@@ -2728,14 +2728,19 @@ fn toolbar_button(
 
 fn sidebar_style(theme: &Theme) -> container::Style {
     let background = theme.palette().background;
-    let alternate = lighter(background, 16);
-    // Iced projects angled gradients across the full bounds. On a tall sidebar,
-    // Slint's 112deg value becomes a large diagonal wedge, so keep the same
-    // left-to-right color progression without making it depend on window height.
-    let gradient = gradient::Linear::new(90.0_f32.to_radians())
-        .add_stop(0.0, with_alpha(alternate, 0.90))
-        .add_stop(0.58, with_alpha(alternate, 0.80))
-        .add_stop(1.0, with_alpha(background, 0.88));
+    let alternate = if background.r > 0.5 {
+        Color::from_rgb8(240, 240, 240)
+    } else {
+        Color::from_rgb8(44, 44, 44)
+    };
+    // Slint's transparent surface produces a much denser result than Iced's
+    // premultiplied WGPU surface. Keep the original 112 degree progression,
+    // but compensate at the stops so the wallpaper stays a subtle texture
+    // instead of becoming a hard diagonal field.
+    let gradient = gradient::Linear::new(112.0_f32.to_radians())
+        .add_stop(0.0, with_alpha(alternate, 0.97))
+        .add_stop(0.58, with_alpha(alternate, 0.94))
+        .add_stop(1.0, with_alpha(background, 0.96));
     container::Style {
         background: Some(Background::from(gradient)),
         ..container::Style::default()
