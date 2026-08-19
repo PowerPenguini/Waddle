@@ -16,7 +16,7 @@ use gio::prelude::*;
 use iced::time::Instant;
 use iced::{
     Alignment, Animation, Background, Border, Color, Element, Fill, Font, Length, Padding, Point,
-    Shadow, Size, Subscription, Task, Theme, Vector,
+    Rectangle, Shadow, Size, Subscription, Task, Theme, Vector,
     animation::Easing,
     application, event, gradient, keyboard, mouse, system, time,
     widget::{
@@ -175,8 +175,7 @@ enum Message {
     ContextTrash,
     CloseContext,
     GridScrolled(f32),
-    GridBackgroundPressed(Point),
-    GridBackgroundReleased,
+    GridPointerMoved(Point),
     NavigationFinished {
         id: u64,
         requested: PathBuf,
@@ -510,19 +509,15 @@ impl App {
                 self.grid_scroll_y = y;
                 Task::none()
             }
-            Message::GridBackgroundPressed(point) => {
-                if self.mutations_allowed() {
-                    self.marquee = Some(MarqueeState {
-                        start: point,
-                        current: point,
-                    });
+            Message::GridPointerMoved(point) => {
+                if let Some(marquee) = &mut self.marquee {
+                    marquee.current = Point::new(
+                        point.x + SIDEBAR_WIDTH,
+                        point.y + TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
+                    );
                     self.update_marquee_selection();
                 }
                 Task::none()
-            }
-            Message::GridBackgroundReleased => {
-                self.marquee = None;
-                self.schedule_details()
             }
             Message::NavigationFinished {
                 id,
@@ -619,7 +614,7 @@ impl App {
         }
     }
 
-    fn handle_event(&mut self, event: iced::Event, status: event::Status) -> Task<Message> {
+    fn handle_event(&mut self, event: iced::Event, _status: event::Status) -> Task<Message> {
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 self.cursor = position;
@@ -635,9 +630,27 @@ impl App {
                 }
                 Task::none()
             }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if self.grid_selection_start_allowed(self.cursor) =>
+            {
+                self.marquee = Some(MarqueeState {
+                    start: self.cursor,
+                    current: self.cursor,
+                });
+                self.update_marquee_selection();
+                Task::none()
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if self.marquee.take().is_some() =>
+            {
+                self.schedule_details()
+            }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)) => self.go_back(),
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Forward)) => {
                 self.go_forward()
+            }
+            iced::Event::Window(window::Event::Unfocused) if self.marquee.take().is_some() => {
+                self.schedule_details()
             }
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
@@ -645,12 +658,7 @@ impl App {
                 modifiers,
                 text,
                 ..
-            }) if status == event::Status::Ignored
-                || self.input_mode != InputMode::Browser
-                || self.dialog.is_open() =>
-            {
-                self.handle_key(key, modified_key, modifiers, text.as_deref())
-            }
+            }) => self.handle_key(key, modified_key, modifiers, text.as_deref()),
             _ => Task::none(),
         }
     }
@@ -964,6 +972,9 @@ impl App {
     }
 
     fn finish_entry_press(&mut self, index: usize) -> Task<Message> {
+        if self.drag.is_none() {
+            return Task::none();
+        }
         if self.drag.as_ref().is_some_and(|drag| drag.active) {
             return self.finish_drag();
         }
@@ -1655,12 +1666,11 @@ impl App {
             return;
         };
         let columns = self.grid_columns() as i32;
-        let start = self.grid_cell_at(marquee.start);
-        let current = self.grid_cell_at(marquee.current);
-        if let (Some((start_row, start_column)), Some((end_row, end_column))) = (start, current) {
-            self.explorer
-                .select_rectangle(start_row, start_column, end_row, end_column, columns);
-        }
+        let (start_row, start_column) = self.grid_selection_cell_at(marquee.start);
+        let (end_row, end_column) = self.grid_selection_cell_at(marquee.current);
+        self.explorer
+            .select_rectangle(start_row, start_column, end_row, end_column, columns);
+        self.refresh_status();
     }
 
     fn selected_entries(&self) -> Vec<FileEntry> {
@@ -1751,6 +1761,70 @@ impl App {
         let column = ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / column_width).floor() as i32;
         let row = ((point.y - content_top + self.grid_scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
         (row >= 0 && column >= 0 && column < self.grid_columns() as i32).then_some((row, column))
+    }
+
+    fn grid_selection_cell_at(&self, point: Point) -> (i32, i32) {
+        let content_top =
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
+        let column =
+            ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / self.grid_column_width()).floor() as i32;
+        let row = ((point.y - content_top + self.grid_scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
+        (row, column)
+    }
+
+    fn grid_selection_start_allowed(&self, point: Point) -> bool {
+        if self.explorer.view_mode != ViewMode::Grid || !self.mutations_allowed() {
+            return false;
+        }
+        let content_top =
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
+        let status_height = self.output_expansion.interpolate(
+            STATUS_HEIGHT,
+            self.command_output_height,
+            self.animation_now,
+        );
+        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER
+            || point.x >= self.window_size.width - CONTENT_GUTTER
+            || point.y < content_top
+            || point.y >= self.window_size.height - status_height - CONTENT_GUTTER
+        {
+            return false;
+        }
+        let Some((row, column)) = self.grid_cell_at(point) else {
+            return false;
+        };
+        let index = row as usize * self.grid_columns() + column as usize;
+        if index >= self.explorer.entries.len() {
+            return true;
+        }
+        let column_left = SIDEBAR_WIDTH + CONTENT_GUTTER + column as f32 * self.grid_column_width();
+        let tile_left = column_left + (self.grid_column_width() - TILE_WIDTH) / 2.0;
+        let row_top = content_top - self.grid_scroll_y + row as f32 * TILE_ROW_HEIGHT;
+        let inside_tile = point.x >= tile_left
+            && point.x < tile_left + TILE_WIDTH
+            && point.y >= row_top
+            && point.y < row_top + 108.0;
+        !inside_tile
+    }
+
+    fn marquee_bounds(&self, marquee: &MarqueeState) -> Rectangle {
+        let origin = Point::new(SIDEBAR_WIDTH, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
+        let size = Size::new(
+            (self.window_size.width - origin.x).max(0.0),
+            (self.window_size.height
+                - origin.y
+                - self.output_expansion.interpolate(
+                    STATUS_HEIGHT,
+                    self.command_output_height,
+                    self.animation_now,
+                ))
+            .max(0.0),
+        );
+        let left = (marquee.start.x.min(marquee.current.x) - origin.x).clamp(0.0, size.width);
+        let right = (marquee.start.x.max(marquee.current.x) - origin.x).clamp(0.0, size.width);
+        let top = (marquee.start.y.min(marquee.current.y) - origin.y).clamp(0.0, size.height);
+        let bottom = (marquee.start.y.max(marquee.current.y) - origin.y).clamp(0.0, size.height);
+        Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top))
     }
 
     fn grid_index_at(&self, point: Point) -> Option<usize> {
@@ -2010,23 +2084,40 @@ impl App {
             .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
             .width(Fill)
             .height(Fill);
-        let area = mouse_area(container(scroll).padding(Padding {
+        let area: Element<'_, Message> = mouse_area(container(scroll).padding(Padding {
             top: CONTENT_GUTTER + LIST_VIEW_TOP_INSET,
             right: CONTENT_GUTTER,
             bottom: CONTENT_GUTTER,
             left: CONTENT_GUTTER,
         }))
-        .on_press(Message::GridBackgroundPressed(self.cursor))
-        .on_release(Message::GridBackgroundReleased)
-        .on_move(|point| {
-            Message::Event(
-                iced::Event::Mouse(mouse::Event::CursorMoved { position: point }),
-                event::Status::Ignored,
-            )
-        });
-        container(area)
+        .on_move(Message::GridPointerMoved)
+        .into();
+        let content: Element<'_, Message> = if let Some(marquee) = &self.marquee {
+            let bounds = self.marquee_bounds(marquee);
+            let selection = container(Space::new())
+                .width(bounds.width)
+                .height(bounds.height)
+                .style(move |_| marquee_style(self.accent_color()));
+            let overlay = column![
+                Space::new().height(bounds.y),
+                row![
+                    Space::new().width(bounds.x),
+                    selection,
+                    Space::new().width(Fill)
+                ]
+                .height(bounds.height),
+                Space::new().height(Fill),
+            ]
+            .width(Fill)
+            .height(Fill);
+            stack![area, overlay].into()
+        } else {
+            area
+        };
+        container(content)
             .width(Fill)
             .height(Fill)
+            .clip(true)
             .style(browser_background_style)
             .into()
     }
@@ -2122,7 +2213,11 @@ impl App {
     ) -> Element<'a, Message> {
         let mut rows = Column::new().spacing(0);
         for (index, entry) in entries.iter().enumerate() {
-            let active = selected == Some(index);
+            let active = if parent {
+                selected == Some(index)
+            } else {
+                self.explorer.selected_entries.contains(&index)
+            };
             let hovered = !parent && self.hovered_entry == Some(index);
             let label = fs::display_name(&entry.name);
             let icon = themed_svg(
@@ -2720,6 +2815,16 @@ fn ranger_row_style(theme: &Theme, selected: bool, hovered: bool) -> container::
             ..Border::default()
         })
     }
+}
+
+fn marquee_style(accent: Color) -> container::Style {
+    container::Style::default()
+        .background(with_alpha(accent, 0.18))
+        .border(Border {
+            width: 1.0,
+            color: accent,
+            ..Border::default()
+        })
 }
 
 fn themed_svg(icon: &'static [u8], size: f32, color: Color) -> widget::Svg<'static> {

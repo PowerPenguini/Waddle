@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use iced::{event, keyboard, mouse};
 
-use super::{App, DialogState, InputMode};
+use super::{App, DialogState, InputMode, MarqueeState, Message};
 use crate::app::settings::parse_view_mode;
 use crate::app::state::{ExplorerState, MountRoot, NavigationKind, PendingNavigation, ViewMode};
 use crate::fs::FileEntry;
@@ -175,6 +175,138 @@ fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
             .copied()
             .collect::<Vec<_>>(),
         [0, 1]
+    );
+}
+
+#[test]
+fn captured_browser_key_still_enters_visual_selection() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.explorer.entries = vec![entry("one"), entry("two")];
+    app.explorer.select_only(Some(0));
+    let key = keyboard::Key::Character("v".into());
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::KeyV),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: Some("v".into()),
+            repeat: false,
+        }),
+        event::Status::Captured,
+    );
+
+    assert_eq!(app.explorer.visual_selection_anchor, Some(0));
+}
+
+#[test]
+fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.window_size = iced::Size::new(820.0, 560.0);
+    app.explorer.entries = (0..9)
+        .map(|index| entry(&format!("item-{index}")))
+        .collect();
+    let content_top = super::TOOLBAR_HEIGHT
+        + super::TOOLBAR_DIVIDER_HEIGHT
+        + super::CONTENT_GUTTER
+        + super::LIST_VIEW_TOP_INSET;
+    let start = iced::Point::new(
+        super::SIDEBAR_WIDTH + super::CONTENT_GUTTER + 2.0,
+        content_top + 110.0,
+    );
+    let end = iced::Point::new(
+        super::SIDEBAR_WIDTH + super::CONTENT_GUTTER + app.grid_column_width() + 2.0,
+        content_top + super::TILE_ROW_HEIGHT + 30.0,
+    );
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: start }),
+        event::Status::Ignored,
+    );
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        event::Status::Ignored,
+    );
+    assert!(app.marquee.is_some());
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: end }),
+        event::Status::Ignored,
+    );
+    assert_eq!(
+        app.explorer
+            .selected_entries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0, 1, 5, 6]
+    );
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        event::Status::Ignored,
+    );
+    assert!(app.marquee.is_none());
+}
+
+#[test]
+fn releasing_a_marquee_over_a_tile_keeps_the_rectangular_selection() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.explorer.entries = (0..6)
+        .map(|index| entry(&format!("item-{index}")))
+        .collect();
+    app.explorer.select_rectangle(0, 0, 1, 1, 3);
+
+    let _ = app.finish_entry_press(4);
+
+    assert_eq!(
+        app.explorer
+            .selected_entries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0, 1, 3, 4]
+    );
+}
+
+#[test]
+fn marquee_visual_bounds_match_the_pointer_rectangle() {
+    let (mut app, _) = App::new();
+    app.window_size = iced::Size::new(820.0, 560.0);
+    let marquee = MarqueeState {
+        start: iced::Point::new(300.0, 400.0),
+        current: iced::Point::new(423.0, 100.0),
+    };
+
+    let bounds = app.marquee_bounds(&marquee);
+
+    assert_eq!(bounds.x, 80.0);
+    assert_eq!(bounds.y, 53.0);
+    assert_eq!(bounds.width, 123.0);
+    assert_eq!(bounds.height, 300.0);
+}
+
+#[test]
+fn grid_local_motion_updates_marquee_in_window_coordinates() {
+    let (mut app, _) = App::new();
+    app.explorer.entries = (0..6)
+        .map(|index| entry(&format!("item-{index}")))
+        .collect();
+    app.marquee = Some(MarqueeState {
+        start: iced::Point::new(300.0, 400.0),
+        current: iced::Point::new(300.0, 400.0),
+    });
+
+    let _ = app.update(Message::GridPointerMoved(iced::Point::new(203.0, 53.0)));
+
+    assert_eq!(
+        app.marquee.as_ref().map(|marquee| marquee.current),
+        Some(iced::Point::new(423.0, 100.0))
     );
 }
 
