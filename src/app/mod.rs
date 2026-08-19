@@ -15,7 +15,8 @@ use std::{
 use gio::prelude::*;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Point, Shadow,
-    Size, Subscription, Task, Theme, Vector, application, event, keyboard, mouse, system, time,
+    Size, Subscription, Task, Theme, Vector, application, event, gradient, keyboard, mouse, system,
+    time,
     widget::{
         self, Button, Column, Grid, Id, Row, Space, button, column, container, mouse_area, opaque,
         pin, row, rule, scrollable, stack, svg, text, text_input,
@@ -38,6 +39,13 @@ const TILE_PITCH: f32 = 112.0;
 const TILE_ROW_HEIGHT: f32 = 116.0;
 const CONTENT_GUTTER: f32 = 14.0;
 const SEARCH_LIMIT: usize = 1000;
+
+const UI_FONT: Font = Font::with_name("Roboto");
+const UI_FONT_SEMIBOLD: Font = Font {
+    weight: iced::font::Weight::Semibold,
+    ..UI_FONT
+};
+const MONO_FONT: Font = Font::with_name("JetBrainsMono Nerd Font Mono");
 
 const LOCATION_ID: &str = "location";
 const SEARCH_ID: &str = "search";
@@ -145,6 +153,7 @@ enum Message {
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
     EntryPressed(usize),
     EntryReleased(usize),
+    EntryHover(Option<usize>),
     EntryDoubleClicked(usize),
     RangerPressed(usize),
     RangerReleased,
@@ -213,6 +222,7 @@ pub fn run() -> iced::Result {
         .title("PolarExp")
         .settings(iced::Settings {
             id: Some("dev.polarexp.PolarExp".to_owned()),
+            default_font: UI_FONT,
             antialiasing: true,
             ..iced::Settings::default()
         })
@@ -241,6 +251,7 @@ struct App {
     cursor: Point,
     drag: Option<DragState>,
     marquee: Option<MarqueeState>,
+    hovered_entry: Option<usize>,
     grid_scroll_y: f32,
     ranger_parent_scroll_y: f32,
     ranger_current_scroll_y: f32,
@@ -275,6 +286,7 @@ impl App {
             cursor: Point::ORIGIN,
             drag: None,
             marquee: None,
+            hovered_entry: None,
             grid_scroll_y: 0.0,
             ranger_parent_scroll_y: 0.0,
             ranger_current_scroll_y: 0.0,
@@ -315,8 +327,8 @@ impl App {
             .map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent);
         let palette = if dark {
             iced::theme::Palette {
-                background: Color::from_rgb8(24, 24, 24),
-                text: Color::from_rgb8(238, 238, 238),
+                background: Color::from_rgb8(28, 28, 28),
+                text: Color::from_rgb8(242, 242, 242),
                 primary: accent,
                 success: Color::from_rgb8(45, 150, 90),
                 danger: Color::from_rgb8(196, 43, 28),
@@ -338,10 +350,7 @@ impl App {
     fn application_style(&self, theme: &Theme) -> iced::theme::Style {
         let palette = theme.palette();
         iced::theme::Style {
-            background_color: Color {
-                a: 0.90,
-                ..palette.background
-            },
+            background_color: Color::TRANSPARENT,
             text_color: palette.text,
         }
     }
@@ -402,6 +411,10 @@ impl App {
                 Task::none()
             }
             Message::EntryReleased(index) => self.finish_entry_press(index),
+            Message::EntryHover(index) => {
+                self.hovered_entry = index;
+                Task::none()
+            }
             Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
             Message::RangerPressed(index) => {
                 let Some(entry) = self.explorer.entries.get(index) else {
@@ -982,6 +995,7 @@ impl App {
             self.refresh_status();
             return Task::none();
         };
+        self.refresh_status();
         let path = entry.path.clone();
         let lane = Arc::clone(&self.lanes.background);
         Task::perform(
@@ -1646,22 +1660,39 @@ impl App {
         if self.delete_operator_pending() {
             return;
         }
-        self.status = if let Some(details) = &self.explorer.selected_details {
-            details.clone()
-        } else if self.explorer.selected_entries.len() > 1 {
+        self.status = if self.explorer.selected_entries.len() > 1 {
             format!(
                 "{} selected  •  {}",
                 self.explorer.selected_entries.len(),
                 self.explorer.current.display()
             )
+        } else if let Some(entry) = self
+            .explorer
+            .selected_entry
+            .and_then(|index| self.explorer.entries.get(index))
+        {
+            let name = fs::display_name(&entry.name);
+            match &self.explorer.selected_details {
+                Some(details) => format!("{name}  •  {details}"),
+                None => format!("{name}  •  Loading details…"),
+            }
         } else {
-            self.explorer.current.display().to_string()
+            format!(
+                "{} items  •  {}",
+                self.explorer.entries.len(),
+                self.explorer.current.display()
+            )
         };
     }
 
     fn grid_columns(&self) -> usize {
         let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
         (width / TILE_PITCH).floor().max(1.0) as usize
+    }
+
+    fn grid_column_width(&self) -> f32 {
+        let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
+        width / self.grid_columns() as f32
     }
 
     fn grid_cell_at(&self, point: Point) -> Option<(i32, i32)> {
@@ -1716,45 +1747,62 @@ impl App {
             rows = rows.push(self.tree_row(tree_row));
         }
         let content = column![
-            container(text("Locations").size(13)).padding(Padding::from([13, 14])),
+            container(
+                text("Locations")
+                    .font(UI_FONT_SEMIBOLD)
+                    .size(12)
+                    .color(with_alpha(self.iced_theme().palette().text, 0.68)),
+            )
+            .height(30)
+            .center_y(30),
             scrollable(rows).height(Fill),
         ];
         container(content)
             .width(SIDEBAR_WIDTH)
             .height(Fill)
+            .padding(Padding::from([8, 12]))
             .style(sidebar_style)
             .into()
     }
 
     fn tree_row(&self, tree_row: TreeRow) -> Element<'_, Message> {
-        let mut line = Row::new()
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .padding(Padding::from([0, 7]));
+        let mut line = Row::new().spacing(6).align_y(Alignment::Center).padding(0);
         line = line.push(
             Space::new()
-                .width((tree_row.depth as f32 * 16.0) + 3.0)
+                .width((tree_row.depth as f32 * 16.0) + 5.0)
                 .height(1),
         );
-        let marker = if tree_row.loading {
-            "◌"
-        } else if tree_row.expandable && tree_row.expanded {
-            "⌄"
-        } else if tree_row.expandable {
-            "›"
-        } else {
-            ""
+        let (icon, icon_color) = match tree_row.kind {
+            state::NodeKind::Computer => (
+                include_bytes!("../ui/icons/computer.svg").as_slice(),
+                self.secondary_text_color(),
+            ),
+            state::NodeKind::Drive => (
+                include_bytes!("../ui/icons/drive.svg").as_slice(),
+                self.secondary_text_color(),
+            ),
+            state::NodeKind::Folder => (
+                include_bytes!("../ui/icons/folder.svg").as_slice(),
+                self.accent_color(),
+            ),
         };
-        let icon = match tree_row.kind {
-            state::NodeKind::Computer => "▣",
-            state::NodeKind::Drive => "▱",
-            state::NodeKind::Folder => "■",
-        };
-        line = line
-            .push(text(marker).size(13).width(12))
-            .push(text(icon).size(13).color(self.accent_color()))
-            .push(text(tree_row.label).size(13));
         let selected = tree_row.selected;
+        let label_color = if selected {
+            self.selection_text_color()
+        } else {
+            self.iced_theme().palette().text
+        };
+        if tree_row.loading {
+            line = line.push(
+                container(text("◌").size(14).color(icon_color))
+                    .width(17)
+                    .height(17)
+                    .center(Fill),
+            );
+        } else {
+            line = line.push(themed_svg(icon, 17.0, icon_color));
+        }
+        line = line.push(text(tree_row.label).size(13).color(label_color).width(Fill));
         button(line)
             .on_press(Message::TreeRow(tree_row.id))
             .width(Fill)
@@ -1783,50 +1831,60 @@ impl App {
             "Parent folder",
             self.explorer.current.parent().is_some(),
             Message::Parent,
-            self.secondary_text_color(),
+            self.iced_theme().palette().text,
+            self.iced_theme().palette().background,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
             "Back",
             !self.explorer.history.is_empty(),
             Message::Back,
-            self.secondary_text_color(),
+            self.iced_theme().palette().text,
+            self.iced_theme().palette().background,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
             "Forward",
             !self.explorer.forward_history.is_empty(),
             Message::Forward,
-            self.secondary_text_color(),
+            self.iced_theme().palette().text,
+            self.iced_theme().palette().background,
         );
-        let location = text_input("Location", &self.location_input)
+        let location_input = text_input("Location", &self.location_input)
             .id(Id::new(LOCATION_ID))
             .on_input(Message::LocationChanged)
             .on_submit(Message::LocationSubmitted)
             .on_paste(Message::LocationChanged)
-            .padding(Padding::from([6, 10]))
+            .font(UI_FONT)
+            .padding(Padding::from([0, 10]))
             .size(14)
             .style(flat_input_style)
             .width(Fill);
+        let location_input = container(location_input)
+            .width(Fill)
+            .height(33)
+            .center_y(33);
+        let accent = self.accent_color();
+        let location = column![
+            location_input,
+            container(Space::new().width(Fill).height(1))
+                .width(Fill)
+                .height(1)
+                .style(move |_| solid_background_style(accent)),
+        ]
+        .spacing(0)
+        .width(Fill)
+        .height(34);
         let location = mouse_area(location).on_press(Message::LocationFocused);
-        let grid_button = button(text("Grid").size(12))
-            .on_press(Message::ViewMode(ViewMode::Grid))
-            .padding(Padding::from([5, 7]))
-            .style(if self.explorer.view_mode == ViewMode::Grid {
-                button::primary
-            } else {
-                button::text
-            });
-        let ranger_button = button(text("Ranger").size(12))
-            .on_press(Message::ViewMode(ViewMode::Ranger))
-            .padding(Padding::from([5, 7]))
-            .style(if self.explorer.view_mode == ViewMode::Ranger {
-                button::primary
-            } else {
-                button::text
-            });
+        let view_switch = row![
+            self.view_mode_tab("Grid", ViewMode::Grid),
+            self.view_mode_tab("Ranger", ViewMode::Ranger),
+        ]
+        .spacing(12)
+        .width(106)
+        .height(34);
         container(
-            row![parent, back, forward, location, grid_button, ranger_button]
+            row![parent, back, forward, location, view_switch]
                 .spacing(4)
                 .align_y(Alignment::Center),
         )
@@ -1834,6 +1892,35 @@ impl App {
         .padding(Padding::from([6, CONTENT_GUTTER as u16]))
         .style(browser_background_style)
         .into()
+    }
+
+    fn view_mode_tab(&self, label: &'static str, mode: ViewMode) -> Element<'_, Message> {
+        let selected = self.explorer.view_mode == mode;
+        let label_color = if selected {
+            self.accent_color()
+        } else {
+            self.secondary_text_color()
+        };
+        let underline = if selected {
+            self.accent_color()
+        } else {
+            Color::TRANSPARENT
+        };
+        let content = column![
+            container(text(label).font(UI_FONT).size(12).color(label_color))
+                .width(Fill)
+                .height(32)
+                .center_x(Fill)
+                .center_y(32),
+            container(Space::new().width(Fill).height(2))
+                .width(Fill)
+                .height(2)
+                .style(move |_| solid_background_style(underline)),
+        ]
+        .spacing(0)
+        .width(Fill)
+        .height(34);
+        mouse_area(content).on_press(Message::ViewMode(mode)).into()
     }
 
     fn grid_body(&self) -> Element<'_, Message> {
@@ -1849,6 +1936,10 @@ impl App {
         let last_index = (last_row * columns).min(self.explorer.entries.len());
         let mut grid = Grid::with_capacity(last_index.saturating_sub(first_index))
             .columns(columns)
+            .height(widget::grid::aspect_ratio(
+                self.grid_column_width(),
+                TILE_ROW_HEIGHT,
+            ))
             .spacing(0);
         for index in first_index..last_index {
             grid = grid.push(self.file_tile(index));
@@ -1885,34 +1976,61 @@ impl App {
     fn file_tile(&self, index: usize) -> Element<'_, Message> {
         let entry = &self.explorer.entries[index];
         let selected = self.explorer.selected_entries.contains(&index);
-        let icon = if entry.is_directory() { "■" } else { "▤" };
+        let hovered = self.hovered_entry == Some(index);
         let icon_color = if entry.is_directory() {
             self.accent_color()
         } else {
             self.secondary_text_color()
         };
+        let icon = themed_svg(
+            if entry.is_directory() {
+                include_bytes!("../ui/icons/folder.svg")
+            } else {
+                include_bytes!("../ui/icons/file.svg")
+            },
+            48.0,
+            icon_color,
+        );
+        let label_color = if selected {
+            self.selection_text_color()
+        } else {
+            self.iced_theme().palette().text
+        };
         let content = column![
-            text(icon).size(45).color(icon_color),
+            container(icon)
+                .width(Fill)
+                .height(48)
+                .center_x(Fill)
+                .center_y(48),
             text(fs::display_name(&entry.name))
+                .font(UI_FONT)
                 .size(13)
+                .color(label_color)
                 .width(Fill)
                 .height(34)
-                .wrapping(iced::advanced::text::Wrapping::Glyph)
+                .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
                 .align_x(Alignment::Center),
         ]
-        .spacing(5)
+        .spacing(6)
         .align_x(Alignment::Center);
         let tile = container(content)
             .width(TILE_WIDTH)
             .height(108)
-            .padding(Padding::from([8, 7]))
+            .padding(Padding {
+                top: 10.0,
+                right: 7.0,
+                bottom: 6.0,
+                left: 7.0,
+            })
             .clip(true)
-            .style(move |theme| tile_style(theme, selected));
+            .style(move |theme| tile_style(theme, selected, hovered));
         mouse_area(container(tile).width(Fill).center_x(Fill))
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
             .on_right_press(Message::EntryContext(index))
+            .on_enter(Message::EntryHover(Some(index)))
+            .on_exit(Message::EntryHover(None))
             .into()
     }
 
@@ -1947,30 +2065,53 @@ impl App {
         let mut rows = Column::new().spacing(0);
         for (index, entry) in entries.iter().enumerate() {
             let active = selected == Some(index);
+            let hovered = !parent && self.hovered_entry == Some(index);
             let label = fs::display_name(&entry.name);
+            let icon = themed_svg(
+                if entry.is_directory() {
+                    include_bytes!("../ui/icons/folder.svg")
+                } else {
+                    include_bytes!("../ui/icons/file.svg")
+                },
+                16.0,
+                if entry.is_directory() {
+                    self.accent_color()
+                } else {
+                    self.secondary_text_color()
+                },
+            );
             let line = row![
-                text(if entry.is_directory() { "■" } else { "▤" })
-                    .size(14)
-                    .color(if entry.is_directory() {
-                        self.accent_color()
+                container(icon)
+                    .width(16)
+                    .height(Fill)
+                    .center_x(16)
+                    .center_y(Fill),
+                text(label)
+                    .font(UI_FONT)
+                    .size(13)
+                    .color(if active {
+                        self.selection_text_color()
                     } else {
-                        self.secondary_text_color()
-                    }),
-                text(label).size(13).width(Fill),
-                text(if entry.is_directory() { "›" } else { "" }).size(14),
+                        self.iced_theme().palette().text
+                    })
+                    .width(Fill),
             ]
-            .spacing(7)
+            .spacing(8)
             .align_y(Alignment::Center);
             let message = if parent {
                 Message::RangerParentActivated(index)
             } else {
                 Message::RangerPressed(index)
             };
-            let row = container(line)
-                .height(30)
-                .padding(Padding::from([5, 8]))
-                .clip(true)
-                .style(move |theme| ranger_row_style(theme, active));
+            let row = container(
+                container(line)
+                    .height(30)
+                    .padding(Padding::from([0, 8]))
+                    .clip(true)
+                    .style(move |theme| ranger_row_style(theme, active, hovered)),
+            )
+            .height(32)
+            .padding(Padding::from([1, 6]));
             rows = rows.push(
                 mouse_area(row)
                     .on_press(message)
@@ -1988,6 +2129,16 @@ impl App {
                         Message::Noop
                     } else {
                         Message::EntryContext(index)
+                    })
+                    .on_enter(if parent {
+                        Message::Noop
+                    } else {
+                        Message::EntryHover(Some(index))
+                    })
+                    .on_exit(if parent {
+                        Message::Noop
+                    } else {
+                        Message::EntryHover(None)
                     }),
             );
         }
@@ -2021,9 +2172,9 @@ impl App {
                         .color(self.secondary_text_color()),
                     text(&self.preview.text).size(12).font(
                         if self.preview.kind == PreviewKind::Text {
-                            Font::MONOSPACE
+                            MONO_FONT
                         } else {
-                            Font::DEFAULT
+                            UI_FONT
                         }
                     ),
                 ]
@@ -2041,7 +2192,7 @@ impl App {
     fn status_bar(&self) -> Element<'_, Message> {
         if let Some((summary, detail)) = &self.command_output {
             let header = row![
-                text(summary).font(Font::MONOSPACE).size(11).width(Fill),
+                text(summary).font(MONO_FONT).size(11).width(Fill),
                 button(text("×").size(16))
                     .on_press(Message::CloseOutput)
                     .style(button::text),
@@ -2049,7 +2200,7 @@ impl App {
             .align_y(Alignment::Center);
             let body = column![
                 header,
-                scrollable(text(detail).font(Font::MONOSPACE).size(12)).height(Fill)
+                scrollable(text(detail).font(MONO_FONT).size(12)).height(Fill)
             ]
             .spacing(5);
             return container(body)
@@ -2071,7 +2222,7 @@ impl App {
                         .id(Id::new(SEARCH_ID))
                         .on_input(Message::SearchChanged)
                         .on_submit(Message::SearchSubmitted)
-                        .font(Font::MONOSPACE)
+                        .font(MONO_FONT)
                         .size(12)
                         .padding(0)
                         .style(status_input_style)
@@ -2088,7 +2239,7 @@ impl App {
                     .id(Id::new(COMMAND_ID))
                     .on_input(Message::CommandChanged)
                     .on_submit(Message::CommandSubmitted)
-                    .font(Font::MONOSPACE)
+                    .font(MONO_FONT)
                     .size(12)
                     .padding(0)
                     .style(status_input_style)
@@ -2252,6 +2403,13 @@ impl App {
         color.a = 0.62;
         color
     }
+
+    fn selection_text_color(&self) -> Color {
+        self.accent
+            .as_ref()
+            .and_then(|colors| colors.selection_foreground)
+            .unwrap_or(self.iced_theme().palette().text)
+    }
 }
 
 async fn run_blocking<T, F>(lane: Arc<Semaphore>, work: F) -> Result<T, String>
@@ -2362,29 +2520,38 @@ fn command_output_height(detail: &str) -> f32 {
     (40.0 + lines * 16.0).clamp(56.0, 280.0)
 }
 
-fn toolbar_button<'a>(
+fn toolbar_button(
     icon: &'static [u8],
-    _accessible_label: &'a str,
+    _accessible_label: &'static str,
     enabled: bool,
     message: Message,
     color: Color,
-) -> Button<'a, Message> {
-    let icon = svg(svg::Handle::from_memory(icon))
-        .width(18)
-        .height(18)
-        .style(move |_, _| svg::Style { color: Some(color) });
+    background: Color,
+) -> Button<'static, Message> {
+    let icon = themed_svg(
+        icon,
+        18.0,
+        blend_colors(background, color, if enabled { 0.98 } else { 0.30 }),
+    );
     button(icon)
         .on_press_maybe(enabled.then_some(message))
-        .width(32)
-        .height(32)
+        .width(30)
+        .height(34)
         .padding(0)
-        .style(button::text)
+        .style(toolbar_button_style)
 }
 
 fn sidebar_style(theme: &Theme) -> container::Style {
-    let mut color = theme.palette().background;
-    color.a = 0.72;
-    container::Style::default().background(color)
+    let background = theme.palette().background;
+    let alternate = lighter(background, 16);
+    let gradient = gradient::Linear::new(112.0_f32.to_radians())
+        .add_stop(0.0, with_alpha(alternate, 0.90))
+        .add_stop(0.58, with_alpha(alternate, 0.80))
+        .add_stop(1.0, with_alpha(background, 0.88));
+    container::Style {
+        background: Some(Background::from(gradient)),
+        ..container::Style::default()
+    }
 }
 
 fn browser_background_style(theme: &Theme) -> container::Style {
@@ -2403,34 +2570,34 @@ fn preview_background_style(theme: &Theme) -> container::Style {
 }
 
 fn status_background_style(theme: &Theme) -> container::Style {
-    let base = theme.palette().background;
-    let color = Color::from_rgba(
-        (base.r + 0.035).min(1.0),
-        (base.g + 0.035).min(1.0),
-        (base.b + 0.035).min(1.0),
-        1.0,
-    );
-    container::Style::default().background(color)
+    container::Style::default().background(lighter(theme.palette().background, 16))
 }
 
 fn tree_button_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
-    if selected {
-        let mut style = button::primary(theme, status);
-        if let Some(Background::Color(color)) = style.background {
-            style.background = Some(Background::Color(Color { a: 0.45, ..color }));
-        }
-        style
-    } else {
-        button::text(theme, status)
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: if selected {
+            Some(Background::Color(with_alpha(theme.palette().primary, 0.45)))
+        } else if hovered {
+            Some(Background::Color(lighter(theme.palette().background, 16)))
+        } else {
+            None
+        },
+        text_color: theme.palette().text,
+        border: Border {
+            radius: 5.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
     }
 }
 
-fn tile_style(theme: &Theme, selected: bool) -> container::Style {
+fn tile_style(theme: &Theme, selected: bool, hovered: bool) -> container::Style {
     let mut style = container::Style::default();
     if selected {
-        let mut color = theme.palette().primary;
-        color.a = 0.34;
-        style.background = Some(Background::Color(color));
+        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.45)));
+    } else if hovered {
+        style.background = Some(Background::Color(lighter(theme.palette().background, 16)));
     }
     style.border = Border {
         radius: 7.0.into(),
@@ -2439,14 +2606,75 @@ fn tile_style(theme: &Theme, selected: bool) -> container::Style {
     style
 }
 
-fn ranger_row_style(theme: &Theme, selected: bool) -> container::Style {
+fn ranger_row_style(theme: &Theme, selected: bool, hovered: bool) -> container::Style {
     if selected {
-        let mut color = theme.palette().primary;
-        color.a = 0.34;
-        container::Style::default().background(color)
-    } else {
         container::Style::default()
+            .background(with_alpha(theme.palette().primary, 0.45))
+            .border(Border {
+                radius: 5.0.into(),
+                ..Border::default()
+            })
+    } else if hovered {
+        container::Style::default()
+            .background(lighter(theme.palette().background, 16))
+            .border(Border {
+                radius: 5.0.into(),
+                ..Border::default()
+            })
+    } else {
+        container::Style::default().border(Border {
+            radius: 5.0.into(),
+            ..Border::default()
+        })
     }
+}
+
+fn themed_svg(icon: &'static [u8], size: f32, color: Color) -> widget::Svg<'static> {
+    svg(svg::Handle::from_memory(icon))
+        .width(size)
+        .height(size)
+        .style(move |_, _| svg::Style { color: Some(color) })
+}
+
+fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            Some(Background::Color(lighter(theme.palette().background, 16)))
+        } else {
+            None
+        },
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+fn solid_background_style(color: Color) -> container::Style {
+    container::Style::default().background(color)
+}
+
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color { a: alpha, ..color }
+}
+
+fn lighter(color: Color, amount: u8) -> Color {
+    let amount = amount as f32 / 255.0;
+    Color::from_rgba(
+        (color.r + amount).min(1.0),
+        (color.g + amount).min(1.0),
+        (color.b + amount).min(1.0),
+        color.a,
+    )
+}
+
+fn blend_colors(background: Color, foreground: Color, opacity: f32) -> Color {
+    Color::from_rgb(
+        background.r + (foreground.r - background.r) * opacity,
+        background.g + (foreground.g - background.g) * opacity,
+        background.b + (foreground.b - background.b) * opacity,
+    )
 }
 
 fn flat_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
