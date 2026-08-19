@@ -1,0 +1,37 @@
+[package]
+name = "polarexp"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+gio = "0.22.8"
+libc = "0.2.189"
+slint = { version = "1.17.1", default-features = false, features = [
+    "accessibility",
+    "backend-winit",
+    "compat-1-2",
+    "renderer-femtovg",
+    "software-renderer-systemfonts",
+    "std",
+    "unstable-winit-030",
+] }
+
+[build-dependencies]
+slint-build = "1.17.1"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+# Slint does most of the frame rendering in dependencies. Optimizing those
+# crates keeps `cargo run` responsive without making PolarExp's own edit/build
+# cycle as expensive as a full release build.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+strip = "debuginfo"

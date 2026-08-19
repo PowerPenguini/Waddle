@@ -1,0 +1,52 @@
+import { Palette } from "std-widgets.slint";
+import { SystemTheme, ViewMode } from "../types.slint";
+
+export component ViewModeSwitch inherits Rectangle {
+    in property <ViewMode> mode;
+    callback requested(ViewMode);
+    width: 106px;
+    height: 34px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 12px;
+
+        grid-tab := Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+            Text {
+                text: "Grid";
+                color: root.mode == ViewMode.grid ? SystemTheme.accent : Palette.foreground;
+                opacity: root.mode == ViewMode.grid ? 1 : 0.62;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                background: root.mode == ViewMode.grid ? SystemTheme.accent : transparent;
+            }
+            TouchArea { clicked => { root.requested(ViewMode.grid); } }
+        }
+
+        ranger-tab := Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+            Text {
+                text: "Ranger";
+                color: root.mode == ViewMode.ranger ? SystemTheme.accent : Palette.foreground;
+                opacity: root.mode == ViewMode.ranger ? 1 : 0.62;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                background: root.mode == ViewMode.ranger ? SystemTheme.accent : transparent;
+            }
+            TouchArea { clicked => { root.requested(ViewMode.ranger); } }
+        }
+    }
+}

@@ -1,0 +1,36 @@
+import { Palette } from "std-widgets.slint";
+
+export enum EntryIcon { folder, file }
+export enum FolderIcon { computer, drive, folder }
+export enum DialogKind { none, name, trash, permanent-delete, error }
+export enum ViewMode { grid, ranger }
+export enum PreviewKind { empty, directory, text, metadata, error }
+
+export global SystemTheme {
+    in-out property <bool> has-accent: false;
+    in-out property <bool> has-selection-foreground: false;
+    in-out property <brush> detected-accent;
+    in-out property <brush> detected-selection-foreground;
+    out property <brush> accent: has-accent ? detected-accent : Palette.accent-background;
+    out property <brush> selection-background: has-accent ? detected-accent : Palette.selection-background;
+    out property <brush> selection-foreground: has-selection-foreground
+        ? detected-selection-foreground
+        : Palette.selection-foreground;
+}
+
+export struct FileItem {
+    name: string,
+    directory: bool,
+    icon: EntryIcon,
+    drag-data: data-transfer,
+}
+
+export struct FolderRow {
+    label: string,
+    depth: int,
+    expanded: bool,
+    expandable: bool,
+    loading: bool,
+    selected: bool,
+    icon: FolderIcon,
+}

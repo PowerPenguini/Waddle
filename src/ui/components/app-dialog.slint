@@ -1,0 +1,116 @@
+import { Button, Palette } from "std-widgets.slint";
+import { DialogKind } from "../types.slint";
+import { ThemedLineInput } from "themed-line-input.slint";
+
+export component AppDialog inherits Rectangle {
+    in property <DialogKind> kind;
+    in property <string> title;
+    in property <string> message;
+    in property <string> detail;
+    in-out property <string> input;
+    in property <string> error;
+    in property <bool> busy;
+    callback name-submitted(string);
+    callback cancelled();
+    callback confirmed();
+
+    z: 10;
+    background: #00000070;
+    TouchArea {}
+
+    Rectangle {
+        width: 410px;
+        height: root.kind == DialogKind.name ? 210px : 225px;
+        x: (parent.width - self.width) / 2;
+        y: Math.max(24px, (parent.height - self.height) / 2 - 12px);
+        background: Palette.background;
+        border-color: Palette.border;
+        border-width: 1px;
+        border-radius: 8px;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000048;
+        drop-shadow-offset-y: 8px;
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                color: Palette.foreground;
+                font-size: 18px;
+                font-weight: 600;
+            }
+
+            if root.kind == DialogKind.name : VerticalLayout {
+                spacing: 6px;
+                dialog-name-editor := ThemedLineInput {
+                    text <=> root.input;
+                    enabled: !root.busy;
+                    font-size: 14px;
+                    input-label: root.title;
+                    accepted => { root.name-submitted(self.text); }
+                    init => {
+                        self.focus-input();
+                        self.select-all();
+                    }
+                }
+                Text {
+                    text: root.error;
+                    color: #c42b1c;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.kind != DialogKind.name : VerticalLayout {
+                spacing: 7px;
+                Text {
+                    text: root.message;
+                    color: Palette.foreground;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.detail;
+                    color: Palette.foreground;
+                    opacity: 0.68;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                if root.kind != DialogKind.error : Button {
+                    text: "Cancel";
+                    enabled: !root.busy;
+                    clicked => { root.cancelled(); }
+                }
+
+                Button {
+                    primary: true;
+                    enabled: !root.busy;
+                    text: root.kind == DialogKind.name
+                        ? root.title
+                        : root.kind == DialogKind.trash
+                            ? "Move to Trash"
+                            : root.kind == DialogKind.permanent-delete
+                                ? "Delete Permanently"
+                                : "Close";
+                    clicked => {
+                        if root.kind == DialogKind.name {
+                            root.name-submitted(root.input);
+                        } else {
+                            root.confirmed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

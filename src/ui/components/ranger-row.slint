@@ -1,0 +1,108 @@
+import { Palette } from "std-widgets.slint";
+import { SystemTheme, EntryIcon, FileItem } from "../types.slint";
+
+export component RangerRow inherits Rectangle {
+    in property <FileItem> item;
+    in property <int> item-index;
+    in property <bool> selected;
+    in property <bool> actions-enabled;
+    in property <bool> drag-enabled;
+    in property <bool> drop-enabled;
+    callback clicked(int);
+    callback double-clicked(int);
+    callback context-selected(int);
+    callback rename-requested(int);
+    callback trash-requested(int);
+    pure callback drop-allowed(data-transfer, int) -> bool;
+    callback dropped(data-transfer, int) -> bool;
+
+    height: 32px;
+    background: transparent;
+
+    row-surface := Rectangle {
+        x: 6px;
+        y: 1px;
+        width: max(0px, root.width - 12px);
+        height: root.height - 2px;
+        border-radius: 5px;
+        border-width: drop-target.has-drag ? 1px : 0px;
+        border-color: drop-target.has-drag ? SystemTheme.accent : transparent;
+        background: drop-target.has-drag
+            ? Palette.control-background
+            : root.selected
+            ? SystemTheme.selection-background.transparentize(0.55)
+            : row-touch.has-hover ? Palette.control-background : transparent;
+
+        drop-target := DropArea {
+            enabled: root.drop-enabled && root.item.directory;
+            can-drop(event) => {
+                root.drop-allowed(event.data, root.item-index) ? DragAction.move : DragAction.none
+            }
+            dropped(event) => {
+                return root.dropped(event.data, root.item-index) ? DragAction.move : DragAction.none;
+            }
+
+            drag-source := DragArea {
+                enabled: root.drag-enabled;
+                data: root.item.drag-data;
+                allow-move: true;
+
+                ContextMenuArea {
+                    Menu {
+                        if root.actions-enabled : MenuItem {
+                            title: "Rename";
+                            activated => { root.rename-requested(root.item-index); }
+                        }
+                        if root.actions-enabled : MenuItem {
+                            title: "Move to Trash";
+                            activated => { root.trash-requested(root.item-index); }
+                        }
+                    }
+
+                    row-touch := TouchArea {
+                        accessible-role: list-item;
+                        accessible-label: root.item.name;
+                        clicked => { root.clicked(root.item-index); }
+                        double-clicked => { root.double-clicked(root.item-index); }
+                        pointer-event(event) => {
+                            if root.actions-enabled && event.kind == PointerEventKind.down
+                                && event.button == PointerEventButton.right {
+                                root.context-selected(root.item-index);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 16px;
+                            vertical-stretch: 1;
+                            background: transparent;
+
+                            Image {
+                                y: (parent.height - self.height) / 2;
+                                width: 16px;
+                                height: 16px;
+                                source: root.item.icon == EntryIcon.folder
+                                    ? @image-url("../icons/folder.svg")
+                                    : @image-url("../icons/file.svg");
+                                colorize: root.item.icon == EntryIcon.folder
+                                    ? SystemTheme.accent
+                                    : Palette.alternate-foreground;
+                            }
+                        }
+                        Text {
+                            text: root.item.name;
+                            color: root.selected ? SystemTheme.selection-foreground : Palette.foreground;
+                            font-size: 13px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

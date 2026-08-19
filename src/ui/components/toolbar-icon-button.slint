@@ -1,0 +1,31 @@
+import { Palette } from "std-widgets.slint";
+
+export component ToolbarIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 30px;
+    height: 34px;
+    background: transparent;
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        source: root.icon;
+        colorize: Palette.foreground;
+        opacity: !root.enabled
+            ? 0.28
+            : icon-touch.pressed ? 0.55 : icon-touch.has-hover ? 0.72 : 0.92;
+    }
+
+    icon-touch := TouchArea {
+        enabled: root.enabled;
+        accessible-role: button;
+        accessible-label: root.label;
+        clicked => { root.clicked(); }
+    }
+}

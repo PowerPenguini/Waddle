@@ -1,0 +1,109 @@
+import { Palette } from "std-widgets.slint";
+import { SystemTheme, FileItem, EntryIcon } from "../types.slint";
+
+export component FileTile inherits Rectangle {
+    in property <FileItem> item;
+    in property <int> item-index;
+    in property <bool> selected;
+    in property <bool> drag-enabled;
+    in property <bool> actions-enabled;
+    callback clicked(int);
+    callback double-clicked(int);
+    callback context-selected(int);
+    callback rename-requested(int);
+    callback trash-requested(int);
+    pure callback drop-allowed(data-transfer, int) -> bool;
+    callback dropped(data-transfer, int) -> bool;
+
+    border-radius: 7px;
+    border-width: drop-target.has-drag ? 1px : 0px;
+    border-color: drop-target.has-drag ? SystemTheme.accent : transparent;
+    background: drop-target.has-drag
+        ? Palette.control-background
+        : selected
+        ? SystemTheme.selection-background.transparentize(0.55)
+        : tile-touch.has-hover ? Palette.control-background : transparent;
+    opacity: drag-source.dragging ? 0.48 : 1;
+
+    drop-target := DropArea {
+        enabled: root.item.directory && root.drag-enabled;
+        can-drop(event) => {
+            root.drop-allowed(event.data, root.item-index)
+                ? DragAction.move
+                : DragAction.none
+        }
+        dropped(event) => {
+            return root.dropped(event.data, root.item-index)
+                ? DragAction.move
+                : DragAction.none;
+        }
+
+        drag-source := DragArea {
+            enabled: root.drag-enabled;
+            data: root.item.drag-data;
+            allow-move: true;
+
+            ContextMenuArea {
+                Menu {
+                    if root.actions-enabled : MenuItem {
+                        title: "Rename";
+                        activated => { root.rename-requested(root.item-index); }
+                    }
+                    if root.actions-enabled : MenuItem {
+                        title: "Move to Trash";
+                        activated => { root.trash-requested(root.item-index); }
+                    }
+                }
+
+                tile-touch := TouchArea {
+                    accessible-role: list-item;
+                    accessible-label: root.item.name;
+                    clicked => { root.clicked(root.item-index); }
+                    double-clicked => { root.double-clicked(root.item-index); }
+                    pointer-event(event) => {
+                        if root.actions-enabled && event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                            root.context-selected(root.item-index);
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 6px;
+                    padding-left: 7px;
+                    padding-right: 7px;
+                    spacing: 6px;
+                    alignment: start;
+
+                    Rectangle {
+                        height: 48px;
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            width: 48px;
+                            height: 48px;
+                            horizontal-alignment: center;
+                            source: root.item.icon == EntryIcon.folder
+                                ? @image-url("../icons/folder.svg")
+                                : @image-url("../icons/file.svg");
+                            colorize: root.item.icon == EntryIcon.folder
+                                ? SystemTheme.accent
+                                : Palette.alternate-foreground;
+                        }
+                    }
+
+                    Text {
+                        text: root.item.name;
+                        color: root.selected ? SystemTheme.selection-foreground : Palette.foreground;
+                        horizontal-alignment: center;
+                        vertical-alignment: top;
+                        overflow: elide;
+                        wrap: word-wrap;
+                        font-size: 13px;
+                        height: 34px;
+                    }
+                }
+            }
+        }
+    }
+}
