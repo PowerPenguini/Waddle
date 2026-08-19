@@ -58,6 +58,20 @@ fn iced_browser_modes_follow_the_command_prefixes() {
 }
 
 #[test]
+fn command_output_expands_and_collapses_through_the_animation_state() {
+    let (mut app, _) = App::new();
+
+    app.show_command_output("summary".to_owned(), "one\ntwo".to_owned());
+    assert!(app.command_output.is_some());
+    assert!(app.output_expansion.value());
+    assert!(app.command_output_height > super::STATUS_HEIGHT);
+
+    app.hide_command_output();
+    assert!(app.command_output.is_none());
+    assert!(!app.output_expansion.value());
+}
+
+#[test]
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
     app.input_mode = InputMode::Search;

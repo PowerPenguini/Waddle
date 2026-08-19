@@ -13,10 +13,12 @@ use std::{
 };
 
 use gio::prelude::*;
+use iced::time::Instant;
 use iced::{
-    Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Point, Shadow,
-    Size, Subscription, Task, Theme, Vector, application, event, gradient, keyboard, mouse, system,
-    time,
+    Alignment, Animation, Background, Border, Color, Element, Fill, Font, Length, Padding, Point,
+    Shadow, Size, Subscription, Task, Theme, Vector,
+    animation::Easing,
+    application, event, gradient, keyboard, mouse, system, time,
     widget::{
         self, Button, Column, Grid, Id, Row, Space, button, column, container, mouse_area, opaque,
         pin, row, rule, scrollable, stack, svg, text, text_input,
@@ -38,6 +40,8 @@ const TILE_WIDTH: f32 = 104.0;
 const TILE_PITCH: f32 = 112.0;
 const TILE_ROW_HEIGHT: f32 = 116.0;
 const CONTENT_GUTTER: f32 = 14.0;
+const LIST_VIEW_TOP_INSET: f32 = 6.0;
+const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 const SEARCH_LIMIT: usize = 1000;
 
 const UI_FONT: Font = Font::with_name("Roboto");
@@ -46,6 +50,10 @@ const UI_FONT_SEMIBOLD: Font = Font {
     ..UI_FONT
 };
 const MONO_FONT: Font = Font::with_name("JetBrainsMono Nerd Font Mono");
+const MONO_FONT_SEMIBOLD: Font = Font {
+    weight: iced::font::Weight::Semibold,
+    ..MONO_FONT
+};
 
 const LOCATION_ID: &str = "location";
 const SEARCH_ID: &str = "search";
@@ -195,6 +203,7 @@ enum Message {
     CommandSubmitted,
     ShellFinished(Result<ShellReport, String>),
     CloseOutput,
+    AnimationFrame(Instant),
     DialogInputChanged(String),
     DialogSubmit,
     DialogConfirm,
@@ -242,6 +251,9 @@ struct App {
     search_text: String,
     command_text: String,
     command_output: Option<(String, String)>,
+    command_output_height: f32,
+    output_expansion: Animation<bool>,
+    animation_now: Instant,
     status: String,
     busy: bool,
     navigation_loading: bool,
@@ -264,6 +276,7 @@ struct App {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        let now = Instant::now();
         let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut explorer = ExplorerState::new(current.clone(), mounted_roots());
         explorer.view_mode = settings::load_view_mode();
@@ -277,6 +290,11 @@ impl App {
             search_text: String::new(),
             command_text: String::new(),
             command_output: None,
+            command_output_height: STATUS_HEIGHT,
+            output_expansion: Animation::new(false)
+                .duration(Duration::from_millis(140))
+                .easing(Easing::EaseOut),
+            animation_now: now,
             status: String::new(),
             busy: false,
             navigation_loading: false,
@@ -311,11 +329,17 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        let animation = if self.output_expansion.is_animating(self.animation_now) {
+            time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             event::listen_with(|event, status, _| Some(Message::Event(event, status))),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             system::theme_changes().map(Message::SystemTheme),
             time::every(Duration::from_secs(2)).map(|_| Message::PollSystem),
+            animation,
         ])
     }
 
@@ -553,7 +577,11 @@ impl App {
             Message::CommandSubmitted => self.submit_command(),
             Message::ShellFinished(result) => self.finish_shell(result),
             Message::CloseOutput => {
-                self.command_output = None;
+                self.hide_command_output();
+                Task::none()
+            }
+            Message::AnimationFrame(now) => {
+                self.animation_now = now;
                 Task::none()
             }
             Message::DialogInputChanged(value) => {
@@ -664,7 +692,8 @@ impl App {
             };
         }
         if key == keyboard::Key::Named(keyboard::key::Named::Escape) {
-            if self.command_output.take().is_some() {
+            if self.command_output.is_some() {
+                self.hide_command_output();
                 return Task::none();
             }
             if self.explorer.visual_selection_anchor.is_some() {
@@ -1111,7 +1140,7 @@ impl App {
     fn begin_search(&mut self) -> Task<Message> {
         self.input_mode = InputMode::Search;
         self.search_text.clear();
-        self.command_output = None;
+        self.hide_command_output();
         self.explorer.search_origin = Some(self.explorer.selected_entry);
         widget::operation::focus(Id::new(SEARCH_ID))
     }
@@ -1255,7 +1284,7 @@ impl App {
     fn begin_command(&mut self, prefix: char) -> Task<Message> {
         self.input_mode = InputMode::Command(prefix);
         self.command_text.clear();
-        self.command_output = None;
+        self.hide_command_output();
         widget::operation::focus(Id::new(COMMAND_ID))
     }
 
@@ -1289,7 +1318,7 @@ impl App {
         self.busy = false;
         match result {
             Ok(report) => {
-                self.command_output = Some((report.summary, report.detail));
+                self.show_command_output(report.summary, report.detail);
                 let previous_directory = self.explorer.current.clone();
                 let tree_refresh = self.invalidate_tree(vec![previous_directory]);
                 if let Some(directory) = report
@@ -1301,11 +1330,11 @@ impl App {
                 Task::batch([tree_refresh, self.refresh(None)])
             }
             Err(error) if error.contains("interactive terminal") => {
-                self.command_output = Some((
+                self.show_command_output(
                     "interactive terminal required".to_owned(),
                     "This command tried to take over the terminal screen, so PolarExp stopped it."
                         .to_owned(),
-                ));
+                );
                 Task::none()
             }
             Err(error) => {
@@ -1313,6 +1342,22 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    fn show_command_output(&mut self, summary: String, detail: String) {
+        self.command_output_height = command_output_height(&detail);
+        self.command_output = Some((summary, detail));
+        self.animation_now = Instant::now();
+        self.output_expansion.go_mut(true, self.animation_now);
+    }
+
+    fn hide_command_output(&mut self) {
+        if self.command_output.is_none() && !self.output_expansion.value() {
+            return;
+        }
+        self.command_output = None;
+        self.animation_now = Instant::now();
+        self.output_expansion.go_mut(false, self.animation_now);
     }
 
     fn show_rename(&mut self, index: usize) -> Task<Message> {
@@ -1696,15 +1741,15 @@ impl App {
     }
 
     fn grid_cell_at(&self, point: Point) -> Option<(i32, i32)> {
-        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER || point.y < TOOLBAR_HEIGHT + CONTENT_GUTTER {
+        let content_top =
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
+        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER || point.y < content_top {
             return None;
         }
         let width = self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER;
         let column_width = width / self.grid_columns() as f32;
         let column = ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / column_width).floor() as i32;
-        let row = ((point.y - TOOLBAR_HEIGHT - CONTENT_GUTTER + self.grid_scroll_y)
-            / TILE_ROW_HEIGHT)
-            .floor() as i32;
+        let row = ((point.y - content_top + self.grid_scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
         (row >= 0 && column >= 0 && column < self.grid_columns() as i32).then_some((row, column))
     }
 
@@ -1755,7 +1800,11 @@ impl App {
             )
             .height(30)
             .center_y(30),
-            scrollable(rows).height(Fill),
+            scrollable(container(rows).padding(Padding {
+                top: LIST_VIEW_TOP_INSET,
+                ..Padding::ZERO
+            }))
+            .height(Fill),
         ];
         container(content)
             .width(SIDEBAR_WIDTH)
@@ -1926,9 +1975,13 @@ impl App {
     fn grid_body(&self) -> Element<'_, Message> {
         let columns = self.grid_columns();
         let total_rows = self.explorer.entries.len().div_ceil(columns);
-        let viewport_height =
-            (self.window_size.height - TOOLBAR_HEIGHT - STATUS_HEIGHT - 2.0 * CONTENT_GUTTER)
-                .max(TILE_ROW_HEIGHT);
+        let viewport_height = (self.window_size.height
+            - TOOLBAR_HEIGHT
+            - TOOLBAR_DIVIDER_HEIGHT
+            - STATUS_HEIGHT
+            - 2.0 * CONTENT_GUTTER
+            - LIST_VIEW_TOP_INSET)
+            .max(TILE_ROW_HEIGHT);
         let first_row = ((self.grid_scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
         let visible_rows = (viewport_height / TILE_ROW_HEIGHT).ceil() as usize + 2;
         let last_row = (first_row + visible_rows).min(total_rows);
@@ -1957,15 +2010,20 @@ impl App {
             .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
             .width(Fill)
             .height(Fill);
-        let area = mouse_area(container(scroll).padding(CONTENT_GUTTER))
-            .on_press(Message::GridBackgroundPressed(self.cursor))
-            .on_release(Message::GridBackgroundReleased)
-            .on_move(|point| {
-                Message::Event(
-                    iced::Event::Mouse(mouse::Event::CursorMoved { position: point }),
-                    event::Status::Ignored,
-                )
-            });
+        let area = mouse_area(container(scroll).padding(Padding {
+            top: CONTENT_GUTTER + LIST_VIEW_TOP_INSET,
+            right: CONTENT_GUTTER,
+            bottom: CONTENT_GUTTER,
+            left: CONTENT_GUTTER,
+        }))
+        .on_press(Message::GridBackgroundPressed(self.cursor))
+        .on_release(Message::GridBackgroundReleased)
+        .on_move(|point| {
+            Message::Event(
+                iced::Event::Mouse(mouse::Event::CursorMoved { position: point }),
+                event::Status::Ignored,
+            )
+        });
         container(area)
             .width(Fill)
             .height(Fill)
@@ -2190,84 +2248,116 @@ impl App {
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        if let Some((summary, detail)) = &self.command_output {
+        let height = self.output_expansion.interpolate(
+            STATUS_HEIGHT,
+            self.command_output_height,
+            self.animation_now,
+        );
+        let content: Element<'_, Message> = if let Some((summary, detail)) = &self.command_output {
             let header = row![
-                text(summary).font(MONO_FONT).size(11).width(Fill),
-                button(text("×").size(16))
+                text(summary).font(MONO_FONT_SEMIBOLD).size(11).width(Fill),
+                button(text("×").font(UI_FONT).size(17))
                     .on_press(Message::CloseOutput)
-                    .style(button::text),
+                    .width(26)
+                    .height(25)
+                    .padding(0)
+                    .style(output_close_button_style),
             ]
+            .height(29)
             .align_y(Alignment::Center);
-            let body = column![
+            let output = column![
                 header,
-                scrollable(text(detail).font(MONO_FONT).size(12)).height(Fill)
+                scrollable(
+                    text(detail)
+                        .font(MONO_FONT)
+                        .size(12)
+                        .color(with_alpha(self.iced_theme().palette().text, 0.84))
+                        .width(Fill)
+                        .wrapping(iced::advanced::text::Wrapping::WordOrGlyph),
+                )
+                .width(Fill)
+                .height(Fill),
             ]
-            .spacing(5);
-            return container(body)
-                .height(Length::Fixed(command_output_height(detail)))
-                .padding(Padding::from([4, CONTENT_GUTTER as u16]))
-                .style(status_background_style)
-                .into();
-        }
-        let content: Element<'_, Message> = match self.input_mode {
-            InputMode::Search => {
-                let prefix = if self.explorer.recursive_search_active {
-                    "//"
-                } else {
-                    "/"
-                };
-                row![
-                    text(prefix).size(12).color(self.accent_color()),
-                    text_input("", &self.search_text)
-                        .id(Id::new(SEARCH_ID))
-                        .on_input(Message::SearchChanged)
-                        .on_submit(Message::SearchSubmitted)
+            .spacing(1)
+            .width(Fill)
+            .height(Fill);
+            container(output)
+                .width(Fill)
+                .height(Fill)
+                .padding(Padding {
+                    top: 1.0,
+                    right: CONTENT_GUTTER,
+                    bottom: 9.0,
+                    left: CONTENT_GUTTER,
+                })
+                .into()
+        } else {
+            let status: Element<'_, Message> = match self.input_mode {
+                InputMode::Search => {
+                    let prefix = if self.explorer.recursive_search_active {
+                        "//"
+                    } else {
+                        "/"
+                    };
+                    row![
+                        text(prefix).size(12).color(self.accent_color()),
+                        text_input("", &self.search_text)
+                            .id(Id::new(SEARCH_ID))
+                            .on_input(Message::SearchChanged)
+                            .on_submit(Message::SearchSubmitted)
+                            .font(MONO_FONT)
+                            .size(12)
+                            .padding(0)
+                            .style(status_input_style)
+                            .width(Fill),
+                        self.search_count_view(),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into()
+                }
+                InputMode::Command(prefix) => row![
+                    text(prefix.to_string()).size(12).color(self.accent_color()),
+                    text_input("", &self.command_text)
+                        .id(Id::new(COMMAND_ID))
+                        .on_input(Message::CommandChanged)
+                        .on_submit(Message::CommandSubmitted)
                         .font(MONO_FONT)
                         .size(12)
                         .padding(0)
                         .style(status_input_style)
                         .width(Fill),
-                    self.search_count_view(),
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center)
-                .into()
-            }
-            InputMode::Command(prefix) => row![
-                text(prefix.to_string()).size(12).color(self.accent_color()),
-                text_input("", &self.command_text)
-                    .id(Id::new(COMMAND_ID))
-                    .on_input(Message::CommandChanged)
-                    .on_submit(Message::CommandSubmitted)
-                    .font(MONO_FONT)
+                .into(),
+                _ => row![
+                    text(if self.busy || self.navigation_loading {
+                        "◌"
+                    } else {
+                        ""
+                    })
                     .size(12)
-                    .padding(0)
-                    .style(status_input_style)
-                    .width(Fill),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .into(),
-            _ => row![
-                text(if self.busy || self.navigation_loading {
-                    "◌"
-                } else {
-                    ""
-                })
-                .size(12)
-                .color(self.accent_color()),
-                text(&self.status)
-                    .size(11)
-                    .color(self.secondary_text_color())
-                    .width(Fill),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .into(),
+                    .color(self.accent_color()),
+                    text(&self.status)
+                        .size(11)
+                        .color(self.secondary_text_color())
+                        .width(Fill),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into(),
+            };
+            container(status)
+                .width(Fill)
+                .height(Fill)
+                .padding(Padding::from([0, CONTENT_GUTTER as u16]))
+                .into()
         };
         container(content)
-            .height(STATUS_HEIGHT)
-            .padding(Padding::from([0, CONTENT_GUTTER as u16]))
+            .width(Fill)
+            .height(Length::Fixed(height))
+            .clip(true)
             .style(status_background_style)
             .into()
     }
@@ -2544,7 +2634,10 @@ fn toolbar_button(
 fn sidebar_style(theme: &Theme) -> container::Style {
     let background = theme.palette().background;
     let alternate = lighter(background, 16);
-    let gradient = gradient::Linear::new(112.0_f32.to_radians())
+    // Iced projects angled gradients across the full bounds. On a tall sidebar,
+    // Slint's 112deg value becomes a large diagonal wedge, so keep the same
+    // left-to-right color progression without making it depend on window height.
+    let gradient = gradient::Linear::new(90.0_f32.to_radians())
         .add_stop(0.0, with_alpha(alternate, 0.90))
         .add_stop(0.58, with_alpha(alternate, 0.80))
         .add_stop(1.0, with_alpha(background, 0.88));
@@ -2647,6 +2740,18 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
             radius: 4.0.into(),
             ..Border::default()
         },
+        ..button::Style::default()
+    }
+}
+
+fn output_close_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let opacity = match status {
+        button::Status::Pressed => 0.45,
+        button::Status::Hovered => 1.0,
+        _ => 0.62,
+    };
+    button::Style {
+        text_color: with_alpha(theme.palette().text, opacity),
         ..button::Style::default()
     }
 }
