@@ -1,12 +1,12 @@
 # PolarExp
 
-A deliberately small Slint file explorer written in Rust for Linux desktops.
+A deliberately small Iced file explorer written in Rust for Linux desktops.
 
 ## Requirements
 
 - Rust 1.92 or newer
 - GLib/GIO development files
-- X11 or Wayland development files required by Slint's Winit backend
+- X11 or Wayland development files required by Iced's Winit backend
 
 On Debian or Ubuntu, install the GIO and X11 dependencies with:
 
@@ -32,6 +32,13 @@ sudo apt install libwayland-dev libxkbcommon-dev
 cargo run
 ```
 
+Iced uses WGPU by default and automatically falls back to its software renderer when needed. To
+force the software renderer while diagnosing a graphics-driver issue, run:
+
+```sh
+ICED_BACKEND=tiny-skia cargo run
+```
+
 PolarExp starts in the directory from which it is launched. Single-click folders to browse, and double-click files to open them with the system default application. Right-click an item to rename it or move it to Trash. Drag files or folders onto a folder in the main grid or sidebar tree to move them there.
 
 Vim-style navigation is available in the browser: `h`, `j`, `k`, and `l` move the selection left, down, up, and right across the file grid. `Enter` opens the selected item. `Ctrl+O` or netrw-style `u` returns to the previously visited folder. These shortcuts are inactive while entering text or using a dialog.
@@ -48,7 +55,8 @@ The sidebar lists the computer root and mounted volumes. Its folders are loaded 
 
 ## Architecture
 
-- `src/app/explorer.rs` owns the application lifecycle and connects Slint callbacks. Feature-specific `Explorer` implementations live under `src/app/explorer/`.
-- `src/app/state.rs` contains UI-independent navigation and selection state. `tree.rs` manages sidebar data, while `view.rs` maps Rust state into Slint models.
-- Filesystem work runs through a small fixed-size executor in `src/app/executor.rs`; results return to the Slint event loop before state or UI updates.
-- `src/ui/app-window.slint` defines the Rust-facing UI contract. The visual areas are composed from the components in `src/ui/components/`.
+- `src/app/mod.rs` owns the Iced application, messages, subscriptions, views, and asynchronous task routing.
+- `src/app/state.rs` contains UI-independent navigation and selection state; `tree.rs` manages the lazy sidebar hierarchy.
+- Filesystem and shell work runs off the UI thread through bounded Tokio task lanes. Results return as Iced messages, and generation IDs reject stale navigation, preview, and search responses.
+- `src/app/shell.rs` isolates Bash execution, detects terminal-screen takeover, and separates `!` commands from stateful `:` commands.
+- `src/fs/mod.rs` is the filesystem boundary, while `src/theme/mod.rs` reads the desktop accent and selection colors.

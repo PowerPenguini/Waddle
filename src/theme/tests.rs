@@ -8,11 +8,8 @@ fn parses_gtk_selection_colors() {
     )
     .unwrap();
 
-    assert_eq!(colors.accent, Color::from_rgb_u8(46, 179, 152));
-    assert_eq!(
-        colors.selection_foreground,
-        Some(Color::from_rgb_u8(255, 255, 255))
-    );
+    assert_eq!(colors.accent, Color::from_rgb8(46, 179, 152));
+    assert_eq!(colors.selection_foreground, Some(Color::WHITE));
 }
 
 #[test]
@@ -24,9 +21,6 @@ fn resolves_symbolic_gtk_colors() {
     )
     .unwrap();
 
-    assert_eq!(colors.accent, Color::from_rgb_u8(51, 102, 153));
-    assert_eq!(
-        colors.selection_foreground,
-        Some(Color::from_rgb_u8(0, 0, 0))
-    );
+    assert_eq!(colors.accent, Color::from_rgb8(51, 102, 153));
+    assert_eq!(colors.selection_foreground, Some(Color::BLACK));
 }

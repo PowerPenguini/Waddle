@@ -12,11 +12,6 @@ pub(super) enum ViewMode {
     Ranger,
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct DraggedEntry {
-    pub(super) path: PathBuf,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MountRoot {
     pub(super) path: PathBuf,
@@ -125,7 +120,6 @@ pub(super) struct ExplorerState {
     pub(super) selected_parent_entry: Option<usize>,
     pub(super) preview_generation: u64,
     pub(super) roots: Vec<FolderNode>,
-    pub(super) visible_tree_ids: Vec<u64>,
     next_node_id: u64,
     pub(super) pending_navigation: Option<PendingNavigation>,
     pub(super) pending_name: Option<PendingName>,
@@ -157,7 +151,6 @@ impl ExplorerState {
             selected_parent_entry: None,
             preview_generation: 0,
             roots: vec![FolderNode::root(1)],
-            visible_tree_ids: Vec::new(),
             next_node_id: 2,
             pending_navigation: None,
             pending_name: None,
@@ -403,6 +396,7 @@ impl ExplorerState {
         self.pending_navigation = Some(navigation);
     }
 
+    #[cfg(test)]
     pub(super) fn cancel_navigation(&mut self) -> bool {
         self.pending_navigation.take().is_some()
     }

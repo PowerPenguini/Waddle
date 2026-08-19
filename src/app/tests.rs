@@ -1,17 +1,11 @@
-use crate::AppWindow;
-use crate::ViewMode as UiViewMode;
-use crate::app::explorer::{
-    MouseNavigation, dispatch_mouse_navigation, mouse_navigation_for_input,
-};
+use std::path::PathBuf;
+
+use iced::{event, keyboard, mouse};
+
+use super::{App, DialogState, InputMode};
 use crate::app::settings::parse_view_mode;
 use crate::app::state::{ExplorerState, MountRoot, NavigationKind, PendingNavigation, ViewMode};
 use crate::fs::FileEntry;
-use slint::ComponentHandle;
-use std::{
-    cell::{Cell, RefCell},
-    path::PathBuf,
-    rc::Rc,
-};
 
 fn state() -> ExplorerState {
     ExplorerState::new(PathBuf::from("/start"), Vec::new())
@@ -25,12 +19,149 @@ fn entry(name: &str) -> FileEntry {
     }
 }
 
+fn directory(path: &str) -> FileEntry {
+    let path = PathBuf::from(path);
+    FileEntry {
+        name: path.file_name().unwrap_or_default().into(),
+        path,
+        directory: true,
+    }
+}
+
 fn navigation(path: &str, kind: NavigationKind) -> PendingNavigation {
     PendingNavigation {
         requested: PathBuf::from(path),
         kind,
         select: None,
     }
+}
+
+fn press(app: &mut App, value: &'static str) {
+    let key = keyboard::Key::Character(value.into());
+    let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
+}
+
+#[test]
+fn iced_browser_modes_follow_the_command_prefixes() {
+    let (mut app, _) = App::new();
+
+    press(&mut app, "/");
+    assert_eq!(app.input_mode, InputMode::Search);
+    app.input_mode = InputMode::Browser;
+
+    press(&mut app, "!");
+    assert_eq!(app.input_mode, InputMode::Command('!'));
+    app.input_mode = InputMode::Browser;
+
+    press(&mut app, ":");
+    assert_eq!(app.input_mode, InputMode::Command(':'));
+}
+
+#[test]
+fn captured_escape_leaves_the_recursive_search_input() {
+    let (mut app, _) = App::new();
+    app.input_mode = InputMode::Search;
+    app.explorer.recursive_search_active = true;
+    app.search_text = "needle".to_owned();
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: escape.clone(),
+            modified_key: escape,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        }),
+        event::Status::Captured,
+    );
+
+    assert_eq!(app.input_mode, InputMode::Browser);
+    assert!(!app.explorer.recursive_search_active);
+    assert!(app.search_text.is_empty());
+}
+
+#[test]
+fn mouse_side_buttons_request_back_and_forward_navigation() {
+    let (mut app, _) = App::new();
+    app.explorer.current = PathBuf::from("/current");
+    app.explorer.history = vec![PathBuf::from("/back")];
+    app.explorer.forward_history = vec![PathBuf::from("/forward")];
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    assert_eq!(
+        app.explorer
+            .pending_navigation
+            .as_ref()
+            .map(|navigation| navigation.requested.as_path()),
+        Some(PathBuf::from("/back").as_path())
+    );
+
+    app.navigation_loading = false;
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Forward)),
+        event::Status::Captured,
+    );
+    assert_eq!(
+        app.explorer
+            .pending_navigation
+            .as_ref()
+            .map(|navigation| navigation.requested.as_path()),
+        Some(PathBuf::from("/forward").as_path())
+    );
+}
+
+#[test]
+fn ranger_drag_targets_parent_and_current_directory_rows() {
+    let (mut app, _) = App::new();
+    app.explorer.view_mode = ViewMode::Ranger;
+    app.window_size.width = 800.0;
+    app.explorer.parent_entries = vec![directory("/parent")];
+    app.explorer.entries = vec![directory("/current/child")];
+
+    app.cursor = iced::Point::new(50.0, super::TOOLBAR_HEIGHT + 15.0);
+    assert_eq!(
+        app.drop_destination(PathBuf::from("/source/item").as_path()),
+        Some(PathBuf::from("/parent"))
+    );
+
+    app.cursor = iced::Point::new(300.0, super::TOOLBAR_HEIGHT + 15.0);
+    assert_eq!(
+        app.drop_destination(PathBuf::from("/source/item").as_path()),
+        Some(PathBuf::from("/current/child"))
+    );
+}
+
+#[test]
+fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.explorer.entries = vec![entry("one"), entry("two")];
+    app.explorer.select_only(Some(0));
+
+    press(&mut app, "v");
+    assert_eq!(app.explorer.visual_selection_anchor, Some(0));
+
+    press(&mut app, "v");
+    assert_eq!(app.explorer.visual_selection_anchor, None);
+    press(&mut app, "d");
+    assert!(app.delete_operator_pending());
+
+    press(&mut app, "$");
+    assert!(matches!(app.dialog, DialogState::Trash { .. }));
+    assert_eq!(
+        app.explorer
+            .selected_entries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
 }
 
 #[test]
@@ -52,266 +183,6 @@ fn regular_navigation_clears_forward_history() {
 
     assert!(state.commit_navigation(pending, PathBuf::from("/next"), Vec::new()));
     assert!(state.forward_history.is_empty());
-}
-
-#[test]
-fn browser_keyboard_shortcuts_dispatch_expected_actions() {
-    let ui = AppWindow::new().unwrap();
-    let parent_invocations = Rc::new(Cell::new(0));
-    let callback_invocations = parent_invocations.clone();
-    ui.on_parent_requested(move || callback_invocations.set(callback_invocations.get() + 1));
-    ui.set_can_go_parent(true);
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Backspace.into(),
-        });
-
-    assert_eq!(parent_invocations.get(), 1);
-
-    let back_invocations = Rc::new(Cell::new(0));
-    let callback_invocations = back_invocations.clone();
-    ui.on_back_requested(move || callback_invocations.set(callback_invocations.get() + 1));
-    dispatch_mouse_navigation(&ui, MouseNavigation::Back);
-    assert_eq!(back_invocations.get(), 0);
-    ui.set_can_go_back(true);
-    dispatch_mouse_navigation(&ui, MouseNavigation::Back);
-    assert_eq!(back_invocations.get(), 1);
-
-    let forward_invocations = Rc::new(Cell::new(0));
-    let callback_invocations = forward_invocations.clone();
-    ui.on_forward_requested(move || callback_invocations.set(callback_invocations.get() + 1));
-    ui.set_can_go_forward(true);
-    dispatch_mouse_navigation(&ui, MouseNavigation::Forward);
-    assert_eq!(forward_invocations.get(), 1);
-
-    ui.set_busy(true);
-    dispatch_mouse_navigation(&ui, MouseNavigation::Back);
-    dispatch_mouse_navigation(&ui, MouseNavigation::Forward);
-    assert_eq!(back_invocations.get(), 1);
-    assert_eq!(forward_invocations.get(), 1);
-    ui.set_busy(false);
-    ui.invoke_focus_browser();
-
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "u".into() });
-
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Control.into(),
-        });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "o".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "o".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
-            text: slint::platform::Key::Control.into(),
-        });
-
-    assert_eq!(back_invocations.get(), 1);
-
-    let deletion = Rc::new(Cell::new(0));
-    let deletion_requests = deletion.clone();
-    ui.on_delete_selection_requested(move || deletion_requests.set(deletion_requests.get() + 1));
-    ui.set_selected_entry(2);
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Delete.into(),
-        });
-
-    assert_eq!(deletion.get(), 1);
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-    assert_eq!(deletion.get(), 2);
-
-    let operator_motion = Rc::new(RefCell::new(String::new()));
-    let captured_motion = operator_motion.clone();
-    ui.on_delete_operator_motion_requested(move |motion, _| {
-        *captured_motion.borrow_mut() = motion.to_string();
-    });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "d".into() });
-    assert!(ui.get_delete_operator_pending());
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "$".into() });
-    assert!(!ui.get_delete_operator_pending());
-    assert_eq!(operator_motion.borrow().as_str(), "$");
-
-    let copied = Rc::new(Cell::new(-1));
-    let copied_index = copied.clone();
-    ui.on_copy_requested(move |index| copied_index.set(index));
-    let pasted = Rc::new(Cell::new(0));
-    let paste_invocations = pasted.clone();
-    ui.on_paste_requested(move || paste_invocations.set(paste_invocations.get() + 1));
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "y".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "p".into() });
-    assert_eq!(copied.get(), 2);
-    assert_eq!(pasted.get(), 1);
-
-    copied.set(-1);
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Control.into(),
-        });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "c".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "c".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "v".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "v".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
-            text: slint::platform::Key::Control.into(),
-        });
-    assert_eq!(copied.get(), 2);
-    assert_eq!(pasted.get(), 2);
-
-    let delta = Rc::new(Cell::new(0));
-    let callback_delta = delta.clone();
-    ui.on_ranger_selection_move_requested(move |value| callback_delta.set(value));
-    ui.set_view_mode(UiViewMode::Ranger);
-    ui.set_navigation_loading(true);
-    ui.invoke_focus_browser();
-
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "j".into() });
-
-    assert_eq!(delta.get(), 1);
-    ui.set_navigation_loading(false);
-
-    let started = Rc::new(Cell::new(0));
-    let started_callback = started.clone();
-    ui.on_search_started(move || started_callback.set(started_callback.get() + 1));
-    let changed = Rc::new(RefCell::new(String::new()));
-    let changed_callback = changed.clone();
-    ui.on_search_changed(move |query| {
-        *changed_callback.borrow_mut() = query.to_string();
-    });
-    let submitted = Rc::new(Cell::new(0));
-    let submitted_callback = submitted.clone();
-    ui.on_search_submitted(move || submitted_callback.set(submitted_callback.get() + 1));
-    let cancelled = Rc::new(Cell::new(0));
-    let cancelled_callback = cancelled.clone();
-    ui.on_search_cancelled(move || cancelled_callback.set(cancelled_callback.get() + 1));
-    let repeat_direction = Rc::new(RefCell::new(Vec::new()));
-    let repeat_callback = repeat_direction.clone();
-    ui.on_search_repeat_requested(move |reverse| {
-        repeat_callback.borrow_mut().push(reverse);
-    });
-
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "/".into() });
-    assert!(ui.get_search_active());
-    assert_eq!(started.get(), 1);
-
-    // Raw TextInput editing is exercised by the live UI. The headless Slint
-    // test backend does not route synthetic text events into that primitive.
-    ui.set_search_text("a".into());
-    ui.invoke_search_changed("a".into());
-    assert_eq!(changed.borrow().as_str(), "a");
-    ui.set_search_active(false);
-    ui.invoke_search_submitted();
-    assert!(!ui.get_search_active());
-    assert_eq!(submitted.get(), 1);
-
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "/".into() });
-    ui.set_search_active(false);
-    ui.set_search_text("".into());
-    ui.invoke_search_cancelled();
-    assert!(!ui.get_search_active());
-    assert_eq!(cancelled.get(), 1);
-
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "n".into() });
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "N".into() });
-    assert_eq!(repeat_direction.borrow().as_slice(), [false, true]);
-
-    ui.invoke_focus_browser();
-    ui.set_navigation_loading(true);
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "!".into() });
-    assert!(!ui.get_command_active());
-    ui.set_navigation_loading(false);
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "!".into() });
-    assert!(ui.get_command_active());
-    // As with the search field above, the headless backend does not route
-    // synthetic key events into the focused TextInput primitive.
-    ui.set_command_text("pwd".into());
-    ui.set_command_active(false);
-    ui.set_command_text("".into());
-    assert!(!ui.get_command_active());
-    assert!(ui.get_command_text().is_empty());
-
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: ":".into() });
-    assert!(ui.get_command_active());
-    assert_eq!(ui.get_command_prefix().as_str(), ":");
-    ui.set_command_active(false);
-
-    let visual_toggles = Rc::new(Cell::new(0));
-    let callback_toggles = visual_toggles.clone();
-    ui.on_visual_selection_toggled(move || callback_toggles.set(callback_toggles.get() + 1));
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "v".into() });
-    assert_eq!(visual_toggles.get(), 1);
-
-    let visual_cancellations = Rc::new(Cell::new(0));
-    let callback_cancellations = visual_cancellations.clone();
-    ui.on_visual_selection_cancelled(move || {
-        callback_cancellations.set(callback_cancellations.get() + 1)
-    });
-    ui.set_visual_selection_active(true);
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Escape.into(),
-        });
-    assert_eq!(visual_cancellations.get(), 1);
-    ui.set_visual_selection_active(false);
-
-    ui.set_command_output_active(true);
-    ui.invoke_focus_browser();
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Escape.into(),
-        });
-    assert!(!ui.get_command_output_active());
-}
-
-#[test]
-fn mouse_navigation_buttons_map_pressed_events_only() {
-    use slint::winit_030::winit::event::{ElementState, MouseButton};
-
-    assert_eq!(
-        mouse_navigation_for_input(ElementState::Pressed, MouseButton::Back),
-        Some(MouseNavigation::Back)
-    );
-    assert_eq!(
-        mouse_navigation_for_input(ElementState::Pressed, MouseButton::Forward),
-        Some(MouseNavigation::Forward)
-    );
-    assert_eq!(
-        mouse_navigation_for_input(ElementState::Released, MouseButton::Back),
-        None
-    );
-    assert_eq!(
-        mouse_navigation_for_input(ElementState::Pressed, MouseButton::Left),
-        None
-    );
 }
 
 #[test]

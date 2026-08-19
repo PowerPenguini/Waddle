@@ -1,14 +1,24 @@
 use std::path::{Path, PathBuf};
 
 use gio::prelude::{FileExt, MountExt, VolumeMonitorExt};
-use slint::{DataTransfer, ModelRc, VecModel};
 
-use crate::{AppWindow, FolderIcon, FolderRow as UiFolderRow};
+use super::state::{ExplorerState, FolderNode, MountRoot, NodeKind};
 
-use super::state::{DraggedEntry, ExplorerState, FolderNode, MountRoot, NodeKind};
+#[derive(Clone, Debug)]
+pub(super) struct TreeRow {
+    pub(super) id: u64,
+    pub(super) path: PathBuf,
+    pub(super) label: String,
+    pub(super) depth: usize,
+    pub(super) expanded: bool,
+    pub(super) expandable: bool,
+    pub(super) loading: bool,
+    pub(super) selected: bool,
+    pub(super) kind: NodeKind,
+}
 
-pub(super) fn mounted_roots(monitor: &gio::VolumeMonitor) -> Vec<MountRoot> {
-    monitor
+pub(super) fn mounted_roots() -> Vec<MountRoot> {
+    gio::VolumeMonitor::get()
         .mounts()
         .into_iter()
         .filter(|mount| !mount.is_shadowed())
@@ -46,12 +56,54 @@ pub(super) fn find_node_mut(nodes: &mut [FolderNode], id: u64) -> Option<&mut Fo
     None
 }
 
-pub(super) fn dragged_path(data: &DataTransfer) -> Option<PathBuf> {
-    let user_data = data.user_data()?;
-    user_data
-        .as_ref()
-        .downcast_ref::<DraggedEntry>()
-        .map(|entry| entry.path.clone())
+pub(super) fn flatten_rows(state: &ExplorerState) -> Vec<TreeRow> {
+    let mut rows = Vec::new();
+    flatten_nodes(&state.roots, 0, &state.current, &mut rows);
+    rows
+}
+
+fn flatten_nodes(nodes: &[FolderNode], depth: usize, current: &Path, rows: &mut Vec<TreeRow>) {
+    for node in nodes {
+        rows.push(TreeRow {
+            id: node.id,
+            path: node.path.clone(),
+            label: node.label.clone(),
+            depth,
+            expanded: node.expanded,
+            expandable: !node.loaded || !node.children.is_empty(),
+            loading: node.loading,
+            selected: node.path == current,
+            kind: node.kind,
+        });
+        if node.expanded {
+            flatten_nodes(&node.children, depth + 1, current, rows);
+        }
+    }
+}
+
+pub(super) fn install_children(
+    state: &mut ExplorerState,
+    node_id: u64,
+    path: &Path,
+    folders: Vec<PathBuf>,
+) -> bool {
+    if find_node(&state.roots, node_id).is_none_or(|node| node.path != path) {
+        return false;
+    }
+    let children = folders
+        .into_iter()
+        .map(|path| {
+            let id = state.allocate_node_id();
+            FolderNode::folder(id, path)
+        })
+        .collect();
+    let Some(node) = find_node_mut(&mut state.roots, node_id) else {
+        return false;
+    };
+    node.children = children;
+    node.loading = false;
+    node.loaded = true;
+    true
 }
 
 pub(super) fn invalidate_tree_folders(
@@ -79,42 +131,5 @@ fn invalidate_tree_folders_inner(
             continue;
         }
         invalidate_tree_folders_inner(&mut node.children, changed_folders, reloads);
-    }
-}
-
-pub(super) fn sync_tree(ui: &AppWindow, state: &mut ExplorerState) {
-    let mut rows = Vec::new();
-    let mut ids = Vec::new();
-    flatten_nodes(&state.roots, 0, &state.current, &mut rows, &mut ids);
-
-    state.visible_tree_ids = ids;
-    ui.set_folder_rows(ModelRc::new(VecModel::from(rows)));
-}
-
-fn flatten_nodes(
-    nodes: &[FolderNode],
-    depth: i32,
-    current: &Path,
-    rows: &mut Vec<UiFolderRow>,
-    ids: &mut Vec<u64>,
-) {
-    for node in nodes {
-        ids.push(node.id);
-        rows.push(UiFolderRow {
-            label: node.label.clone().into(),
-            depth,
-            expanded: node.expanded,
-            expandable: !node.loaded || !node.children.is_empty(),
-            loading: node.loading,
-            selected: node.path == current,
-            icon: match node.kind {
-                NodeKind::Computer => FolderIcon::Computer,
-                NodeKind::Drive => FolderIcon::Drive,
-                NodeKind::Folder => FolderIcon::Folder,
-            },
-        });
-        if node.expanded {
-            flatten_nodes(&node.children, depth + 1, current, rows, ids);
-        }
     }
 }

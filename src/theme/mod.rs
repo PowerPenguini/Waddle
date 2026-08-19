@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use gio::prelude::*;
-use slint::Color;
+use iced::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ThemeColors {
@@ -151,12 +151,12 @@ fn parse_css_color(value: &str) -> Option<Color> {
         } else {
             255
         };
-        return Some(Color::from_argb_u8(alpha, red, green, blue));
+        return Some(Color::from_rgba8(red, green, blue, alpha as f32 / 255.0));
     }
 
     match value.to_ascii_lowercase().as_str() {
-        "white" => Some(Color::from_rgb_u8(255, 255, 255)),
-        "black" => Some(Color::from_rgb_u8(0, 0, 0)),
+        "white" => Some(Color::WHITE),
+        "black" => Some(Color::BLACK),
         _ => None,
     }
 }
