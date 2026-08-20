@@ -2456,7 +2456,7 @@ impl App {
             };
             container(status)
                 .width(Fill)
-                .height(Fill)
+                .center_y(Fill)
                 .padding(Padding::from([0, CONTENT_GUTTER as u16]))
                 .into()
         };
