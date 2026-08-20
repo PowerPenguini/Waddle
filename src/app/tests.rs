@@ -311,6 +311,17 @@ fn grid_local_motion_updates_marquee_in_window_coordinates() {
 }
 
 #[test]
+fn entering_an_earlier_tile_is_not_cleared_by_the_previous_tiles_exit() {
+    let (mut app, _) = App::new();
+    app.hovered_entry = Some(1);
+
+    let _ = app.update(Message::EntryHovered(0));
+    let _ = app.update(Message::EntryUnhovered(1));
+
+    assert_eq!(app.hovered_entry, Some(0));
+}
+
+#[test]
 fn successful_navigation_commits_location_and_history() {
     let mut state = state();
     let pending = navigation("/next", NavigationKind::Forward { remember: true });

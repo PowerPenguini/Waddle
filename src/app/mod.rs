@@ -161,7 +161,8 @@ enum Message {
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
     EntryPressed(usize),
     EntryReleased(usize),
-    EntryHover(Option<usize>),
+    EntryHovered(usize),
+    EntryUnhovered(usize),
     EntryDoubleClicked(usize),
     RangerPressed(usize),
     RangerReleased,
@@ -434,8 +435,14 @@ impl App {
                 Task::none()
             }
             Message::EntryReleased(index) => self.finish_entry_press(index),
-            Message::EntryHover(index) => {
-                self.hovered_entry = index;
+            Message::EntryHovered(index) => {
+                self.hovered_entry = Some(index);
+                Task::none()
+            }
+            Message::EntryUnhovered(index) => {
+                if self.hovered_entry == Some(index) {
+                    self.hovered_entry = None;
+                }
                 Task::none()
             }
             Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
@@ -2189,8 +2196,8 @@ impl App {
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
             .on_right_press(Message::EntryContext(index))
-            .on_enter(Message::EntryHover(Some(index)))
-            .on_exit(Message::EntryHover(None))
+            .on_enter(Message::EntryHovered(index))
+            .on_exit(Message::EntryUnhovered(index))
             .into()
     }
 
@@ -2297,12 +2304,12 @@ impl App {
                     .on_enter(if parent {
                         Message::Noop
                     } else {
-                        Message::EntryHover(Some(index))
+                        Message::EntryHovered(index)
                     })
                     .on_exit(if parent {
                         Message::Noop
                     } else {
-                        Message::EntryHover(None)
+                        Message::EntryUnhovered(index)
                     }),
             );
         }
