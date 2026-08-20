@@ -1889,7 +1889,11 @@ impl App {
     }
 
     fn tree_row(&self, tree_row: TreeRow) -> Element<'_, Message> {
-        let mut line = Row::new().spacing(6).align_y(Alignment::Center).padding(0);
+        let mut line = Row::new()
+            .spacing(6)
+            .height(Fill)
+            .align_y(Alignment::Center)
+            .padding(0);
         line = line.push(
             Space::new()
                 .width((tree_row.depth as f32 * 16.0) + 5.0)
@@ -1925,7 +1929,14 @@ impl App {
         } else {
             line = line.push(themed_svg(icon, 17.0, icon_color));
         }
-        line = line.push(text(tree_row.label).size(13).color(label_color).width(Fill));
+        line = line.push(
+            text(tree_row.label)
+                .size(13)
+                .color(label_color)
+                .width(Fill)
+                .height(Fill)
+                .align_y(Alignment::Center),
+        );
         button(line)
             .on_press(Message::TreeRow(tree_row.id))
             .width(Fill)
