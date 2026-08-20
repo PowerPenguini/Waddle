@@ -96,6 +96,10 @@ pub(super) fn is_quit(mode: CommandMode, command: &str) -> bool {
     mode == CommandMode::PolarExp && command.trim() == "q"
 }
 
+pub(super) fn is_help(mode: CommandMode, command: &str) -> bool {
+    mode == CommandMode::PolarExp && matches!(command.trim(), "help" | "h")
+}
+
 pub(super) fn execute(
     current: &Path,
     prefix: char,
@@ -280,6 +284,9 @@ mod tests {
         assert!(!is_quit(CommandMode::Bash, "q"));
         assert!(is_quit(CommandMode::PolarExp, " q "));
         assert!(!is_quit(CommandMode::PolarExp, "q!"));
+        assert!(!is_help(CommandMode::Bash, "help"));
+        assert!(is_help(CommandMode::PolarExp, " help "));
+        assert!(is_help(CommandMode::PolarExp, "h"));
     }
 
     #[test]

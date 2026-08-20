@@ -73,6 +73,24 @@ fn iced_browser_modes_follow_the_command_prefixes() {
 }
 
 #[test]
+fn colon_help_opens_the_internal_command_reference() {
+    let (mut app, _) = App::new();
+    app.input_mode = InputMode::Command(':');
+    app.command_text = "help".to_owned();
+
+    let _ = app.submit_command();
+
+    assert_eq!(app.input_mode, InputMode::Browser);
+    assert!(app.command_text.is_empty());
+    assert!(!app.busy);
+    let (summary, detail) = app.command_output.as_ref().expect("help output");
+    assert!(summary.starts_with(":help"));
+    assert!(detail.contains(":cd PATH"));
+    assert!(detail.contains("h j k l"));
+    assert!(app.output_expansion.value());
+}
+
+#[test]
 fn command_output_expands_and_collapses_through_the_animation_state() {
     let (mut app, _) = App::new();
 

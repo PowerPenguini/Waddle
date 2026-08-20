@@ -42,6 +42,27 @@ const CONTENT_GUTTER: f32 = 14.0;
 const LIST_VIEW_TOP_INSET: f32 = 6.0;
 const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 const SEARCH_LIMIT: usize = 1000;
+const HELP_TEXT: &str = "\
+Commands
+  :help, :h     Show this help
+  :cd PATH      Change PolarExp's current directory
+  :q            Quit PolarExp
+  :COMMAND      Run Bash and keep its final directory
+  !COMMAND      Run Bash without changing PolarExp's directory
+
+Browser
+  h j k l       Move across the file grid
+  Enter         Open the selected item
+  Backspace     Go to the parent directory
+  u / Ctrl+O    Go back
+  v             Toggle visual selection
+  x / Delete    Move the selection to Trash
+  d{motion}     Delete with 0, $, h, j, k, l, or d
+  /query        Search the current directory
+  //query       Search recursively
+  n / N         Repeat search forward / backward
+  y / p         Copy / paste
+  Esc           Cancel the active mode or close output";
 
 const UI_FONT: Font = Font::with_name("Roboto");
 const UI_FONT_SEMIBOLD: Font = Font {
@@ -1154,6 +1175,15 @@ impl App {
         let mode = CommandMode::from_prefix(prefix);
         if shell::is_quit(mode, &self.command_text) {
             return iced::exit();
+        }
+        if shell::is_help(mode, &self.command_text) {
+            self.command_text.clear();
+            self.input_mode = InputMode::Browser;
+            self.show_command_output(
+                ":help  •  PolarExp commands".to_owned(),
+                HELP_TEXT.to_owned(),
+            );
+            return Task::none();
         }
         if self.command_text.trim().is_empty() {
             self.input_mode = InputMode::Browser;
