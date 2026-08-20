@@ -43,12 +43,20 @@ const LIST_VIEW_TOP_INSET: f32 = 6.0;
 const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 const SEARCH_LIMIT: usize = 1000;
 
-const UI_FONT: Font = Font::with_name("Roboto");
+// Cosmic Text renders the regular faces lighter than Slint's FemtoVG at these
+// small UI sizes. Medium restores the same apparent stroke weight.
+const UI_FONT: Font = Font {
+    weight: iced::font::Weight::Medium,
+    ..Font::with_name("Roboto")
+};
 const UI_FONT_SEMIBOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
     ..UI_FONT
 };
-const MONO_FONT: Font = Font::with_name("JetBrainsMono Nerd Font Mono");
+const MONO_FONT: Font = Font {
+    weight: iced::font::Weight::Medium,
+    ..Font::with_name("JetBrainsMono Nerd Font Mono")
+};
 const MONO_FONT_SEMIBOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
     ..MONO_FONT
@@ -1662,6 +1670,7 @@ impl App {
                 text("Locations")
                     .font(UI_FONT_SEMIBOLD)
                     .size(12)
+                    .line_height(iced::Pixels(14.0))
                     .color(with_alpha(self.iced_theme().palette().text, 0.68)),
             )
             .height(30)
@@ -1724,6 +1733,7 @@ impl App {
         line = line.push(
             text(tree_row.label)
                 .size(13)
+                .line_height(iced::Pixels(16.0))
                 .color(label_color)
                 .width(Fill)
                 .height(Fill)
@@ -1784,6 +1794,7 @@ impl App {
             .font(UI_FONT)
             .padding(Padding::from([0, 10]))
             .size(14)
+            .line_height(iced::Pixels(17.0))
             .style(flat_input_style)
             .width(Fill);
         let location_input = container(location_input)
@@ -1921,6 +1932,7 @@ impl App {
             text(fs::display_name(&entry.name))
                 .font(UI_FONT)
                 .size(13)
+                .line_height(iced::Pixels(16.0))
                 .color(label_color)
                 .width(Fill)
                 .height(34)
@@ -1958,7 +1970,11 @@ impl App {
         );
         let content: Element<'_, Message> = if let Some((summary, detail)) = &self.command_output {
             let header = row![
-                text(summary).font(MONO_FONT_SEMIBOLD).size(11).width(Fill),
+                text(summary)
+                    .font(MONO_FONT_SEMIBOLD)
+                    .size(11)
+                    .line_height(iced::Pixels(13.0))
+                    .width(Fill),
                 button(text("×").font(UI_FONT).size(17))
                     .on_press(Message::CloseOutput)
                     .width(26)
@@ -1974,6 +1990,7 @@ impl App {
                     text(detail)
                         .font(MONO_FONT)
                         .size(12)
+                        .line_height(iced::Pixels(15.0))
                         .color(with_alpha(self.iced_theme().palette().text, 0.84))
                         .width(Fill)
                         .wrapping(iced::advanced::text::Wrapping::WordOrGlyph),
@@ -2003,13 +2020,17 @@ impl App {
                         "/"
                     };
                     row![
-                        text(prefix).size(12).color(self.accent_color()),
+                        text(prefix)
+                            .size(12)
+                            .line_height(iced::Pixels(15.0))
+                            .color(self.accent_color()),
                         text_input("", &self.search_text)
                             .id(Id::new(SEARCH_ID))
                             .on_input(Message::SearchChanged)
                             .on_submit(Message::SearchSubmitted)
                             .font(MONO_FONT)
                             .size(12)
+                            .line_height(iced::Pixels(15.0))
                             .padding(0)
                             .style(status_input_style)
                             .width(Fill),
@@ -2020,13 +2041,17 @@ impl App {
                     .into()
                 }
                 InputMode::Command(prefix) => row![
-                    text(prefix.to_string()).size(12).color(self.accent_color()),
+                    text(prefix.to_string())
+                        .size(12)
+                        .line_height(iced::Pixels(15.0))
+                        .color(self.accent_color()),
                     text_input("", &self.command_text)
                         .id(Id::new(COMMAND_ID))
                         .on_input(Message::CommandChanged)
                         .on_submit(Message::CommandSubmitted)
                         .font(MONO_FONT)
                         .size(12)
+                        .line_height(iced::Pixels(15.0))
                         .padding(0)
                         .style(status_input_style)
                         .width(Fill),
@@ -2044,6 +2069,7 @@ impl App {
                     .color(self.accent_color()),
                     text(&self.status)
                         .size(11)
+                        .line_height(iced::Pixels(13.0))
                         .color(self.secondary_text_color())
                         .width(Fill),
                 ]
@@ -2078,6 +2104,7 @@ impl App {
         };
         text(label)
             .size(11)
+            .line_height(iced::Pixels(13.0))
             .color(self.secondary_text_color())
             .into()
     }
