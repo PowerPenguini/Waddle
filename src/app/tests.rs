@@ -32,6 +32,31 @@ fn press(app: &mut App, value: &'static str) {
 }
 
 #[test]
+fn popular_file_formats_use_distinct_icons() {
+    use super::EntryIconKind;
+
+    for (name, expected) in [
+        ("main.rs", EntryIconKind::Code),
+        ("Dockerfile", EntryIconKind::Code),
+        ("manual.pdf", EntryIconKind::Pdf),
+        ("notes.md", EntryIconKind::Document),
+        ("photo.JPG", EntryIconKind::Image),
+        ("song.flac", EntryIconKind::Audio),
+        ("movie.mkv", EntryIconKind::Video),
+        ("backup.tar.gz", EntryIconKind::Archive),
+        ("budget.xlsx", EntryIconKind::Spreadsheet),
+        ("slides.pptx", EntryIconKind::Presentation),
+        ("unknown.bin", EntryIconKind::Generic),
+    ] {
+        assert_eq!(super::entry_icon_kind(&entry(name)), expected, "{name}");
+    }
+
+    let mut folder = entry("archive.zip");
+    folder.directory = true;
+    assert_eq!(super::entry_icon_kind(&folder), EntryIconKind::Folder);
+}
+
+#[test]
 fn iced_browser_modes_follow_the_command_prefixes() {
     let (mut app, _) = App::new();
 

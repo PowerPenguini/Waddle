@@ -94,6 +94,21 @@ enum InputMode {
     Command(char),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryIconKind {
+    Folder,
+    Generic,
+    Code,
+    Document,
+    Pdf,
+    Image,
+    Audio,
+    Video,
+    Archive,
+    Spreadsheet,
+    Presentation,
+}
+
 #[derive(Clone, Debug)]
 struct DragState {
     path: PathBuf,
@@ -1921,19 +1936,11 @@ impl App {
         let entry = &self.explorer.entries[index];
         let selected = self.explorer.selected_entries.contains(&index);
         let hovered = self.hovered_entry == Some(index);
-        let icon_color = if entry.is_directory() {
-            self.accent_color()
-        } else {
-            self.secondary_text_color()
-        };
+        let icon_kind = entry_icon_kind(entry);
         let icon = themed_svg(
-            if entry.is_directory() {
-                include_bytes!("../ui/icons/folder.svg")
-            } else {
-                include_bytes!("../ui/icons/file.svg")
-            },
+            entry_icon_asset(icon_kind),
             48.0,
-            icon_color,
+            self.entry_icon_color(icon_kind),
         );
         let label_color = if selected {
             self.selection_text_color()
@@ -2256,6 +2263,18 @@ impl App {
             .and_then(|colors| colors.selection_foreground)
             .unwrap_or(self.iced_theme().palette().text)
     }
+
+    fn entry_icon_color(&self, kind: EntryIconKind) -> Color {
+        let palette = self.iced_theme().palette();
+        match kind {
+            EntryIconKind::Folder | EntryIconKind::Code => palette.primary,
+            EntryIconKind::Image | EntryIconKind::Spreadsheet => palette.success,
+            EntryIconKind::Pdf => palette.danger,
+            EntryIconKind::Archive | EntryIconKind::Presentation => palette.warning,
+            EntryIconKind::Audio | EntryIconKind::Video => Color::from_rgb8(164, 112, 218),
+            EntryIconKind::Document | EntryIconKind::Generic => self.secondary_text_color(),
+        }
+    }
 }
 
 async fn run_blocking<T, F>(lane: Arc<Semaphore>, work: F) -> Result<T, String>
@@ -2270,6 +2289,82 @@ where
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| format!("background task failed: {error}"))?
+}
+
+fn entry_icon_kind(entry: &FileEntry) -> EntryIconKind {
+    if entry.is_directory() {
+        return EntryIconKind::Folder;
+    }
+
+    let name = entry.name.to_string_lossy().to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "makefile"
+            | "dockerfile"
+            | "justfile"
+            | "cmakelists.txt"
+            | "meson.build"
+            | "build.gradle"
+            | "cargo.lock"
+            | "package-lock.json"
+    ) {
+        return EntryIconKind::Code;
+    }
+    if matches!(
+        name.as_str(),
+        "readme" | "license" | "copying" | "changelog" | "authors"
+    ) {
+        return EntryIconKind::Document;
+    }
+
+    let extension = entry
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some(
+            "rs" | "go" | "py" | "js" | "jsx" | "ts" | "tsx" | "c" | "h" | "cc" | "cpp" | "hpp"
+            | "java" | "kt" | "kts" | "swift" | "rb" | "php" | "sh" | "bash" | "zsh" | "fish"
+            | "html" | "htm" | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "sql" | "json"
+            | "jsonc" | "yaml" | "yml" | "toml" | "xml" | "ini" | "conf" | "env" | "lock",
+        ) => EntryIconKind::Code,
+        Some("pdf") => EntryIconKind::Pdf,
+        Some(
+            "txt" | "md" | "markdown" | "rtf" | "doc" | "docx" | "odt" | "epub" | "tex" | "log",
+        ) => EntryIconKind::Document,
+        Some(
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff" | "avif"
+            | "heic" | "ico",
+        ) => EntryIconKind::Image,
+        Some("mp3" | "wav" | "flac" | "ogg" | "opus" | "m4a" | "aac" | "wma") => {
+            EntryIconKind::Audio
+        }
+        Some("mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" | "wmv") => EntryIconKind::Video,
+        Some(
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "txz" | "7z" | "rar" | "zst" | "deb"
+            | "rpm" | "apk",
+        ) => EntryIconKind::Archive,
+        Some("csv" | "xls" | "xlsx" | "ods") => EntryIconKind::Spreadsheet,
+        Some("ppt" | "pptx" | "odp") => EntryIconKind::Presentation,
+        _ => EntryIconKind::Generic,
+    }
+}
+
+fn entry_icon_asset(kind: EntryIconKind) -> &'static [u8] {
+    match kind {
+        EntryIconKind::Folder => include_bytes!("../ui/icons/folder.svg"),
+        EntryIconKind::Generic => include_bytes!("../ui/icons/file.svg"),
+        EntryIconKind::Code => include_bytes!("../ui/icons/file-code.svg"),
+        EntryIconKind::Document => include_bytes!("../ui/icons/file-document.svg"),
+        EntryIconKind::Pdf => include_bytes!("../ui/icons/file-pdf.svg"),
+        EntryIconKind::Image => include_bytes!("../ui/icons/file-image.svg"),
+        EntryIconKind::Audio => include_bytes!("../ui/icons/file-audio.svg"),
+        EntryIconKind::Video => include_bytes!("../ui/icons/file-video.svg"),
+        EntryIconKind::Archive => include_bytes!("../ui/icons/file-archive.svg"),
+        EntryIconKind::Spreadsheet => include_bytes!("../ui/icons/file-spreadsheet.svg"),
+        EntryIconKind::Presentation => include_bytes!("../ui/icons/file-presentation.svg"),
+    }
 }
 
 fn find_match(
