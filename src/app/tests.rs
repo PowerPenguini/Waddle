@@ -322,6 +322,23 @@ fn entering_an_earlier_tile_is_not_cleared_by_the_previous_tiles_exit() {
 }
 
 #[test]
+fn sidebar_tree_hover_and_selection_remain_translucent() {
+    let (app, _) = App::new();
+    let theme = app.iced_theme();
+    let hover = super::tree_button_style(&theme, iced::widget::button::Status::Hovered, false);
+    let selected = super::tree_button_style(&theme, iced::widget::button::Status::Active, true);
+
+    assert!(matches!(
+        hover.background,
+        Some(iced::Background::Color(color)) if color.a == 0.08
+    ));
+    assert!(matches!(
+        selected.background,
+        Some(iced::Background::Color(color)) if color.a == 0.28
+    ));
+}
+
+#[test]
 fn successful_navigation_commits_location_and_history() {
     let mut state = state();
     let pending = navigation("/next", NavigationKind::Forward { remember: true });
