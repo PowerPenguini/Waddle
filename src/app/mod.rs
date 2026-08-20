@@ -2726,13 +2726,13 @@ fn toolbar_button(
 ) -> Button<'static, Message> {
     let icon = themed_svg(
         icon,
-        18.0,
+        16.0,
         blend_colors(background, color, if enabled { 0.98 } else { 0.30 }),
     );
     button(icon)
         .on_press_maybe(enabled.then_some(message))
-        .width(30)
-        .height(34)
+        .width(26)
+        .height(30)
         .padding(0)
         .style(toolbar_button_style)
 }
