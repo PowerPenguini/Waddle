@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use iced::{event, keyboard, mouse};
 
 use super::{App, DialogState, InputMode, MarqueeState, Message};
-use crate::app::settings::parse_view_mode;
-use crate::app::state::{ExplorerState, MountRoot, NavigationKind, PendingNavigation, ViewMode};
+use crate::app::state::{ExplorerState, MountRoot, NavigationKind, PendingNavigation};
 use crate::fs::FileEntry;
 
 fn state() -> ExplorerState {
@@ -16,15 +15,6 @@ fn entry(name: &str) -> FileEntry {
         path: PathBuf::from("/start").join(name),
         name: name.into(),
         directory: false,
-    }
-}
-
-fn directory(path: &str) -> FileEntry {
-    let path = PathBuf::from(path);
-    FileEntry {
-        name: path.file_name().unwrap_or_default().into(),
-        path,
-        directory: true,
     }
 }
 
@@ -127,27 +117,6 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
             .as_ref()
             .map(|navigation| navigation.requested.as_path()),
         Some(PathBuf::from("/forward").as_path())
-    );
-}
-
-#[test]
-fn ranger_drag_targets_parent_and_current_directory_rows() {
-    let (mut app, _) = App::new();
-    app.explorer.view_mode = ViewMode::Ranger;
-    app.window_size.width = 800.0;
-    app.explorer.parent_entries = vec![directory("/parent")];
-    app.explorer.entries = vec![directory("/current/child")];
-
-    app.cursor = iced::Point::new(50.0, super::TOOLBAR_HEIGHT + 15.0);
-    assert_eq!(
-        app.drop_destination(PathBuf::from("/source/item").as_path()),
-        Some(PathBuf::from("/parent"))
-    );
-
-    app.cursor = iced::Point::new(300.0, super::TOOLBAR_HEIGHT + 15.0);
-    assert_eq!(
-        app.drop_destination(PathBuf::from("/source/item").as_path()),
-        Some(PathBuf::from("/current/child"))
     );
 }
 
@@ -485,41 +454,6 @@ fn delete_operator_selects_vim_style_grid_motions() {
         [0, 1, 2, 3, 4, 5]
     );
     assert!(!state.select_delete_motion("w", 3));
-}
-
-#[test]
-fn ranger_selection_moves_linearly_and_stops_at_edges() {
-    let mut state = state();
-    state.entries = vec![entry("one"), entry("two"), entry("three")];
-
-    assert_eq!(state.move_ranger_selection(1), Some(0));
-    assert_eq!(state.move_ranger_selection(1), Some(1));
-    assert_eq!(state.move_ranger_selection(1), Some(2));
-    assert_eq!(state.move_ranger_selection(1), Some(2));
-    assert_eq!(state.move_ranger_selection(-1), Some(1));
-}
-
-#[test]
-fn stale_ranger_previews_are_rejected() {
-    let mut state = state();
-    state.entries = vec![entry("one"), entry("two")];
-    state.selected_entry = Some(0);
-    let first = state.begin_preview();
-    let first_path = state.entries[0].path.clone();
-    assert!(state.accepts_preview(first, &first_path));
-
-    state.selected_entry = Some(1);
-    let second = state.begin_preview();
-    assert!(!state.accepts_preview(first, &first_path));
-    assert!(state.accepts_preview(second, &state.entries[1].path));
-}
-
-#[test]
-fn view_mode_parser_defaults_to_grid() {
-    assert_eq!(parse_view_mode("view-mode=ranger\n"), ViewMode::Ranger);
-    assert_eq!(parse_view_mode("view-mode=grid\n"), ViewMode::Grid);
-    assert_eq!(parse_view_mode("view-mode=unknown\n"), ViewMode::Grid);
-    assert_eq!(parse_view_mode(""), ViewMode::Grid);
 }
 
 #[test]

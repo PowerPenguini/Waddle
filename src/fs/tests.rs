@@ -109,63 +109,6 @@ fn reads_child_folders_hidden_filtered_and_sorted() {
     assert_eq!(names, ["alpha", "Zulu"]);
 }
 
-#[test]
-fn previews_directory_contents() {
-    let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("folder");
-    fs::create_dir(&folder).unwrap();
-    fs::write(folder.join("note.txt"), "hello").unwrap();
-    let entry = FileEntry {
-        path: folder,
-        name: "folder".into(),
-        directory: true,
-    };
-
-    let PreviewData::Directory(entries) = read_preview(&entry).unwrap() else {
-        panic!("expected directory preview");
-    };
-    assert_eq!(entries.len(), 1);
-    assert_eq!(display_name(&entries[0].name), "note.txt");
-}
-
-#[test]
-fn previews_text_and_truncates_large_files() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("note.txt");
-    fs::write(&path, "a".repeat(70 * 1024)).unwrap();
-    let entry = FileEntry {
-        path,
-        name: "note.txt".into(),
-        directory: false,
-    };
-
-    let PreviewData::Text {
-        text, truncated, ..
-    } = read_preview(&entry).unwrap()
-    else {
-        panic!("expected text preview");
-    };
-    assert!(truncated);
-    assert_eq!(text.len(), 64 * 1024);
-}
-
-#[test]
-fn binary_preview_contains_metadata_only() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("data.bin");
-    fs::write(&path, [0, 1, 2, 3]).unwrap();
-    let entry = FileEntry {
-        path,
-        name: "data.bin".into(),
-        directory: false,
-    };
-
-    let PreviewData::Metadata(metadata) = read_preview(&entry).unwrap() else {
-        panic!("expected metadata preview");
-    };
-    assert!(metadata.contains("4 B"));
-}
-
 #[cfg(unix)]
 #[test]
 fn reads_permissions_size_and_owner_for_status() {

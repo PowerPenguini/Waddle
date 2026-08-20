@@ -2,10 +2,8 @@ use std::{
     collections::VecDeque,
     ffi::{OsStr, OsString},
     fmt, fs, io,
-    io::Read,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
 };
 
 use gio::prelude::*;
@@ -28,19 +26,6 @@ pub struct SearchResults {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
 }
-
-#[derive(Debug)]
-pub enum PreviewData {
-    Directory(Vec<FileEntry>),
-    Text {
-        metadata: String,
-        text: String,
-        truncated: bool,
-    },
-    Metadata(String),
-}
-
-const TEXT_PREVIEW_LIMIT: u64 = 64 * 1024;
 
 impl FileEntry {
     pub fn is_directory(&self) -> bool {
@@ -244,39 +229,6 @@ pub fn read_child_folders(path: &Path) -> Vec<PathBuf> {
     folders
 }
 
-pub fn read_preview(entry: &FileEntry) -> Result<PreviewData, FsError> {
-    if entry.is_directory() {
-        return read_directory(&entry.path).map(PreviewData::Directory);
-    }
-
-    let metadata =
-        fs::metadata(&entry.path).map_err(|error| FsError::new("inspect", &entry.path, error))?;
-    let mut file =
-        fs::File::open(&entry.path).map_err(|error| FsError::new("preview", &entry.path, error))?;
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(TEXT_PREVIEW_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| FsError::new("preview", &entry.path, error))?;
-
-    let truncated = bytes.len() as u64 > TEXT_PREVIEW_LIMIT;
-    bytes.truncate(TEXT_PREVIEW_LIMIT as usize);
-    let (content_type, _) = gio::content_type_guess(Some(&entry.path), Some(bytes.as_slice()));
-    let details = format_metadata(&metadata, content_type.as_str());
-
-    if !bytes.contains(&0)
-        && let Ok(text) = String::from_utf8(bytes)
-    {
-        return Ok(PreviewData::Text {
-            metadata: details,
-            text,
-            truncated,
-        });
-    }
-
-    Ok(PreviewData::Metadata(details))
-}
-
 pub fn read_entry_details(path: &Path) -> Result<String, FsError> {
     const ATTRIBUTES: &str = concat!(
         "standard::size,standard::type,unix::mode,unix::uid,unix::gid,",
@@ -349,20 +301,6 @@ fn format_permissions(mode: u32, file_type: gio::FileType) -> String {
         (false, false) => '-',
     });
     value
-}
-
-fn format_metadata(metadata: &fs::Metadata, content_type: &str) -> String {
-    let size = format_size(metadata.len());
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .and_then(|seconds| gio::glib::DateTime::from_unix_local(seconds).ok())
-        .and_then(|date| date.format("%Y-%m-%d %H:%M").ok())
-        .map(|date| date.to_string())
-        .unwrap_or_else(|| "Unknown".to_owned());
-    format!("{content_type}  •  {size}  •  Modified {modified}")
 }
 
 fn format_size(bytes: u64) -> String {

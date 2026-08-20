@@ -5,13 +5,6 @@ use std::{
 
 use crate::fs::FileEntry;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum ViewMode {
-    #[default]
-    Grid,
-    Ranger,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MountRoot {
     pub(super) path: PathBuf,
@@ -115,10 +108,6 @@ pub(super) struct ExplorerState {
     pub(super) visual_selection_anchor: Option<usize>,
     pub(super) selected_details: Option<String>,
     pub(super) details_generation: u64,
-    pub(super) view_mode: ViewMode,
-    pub(super) parent_entries: Vec<FileEntry>,
-    pub(super) selected_parent_entry: Option<usize>,
-    pub(super) preview_generation: u64,
     pub(super) roots: Vec<FolderNode>,
     next_node_id: u64,
     pub(super) pending_navigation: Option<PendingNavigation>,
@@ -146,10 +135,6 @@ impl ExplorerState {
             visual_selection_anchor: None,
             selected_details: None,
             details_generation: 0,
-            view_mode: ViewMode::Grid,
-            parent_entries: Vec::new(),
-            selected_parent_entry: None,
-            preview_generation: 0,
             roots: vec![FolderNode::root(1)],
             next_node_id: 2,
             pending_navigation: None,
@@ -217,30 +202,6 @@ impl ExplorerState {
             } else {
                 current.saturating_add(columns).min(last)
             }
-        } else {
-            current
-        };
-        self.selected_entry = Some(next);
-        self.update_keyboard_selection();
-        self.selected_entry
-    }
-
-    pub(super) fn move_ranger_selection(&mut self, delta: i32) -> Option<usize> {
-        if self.entries.is_empty() {
-            self.select_only(None);
-            return None;
-        }
-
-        let last = self.entries.len() - 1;
-        let Some(current) = self.selected_entry else {
-            self.selected_entry = Some(if delta < 0 { last } else { 0 });
-            self.update_keyboard_selection();
-            return self.selected_entry;
-        };
-        let next = if delta < 0 {
-            current.saturating_sub(1)
-        } else if delta > 0 {
-            current.saturating_add(1).min(last)
         } else {
             current
         };
@@ -365,11 +326,6 @@ impl ExplorerState {
         }
     }
 
-    pub(super) fn begin_preview(&mut self) -> u64 {
-        self.preview_generation += 1;
-        self.preview_generation
-    }
-
     pub(super) fn begin_details(&mut self) -> u64 {
         self.details_generation += 1;
         self.selected_details = None;
@@ -378,14 +334,6 @@ impl ExplorerState {
 
     pub(super) fn accepts_details(&self, generation: u64, path: &Path) -> bool {
         self.details_generation == generation
-            && self
-                .selected_entry
-                .and_then(|index| self.entries.get(index))
-                .is_some_and(|entry| entry.path == path)
-    }
-
-    pub(super) fn accepts_preview(&self, generation: u64, path: &Path) -> bool {
-        self.preview_generation == generation
             && self
                 .selected_entry
                 .and_then(|index| self.entries.get(index))
@@ -444,8 +392,7 @@ impl ExplorerState {
         self.selected_entry = navigation
             .select
             .as_deref()
-            .and_then(|path| entries.iter().position(|entry| entry.path == path))
-            .or_else(|| (self.view_mode == ViewMode::Ranger && !entries.is_empty()).then_some(0));
+            .and_then(|path| entries.iter().position(|entry| entry.path == path));
         self.selected_entries.clear();
         self.selected_entries.extend(self.selected_entry);
         self.visual_selection_anchor = None;

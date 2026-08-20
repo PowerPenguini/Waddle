@@ -57,6 +57,6 @@ The sidebar lists the computer root and mounted volumes. Its folders are loaded 
 
 - `src/app/mod.rs` owns the Iced application, messages, subscriptions, views, and asynchronous task routing.
 - `src/app/state.rs` contains UI-independent navigation and selection state; `tree.rs` manages the lazy sidebar hierarchy.
-- Filesystem and shell work runs off the UI thread through bounded Tokio task lanes. Results return as Iced messages, and generation IDs reject stale navigation, preview, and search responses.
+- Filesystem and shell work runs off the UI thread through bounded Tokio task lanes. Results return as Iced messages, and generation IDs reject stale navigation, details, and search responses.
 - `src/app/shell.rs` isolates Bash execution, detects terminal-screen takeover, and separates `!` commands from stateful `:` commands.
 - `src/fs/mod.rs` is the filesystem boundary, while `src/theme/mod.rs` reads the desktop accent and selection colors.

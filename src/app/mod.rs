@@ -1,4 +1,3 @@
-mod settings;
 mod shell;
 mod state;
 mod tree;
@@ -28,9 +27,9 @@ use iced::{
 use tokio::sync::Semaphore;
 
 use crate::{fs, theme};
-use fs::{FileEntry, PreviewData};
+use fs::FileEntry;
 use shell::{CommandMode, ShellReport};
-use state::{ExplorerState, NavigationKind, PendingName, PendingNavigation, ViewMode};
+use state::{ExplorerState, NavigationKind, PendingName, PendingNavigation};
 use tree::{TreeRow, find_node_mut, flatten_rows, mounted_roots};
 
 const SIDEBAR_WIDTH: f32 = 220.0;
@@ -95,25 +94,6 @@ enum InputMode {
     Command(char),
 }
 
-#[derive(Clone, Debug, Default)]
-struct PreviewView {
-    title: String,
-    metadata: String,
-    text: String,
-    entries: Vec<FileEntry>,
-    kind: PreviewKind,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum PreviewKind {
-    #[default]
-    Empty,
-    Directory,
-    Text,
-    Metadata,
-    Error,
-}
-
 #[derive(Clone, Debug)]
 struct DragState {
     path: PathBuf,
@@ -156,7 +136,6 @@ enum Message {
     LocationChanged(String),
     LocationFocused,
     LocationSubmitted,
-    ViewMode(ViewMode),
     TreeRow(u64),
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
     EntryPressed(usize),
@@ -164,12 +143,6 @@ enum Message {
     EntryHovered(usize),
     EntryUnhovered(usize),
     EntryDoubleClicked(usize),
-    RangerPressed(usize),
-    RangerReleased,
-    RangerActivated(usize),
-    RangerParentActivated(usize),
-    RangerParentScrolled(f32),
-    RangerCurrentScrolled(f32),
     EntryContext(usize),
     ContextNewFolder,
     ContextRename,
@@ -187,12 +160,6 @@ enum Message {
         path: PathBuf,
         result: Result<String, String>,
     },
-    PreviewFinished {
-        generation: u64,
-        entry: FileEntry,
-        result: Result<PreviewView, String>,
-    },
-    ParentLoaded(PathBuf, Vec<FileEntry>),
     SearchChanged(String),
     SearchSubmitted,
     SearchFinished {
@@ -258,15 +225,12 @@ struct App {
     busy: bool,
     navigation_loading: bool,
     dialog: DialogState,
-    preview: PreviewView,
     context_menu: Option<(usize, Point)>,
     cursor: Point,
     drag: Option<DragState>,
     marquee: Option<MarqueeState>,
     hovered_entry: Option<usize>,
     grid_scroll_y: f32,
-    ranger_parent_scroll_y: f32,
-    ranger_current_scroll_y: f32,
     navigation_id: u64,
     pending_navigation_id: Option<u64>,
     search_generation: u64,
@@ -278,8 +242,7 @@ impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
         let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut explorer = ExplorerState::new(current.clone(), mounted_roots());
-        explorer.view_mode = settings::load_view_mode();
+        let explorer = ExplorerState::new(current.clone(), mounted_roots());
         let accent = theme::load(theme::interface_settings().as_ref());
         let mut app = Self {
             explorer,
@@ -299,15 +262,12 @@ impl App {
             busy: false,
             navigation_loading: false,
             dialog: DialogState::None,
-            preview: PreviewView::default(),
             context_menu: None,
             cursor: Point::ORIGIN,
             drag: None,
             marquee: None,
             hovered_entry: None,
             grid_scroll_y: 0.0,
-            ranger_parent_scroll_y: 0.0,
-            ranger_current_scroll_y: 0.0,
             navigation_id: 0,
             pending_navigation_id: None,
             search_generation: 0,
@@ -417,7 +377,6 @@ impl App {
                 };
                 self.navigate(requested, true, None)
             }
-            Message::ViewMode(mode) => self.set_view_mode(mode),
             Message::TreeRow(id) => self.activate_tree_row(id),
             Message::TreeLoaded(id, path, folders) => {
                 tree::install_children(&mut self.explorer, id, &path, folders);
@@ -446,47 +405,6 @@ impl App {
                 Task::none()
             }
             Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
-            Message::RangerPressed(index) => {
-                let Some(entry) = self.explorer.entries.get(index) else {
-                    return Task::none();
-                };
-                self.drag = Some(DragState {
-                    path: entry.path.clone(),
-                    start: self.cursor,
-                    active: false,
-                });
-                self.explorer.select_only(Some(index));
-                Task::batch([self.schedule_details(), self.schedule_preview()])
-            }
-            Message::RangerReleased => {
-                if self.drag.as_ref().is_some_and(|drag| drag.active) {
-                    self.finish_drag()
-                } else {
-                    self.drag = None;
-                    Task::none()
-                }
-            }
-            Message::RangerActivated(index) => self.open_or_navigate(index),
-            Message::RangerParentActivated(index) => {
-                let Some(path) = self
-                    .explorer
-                    .parent_entries
-                    .get(index)
-                    .filter(|entry| entry.is_directory())
-                    .map(|entry| entry.path.clone())
-                else {
-                    return Task::none();
-                };
-                self.navigate(path, true, None)
-            }
-            Message::RangerParentScrolled(y) => {
-                self.ranger_parent_scroll_y = y;
-                Task::none()
-            }
-            Message::RangerCurrentScrolled(y) => {
-                self.ranger_current_scroll_y = y;
-                Task::none()
-            }
             Message::EntryContext(index) => {
                 self.explorer.select_only(Some(index));
                 self.context_menu = Some((index, self.cursor));
@@ -539,30 +457,6 @@ impl App {
                 if self.explorer.accepts_details(generation, &path) {
                     self.explorer.selected_details = result.ok();
                     self.refresh_status();
-                }
-                Task::none()
-            }
-            Message::PreviewFinished {
-                generation,
-                entry,
-                result,
-            } => {
-                if self.explorer.accepts_preview(generation, &entry.path) {
-                    self.preview = result.unwrap_or_else(|error| PreviewView {
-                        title: fs::display_name(&entry.name),
-                        text: error,
-                        kind: PreviewKind::Error,
-                        ..PreviewView::default()
-                    });
-                }
-                Task::none()
-            }
-            Message::ParentLoaded(path, entries) => {
-                if self.explorer.current.parent() == Some(path.as_path()) {
-                    self.explorer.selected_parent_entry = entries
-                        .iter()
-                        .position(|entry| entry.path == self.explorer.current);
-                    self.explorer.parent_entries = entries;
                 }
                 Task::none()
             }
@@ -857,15 +751,8 @@ impl App {
                 }
                 self.location_input = self.explorer.current.display().to_string();
                 self.grid_scroll_y = 0.0;
-                self.ranger_parent_scroll_y = 0.0;
-                self.ranger_current_scroll_y = 0.0;
                 self.status.clear();
-                let mut tasks = vec![self.load_root_if_needed(), self.schedule_details()];
-                if self.explorer.view_mode == ViewMode::Ranger {
-                    tasks.push(self.load_parent());
-                    tasks.push(self.schedule_preview());
-                }
-                Task::batch(tasks)
+                Task::batch([self.load_root_if_needed(), self.schedule_details()])
             }
             Err(error) => {
                 self.status = error;
@@ -916,34 +803,6 @@ impl App {
         })
     }
 
-    fn set_view_mode(&mut self, mode: ViewMode) -> Task<Message> {
-        if self.explorer.view_mode == mode {
-            return Task::none();
-        }
-        self.explorer.view_mode = mode;
-        if mode == ViewMode::Ranger
-            && self.explorer.selected_entry.is_none()
-            && !self.explorer.entries.is_empty()
-        {
-            self.explorer.select_only(Some(0));
-        }
-        let save = mode;
-        let lane = Arc::clone(&self.lanes.mutation);
-        let mut tasks = vec![Task::perform(
-            run_blocking(lane, move || {
-                settings::save_view_mode(save).map_err(|error| error.to_string())
-            }),
-            |_| Message::Noop,
-        )];
-        if mode == ViewMode::Ranger {
-            tasks.push(self.load_parent());
-            tasks.push(self.schedule_preview());
-        } else {
-            self.preview = PreviewView::default();
-        }
-        Task::batch(tasks)
-    }
-
     fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
         let Some(entry) = self.explorer.entries.get(index).cloned() else {
             return Task::none();
@@ -958,7 +817,7 @@ impl App {
         if double {
             return self.open_entry(entry);
         }
-        Task::batch([self.schedule_details(), self.schedule_preview()])
+        self.schedule_details()
     }
 
     fn activate_selected(&mut self) -> Task<Message> {
@@ -1005,26 +864,15 @@ impl App {
     }
 
     fn move_selection(&mut self, horizontal: i32, vertical: i32) -> Task<Message> {
-        if self.explorer.view_mode == ViewMode::Ranger {
-            self.explorer.move_ranger_selection(vertical + horizontal);
-        } else {
-            self.explorer
-                .move_selection(horizontal, vertical, self.grid_columns() as i32);
-        }
-        Task::batch([
-            self.schedule_details(),
-            self.schedule_preview(),
-            self.scroll_to_selected(),
-        ])
+        self.explorer
+            .move_selection(horizontal, vertical, self.grid_columns() as i32);
+        Task::batch([self.schedule_details(), self.scroll_to_selected()])
     }
 
     fn scroll_to_selected(&self) -> Task<Message> {
         let Some(index) = self.explorer.selected_entry else {
             return Task::none();
         };
-        if self.explorer.view_mode != ViewMode::Grid {
-            return Task::none();
-        }
         let y = (index / self.grid_columns()) as f32 * TILE_ROW_HEIGHT;
         widget::operation::scroll_to(
             Id::new(GRID_SCROLL_ID),
@@ -1058,53 +906,6 @@ impl App {
                 path: entry.path,
                 result,
             },
-        )
-    }
-
-    fn schedule_preview(&mut self) -> Task<Message> {
-        if self.explorer.view_mode != ViewMode::Ranger {
-            return Task::none();
-        }
-        let generation = self.explorer.begin_preview();
-        let Some(entry) = self
-            .explorer
-            .selected_entry
-            .and_then(|index| self.explorer.entries.get(index).cloned())
-        else {
-            self.preview = PreviewView::default();
-            return Task::none();
-        };
-        let worker_entry = entry.clone();
-        let lane = Arc::clone(&self.lanes.background);
-        Task::perform(
-            async move {
-                tokio::time::sleep(Duration::from_millis(75)).await;
-                run_blocking(lane, move || {
-                    fs::read_preview(&worker_entry)
-                        .map(|data| preview_view(&worker_entry, data))
-                        .map_err(|error| error.to_string())
-                })
-                .await
-            },
-            move |result| Message::PreviewFinished {
-                generation,
-                entry,
-                result,
-            },
-        )
-    }
-
-    fn load_parent(&self) -> Task<Message> {
-        let Some(path) = self.explorer.current.parent().map(Path::to_path_buf) else {
-            return Task::done(Message::ParentLoaded(PathBuf::new(), Vec::new()));
-        };
-        let worker_path = path.clone();
-        let lane = Arc::clone(&self.lanes.background);
-        Task::perform(
-            run_blocking(lane, move || {
-                Ok(fs::read_directory(&worker_path).unwrap_or_default())
-            }),
-            move |result| Message::ParentLoaded(path, result.unwrap_or_default()),
         )
     }
 
@@ -1185,7 +986,7 @@ impl App {
             .selected_entries
             .extend(self.explorer.selected_entry);
         if previous != self.explorer.selected_entry {
-            Task::batch([self.schedule_details(), self.schedule_preview()])
+            self.schedule_details()
         } else {
             Task::none()
         }
@@ -1294,7 +1095,7 @@ impl App {
             reverse,
         ) {
             self.explorer.select_only(Some(index));
-            return Task::batch([self.schedule_details(), self.schedule_preview()]);
+            return self.schedule_details();
         }
         Task::none()
     }
@@ -1633,34 +1434,16 @@ impl App {
     }
 
     fn drop_destination(&self, source: &Path) -> Option<PathBuf> {
-        let target = if self.explorer.view_mode == ViewMode::Grid && self.cursor.x < SIDEBAR_WIDTH {
+        let target = if self.cursor.x < SIDEBAR_WIDTH {
             let rows = flatten_rows(&self.explorer);
             let index = ((self.cursor.y - 42.0) / 32.0).floor() as isize;
             let index = usize::try_from(index).ok()?;
             rows.get(index).map(|row| row.path.clone())
-        } else if self.explorer.view_mode == ViewMode::Grid {
+        } else {
             self.grid_index_at(self.cursor)
                 .and_then(|index| self.explorer.entries.get(index))
                 .filter(|entry| entry.is_directory())
                 .map(|entry| entry.path.clone())
-        } else if self.cursor.y >= TOOLBAR_HEIGHT && self.cursor.x < self.window_size.width * 0.25 {
-            let index = ((self.cursor.y - TOOLBAR_HEIGHT + self.ranger_parent_scroll_y) / 30.0)
-                .floor() as usize;
-            self.explorer
-                .parent_entries
-                .get(index)
-                .filter(|entry| entry.is_directory())
-                .map(|entry| entry.path.clone())
-        } else if self.cursor.y >= TOOLBAR_HEIGHT && self.cursor.x < self.window_size.width * 0.60 {
-            let index = ((self.cursor.y - TOOLBAR_HEIGHT + self.ranger_current_scroll_y) / 30.0)
-                .floor() as usize;
-            self.explorer
-                .entries
-                .get(index)
-                .filter(|entry| entry.is_directory())
-                .map(|entry| entry.path.clone())
-        } else {
-            None
         }?;
         (source != target
             && source.parent() != Some(target.as_path())
@@ -1780,7 +1563,7 @@ impl App {
     }
 
     fn grid_selection_start_allowed(&self, point: Point) -> bool {
-        if self.explorer.view_mode != ViewMode::Grid || !self.mutations_allowed() {
+        if !self.mutations_allowed() {
             return false;
         }
         let content_top =
@@ -1841,10 +1624,7 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let base = match self.explorer.view_mode {
-            ViewMode::Grid => self.grid_layout(),
-            ViewMode::Ranger => self.ranger_layout(),
-        };
+        let base = self.layout();
         let mut layers: Vec<Element<'_, Message>> = vec![base];
         if let Some((_, point)) = self.context_menu {
             layers.push(self.context_menu_view(point));
@@ -1855,16 +1635,12 @@ impl App {
         stack(layers).width(Fill).height(Fill).into()
     }
 
-    fn grid_layout(&self) -> Element<'_, Message> {
-        row![self.sidebar(), self.browser(false)]
+    fn layout(&self) -> Element<'_, Message> {
+        row![self.sidebar(), self.browser()]
             .spacing(0)
             .width(Fill)
             .height(Fill)
             .into()
-    }
-
-    fn ranger_layout(&self) -> Element<'_, Message> {
-        self.browser(true)
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
@@ -1953,17 +1729,17 @@ impl App {
             .into()
     }
 
-    fn browser(&self, ranger: bool) -> Element<'_, Message> {
-        let body = if ranger {
-            self.ranger_body()
-        } else {
-            self.grid_body()
-        };
-        column![self.toolbar(), rule::horizontal(1), body, self.status_bar(),]
-            .spacing(0)
-            .width(Fill)
-            .height(Fill)
-            .into()
+    fn browser(&self) -> Element<'_, Message> {
+        column![
+            self.toolbar(),
+            rule::horizontal(1),
+            self.grid_body(),
+            self.status_bar(),
+        ]
+        .spacing(0)
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     fn toolbar(&self) -> Element<'_, Message> {
@@ -2017,15 +1793,8 @@ impl App {
         .width(Fill)
         .height(34);
         let location = mouse_area(location).on_press(Message::LocationFocused);
-        let view_switch = row![
-            self.view_mode_tab("Grid", ViewMode::Grid),
-            self.view_mode_tab("Ranger", ViewMode::Ranger),
-        ]
-        .spacing(12)
-        .width(106)
-        .height(34);
         container(
-            row![parent, back, forward, location, view_switch]
+            row![parent, back, forward, location]
                 .spacing(4)
                 .align_y(Alignment::Center),
         )
@@ -2033,35 +1802,6 @@ impl App {
         .padding(Padding::from([6, CONTENT_GUTTER as u16]))
         .style(browser_background_style)
         .into()
-    }
-
-    fn view_mode_tab(&self, label: &'static str, mode: ViewMode) -> Element<'_, Message> {
-        let selected = self.explorer.view_mode == mode;
-        let label_color = if selected {
-            self.accent_color()
-        } else {
-            self.secondary_text_color()
-        };
-        let underline = if selected {
-            self.accent_color()
-        } else {
-            Color::TRANSPARENT
-        };
-        let content = column![
-            container(text(label).font(UI_FONT).size(12).color(label_color))
-                .width(Fill)
-                .height(32)
-                .center_x(Fill)
-                .center_y(32),
-            container(Space::new().width(Fill).height(2))
-                .width(Fill)
-                .height(2)
-                .style(move |_| solid_background_style(underline)),
-        ]
-        .spacing(0)
-        .width(Fill)
-        .height(34);
-        mouse_area(content).on_press(Message::ViewMode(mode)).into()
     }
 
     fn grid_body(&self) -> Element<'_, Message> {
@@ -2198,165 +1938,6 @@ impl App {
             .on_right_press(Message::EntryContext(index))
             .on_enter(Message::EntryHovered(index))
             .on_exit(Message::EntryUnhovered(index))
-            .into()
-    }
-
-    fn ranger_body(&self) -> Element<'_, Message> {
-        let parent = self.ranger_column(
-            &self.explorer.parent_entries,
-            self.explorer.selected_parent_entry,
-            true,
-        );
-        let current =
-            self.ranger_column(&self.explorer.entries, self.explorer.selected_entry, false);
-        let preview = self.preview_column();
-        row![
-            parent,
-            rule::vertical(1),
-            current,
-            rule::vertical(1),
-            preview
-        ]
-        .spacing(0)
-        .width(Fill)
-        .height(Fill)
-        .into()
-    }
-
-    fn ranger_column<'a>(
-        &'a self,
-        entries: &'a [FileEntry],
-        selected: Option<usize>,
-        parent: bool,
-    ) -> Element<'a, Message> {
-        let mut rows = Column::new().spacing(0);
-        for (index, entry) in entries.iter().enumerate() {
-            let active = if parent {
-                selected == Some(index)
-            } else {
-                self.explorer.selected_entries.contains(&index)
-            };
-            let hovered = !parent && self.hovered_entry == Some(index);
-            let label = fs::display_name(&entry.name);
-            let icon = themed_svg(
-                if entry.is_directory() {
-                    include_bytes!("../ui/icons/folder.svg")
-                } else {
-                    include_bytes!("../ui/icons/file.svg")
-                },
-                16.0,
-                if entry.is_directory() {
-                    self.accent_color()
-                } else {
-                    self.secondary_text_color()
-                },
-            );
-            let line = row![
-                container(icon)
-                    .width(16)
-                    .height(Fill)
-                    .center_x(16)
-                    .center_y(Fill),
-                text(label)
-                    .font(UI_FONT)
-                    .size(13)
-                    .color(if active {
-                        self.selection_text_color()
-                    } else {
-                        self.iced_theme().palette().text
-                    })
-                    .width(Fill),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
-            let message = if parent {
-                Message::RangerParentActivated(index)
-            } else {
-                Message::RangerPressed(index)
-            };
-            let row = container(
-                container(line)
-                    .height(30)
-                    .padding(Padding::from([0, 8]))
-                    .clip(true)
-                    .style(move |theme| ranger_row_style(theme, active, hovered)),
-            )
-            .height(32)
-            .padding(Padding::from([1, 6]));
-            rows = rows.push(
-                mouse_area(row)
-                    .on_press(message)
-                    .on_release(if parent {
-                        Message::Noop
-                    } else {
-                        Message::RangerReleased
-                    })
-                    .on_double_click(if parent {
-                        Message::RangerParentActivated(index)
-                    } else {
-                        Message::RangerActivated(index)
-                    })
-                    .on_right_press(if parent {
-                        Message::Noop
-                    } else {
-                        Message::EntryContext(index)
-                    })
-                    .on_enter(if parent {
-                        Message::Noop
-                    } else {
-                        Message::EntryHovered(index)
-                    })
-                    .on_exit(if parent {
-                        Message::Noop
-                    } else {
-                        Message::EntryUnhovered(index)
-                    }),
-            );
-        }
-        let rows = scrollable(rows)
-            .on_scroll(if parent {
-                |viewport: scrollable::Viewport| {
-                    Message::RangerParentScrolled(viewport.absolute_offset().y)
-                }
-            } else {
-                |viewport: scrollable::Viewport| {
-                    Message::RangerCurrentScrolled(viewport.absolute_offset().y)
-                }
-            })
-            .height(Fill);
-        container(rows)
-            .width(Fill)
-            .height(Fill)
-            .style(browser_background_style)
-            .into()
-    }
-
-    fn preview_column(&self) -> Element<'_, Message> {
-        let content: Element<'_, Message> = match self.preview.kind {
-            PreviewKind::Directory => self.ranger_column(&self.preview.entries, None, true),
-            PreviewKind::Empty => container(text("No preview").size(12)).center(Fill).into(),
-            _ => {
-                let body = column![
-                    text(&self.preview.title).size(13),
-                    text(&self.preview.metadata)
-                        .size(11)
-                        .color(self.secondary_text_color()),
-                    text(&self.preview.text).size(12).font(
-                        if self.preview.kind == PreviewKind::Text {
-                            MONO_FONT
-                        } else {
-                            UI_FONT
-                        }
-                    ),
-                ]
-                .spacing(7);
-                scrollable(container(body).padding(10)).height(Fill).into()
-            }
-        };
-        container(content)
-            .width(Fill)
-            .height(Fill)
-            .style(preview_background_style)
             .into()
     }
 
@@ -2629,41 +2210,6 @@ where
         .map_err(|error| format!("background task failed: {error}"))?
 }
 
-fn preview_view(entry: &FileEntry, data: PreviewData) -> PreviewView {
-    let title = fs::display_name(&entry.name);
-    match data {
-        PreviewData::Directory(entries) => PreviewView {
-            title,
-            entries,
-            kind: PreviewKind::Directory,
-            ..PreviewView::default()
-        },
-        PreviewData::Text {
-            metadata,
-            mut text,
-            truncated,
-        } => {
-            if truncated {
-                text.push_str("\n\n… preview truncated");
-            }
-            PreviewView {
-                title,
-                metadata,
-                text,
-                kind: PreviewKind::Text,
-                entries: Vec::new(),
-            }
-        }
-        PreviewData::Metadata(metadata) => PreviewView {
-            title,
-            metadata,
-            text: "Binary file".to_owned(),
-            kind: PreviewKind::Metadata,
-            entries: Vec::new(),
-        },
-    }
-}
-
 fn find_match(
     entries: &[FileEntry],
     query: &str,
@@ -2768,17 +2314,6 @@ fn browser_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(theme.palette().background)
 }
 
-fn preview_background_style(theme: &Theme) -> container::Style {
-    let mut color = theme.palette().background;
-    color = Color::from_rgba(
-        (color.r + 0.02).min(1.0),
-        (color.g + 0.02).min(1.0),
-        (color.b + 0.02).min(1.0),
-        1.0,
-    );
-    container::Style::default().background(color)
-}
-
 fn status_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(lighter(theme.palette().background, 16))
 }
@@ -2814,29 +2349,6 @@ fn tile_style(theme: &Theme, selected: bool, hovered: bool) -> container::Style 
         ..Border::default()
     };
     style
-}
-
-fn ranger_row_style(theme: &Theme, selected: bool, hovered: bool) -> container::Style {
-    if selected {
-        container::Style::default()
-            .background(with_alpha(theme.palette().primary, 0.45))
-            .border(Border {
-                radius: 5.0.into(),
-                ..Border::default()
-            })
-    } else if hovered {
-        container::Style::default()
-            .background(lighter(theme.palette().background, 16))
-            .border(Border {
-                radius: 5.0.into(),
-                ..Border::default()
-            })
-    } else {
-        container::Style::default().border(Border {
-            radius: 5.0.into(),
-            ..Border::default()
-        })
-    }
 }
 
 fn marquee_style(accent: Color) -> container::Style {
