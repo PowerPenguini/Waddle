@@ -2733,14 +2733,13 @@ fn sidebar_style(theme: &Theme) -> container::Style {
     } else {
         Color::from_rgb8(44, 44, 44)
     };
-    // Slint's transparent surface produces a much denser result than Iced's
-    // premultiplied WGPU surface. Keep the original 112 degree progression,
-    // but compensate at the stops so the wallpaper stays a subtle texture
-    // instead of becoming a hard diagonal field.
+    // Iced makes differences between transparent stops much more pronounced
+    // than Slint. Keep the 112 degree color progression, but use one alpha for
+    // the whole surface so the wallpaper remains visible without a hard wedge.
     let gradient = gradient::Linear::new(112.0_f32.to_radians())
-        .add_stop(0.0, with_alpha(alternate, 0.97))
-        .add_stop(0.58, with_alpha(alternate, 0.94))
-        .add_stop(1.0, with_alpha(background, 0.96));
+        .add_stop(0.0, with_alpha(alternate, 0.84))
+        .add_stop(0.58, with_alpha(alternate, 0.84))
+        .add_stop(1.0, with_alpha(background, 0.84));
     container::Style {
         background: Some(Background::from(gradient)),
         ..container::Style::default()
