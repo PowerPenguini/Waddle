@@ -1783,12 +1783,7 @@ impl App {
             self.iced_theme().palette().text
         };
         if tree_row.loading {
-            line = line.push(
-                container(self.spinner(17.0))
-                    .width(17)
-                    .height(17)
-                    .center(Fill),
-            );
+            line = line.push(self.spinner(17.0));
         } else {
             line = line.push(themed_svg(icon, 17.0, icon_color));
         }
