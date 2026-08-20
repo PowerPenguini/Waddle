@@ -229,6 +229,7 @@ struct App {
     command_output_height: f32,
     output_expansion: Animation<bool>,
     animation_now: Instant,
+    spinner_started: Instant,
     status: String,
     busy: bool,
     navigation_loading: bool,
@@ -266,6 +267,7 @@ impl App {
                 .duration(Duration::from_millis(140))
                 .easing(Easing::EaseOut),
             animation_now: now,
+            spinner_started: now,
             status: String::new(),
             busy: false,
             navigation_loading: false,
@@ -297,11 +299,12 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let animation = if self.output_expansion.is_animating(self.animation_now) {
-            time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
-        } else {
-            Subscription::none()
-        };
+        let animation =
+            if self.output_expansion.is_animating(self.animation_now) || self.spinner_active() {
+                time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
+            } else {
+                Subscription::none()
+            };
         Subscription::batch([
             event::listen_with(|event, status, _| Some(Message::Event(event, status))),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
@@ -337,6 +340,28 @@ impl App {
             }
         };
         Theme::custom("PolarExp", palette)
+    }
+
+    fn spinner_active(&self) -> bool {
+        self.busy
+            || self.navigation_loading
+            || self.explorer.recursive_search_loading
+            || flatten_rows(&self.explorer).iter().any(|row| row.loading)
+    }
+
+    fn spinner(&self, size: f32) -> widget::Svg<'static> {
+        let angle = self
+            .animation_now
+            .duration_since(self.spinner_started)
+            .as_secs_f32()
+            * std::f32::consts::TAU
+            / 0.9;
+        themed_svg(
+            include_bytes!("../ui/icons/spinner.svg"),
+            size,
+            self.accent_color(),
+        )
+        .rotation(angle)
     }
 
     fn application_style(&self, theme: &Theme) -> iced::theme::Style {
@@ -1722,7 +1747,7 @@ impl App {
         };
         if tree_row.loading {
             line = line.push(
-                container(text("◌").size(14).color(icon_color))
+                container(self.spinner(17.0))
                     .width(17)
                     .height(17)
                     .center(Fill),
@@ -2059,23 +2084,28 @@ impl App {
                 .spacing(4)
                 .align_y(Alignment::Center)
                 .into(),
-                _ => row![
-                    text(if self.busy || self.navigation_loading {
-                        "◌"
+                _ => {
+                    let indicator: Element<'_, Message> = if self.busy || self.navigation_loading {
+                        self.spinner(13.0).into()
                     } else {
-                        ""
+                        Space::new().width(0).into()
+                    };
+                    row![
+                        indicator,
+                        text(&self.status)
+                            .size(11)
+                            .line_height(iced::Pixels(13.0))
+                            .color(self.secondary_text_color())
+                            .width(Fill),
+                    ]
+                    .spacing(if self.busy || self.navigation_loading {
+                        7
+                    } else {
+                        0
                     })
-                    .size(12)
-                    .color(self.accent_color()),
-                    text(&self.status)
-                        .size(11)
-                        .line_height(iced::Pixels(13.0))
-                        .color(self.secondary_text_color())
-                        .width(Fill),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .into(),
+                    .align_y(Alignment::Center)
+                    .into()
+                }
             };
             container(status)
                 .width(Fill)
@@ -2095,9 +2125,13 @@ impl App {
         if !self.explorer.recursive_search_active || self.search_text.is_empty() {
             return Space::new().into();
         }
-        let label = if self.explorer.recursive_search_loading {
-            "searching…".to_owned()
-        } else if self.explorer.recursive_search_truncated {
+        if self.explorer.recursive_search_loading {
+            return row![Space::new().width(Fill), self.spinner(13.0)]
+                .width(108)
+                .align_y(Alignment::Center)
+                .into();
+        }
+        let label = if self.explorer.recursive_search_truncated {
             "1000+ matches".to_owned()
         } else {
             format!("{} matches", self.explorer.entries.len())

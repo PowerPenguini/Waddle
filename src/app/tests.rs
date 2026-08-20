@@ -322,6 +322,19 @@ fn sidebar_tree_hover_and_selection_remain_translucent() {
 }
 
 #[test]
+fn spinner_animation_runs_for_tree_and_background_loading() {
+    let (mut app, _) = App::new();
+    assert!(app.spinner_active());
+
+    app.explorer.roots[0].loading = false;
+    app.navigation_loading = false;
+    assert!(!app.spinner_active());
+
+    app.busy = true;
+    assert!(app.spinner_active());
+}
+
+#[test]
 fn successful_navigation_commits_location_and_history() {
     let mut state = state();
     let pending = navigation("/next", NavigationKind::Forward { remember: true });
