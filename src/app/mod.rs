@@ -43,20 +43,12 @@ const LIST_VIEW_TOP_INSET: f32 = 6.0;
 const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 const SEARCH_LIMIT: usize = 1000;
 
-// Cosmic Text renders the regular faces lighter than Slint's FemtoVG at these
-// small UI sizes. Medium restores the same apparent stroke weight.
-const UI_FONT: Font = Font {
-    weight: iced::font::Weight::Medium,
-    ..Font::with_name("Roboto")
-};
+const UI_FONT: Font = Font::with_name("Roboto");
 const UI_FONT_SEMIBOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
     ..UI_FONT
 };
-const MONO_FONT: Font = Font {
-    weight: iced::font::Weight::Medium,
-    ..Font::with_name("JetBrainsMono Nerd Font Mono")
-};
+const MONO_FONT: Font = Font::with_name("JetBrainsMono Nerd Font Mono");
 const MONO_FONT_SEMIBOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
     ..MONO_FONT
