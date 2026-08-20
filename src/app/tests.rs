@@ -62,6 +62,20 @@ fn command_output_expands_and_collapses_through_the_animation_state() {
 }
 
 #[test]
+fn command_without_output_keeps_the_bottom_panel_collapsed() {
+    let (mut app, _) = App::new();
+
+    let _ = app.finish_shell(Ok(super::shell::ShellReport {
+        summary: "!true  •  exit 0".to_owned(),
+        detail: "\n  \t".to_owned(),
+        final_directory: None,
+    }));
+
+    assert!(app.command_output.is_none());
+    assert!(!app.output_expansion.value());
+}
+
+#[test]
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
     app.input_mode = InputMode::Search;

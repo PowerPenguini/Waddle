@@ -1137,12 +1137,21 @@ impl App {
         self.busy = false;
         match result {
             Ok(report) => {
-                self.show_command_output(report.summary, report.detail);
+                let ShellReport {
+                    summary,
+                    detail,
+                    final_directory,
+                } = report;
+                if detail.trim().is_empty() {
+                    self.hide_command_output();
+                    self.status = summary;
+                } else {
+                    self.show_command_output(summary, detail);
+                }
                 let previous_directory = self.explorer.current.clone();
                 let tree_refresh = self.invalidate_tree(vec![previous_directory]);
-                if let Some(directory) = report
-                    .final_directory
-                    .filter(|path| path != &self.explorer.current)
+                if let Some(directory) =
+                    final_directory.filter(|path| path != &self.explorer.current)
                 {
                     return Task::batch([tree_refresh, self.navigate(directory, true, None)]);
                 }

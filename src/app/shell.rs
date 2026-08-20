@@ -150,9 +150,6 @@ exit "$status""#,
         }
         append_output(&mut detail, &stderr);
     }
-    if detail.is_empty() {
-        detail.push_str("The command produced no output.");
-    }
     truncate_output(&mut detail);
     Ok(ShellReport {
         summary: format!("{prefix}{command}  •  {status_text}"),
@@ -291,5 +288,12 @@ mod tests {
         assert!(!detector.observe(b"\x1b[?25"));
         assert!(!detector.observe(b"lhello\x1b[?25h"));
         assert!(detector.observe(b"\x1b[?1049h"));
+    }
+
+    #[test]
+    fn successful_silent_command_has_empty_detail() {
+        let report = execute(Path::new("."), '!', "true").unwrap();
+
+        assert!(report.detail.is_empty());
     }
 }
