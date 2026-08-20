@@ -100,6 +100,53 @@ pub(super) fn is_help(mode: CommandMode, command: &str) -> bool {
     mode == CommandMode::PolarExp && matches!(command.trim(), "help" | "h")
 }
 
+pub(super) fn is_terminal(mode: CommandMode, command: &str) -> bool {
+    mode == CommandMode::PolarExp && matches!(command.trim(), "terminal" | "t")
+}
+
+pub(super) fn launch_terminal(current: &Path) -> io::Result<()> {
+    match spawn_terminal("xdg-terminal-exec", current) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            spawn_terminal("x-terminal-emulator", current).map_err(|fallback_error| {
+                if fallback_error.kind() == io::ErrorKind::NotFound {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "no default terminal launcher found (tried xdg-terminal-exec and x-terminal-emulator)",
+                    )
+                } else {
+                    fallback_error
+                }
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn spawn_terminal(program: &str, current: &Path) -> io::Result<()> {
+    let mut command = Command::new(program);
+    command
+        .current_dir(current)
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if program == "xdg-terminal-exec" {
+        command.arg(xdg_directory_argument(current));
+    }
+    let mut child = command.spawn()?;
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+fn xdg_directory_argument(current: &Path) -> OsString {
+    let mut argument = OsString::from("--dir=");
+    argument.push(current.as_os_str());
+    argument
+}
+
 pub(super) fn execute(
     current: &Path,
     prefix: char,
@@ -287,6 +334,14 @@ mod tests {
         assert!(!is_help(CommandMode::Bash, "help"));
         assert!(is_help(CommandMode::PolarExp, " help "));
         assert!(is_help(CommandMode::PolarExp, "h"));
+        assert!(!is_terminal(CommandMode::Bash, "terminal"));
+        assert!(is_terminal(CommandMode::PolarExp, " terminal "));
+        assert!(is_terminal(CommandMode::PolarExp, "t"));
+        assert!(!is_terminal(CommandMode::PolarExp, "term"));
+        assert_eq!(
+            xdg_directory_argument(Path::new("/tmp/folder with spaces")),
+            OsString::from("--dir=/tmp/folder with spaces")
+        );
     }
 
     #[test]

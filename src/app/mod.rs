@@ -45,6 +45,7 @@ const SEARCH_LIMIT: usize = 1000;
 const HELP_TEXT: &str = "\
 Commands
   :help, :h     Show this help
+  :terminal, :t Open a terminal in the current directory
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -1184,6 +1185,25 @@ impl App {
                 HELP_TEXT.to_owned(),
             );
             return Task::none();
+        }
+        if shell::is_terminal(mode, &self.command_text) {
+            self.command_text.clear();
+            self.input_mode = InputMode::Browser;
+            let current = self.explorer.current.clone();
+            return match shell::launch_terminal(&current) {
+                Ok(()) => {
+                    self.hide_command_output();
+                    self.status = format!("Opened terminal in {}", current.display());
+                    Task::none()
+                }
+                Err(error) => {
+                    self.show_command_output(
+                        ":terminal  •  error".to_owned(),
+                        format!("Could not open the default terminal: {error}"),
+                    );
+                    Task::none()
+                }
+            };
         }
         if self.command_text.trim().is_empty() {
             self.input_mode = InputMode::Browser;

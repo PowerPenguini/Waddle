@@ -86,6 +86,7 @@ fn colon_help_opens_the_internal_command_reference() {
     let (summary, detail) = app.command_output.as_ref().expect("help output");
     assert!(summary.starts_with(":help"));
     assert!(detail.contains(":cd PATH"));
+    assert!(detail.contains(":terminal, :t"));
     assert!(detail.contains("h j k l"));
     assert!(app.output_expansion.value());
 }
