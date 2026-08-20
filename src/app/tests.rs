@@ -330,11 +330,11 @@ fn sidebar_tree_hover_and_selection_remain_translucent() {
 
     assert!(matches!(
         hover.background,
-        Some(iced::Background::Color(color)) if color.a == 0.08
+        Some(iced::Background::Color(color)) if color.a == 0.06
     ));
     assert!(matches!(
         selected.background,
-        Some(iced::Background::Color(color)) if color.a == 0.28
+        Some(iced::Background::Color(color)) if color.a == 0.22
     ));
 }
 

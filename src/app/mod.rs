@@ -2787,9 +2787,9 @@ fn tree_button_style(theme: &Theme, status: button::Status, selected: bool) -> b
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
         background: if selected {
-            Some(Background::Color(with_alpha(theme.palette().primary, 0.28)))
+            Some(Background::Color(with_alpha(theme.palette().primary, 0.22)))
         } else if hovered {
-            Some(Background::Color(with_alpha(theme.palette().text, 0.08)))
+            Some(Background::Color(with_alpha(theme.palette().text, 0.06)))
         } else {
             None
         },
