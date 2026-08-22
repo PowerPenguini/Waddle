@@ -4,9 +4,15 @@
 
 **Blocked by:** 11: Persistent Undo and Redo for Rename and New Folder; 17: List view, sorting, and directory view overrides; 23: Desktop Places, Favorites, and mounted volumes; 28: Persistent `:set`, `:setlocal`, and common controls.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
-- [ ] A local path or file URI opens the requested location.
-- [ ] Explicit input overrides remembered state.
+- [x] A local path or file URI opens the requested location.
+- [x] Explicit input overrides remembered state.
 - [ ] Geometry, last folder, views, sorting, Favorites, and Undo history persist.
-- [ ] Each invocation remains an independent process and window.
+- [x] Each invocation remains an independent process and window.
+
+## Comments
+
+CLI location resolution, remembered last folder, window size and X11 position are implemented.
+Views, sorting, and Undo already persist in their owning modules. The remaining checkbox waits only
+for Favorites from ticket 23.

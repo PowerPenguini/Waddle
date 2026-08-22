@@ -9,6 +9,7 @@ mod navigation;
 mod operations;
 mod search;
 mod shell;
+mod startup;
 mod state;
 mod thumbnail;
 mod transfer_queue;
@@ -200,14 +201,7 @@ enum Message {
 }
 
 pub fn run() -> iced::Result {
-    let window = window::Settings {
-        size: Size::new(820.0, 560.0),
-        min_size: Some(Size::new(660.0, 420.0)),
-        transparent: true,
-        blur: true,
-        exit_on_close_request: false,
-        ..window::Settings::default()
-    };
+    let window = startup::State::open_default().window_settings();
     application(App::new, App::update, App::view)
         .title("PolarExp")
         .settings(iced::Settings {
@@ -226,6 +220,7 @@ pub fn run() -> iced::Result {
 struct App {
     explorer: ExplorerState,
     navigation: NavigationSession,
+    startup: startup::State,
     operations: Operations,
     search: SearchSession,
     transfers: TransferWorkflow,
@@ -273,7 +268,8 @@ struct ActiveTransferConflict {
 impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
-        let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let startup = startup::State::open_default();
+        let current = startup.initial_directory();
         let explorer = ExplorerState::new(mounted_roots());
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
@@ -286,10 +282,15 @@ impl App {
             Ok(source) => (Some(source), None),
             Err(error) => (None, Some(error)),
         };
-        let startup_error = journal_error.or(watch_error);
+        let startup_error = startup
+            .error()
+            .map(str::to_owned)
+            .or(journal_error)
+            .or(watch_error);
         let mut app = Self {
             explorer,
             navigation: NavigationSession::new(current.clone()),
+            startup,
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
@@ -476,6 +477,7 @@ impl App {
             Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
                 self.grid.resize(size);
+                self.startup.remember_size(size);
                 self.load_visible_thumbnails()
             }
             Message::NativeReady(result) => {
@@ -834,6 +836,10 @@ impl App {
             iced::Event::Window(window::Event::Unfocused) if self.grid.finish_marquee() => {
                 self.schedule_details()
             }
+            iced::Event::Window(window::Event::Moved(position)) => {
+                self.startup.remember_position(position);
+                Task::none()
+            }
             iced::Event::Window(window::Event::CloseRequested) => self.quit(),
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
@@ -928,6 +934,8 @@ impl App {
             }
             InputIntent::CancelLocation => {
                 self.location_input = self.navigation.current().display().to_string();
+                self.startup
+                    .remember_directory(self.navigation.current().to_path_buf());
                 Task::none()
             }
             InputIntent::CloseCommandOutput => {

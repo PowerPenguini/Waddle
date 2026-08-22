@@ -243,12 +243,12 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Startup and desktop integration
 
-- [ ] Accept `polarexp [PATH|file://URI]`.
-- [ ] Open each invocation in a new process and window for 1.0.
-- [ ] Let an explicit CLI location override remembered startup state.
+- [x] Accept `polarexp [PATH|file://URI]`.
+- [x] Open each invocation in a new process and window for 1.0.
+- [x] Let an explicit CLI location override remembered startup state.
 - [ ] Remember window size and position, the last directory, view overrides, sorting, Favorites,
   and Undo history.
-- [ ] Do not restore every previous window automatically.
+- [x] Do not restore every previous window automatically.
 - [ ] Add a `.desktop` file with `%U`, application icons, and AppStream metadata.
 - [ ] Publish a Flatpak and a regular binary archive.
 
