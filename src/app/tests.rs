@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use iced::{event, keyboard, mouse};
 
-use super::{App, BrowserFocus, InputMode, Message, nearest_existing_ancestor};
+use super::{
+    App, BrowserFocus, InputMode, Message, breadcrumb_segments, nearest_existing_ancestor,
+};
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
 };
@@ -26,6 +28,50 @@ fn entry(name: &str) -> FileEntry {
 fn press(app: &mut App, value: &'static str) {
     let key = keyboard::Key::Character(value.into());
     let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
+}
+
+#[test]
+fn breadcrumbs_preserve_each_navigable_ancestor() {
+    assert_eq!(
+        breadcrumb_segments(std::path::Path::new("/home/mateusz/Projects")),
+        [
+            ("/".to_owned(), PathBuf::from("/")),
+            ("home".to_owned(), PathBuf::from("/home")),
+            ("mateusz".to_owned(), PathBuf::from("/home/mateusz")),
+            (
+                "Projects".to_owned(),
+                PathBuf::from("/home/mateusz/Projects"),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn single_click_activation_keeps_modified_clicks_for_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let child = temp.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    let (mut app, _) = App::new();
+    app.view_preferences =
+        super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation.replace_displayed_entries(vec![FileEntry {
+        path: child.clone(),
+        name: "child".into(),
+        directory: true,
+    }]);
+    if !app.view_preferences.single_click_activation() {
+        app.view_preferences.toggle_single_click_activation();
+    }
+
+    app.modifiers = keyboard::Modifiers::CTRL;
+    let _ = app.activate_entry(0, false);
+    assert!(app.navigation.pending_path().is_none());
+    assert_eq!(app.grid.selected_entry(), Some(0));
+
+    app.modifiers = keyboard::Modifiers::empty();
+    let _ = app.activate_entry(0, false);
+    assert_eq!(app.navigation.pending_path(), Some(child.as_path()));
 }
 
 #[test]

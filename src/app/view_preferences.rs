@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::fs::BrowseOptions;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 struct Stored {
     global: BrowseOptions,
     overrides: BTreeMap<PathBuf, BrowseOptions>,
+    single_click_activation: bool,
 }
 
 pub(super) struct Preferences {
@@ -29,6 +31,14 @@ impl Preferences {
         Self { path, stored }
     }
 
+    #[cfg(test)]
+    pub(super) fn empty_at(path: PathBuf) -> Self {
+        Self {
+            path,
+            stored: Stored::default(),
+        }
+    }
+
     pub(super) fn for_directory(&self, directory: &Path) -> BrowseOptions {
         self.stored
             .overrides
@@ -43,6 +53,15 @@ impl Preferences {
         } else {
             self.stored.overrides.insert(directory, options);
         }
+        let _ = self.save();
+    }
+
+    pub(super) fn single_click_activation(&self) -> bool {
+        self.stored.single_click_activation
+    }
+
+    pub(super) fn toggle_single_click_activation(&mut self) {
+        self.stored.single_click_activation = !self.stored.single_click_activation;
         let _ = self.save();
     }
 
@@ -96,5 +115,24 @@ mod tests {
                 .unwrap(),
         };
         assert_eq!(reopened.for_directory(&directory), override_options);
+    }
+
+    #[test]
+    fn click_activation_mode_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("view.json");
+        let mut preferences = Preferences {
+            path: path.clone(),
+            stored: Stored::default(),
+        };
+        assert!(!preferences.single_click_activation());
+
+        preferences.toggle_single_click_activation();
+        let reopened = Preferences {
+            path,
+            stored: serde_json::from_slice(&fs::read(temp.path().join("view.json")).unwrap())
+                .unwrap(),
+        };
+        assert!(reopened.single_click_activation());
     }
 }

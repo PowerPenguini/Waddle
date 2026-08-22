@@ -23,7 +23,7 @@ mod x11_clipboard;
 mod tests;
 
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
 
@@ -138,12 +138,13 @@ enum Message {
     ToggleSortDirection,
     ToggleFoldersFirst,
     ToggleHidden,
+    ToggleClickActivation,
     Parent,
     Back,
     Forward,
     LocationChanged(String),
-    LocationFocused,
     LocationSubmitted,
+    Breadcrumb(PathBuf),
     TreeRow(u64),
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
     EntryPressed(usize),
@@ -516,21 +517,23 @@ impl App {
             Message::ToggleHidden => {
                 self.change_view_options(|options| options.show_hidden = !options.show_hidden)
             }
+            Message::ToggleClickActivation => {
+                self.view_preferences.toggle_single_click_activation();
+                self.status = format!(
+                    "{}-click activation enabled",
+                    if self.view_preferences.single_click_activation() {
+                        "Single"
+                    } else {
+                        "Double"
+                    }
+                );
+                Task::none()
+            }
             Message::Parent => self.go_parent(),
             Message::Back => self.go_back(),
             Message::Forward => self.go_forward(),
             Message::LocationChanged(value) => {
                 self.location_input = value;
-                Task::none()
-            }
-            Message::LocationFocused => {
-                if self.prompt_blocks_action() {
-                    return Task::none();
-                }
-                if self.browser_input.mode() == InputMode::Rename {
-                    self.cancel_rename();
-                }
-                self.browser_input.enter(InputMode::Location);
                 Task::none()
             }
             Message::LocationSubmitted => {
@@ -543,6 +546,7 @@ impl App {
                 };
                 self.navigate(requested, true, None)
             }
+            Message::Breadcrumb(path) => self.navigate(path, true, None),
             Message::TreeRow(id) => {
                 self.browser_focus = BrowserFocus::Sidebar;
                 self.sidebar_cursor = Some(id);
@@ -570,7 +574,13 @@ impl App {
                 self.grid.leave(index);
                 Task::none()
             }
-            Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
+            Message::EntryDoubleClicked(index) => {
+                if self.view_preferences.single_click_activation() {
+                    Task::none()
+                } else {
+                    self.activate_entry(index, true)
+                }
+            }
             Message::EntryContext(index) => {
                 if self.prompt_blocks_action() {
                     return Task::none();
@@ -860,6 +870,7 @@ impl App {
             InputIntent::Redo => self.run_journal(true),
             InputIntent::Refresh => self.live_refresh(),
             InputIntent::ToggleHidden => self.update(Message::ToggleHidden),
+            InputIntent::BeginLocation => self.begin_location(),
             InputIntent::SelectAll => {
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
@@ -1099,6 +1110,18 @@ impl App {
         self.live_refresh()
     }
 
+    fn begin_location(&mut self) -> Task<Message> {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        if self.browser_input.mode() == InputMode::Rename {
+            self.cancel_rename();
+        }
+        self.location_input = self.navigation.current().display().to_string();
+        self.browser_input.enter(InputMode::Location);
+        widget::operation::focus(Id::new(LOCATION_ID))
+    }
+
     fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
         if self.prompt_blocks_action() {
             return Task::none();
@@ -1109,28 +1132,23 @@ impl App {
         if double && self.browser_input.mode() == InputMode::Rename {
             self.cancel_rename();
         }
-        if entry.is_directory() {
-            if !double {
-                self.grid.select_click(
-                    index,
-                    self.modifiers.control(),
-                    self.modifiers.shift(),
-                    self.navigation.entries().len(),
-                );
+        if !double {
+            let modified = self.modifiers.control() || self.modifiers.shift();
+            self.grid.select_click(
+                index,
+                self.modifiers.control(),
+                self.modifiers.shift(),
+                self.navigation.entries().len(),
+            );
+            if !self.view_preferences.single_click_activation() || modified {
                 return self.schedule_details();
             }
-            return self.navigate(entry.path, true, None);
         }
-        self.grid.select_click(
-            index,
-            self.modifiers.control(),
-            self.modifiers.shift(),
-            self.navigation.entries().len(),
-        );
-        if double {
-            return self.open_entry(entry);
+        if entry.is_directory() {
+            self.navigate(entry.path, true, None)
+        } else {
+            self.open_entry(entry)
         }
-        self.schedule_details()
     }
 
     fn activate_selected(&mut self) -> Task<Message> {
@@ -2402,33 +2420,42 @@ impl App {
             options.sort,
             if options.descending { "↓" } else { "↑" }
         );
-        let location_input = text_input("Location", &self.location_input)
-            .id(Id::new(LOCATION_ID))
-            .on_input(Message::LocationChanged)
-            .on_submit(Message::LocationSubmitted)
-            .on_paste(Message::LocationChanged)
-            .font(UI_FONT)
-            .padding(Padding::from([0, 10]))
-            .size(14)
-            .line_height(iced::Pixels(17.0))
-            .style(flat_input_style)
-            .width(Fill);
-        let location_input = container(location_input)
+        let location: Element<'_, Message> = if self.browser_input.mode() == InputMode::Location {
+            let input = text_input("Location", &self.location_input)
+                .id(Id::new(LOCATION_ID))
+                .on_input(Message::LocationChanged)
+                .on_submit(Message::LocationSubmitted)
+                .on_paste(Message::LocationChanged)
+                .font(UI_FONT)
+                .padding(Padding::from([0, 10]))
+                .size(14)
+                .line_height(iced::Pixels(17.0))
+                .style(flat_input_style)
+                .width(Fill);
+            let accent = self.accent_color();
+            column![
+                container(input).width(Fill).height(33).center_y(33),
+                container(Space::new().width(Fill).height(1))
+                    .width(Fill)
+                    .height(1)
+                    .style(move |_| solid_background_style(accent)),
+            ]
+            .spacing(0)
             .width(Fill)
-            .height(33)
-            .center_y(33);
-        let accent = self.accent_color();
-        let location = column![
-            location_input,
-            container(Space::new().width(Fill).height(1))
-                .width(Fill)
-                .height(1)
-                .style(move |_| solid_background_style(accent)),
-        ]
-        .spacing(0)
-        .width(Fill)
-        .height(34);
-        let location = mouse_area(location).on_press(Message::LocationFocused);
+            .height(34)
+            .into()
+        } else {
+            let mut crumbs = Row::new().spacing(1).align_y(Alignment::Center);
+            for (label, path) in breadcrumb_segments(self.navigation.current()) {
+                crumbs = crumbs.push(
+                    button(text(label).font(UI_FONT).size(13))
+                        .on_press(Message::Breadcrumb(path))
+                        .padding(Padding::from([4, 7]))
+                        .style(toolbar_button_style),
+                );
+            }
+            container(crumbs).width(Fill).height(34).center_y(34).into()
+        };
         container(
             row![
                 parent,
@@ -2450,6 +2477,14 @@ impl App {
                         "Hidden off"
                     },
                     Message::ToggleHidden,
+                ),
+                compact_text_button(
+                    if self.view_preferences.single_click_activation() {
+                        "1-click"
+                    } else {
+                        "2-click"
+                    },
+                    Message::ToggleClickActivation,
                 ),
             ]
             .spacing(4)
@@ -3449,6 +3484,23 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
         },
         ..button::Style::default()
     }
+}
+
+fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
+    let mut current = PathBuf::new();
+    let mut segments = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let label = match component {
+            Component::RootDir => "/".to_owned(),
+            Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().into_owned(),
+            Component::CurDir => ".".to_owned(),
+            Component::ParentDir => "..".to_owned(),
+            Component::Normal(name) => name.to_string_lossy().into_owned(),
+        };
+        segments.push((label, current.clone()));
+    }
+    segments
 }
 
 fn compact_text_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
