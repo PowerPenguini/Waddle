@@ -1,70 +1,67 @@
+mod browser_input;
+mod command;
+mod file_operation;
+mod grid;
+mod navigation;
+mod operations;
+mod search;
 mod shell;
 mod state;
 mod tree;
+
+#[cfg(target_os = "linux")]
+mod native_dnd;
 
 #[cfg(test)]
 mod tests;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
+use crate::{
+    fs, theme,
+    transfer::{
+        Action as TransferAction, Adapter, Event as TransferEvent, NativeUpdate,
+        Outcome as TransferOutcome, Preview as TransferPreview, Release as TransferRelease,
+        Request as TransferRequest, TransferWorkflow,
+    },
+};
+use browser_input::{
+    BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
+    NamedKey as InputNamedKey, Press as InputPress,
+};
+use command::{CommandSession, ProcessAdapter, Submission as CommandSubmission};
+use file_operation::{
+    FileOperationSession, GioTrashAdapter, View as FileOperationView, Work as FileOperationWork,
+};
+use fs::FileEntry;
 use gio::prelude::*;
+use grid::{
+    CONTENT_GUTTER, DropZone, GridInteraction, LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH,
+    TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT,
+};
 use iced::time::Instant;
 use iced::{
     Alignment, Animation, Background, Border, Color, Element, Fill, Font, Length, Padding, Point,
-    Rectangle, Shadow, Size, Subscription, Task, Theme, Vector,
+    Shadow, Size, Subscription, Task, Theme, Vector,
     animation::Easing,
     application, event, gradient, keyboard, mouse, system, time,
     widget::{
-        self, Button, Column, Grid, Id, Row, Space, button, column, container, mouse_area, opaque,
-        pin, row, rule, scrollable, stack, svg, text, text_input,
+        self, Button, Column, Grid, Id, Row, Space, button, column, container, mouse_area, pin,
+        row, rule, scrollable, stack, svg, text, text_input,
     },
     window,
 };
-use tokio::sync::Semaphore;
-
-use crate::{fs, theme};
-use fs::FileEntry;
-use shell::{CommandMode, ShellReport};
-use state::{ExplorerState, NavigationKind, PendingName, PendingNavigation};
+use navigation::{NavigationSession, Outcome as NavigationOutcome, Request as NavigationRequest};
+use operations::{Completion, Kind as OperationKind, Operations};
+use search::{SearchSession, Update as SearchUpdate};
+use state::ExplorerState;
 use tree::{TreeRow, find_node_mut, flatten_rows, mounted_roots};
 
-const SIDEBAR_WIDTH: f32 = 220.0;
-const TOOLBAR_HEIGHT: f32 = 46.0;
 const STATUS_HEIGHT: f32 = 25.0;
-const TILE_WIDTH: f32 = 104.0;
-const TILE_PITCH: f32 = 112.0;
-const TILE_ROW_HEIGHT: f32 = 116.0;
-const CONTENT_GUTTER: f32 = 14.0;
-const LIST_VIEW_TOP_INSET: f32 = 6.0;
-const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 const SEARCH_LIMIT: usize = 1000;
-const HELP_TEXT: &str = "\
-Commands
-  :help, :h     Show this help
-  :terminal, :t Open a terminal in the current directory
-  :cd PATH      Change PolarExp's current directory
-  :q            Quit PolarExp
-  :COMMAND      Run Bash and keep its final directory
-  !COMMAND      Run Bash without changing PolarExp's directory
-
-Browser
-  h j k l       Move across the file grid
-  Enter         Open the selected item
-  Backspace     Go to the parent directory
-  u / Ctrl+O    Go back
-  v             Toggle visual selection
-  x / Delete    Move the selection to Trash
-  d{motion}     Delete with 0, $, h, j, k, l, or d
-  /query        Search the current directory
-  //query       Search recursively
-  n / N         Repeat search forward / backward
-  y / p         Copy / paste
-  Esc           Cancel the active mode or close output";
-
 const UI_FONT: Font = Font::with_name("Roboto");
 const UI_FONT_SEMIBOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
@@ -79,42 +76,9 @@ const MONO_FONT_SEMIBOLD: Font = Font {
 const LOCATION_ID: &str = "location";
 const SEARCH_ID: &str = "search";
 const COMMAND_ID: &str = "command";
-const DIALOG_ID: &str = "dialog-name";
+const RENAME_ID: &str = "rename";
+const NEW_FOLDER_ID: &str = "new-folder";
 const GRID_SCROLL_ID: &str = "grid-scroll";
-
-#[derive(Clone, Debug)]
-enum DialogState {
-    None,
-    Name {
-        title: String,
-        value: String,
-        error: String,
-    },
-    Trash {
-        message: String,
-    },
-    PermanentDelete {
-        message: String,
-        detail: String,
-    },
-    Error {
-        message: String,
-    },
-}
-
-impl DialogState {
-    fn is_open(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InputMode {
-    Browser,
-    Location,
-    Search,
-    Command(char),
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryIconKind {
@@ -132,39 +96,18 @@ enum EntryIconKind {
 }
 
 #[derive(Clone, Debug)]
-struct DragState {
-    path: PathBuf,
-    start: Point,
-    active: bool,
-}
-
-#[derive(Clone, Debug)]
-struct MarqueeState {
-    start: Point,
-    current: Point,
-}
-
-#[derive(Clone, Debug)]
-struct OperationLanes {
-    navigation: Arc<Semaphore>,
-    background: Arc<Semaphore>,
-    mutation: Arc<Semaphore>,
-}
-
-impl Default for OperationLanes {
-    fn default() -> Self {
-        Self {
-            navigation: Arc::new(Semaphore::new(2)),
-            background: Arc::new(Semaphore::new(2)),
-            mutation: Arc::new(Semaphore::new(1)),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 enum Message {
     Event(iced::Event, event::Status),
+    FindWindow,
+    WindowAvailable(Option<window::Id>),
     WindowResized(Size),
+    NativeDndReady(Result<native_dnd::Source, String>),
+    NativeDndEvent(TransferEvent),
+    ExternalDragFinished(Result<TransferOutcome, String>),
+    TransferFinished {
+        request: TransferRequest,
+        report: fs::TransferReport,
+    },
     SystemTheme(iced::theme::Mode),
     PollSystem,
     Parent,
@@ -188,37 +131,29 @@ enum Message {
     GridScrolled(f32),
     GridPointerMoved(Point),
     NavigationFinished {
-        id: u64,
         requested: PathBuf,
         result: Result<(PathBuf, Vec<FileEntry>), String>,
     },
     DetailsFinished {
-        generation: u64,
         path: PathBuf,
         result: Result<String, String>,
     },
     SearchChanged(String),
     SearchSubmitted,
-    SearchFinished {
-        generation: u64,
-        result: Result<(Vec<FileEntry>, bool), String>,
-    },
+    SearchFinished(Result<fs::SearchResults, String>),
     CommandChanged(String),
     CommandSubmitted,
-    ShellFinished(Result<ShellReport, String>),
-    CloseOutput,
+    CommandFinished(Result<command::Completion, String>),
     AnimationFrame(Instant),
-    DialogInputChanged(String),
-    DialogSubmit,
-    DialogConfirm,
-    DialogCancel,
-    NameFinished(Result<PathBuf, String>),
-    TrashFinished(Vec<(FileEntry, String)>),
-    PermanentDeleteFinished(Vec<(FileEntry, String)>),
+    RenameChanged(String),
+    RenameSubmitted,
+    PromptInputChanged(String),
+    PromptSubmit,
+    PromptConfirm,
+    PromptCancel,
+    FileOperationFinished(file_operation::Completion),
     Copy,
     Paste,
-    CopyFinished(Result<PathBuf, String>),
-    MoveFinished(Result<PathBuf, String>),
     OperationError(String),
     Noop,
 }
@@ -229,6 +164,7 @@ pub fn run() -> iced::Result {
         min_size: Some(Size::new(660.0, 420.0)),
         transparent: true,
         blur: true,
+        exit_on_close_request: false,
         ..window::Settings::default()
     };
     application(App::new, App::update, App::view)
@@ -248,30 +184,29 @@ pub fn run() -> iced::Result {
 
 struct App {
     explorer: ExplorerState,
-    lanes: OperationLanes,
-    window_size: Size,
-    input_mode: InputMode,
+    navigation: NavigationSession,
+    operations: Operations,
+    search: SearchSession,
+    transfers: TransferWorkflow,
+    command: CommandSession,
+    command_adapter: ProcessAdapter,
+    file_operations: FileOperationSession,
+    trash_adapter: GioTrashAdapter,
+    grid: GridInteraction,
+    browser_input: BrowserInput,
     location_input: String,
-    search_text: String,
-    command_text: String,
-    command_output: Option<(String, String)>,
-    command_output_height: f32,
+    expanded_bar_height: f32,
     output_expansion: Animation<bool>,
     animation_now: Instant,
     spinner_started: Instant,
     status: String,
+    status_notice: Option<String>,
     busy: bool,
     navigation_loading: bool,
-    dialog: DialogState,
     context_menu: Option<(usize, Point)>,
-    cursor: Point,
-    drag: Option<DragState>,
-    marquee: Option<MarqueeState>,
-    hovered_entry: Option<usize>,
-    grid_scroll_y: f32,
-    navigation_id: u64,
-    pending_navigation_id: Option<u64>,
-    search_generation: u64,
+    native_dnd: Option<native_dnd::Source>,
+    native_dnd_error: Option<String>,
+    modifiers: keyboard::Modifiers,
     system_mode: iced::theme::Mode,
     accent: Option<theme::ThemeColors>,
 }
@@ -280,49 +215,43 @@ impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
         let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let explorer = ExplorerState::new(current.clone(), mounted_roots());
+        let explorer = ExplorerState::new(mounted_roots());
         let accent = theme::load(theme::interface_settings().as_ref());
         let mut app = Self {
             explorer,
-            lanes: OperationLanes::default(),
-            window_size: Size::new(820.0, 560.0),
-            input_mode: InputMode::Browser,
+            navigation: NavigationSession::new(current.clone()),
+            operations: Operations::default(),
+            search: SearchSession::default(),
+            transfers: TransferWorkflow::default(),
+            command: CommandSession::default(),
+            command_adapter: ProcessAdapter,
+            file_operations: FileOperationSession::default(),
+            trash_adapter: GioTrashAdapter,
+            grid: GridInteraction::default(),
+            browser_input: BrowserInput::default(),
             location_input: current.display().to_string(),
-            search_text: String::new(),
-            command_text: String::new(),
-            command_output: None,
-            command_output_height: STATUS_HEIGHT,
+            expanded_bar_height: STATUS_HEIGHT,
             output_expansion: Animation::new(false)
                 .duration(Duration::from_millis(140))
                 .easing(Easing::EaseOut),
             animation_now: now,
             spinner_started: now,
             status: String::new(),
+            status_notice: None,
             busy: false,
             navigation_loading: false,
-            dialog: DialogState::None,
             context_menu: None,
-            cursor: Point::ORIGIN,
-            drag: None,
-            marquee: None,
-            hovered_entry: None,
-            grid_scroll_y: 0.0,
-            navigation_id: 0,
-            pending_navigation_id: None,
-            search_generation: 0,
+            native_dnd: None,
+            native_dnd_error: None,
+            modifiers: keyboard::Modifiers::default(),
             system_mode: iced::theme::Mode::Dark,
             accent,
         };
-        let navigation = PendingNavigation {
-            requested: current,
-            kind: NavigationKind::Refresh {
-                keep_operation_busy: false,
-            },
-            select: None,
-        };
+        let navigation = app.navigation.refresh(None);
         let initial = Task::batch([
             app.request_navigation(navigation),
             system::theme().map(Message::SystemTheme),
+            find_window_after_delay(),
         ]);
         (app, initial)
     }
@@ -334,13 +263,17 @@ impl App {
             } else {
                 Subscription::none()
             };
-        Subscription::batch([
+        let mut subscriptions = vec![
             event::listen_with(|event, status, _| Some(Message::Event(event, status))),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             system::theme_changes().map(Message::SystemTheme),
             time::every(Duration::from_secs(2)).map(|_| Message::PollSystem),
             animation,
-        ])
+        ];
+        if let Some(source) = &self.native_dnd {
+            subscriptions.push(source.subscription().map(Message::NativeDndEvent));
+        }
+        Subscription::batch(subscriptions)
     }
 
     fn iced_theme(&self) -> Theme {
@@ -374,8 +307,10 @@ impl App {
     fn spinner_active(&self) -> bool {
         self.busy
             || self.navigation_loading
-            || self.explorer.recursive_search_loading
-            || flatten_rows(&self.explorer).iter().any(|row| row.loading)
+            || self.search.is_loading()
+            || flatten_rows(&self.explorer, self.navigation.current())
+                .iter()
+                .any(|row| row.loading)
     }
 
     fn spinner(&self, size: f32) -> widget::Svg<'static> {
@@ -403,11 +338,40 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Event(event, status) => self.handle_event(event, status),
+            Message::Event(event, status) => {
+                if clears_status_notice(&event) {
+                    self.status_notice = None;
+                }
+                self.handle_event(event, status)
+            }
+            Message::FindWindow => window::latest().map(Message::WindowAvailable),
+            Message::WindowAvailable(Some(id)) => {
+                window::run(id, native_dnd::Source::attach).map(Message::NativeDndReady)
+            }
+            Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
-                self.window_size = size;
+                self.grid.resize(size);
                 Task::none()
             }
+            Message::NativeDndReady(result) => {
+                match result {
+                    Ok(source) => {
+                        self.native_dnd = Some(source);
+                        self.native_dnd_error = None;
+                    }
+                    Err(error) => {
+                        eprintln!("PolarExp: external drag-and-drop unavailable: {error}");
+                        self.native_dnd_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            Message::NativeDndEvent(event) => self.handle_native_dnd_event(event),
+            Message::ExternalDragFinished(result) => {
+                let consequences = self.transfers.finish_outgoing(result);
+                self.apply_transfer_consequences(consequences)
+            }
+            Message::TransferFinished { request, report } => self.finish_transfer(request, report),
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
                 Task::none()
@@ -426,16 +390,22 @@ impl App {
                 Task::none()
             }
             Message::LocationFocused => {
-                self.input_mode = InputMode::Location;
+                if self.prompt_blocks_action() {
+                    return Task::none();
+                }
+                if self.browser_input.mode() == InputMode::Rename {
+                    self.cancel_rename();
+                }
+                self.browser_input.enter(InputMode::Location);
                 Task::none()
             }
             Message::LocationSubmitted => {
-                self.input_mode = InputMode::Browser;
+                self.browser_input.leave_mode();
                 let input = PathBuf::from(&self.location_input);
                 let requested = if input.is_absolute() {
                     input
                 } else {
-                    self.explorer.current.join(input)
+                    self.navigation.current().join(input)
                 };
                 self.navigate(requested, true, None)
             }
@@ -445,31 +415,30 @@ impl App {
                 Task::none()
             }
             Message::EntryPressed(index) => {
-                let Some(entry) = self.explorer.entries.get(index) else {
+                if self.prompt_blocks_action() {
                     return Task::none();
-                };
-                self.drag = Some(DragState {
-                    path: entry.path.clone(),
-                    start: self.cursor,
-                    active: false,
-                });
+                }
+                self.transfers
+                    .press(index, self.grid.cursor(), self.navigation.entries().len());
                 Task::none()
             }
             Message::EntryReleased(index) => self.finish_entry_press(index),
             Message::EntryHovered(index) => {
-                self.hovered_entry = Some(index);
+                self.grid.enter(index);
                 Task::none()
             }
             Message::EntryUnhovered(index) => {
-                if self.hovered_entry == Some(index) {
-                    self.hovered_entry = None;
-                }
+                self.grid.leave(index);
                 Task::none()
             }
             Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
             Message::EntryContext(index) => {
-                self.explorer.select_only(Some(index));
-                self.context_menu = Some((index, self.cursor));
+                if self.prompt_blocks_action() {
+                    return Task::none();
+                }
+                self.grid
+                    .select_only(Some(index), self.navigation.entries().len());
+                self.context_menu = Some((index, self.grid.cursor()));
                 self.schedule_details()
             }
             Message::ContextNewFolder => {
@@ -486,89 +455,83 @@ impl App {
             }
             Message::ContextTrash => {
                 self.context_menu = None;
-                self.show_trash_dialog()
+                self.show_trash_prompt()
             }
             Message::CloseContext => {
                 self.context_menu = None;
                 Task::none()
             }
             Message::GridScrolled(y) => {
-                self.grid_scroll_y = y;
+                self.grid.set_scroll(y);
                 Task::none()
             }
             Message::GridPointerMoved(point) => {
-                if let Some(marquee) = &mut self.marquee {
-                    marquee.current = Point::new(
-                        point.x + SIDEBAR_WIDTH,
-                        point.y + TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
-                    );
-                    self.update_marquee_selection();
+                if self
+                    .grid
+                    .move_pointer_in_grid(point, self.navigation.entries().len())
+                {
+                    self.refresh_status();
                 }
                 Task::none()
             }
-            Message::NavigationFinished {
-                id,
-                requested,
-                result,
-            } => self.finish_navigation(id, requested, result),
-            Message::DetailsFinished {
-                generation,
-                path,
-                result,
-            } => {
-                if self.explorer.accepts_details(generation, &path) {
-                    self.explorer.selected_details = result.ok();
-                    self.refresh_status();
+            Message::NavigationFinished { requested, result } => {
+                self.finish_navigation(requested, result)
+            }
+            Message::DetailsFinished { path, result } => {
+                if self
+                    .grid
+                    .selected_entry()
+                    .and_then(|index| self.navigation.entries().get(index))
+                    .is_some_and(|entry| entry.path == path)
+                {
+                    self.grid.set_details(result.ok());
+                    if !self.transfers.is_native_active() {
+                        self.refresh_status();
+                    }
                 }
                 Task::none()
             }
             Message::SearchChanged(value) => self.update_search(value),
             Message::SearchSubmitted => self.submit_search(),
-            Message::SearchFinished { generation, result } => {
-                self.finish_recursive_search(generation, result);
+            Message::SearchFinished(result) => {
+                if let Err(error) =
+                    self.search
+                        .complete(&mut self.navigation, &mut self.grid, result)
+                {
+                    self.status = error;
+                }
                 Task::none()
             }
             Message::CommandChanged(value) => {
-                self.command_text = value;
+                self.command.change(value);
                 Task::none()
             }
             Message::CommandSubmitted => self.submit_command(),
-            Message::ShellFinished(result) => self.finish_shell(result),
-            Message::CloseOutput => {
-                self.hide_command_output();
-                Task::none()
-            }
+            Message::CommandFinished(result) => self.finish_command(result),
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
                 Task::none()
             }
-            Message::DialogInputChanged(value) => {
-                if let DialogState::Name { value: input, .. } = &mut self.dialog {
-                    *input = value;
+            Message::RenameChanged(value) => {
+                if self.browser_input.mode() == InputMode::Rename {
+                    self.file_operations.change_name(value);
                 }
                 Task::none()
             }
-            Message::DialogSubmit => self.submit_name(),
-            Message::DialogConfirm => self.confirm_dialog(),
-            Message::DialogCancel => {
-                if !self.busy {
-                    self.dialog = DialogState::None;
-                    self.explorer.pending_name = None;
-                    self.explorer.pending_delete.clear();
-                }
+            Message::RenameSubmitted => self.submit_rename(),
+            Message::PromptInputChanged(value) => {
+                self.file_operations.change_name(value);
                 Task::none()
             }
-            Message::NameFinished(result) => self.finish_name(result),
-            Message::TrashFinished(failures) => self.finish_trash(failures),
-            Message::PermanentDeleteFinished(failures) => self.finish_permanent_delete(failures),
+            Message::PromptSubmit => self.submit_file_operation_name(),
+            Message::PromptConfirm => self.confirm_prompt(),
+            Message::PromptCancel => self.cancel_prompt(),
+            Message::FileOperationFinished(completion) => self.finish_file_operation(completion),
             Message::Copy => {
                 self.copy_selection();
                 Task::none()
             }
             Message::Paste => self.paste(),
-            Message::CopyFinished(result) | Message::MoveFinished(result) => {
-                self.finish_file_operation(result)
-            }
             Message::OperationError(error) => {
                 self.show_error(error);
                 Task::none()
@@ -579,32 +542,49 @@ impl App {
 
     fn handle_event(&mut self, event: iced::Event, _status: event::Status) -> Task<Message> {
         match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                self.cursor = position;
-                if let Some(drag) = &mut self.drag
-                    && !drag.active
-                    && distance(drag.start, position) >= 6.0
-                {
-                    drag.active = true;
-                }
-                if let Some(marquee) = &mut self.marquee {
-                    marquee.current = position;
-                    self.update_marquee_selection();
-                }
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                self.modifiers = modifiers;
                 Task::none()
             }
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if self.grid_selection_start_allowed(self.cursor) =>
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                let mut tasks = Vec::new();
+                if let Some(index) = self.transfers.move_pointer(position)
+                    && !self.grid.is_selected(index)
+                {
+                    self.grid
+                        .select_only(Some(index), self.navigation.entries().len());
+                    tasks.push(self.schedule_details());
+                }
+                if self
+                    .grid
+                    .move_cursor(position, self.navigation.entries().len())
+                {
+                    self.refresh_status();
+                }
+                if self.transfers.active_drag_index().is_some() && self.grid.cursor_outside_window()
+                {
+                    tasks.push(self.start_external_drag());
+                }
+                Task::batch(tasks)
+            }
+            iced::Event::Mouse(mouse::Event::CursorLeft)
+                if self.transfers.active_drag_index().is_some() =>
             {
-                self.marquee = Some(MarqueeState {
-                    start: self.cursor,
-                    current: self.cursor,
-                });
-                self.update_marquee_selection();
+                self.start_external_drag()
+            }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if self.grid.start_marquee(
+                    self.grid.cursor(),
+                    self.navigation.entries().len(),
+                    self.status_height(),
+                    self.mutations_allowed() && !self.file_operations.prompt_active(),
+                ) =>
+            {
+                self.refresh_status();
                 Task::none()
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if self.marquee.take().is_some() =>
+                if self.grid.finish_marquee() =>
             {
                 self.schedule_details()
             }
@@ -612,16 +592,20 @@ impl App {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Forward)) => {
                 self.go_forward()
             }
-            iced::Event::Window(window::Event::Unfocused) if self.marquee.take().is_some() => {
+            iced::Event::Window(window::Event::Unfocused) if self.grid.finish_marquee() => {
                 self.schedule_details()
             }
+            iced::Event::Window(window::Event::CloseRequested) => self.quit(),
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
                 modified_key,
                 modifiers,
                 text,
                 ..
-            }) => self.handle_key(key, modified_key, modifiers, text.as_deref()),
+            }) => {
+                self.modifiers = modifiers;
+                self.handle_key(key, modified_key, modifiers, text.as_deref())
+            }
             _ => Task::none(),
         }
     }
@@ -633,147 +617,122 @@ impl App {
         modifiers: keyboard::Modifiers,
         produced: Option<&str>,
     ) -> Task<Message> {
-        if self.dialog.is_open() {
-            if key == keyboard::Key::Named(keyboard::key::Named::Escape) && !self.busy {
-                return self.update(Message::DialogCancel);
-            }
-            return Task::none();
-        }
-        if self.input_mode != InputMode::Browser {
-            if key != keyboard::Key::Named(keyboard::key::Named::Escape) {
-                return Task::none();
-            }
-            return match self.input_mode {
-                InputMode::Search => {
-                    self.input_mode = InputMode::Browser;
-                    self.search_text.clear();
-                    self.cancel_search()
-                }
-                InputMode::Command(_) => {
-                    self.input_mode = InputMode::Browser;
-                    self.command_text.clear();
-                    Task::none()
-                }
-                InputMode::Location => {
-                    self.input_mode = InputMode::Browser;
-                    self.location_input = self.explorer.current.display().to_string();
-                    Task::none()
-                }
-                InputMode::Browser => Task::none(),
-            };
-        }
-        if key == keyboard::Key::Named(keyboard::key::Named::Escape) {
-            if self.command_output.is_some() {
-                self.hide_command_output();
-                return Task::none();
-            }
-            if self.explorer.visual_selection_anchor.is_some() {
-                self.explorer.cancel_visual_selection();
-                return self.schedule_details();
-            }
-            if self.delete_operator_pending() {
-                self.status.clear();
-                return Task::none();
-            }
-        }
-        if self.busy {
-            return Task::none();
-        }
-        if modifiers.control() && !modifiers.alt() && !modifiers.logo() {
-            let lower = produced.unwrap_or_default().to_ascii_lowercase();
-            if lower == "c"
-                || matches!(key, keyboard::Key::Character(ref value) if value.eq_ignore_ascii_case("c"))
-            {
-                return self.update(Message::Copy);
-            }
-            if lower == "v"
-                || matches!(key, keyboard::Key::Character(ref value) if value.eq_ignore_ascii_case("v"))
-            {
-                return self.update(Message::Paste);
-            }
-            if matches!(key, keyboard::Key::Character(ref value) if value.eq_ignore_ascii_case("o"))
-            {
-                return self.go_back();
-            }
-            return Task::none();
-        }
-        let text = produced.or_else(|| match &modified_key {
-            keyboard::Key::Character(value) => Some(value.as_str()),
-            _ => None,
-        });
-        if self.delete_operator_pending() {
+        let text = produced
+            .map(str::to_owned)
+            .or_else(|| match &modified_key {
+                keyboard::Key::Character(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .or_else(|| match &key {
+                keyboard::Key::Character(value) => Some(value.to_string()),
+                _ => None,
+            });
+        let named = match key {
+            keyboard::Key::Named(keyboard::key::Named::Escape) => InputNamedKey::Escape,
+            keyboard::Key::Named(keyboard::key::Named::Enter) => InputNamedKey::Enter,
+            keyboard::Key::Named(keyboard::key::Named::Backspace) => InputNamedKey::Backspace,
+            keyboard::Key::Named(keyboard::key::Named::Delete) => InputNamedKey::Delete,
+            _ => InputNamedKey::Other,
+        };
+        let intent = self.browser_input.handle(
+            InputPress {
+                text,
+                named,
+                control: modifiers.control(),
+                alt: modifiers.alt(),
+                logo: modifiers.logo(),
+            },
+            InputContext {
+                prompt_active: self.file_operations.prompt_active(),
+                prompt_accepts_enter: self.file_operations.prompt_accepts_enter(),
+                prompt_uses_yes_no: self.file_operations.prompt_uses_yes_no(),
+                busy: self.busy,
+                command_output: self.command.output().is_some(),
+                visual_active: self.grid.visual_active(),
+                selection_count: self.grid.selection_count(),
+                has_selection: self.grid.selected_entry().is_some(),
+            },
+        );
+        self.apply_input_intent(intent)
+    }
+
+    fn apply_input_intent(&mut self, intent: InputIntent) -> Task<Message> {
+        if !self.browser_input.delete_pending()
+            && self.status == browser_input::DELETE_PENDING_STATUS
+        {
             self.status.clear();
-            if let Some(motion) =
-                text.filter(|value| matches!(*value, "0" | "$" | "h" | "j" | "k" | "l" | "d"))
-            {
-                self.explorer
-                    .select_delete_motion(motion, self.grid_columns() as i32);
-                return self.show_trash_dialog();
-            }
-            return Task::none();
         }
-        match text {
-            Some("/") => self.begin_search(),
-            Some("!") | Some(":") => self.begin_command(text.unwrap().chars().next().unwrap()),
-            Some("n") => self.repeat_search(false),
-            Some("N") => self.repeat_search(true),
-            Some("u") => self.go_back(),
-            Some("y") => self.update(Message::Copy),
-            Some("p") => self.update(Message::Paste),
-            Some("v") => {
-                self.explorer.toggle_visual_selection();
+        match intent {
+            InputIntent::None => Task::none(),
+            InputIntent::PromptCancel => self.update(Message::PromptCancel),
+            InputIntent::PromptConfirm => self.update(Message::PromptConfirm),
+            InputIntent::CancelSearch => self.cancel_search(),
+            InputIntent::CancelCommand => {
+                self.command.cancel();
+                Task::none()
+            }
+            InputIntent::CancelRename => {
+                self.cancel_rename();
+                Task::none()
+            }
+            InputIntent::CancelLocation => {
+                self.location_input = self.navigation.current().display().to_string();
+                Task::none()
+            }
+            InputIntent::CloseCommandOutput => {
+                self.command.close_output();
+                self.sync_bottom_bar();
+                Task::none()
+            }
+            InputIntent::CancelVisual => {
+                self.grid
+                    .cancel_visual_selection(self.navigation.entries().len());
                 self.schedule_details()
             }
-            Some("x") => self.show_trash_dialog(),
-            Some("d") => {
-                if self.explorer.visual_selection_anchor.is_some()
-                    || self.explorer.selected_entries.len() > 1
-                {
-                    self.show_trash_dialog()
-                } else if self.explorer.selected_entry.is_some() {
-                    self.status = "d  •  awaiting motion: 0, $, h, j, k, l, or d".to_owned();
-                    Task::none()
-                } else {
-                    Task::none()
-                }
+            InputIntent::Copy => self.update(Message::Copy),
+            InputIntent::Paste => self.update(Message::Paste),
+            InputIntent::Back => self.go_back(),
+            InputIntent::BeginSearch => self.begin_search(),
+            InputIntent::BeginCommand(prefix) => self.begin_command(prefix),
+            InputIntent::RepeatSearch(reverse) => self.repeat_search(reverse),
+            InputIntent::Rename => self.rename_selected(),
+            InputIntent::ToggleVisual => {
+                self.grid
+                    .toggle_visual_selection(self.navigation.entries().len());
+                self.schedule_details()
             }
-            Some("h") => self.move_selection(-1, 0),
-            Some("j") => self.move_selection(0, 1),
-            Some("k") => self.move_selection(0, -1),
-            Some("l") => self.move_selection(1, 0),
-            _ if key == keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                self.activate_selected()
+            InputIntent::Trash => self.show_trash_prompt(),
+            InputIntent::ArmDelete => {
+                self.status = browser_input::DELETE_PENDING_STATUS.to_owned();
+                Task::none()
             }
-            _ if key == keyboard::Key::Named(keyboard::key::Named::Backspace) => self.go_parent(),
-            _ if key == keyboard::Key::Named(keyboard::key::Named::Delete) => {
-                self.show_trash_dialog()
+            InputIntent::Move(motion) => self.move_selection(motion),
+            InputIntent::DeleteMotion(motion) => {
+                self.grid
+                    .select_delete_motion(motion, self.navigation.entries().len());
+                self.show_trash_prompt()
             }
-            _ => Task::none(),
+            InputIntent::Activate => self.activate_selected(),
+            InputIntent::Parent => self.go_parent(),
         }
     }
 
-    fn request_navigation(&mut self, navigation: PendingNavigation) -> Task<Message> {
-        self.navigation_id += 1;
-        let id = self.navigation_id;
-        let requested = navigation.requested.clone();
-        self.pending_navigation_id = Some(id);
-        self.explorer.begin_navigation(navigation);
+    fn request_navigation(&mut self, navigation: NavigationRequest) -> Task<Message> {
+        let requested = navigation.requested().to_path_buf();
         self.navigation_loading = true;
         self.status = format!("Opening {}…", requested.display());
-        let lane = Arc::clone(&self.lanes.navigation);
         Task::perform(
-            run_blocking(lane, {
+            self.operations.run(OperationKind::Navigation, {
                 let path = requested.clone();
-                move || {
+                move |_| {
                     fs::open_directory(&path)
                         .map(|opened| (opened.canonical_path, opened.entries))
                         .map_err(|error| error.to_string())
                 }
             }),
-            move |result| Message::NavigationFinished {
-                id,
-                requested,
-                result,
+            move |completion| match completion {
+                Completion::Finished(result) => Message::NavigationFinished { requested, result },
+                Completion::Cancelled => Message::Noop,
             },
         )
     }
@@ -784,98 +743,99 @@ impl App {
         remember: bool,
         select: Option<PathBuf>,
     ) -> Task<Message> {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
         self.cancel_search_state();
-        self.request_navigation(PendingNavigation {
-            requested,
-            kind: NavigationKind::Forward { remember },
-            select,
-        })
+        let navigation = self.navigation.forward(requested, remember, select);
+        self.request_navigation(navigation)
     }
 
     fn finish_navigation(
         &mut self,
-        id: u64,
         requested: PathBuf,
         result: Result<(PathBuf, Vec<FileEntry>), String>,
     ) -> Task<Message> {
-        if self.pending_navigation_id != Some(id) {
-            return Task::none();
-        }
-        self.pending_navigation_id = None;
         self.navigation_loading = false;
-        let Some(pending) = self.explorer.take_navigation_for(&requested) else {
-            return Task::none();
-        };
-        match result {
-            Ok((canonical, entries)) => {
-                if !self.explorer.commit_navigation(pending, canonical, entries) {
-                    return Task::none();
-                }
-                self.location_input = self.explorer.current.display().to_string();
-                self.grid_scroll_y = 0.0;
+        match self.navigation.complete(&requested, result) {
+            NavigationOutcome::Committed { selected } => {
+                self.grid
+                    .select_indices(&selected, self.navigation.entries().len());
+                self.grid.clear_details();
+                self.location_input = self.navigation.current().display().to_string();
+                self.grid.reset_scroll();
                 self.status.clear();
                 Task::batch([self.load_root_if_needed(), self.schedule_details()])
             }
-            Err(error) => {
+            NavigationOutcome::Failed(error) => {
                 self.status = error;
                 Task::none()
             }
+            NavigationOutcome::Ignored => Task::none(),
         }
     }
 
     fn go_parent(&mut self) -> Task<Message> {
-        let Some(parent) = self.explorer.current.parent().map(Path::to_path_buf) else {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        self.cancel_search_state();
+        let Some(navigation) = self.navigation.parent() else {
             return Task::none();
         };
-        let current = self.explorer.current.clone();
-        self.navigate(parent, true, Some(current))
+        self.request_navigation(navigation)
     }
 
     fn go_back(&mut self) -> Task<Message> {
-        let Some(target) = self.explorer.history.last().cloned() else {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        self.cancel_search_state();
+        let Some(navigation) = self.navigation.back() else {
             return Task::none();
         };
-        self.cancel_search_state();
-        self.request_navigation(PendingNavigation {
-            requested: target.clone(),
-            kind: NavigationKind::Back { expected: target },
-            select: None,
-        })
+        self.request_navigation(navigation)
     }
 
     fn go_forward(&mut self) -> Task<Message> {
-        let Some(target) = self.explorer.forward_history.last().cloned() else {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        self.cancel_search_state();
+        let Some(navigation) = self.navigation.history_forward() else {
             return Task::none();
         };
-        self.cancel_search_state();
-        self.request_navigation(PendingNavigation {
-            requested: target.clone(),
-            kind: NavigationKind::HistoryForward { expected: target },
-            select: None,
-        })
+        self.request_navigation(navigation)
     }
 
     fn refresh(&mut self, select: Option<PathBuf>) -> Task<Message> {
-        self.request_navigation(PendingNavigation {
-            requested: self.explorer.current.clone(),
-            kind: NavigationKind::Refresh {
-                keep_operation_busy: true,
-            },
-            select,
-        })
+        let navigation = self.navigation.refresh(select);
+        self.request_navigation(navigation)
+    }
+
+    fn refresh_selected(&mut self, select: Vec<PathBuf>) -> Task<Message> {
+        let navigation = self.navigation.refresh_selected(select);
+        self.request_navigation(navigation)
     }
 
     fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
-        let Some(entry) = self.explorer.entries.get(index).cloned() else {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        let Some(entry) = self.navigation.entries().get(index).cloned() else {
             return Task::none();
         };
+        if double && self.browser_input.mode() == InputMode::Rename {
+            self.cancel_rename();
+        }
         if entry.is_directory() {
             if double {
                 return Task::none();
             }
             return self.navigate(entry.path, true, None);
         }
-        self.explorer.select_only(Some(index));
+        self.grid
+            .select_only(Some(index), self.navigation.entries().len());
         if double {
             return self.open_entry(entry);
         }
@@ -883,13 +843,13 @@ impl App {
     }
 
     fn activate_selected(&mut self) -> Task<Message> {
-        self.explorer
-            .selected_entry
+        self.grid
+            .selected_entry()
             .map_or_else(Task::none, |index| self.open_or_navigate(index))
     }
 
     fn open_or_navigate(&mut self, index: usize) -> Task<Message> {
-        let Some(entry) = self.explorer.entries.get(index).cloned() else {
+        let Some(entry) = self.navigation.entries().get(index).cloned() else {
             return Task::none();
         };
         if entry.is_directory() {
@@ -900,42 +860,38 @@ impl App {
     }
 
     fn finish_entry_press(&mut self, index: usize) -> Task<Message> {
-        if self.drag.is_none() {
-            return Task::none();
+        match self.transfers.release(index) {
+            TransferRelease::None => Task::none(),
+            TransferRelease::Click(index) => self.activate_entry(index, false),
+            TransferRelease::Drop(grabbed_index) => self.finish_drag(grabbed_index),
         }
-        if self.drag.as_ref().is_some_and(|drag| drag.active) {
-            return self.finish_drag();
-        }
-        self.drag = None;
-        self.activate_entry(index, false)
     }
 
     fn open_entry(&self, entry: FileEntry) -> Task<Message> {
-        let lane = Arc::clone(&self.lanes.background);
         Task::perform(
-            run_blocking(lane, move || {
+            self.operations.run(OperationKind::Background, move |_| {
                 let uri = gio::File::for_path(&entry.path).uri();
                 gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
                     .map_err(|error| error.to_string())
             }),
-            |result| match result {
-                Ok(()) => Message::Noop,
-                Err(error) => Message::OperationError(error),
+            |completion| match completion {
+                Completion::Finished(Ok(())) | Completion::Cancelled => Message::Noop,
+                Completion::Finished(Err(error)) => Message::OperationError(error),
             },
         )
     }
 
-    fn move_selection(&mut self, horizontal: i32, vertical: i32) -> Task<Message> {
-        self.explorer
-            .move_selection(horizontal, vertical, self.grid_columns() as i32);
+    fn move_selection(&mut self, motion: Motion) -> Task<Message> {
+        self.grid
+            .move_selection(motion, self.navigation.entries().len());
         Task::batch([self.schedule_details(), self.scroll_to_selected()])
     }
 
     fn scroll_to_selected(&self) -> Task<Message> {
-        let Some(index) = self.explorer.selected_entry else {
+        let Some(index) = self.grid.selected_entry() else {
             return Task::none();
         };
-        let y = (index / self.grid_columns()) as f32 * TILE_ROW_HEIGHT;
+        let y = self.grid.scroll_target(index);
         widget::operation::scroll_to(
             Id::new(GRID_SCROLL_ID),
             scrollable::AbsoluteOffset { x: 0.0, y },
@@ -943,30 +899,30 @@ impl App {
     }
 
     fn schedule_details(&mut self) -> Task<Message> {
-        let generation = self.explorer.begin_details();
+        self.operations.cancel(OperationKind::Details);
+        self.grid.clear_details();
         let Some(entry) = self
-            .explorer
-            .selected_entry
-            .and_then(|index| self.explorer.entries.get(index).cloned())
+            .grid
+            .selected_entry()
+            .and_then(|index| self.navigation.entries().get(index).cloned())
         else {
             self.refresh_status();
             return Task::none();
         };
         self.refresh_status();
         let path = entry.path.clone();
-        let lane = Arc::clone(&self.lanes.background);
         Task::perform(
-            async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                run_blocking(lane, move || {
-                    fs::read_entry_details(&path).map_err(|error| error.to_string())
-                })
-                .await
-            },
-            move |result| Message::DetailsFinished {
-                generation,
-                path: entry.path,
-                result,
+            self.operations.run_after(
+                OperationKind::Details,
+                Duration::from_millis(50),
+                move |_| fs::read_entry_details(&path).map_err(|error| error.to_string()),
+            ),
+            move |completion| match completion {
+                Completion::Finished(result) => Message::DetailsFinished {
+                    path: entry.path,
+                    result,
+                },
+                Completion::Cancelled => Message::Noop,
             },
         )
     }
@@ -987,15 +943,24 @@ impl App {
 
     fn load_tree_node(&self, id: u64, path: PathBuf) -> Task<Message> {
         let worker_path = path.clone();
-        let lane = Arc::clone(&self.lanes.background);
         Task::perform(
-            run_blocking(lane, move || Ok(fs::read_child_folders(&worker_path))),
-            move |result| Message::TreeLoaded(id, path, result.unwrap_or_default()),
+            self.operations.run(OperationKind::Background, move |_| {
+                Ok(fs::read_child_folders(&worker_path))
+            }),
+            move |completion| match completion {
+                Completion::Finished(result) => {
+                    Message::TreeLoaded(id, path, result.unwrap_or_default())
+                }
+                Completion::Cancelled => Message::Noop,
+            },
         )
     }
 
     fn activate_tree_row(&mut self, id: u64) -> Task<Message> {
-        let current = self.explorer.current.clone();
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        let current = self.navigation.current().to_path_buf();
         let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
             return Task::none();
         };
@@ -1019,347 +984,217 @@ impl App {
     }
 
     fn begin_search(&mut self) -> Task<Message> {
-        self.input_mode = InputMode::Search;
-        self.search_text.clear();
-        self.hide_command_output();
-        self.explorer.search_origin = Some(self.explorer.selected_entry);
+        self.browser_input.enter(InputMode::Search);
+        self.command.close_output();
+        self.sync_bottom_bar();
+        self.operations.cancel(OperationKind::Search);
+        self.search.begin(&self.grid);
         widget::operation::focus(Id::new(SEARCH_ID))
     }
 
     fn update_search(&mut self, value: String) -> Task<Message> {
-        self.search_text = value;
-        if !self.explorer.recursive_search_active && self.search_text.starts_with('/') {
-            self.explorer.recursive_search_active = true;
-            self.search_text.remove(0);
+        match self
+            .search
+            .update(&mut self.navigation, &mut self.grid, value)
+        {
+            SearchUpdate::None => Task::none(),
+            SearchUpdate::SelectionChanged => self.schedule_details(),
+            SearchUpdate::CancelPending => {
+                self.operations.cancel(OperationKind::Search);
+                Task::none()
+            }
+            SearchUpdate::Search { root, query } => self.schedule_recursive_search(root, query),
         }
-        self.explorer.search_draft = self.search_text.clone();
-        if self.explorer.recursive_search_active {
-            return self.schedule_recursive_search();
+    }
+
+    fn schedule_recursive_search(&self, root: PathBuf, query: String) -> Task<Message> {
+        Task::perform(
+            self.operations.run_after(
+                OperationKind::Search,
+                Duration::from_millis(160),
+                move |cancellation| {
+                    fs::search_directory(&root, &query, SEARCH_LIMIT, || {
+                        cancellation.is_cancelled()
+                    })
+                    .map_err(|error| error.to_string())
+                },
+            ),
+            |completion| match completion {
+                Completion::Finished(result) => Message::SearchFinished(result),
+                Completion::Cancelled => Message::Noop,
+            },
+        )
+    }
+
+    fn submit_search(&mut self) -> Task<Message> {
+        self.browser_input.leave_mode();
+        self.operations.cancel(OperationKind::Search);
+        if let Some(entry) = self.search.submit(&mut self.navigation, &mut self.grid) {
+            return if entry.is_directory() {
+                self.navigate(entry.path, true, None)
+            } else {
+                self.open_entry(entry)
+            };
         }
-        let previous = self.explorer.selected_entry;
-        self.explorer.selected_entry = find_match(
-            &self.explorer.entries,
-            &self.search_text,
-            self.explorer.search_origin.flatten(),
-            false,
-        );
-        self.explorer.selected_entries.clear();
-        self.explorer
-            .selected_entries
-            .extend(self.explorer.selected_entry);
-        if previous != self.explorer.selected_entry {
+        Task::none()
+    }
+
+    fn cancel_search(&mut self) -> Task<Message> {
+        self.operations.cancel(OperationKind::Search);
+        self.search.cancel(&mut self.navigation, &mut self.grid);
+        self.schedule_details()
+    }
+
+    fn cancel_search_state(&mut self) {
+        if self.browser_input.mode() == InputMode::Rename {
+            self.cancel_rename();
+        }
+        self.operations.cancel(OperationKind::Search);
+        self.search.cancel(&mut self.navigation, &mut self.grid);
+        self.browser_input.leave_mode();
+    }
+
+    fn repeat_search(&mut self, reverse: bool) -> Task<Message> {
+        if self
+            .search
+            .repeat(&mut self.navigation, &mut self.grid, reverse)
+        {
             self.schedule_details()
         } else {
             Task::none()
         }
     }
 
-    fn schedule_recursive_search(&mut self) -> Task<Message> {
-        self.search_generation += 1;
-        let generation = self.search_generation;
-        let query = self.search_text.clone();
-        let root = self.explorer.current.clone();
-        self.explorer.recursive_search_loading = !query.is_empty();
-        if query.is_empty() {
-            self.explorer.entries.clear();
-            self.explorer.select_only(None);
-            return Task::none();
-        }
-        let lane = Arc::clone(&self.lanes.background);
-        Task::perform(
-            async move {
-                tokio::time::sleep(Duration::from_millis(160)).await;
-                run_blocking(lane, move || {
-                    fs::search_directory(&root, &query, SEARCH_LIMIT, || false)
-                        .map(|results| (results.entries, results.truncated))
-                        .map_err(|error| error.to_string())
-                })
-                .await
-            },
-            move |result| Message::SearchFinished { generation, result },
-        )
-    }
-
-    fn finish_recursive_search(
-        &mut self,
-        generation: u64,
-        result: Result<(Vec<FileEntry>, bool), String>,
-    ) {
-        if generation != self.search_generation || !self.explorer.recursive_search_active {
-            return;
-        }
-        self.explorer.recursive_search_loading = false;
-        match result {
-            Ok((entries, truncated)) => {
-                self.explorer.entries = entries;
-                self.explorer.recursive_search_truncated = truncated;
-                self.explorer
-                    .select_only((!self.explorer.entries.is_empty()).then_some(0));
-            }
-            Err(error) => self.status = error,
-        }
-    }
-
-    fn submit_search(&mut self) -> Task<Message> {
-        self.input_mode = InputMode::Browser;
-        self.explorer.last_search = self.search_text.clone();
-        let selected = self
-            .explorer
-            .selected_entry
-            .and_then(|index| self.explorer.entries.get(index).cloned());
-        if self.explorer.recursive_search_active {
-            self.restore_directory_entries(false);
-            if let Some(entry) = selected {
-                return if entry.is_directory() {
-                    self.navigate(entry.path, true, None)
-                } else {
-                    self.open_entry(entry)
-                };
-            }
-        }
-        Task::none()
-    }
-
-    fn cancel_search(&mut self) -> Task<Message> {
-        self.restore_directory_entries(true);
-        self.schedule_details()
-    }
-
-    fn cancel_search_state(&mut self) {
-        self.search_generation += 1;
-        self.restore_directory_entries(true);
-        self.input_mode = InputMode::Browser;
-        self.search_text.clear();
-    }
-
-    fn restore_directory_entries(&mut self, restore_selection: bool) {
-        if self.explorer.recursive_search_active {
-            self.explorer.entries = self.explorer.directory_entries.clone();
-            self.explorer.recursive_search_active = false;
-            self.explorer.recursive_search_loading = false;
-            self.explorer.recursive_search_truncated = false;
-        }
-        if restore_selection && let Some(origin) = self.explorer.search_origin.take() {
-            self.explorer.select_only(origin);
-        }
-        self.explorer.search_draft.clear();
-    }
-
-    fn repeat_search(&mut self, reverse: bool) -> Task<Message> {
-        let query = self.explorer.last_search.clone();
-        if query.is_empty() {
-            return Task::none();
-        }
-        if let Some(index) = find_match(
-            &self.explorer.entries,
-            &query,
-            self.explorer.selected_entry,
-            reverse,
-        ) {
-            self.explorer.select_only(Some(index));
-            return self.schedule_details();
-        }
-        Task::none()
-    }
-
     fn begin_command(&mut self, prefix: char) -> Task<Message> {
-        self.input_mode = InputMode::Command(prefix);
-        self.command_text.clear();
-        self.hide_command_output();
+        self.browser_input.enter(InputMode::Command);
+        self.command.begin(prefix);
+        self.sync_bottom_bar();
         widget::operation::focus(Id::new(COMMAND_ID))
     }
 
     fn submit_command(&mut self) -> Task<Message> {
-        let InputMode::Command(prefix) = self.input_mode else {
-            return Task::none();
-        };
-        let mode = CommandMode::from_prefix(prefix);
-        if shell::is_quit(mode, &self.command_text) {
-            return iced::exit();
-        }
-        if shell::is_help(mode, &self.command_text) {
-            self.command_text.clear();
-            self.input_mode = InputMode::Browser;
-            self.show_command_output(
-                ":help  •  PolarExp commands".to_owned(),
-                HELP_TEXT.to_owned(),
-            );
+        if self.browser_input.mode() != InputMode::Command {
             return Task::none();
         }
-        if shell::is_terminal(mode, &self.command_text) {
-            self.command_text.clear();
-            self.input_mode = InputMode::Browser;
-            let current = self.explorer.current.clone();
-            return match shell::launch_terminal(&current) {
-                Ok(()) => {
-                    self.hide_command_output();
-                    self.status = format!("Opened terminal in {}", current.display());
-                    Task::none()
-                }
-                Err(error) => {
-                    self.show_command_output(
-                        ":terminal  •  error".to_owned(),
-                        format!("Could not open the default terminal: {error}"),
-                    );
-                    Task::none()
-                }
-            };
+        self.browser_input.leave_mode();
+        match self.command.submit(self.navigation.current().to_path_buf()) {
+            CommandSubmission::None => Task::none(),
+            CommandSubmission::Quit => self.quit(),
+            CommandSubmission::Updated => {
+                self.sync_bottom_bar();
+                Task::none()
+            }
+            CommandSubmission::Execute(execution) => {
+                self.busy = true;
+                self.status = execution.status();
+                let adapter = self.command_adapter;
+                Task::perform(
+                    self.operations
+                        .run(OperationKind::Command, move |_| Ok(execution.run(&adapter))),
+                    |completion| match completion {
+                        Completion::Finished(result) => Message::CommandFinished(result),
+                        Completion::Cancelled => Message::Noop,
+                    },
+                )
+            }
         }
-        if self.command_text.trim().is_empty() {
-            self.input_mode = InputMode::Browser;
-            return Task::none();
-        }
-        let command = std::mem::take(&mut self.command_text);
-        let current = self.explorer.current.clone();
-        self.input_mode = InputMode::Browser;
-        self.busy = true;
-        self.status = format!("Running {prefix}{command}…");
-        let lane = Arc::clone(&self.lanes.mutation);
-        Task::perform(
-            run_blocking(lane, move || {
-                shell::execute(&current, prefix, &command).map_err(|error| error.to_string())
-            }),
-            Message::ShellFinished,
-        )
     }
 
-    fn finish_shell(&mut self, result: Result<ShellReport, String>) -> Task<Message> {
+    fn finish_command(&mut self, result: Result<command::Completion, String>) -> Task<Message> {
         self.busy = false;
-        match result {
-            Ok(report) => {
-                let ShellReport {
-                    summary,
-                    detail,
-                    final_directory,
-                } = report;
-                if detail.trim().is_empty() {
-                    self.hide_command_output();
-                    self.status = summary;
-                } else {
-                    self.show_command_output(summary, detail);
-                }
-                let previous_directory = self.explorer.current.clone();
-                let tree_refresh = self.invalidate_tree(vec![previous_directory]);
-                if let Some(directory) =
-                    final_directory.filter(|path| path != &self.explorer.current)
-                {
-                    return Task::batch([tree_refresh, self.navigate(directory, true, None)]);
-                }
-                Task::batch([tree_refresh, self.refresh(None)])
-            }
-            Err(error) if error.contains("interactive terminal") => {
-                self.show_command_output(
-                    "interactive terminal required".to_owned(),
-                    "This command tried to take over the terminal screen, so PolarExp stopped it."
-                        .to_owned(),
-                );
-                Task::none()
-            }
-            Err(error) => {
-                self.show_error(format!("Could not run Bash: {error}"));
-                Task::none()
-            }
+        let consequences = self.command.complete(result, self.navigation.current());
+        self.sync_bottom_bar();
+        if let Some(error) = consequences.error {
+            self.show_error(error);
+            return Task::none();
+        }
+        if let Some(status) = consequences.status {
+            self.status = status;
+        }
+        if !consequences.refresh {
+            return Task::none();
+        }
+        let tree_refresh = self.invalidate_tree(vec![self.navigation.current().to_path_buf()]);
+        if let Some(directory) = consequences.navigate {
+            Task::batch([tree_refresh, self.navigate(directory, true, None)])
+        } else {
+            Task::batch([tree_refresh, self.refresh(None)])
         }
     }
 
-    fn show_command_output(&mut self, summary: String, detail: String) {
-        self.command_output_height = command_output_height(&detail);
-        self.command_output = Some((summary, detail));
-        self.animation_now = Instant::now();
-        self.output_expansion.go_mut(true, self.animation_now);
-    }
-
-    fn hide_command_output(&mut self) {
-        if self.command_output.is_none() && !self.output_expansion.value() {
-            return;
+    fn sync_bottom_bar(&mut self) {
+        let expanded_height = self
+            .command
+            .output()
+            .map(|output| expanded_bar_height(&output.detail))
+            .or_else(|| {
+                self.file_operations
+                    .expanded_detail()
+                    .map(expanded_bar_height)
+            });
+        if let Some(height) = expanded_height {
+            self.expanded_bar_height = height;
         }
-        self.command_output = None;
         self.animation_now = Instant::now();
-        self.output_expansion.go_mut(false, self.animation_now);
+        self.output_expansion
+            .go_mut(expanded_height.is_some(), self.animation_now);
     }
 
     fn show_rename(&mut self, index: usize) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        let Some(entry) = self.explorer.entries.get(index).cloned() else {
+        let Some(entry) = self.navigation.entries().get(index).cloned() else {
             return Task::none();
         };
-        self.explorer.pending_name = Some(PendingName::Rename(entry.clone()));
-        self.dialog = DialogState::Name {
-            title: "Rename".to_owned(),
-            value: fs::display_name(&entry.name),
-            error: String::new(),
-        };
+        self.file_operations.begin_rename(entry);
+        self.browser_input.enter(InputMode::Rename);
+        self.command.close_output();
+        self.sync_bottom_bar();
         Task::batch([
-            widget::operation::focus(Id::new(DIALOG_ID)),
-            widget::operation::select_all(Id::new(DIALOG_ID)),
+            widget::operation::focus(Id::new(RENAME_ID)),
+            widget::operation::select_all(Id::new(RENAME_ID)),
         ])
+    }
+
+    fn rename_selected(&mut self) -> Task<Message> {
+        let Some(index) = self.grid.selected_entry() else {
+            return Task::none();
+        };
+        self.show_rename(index)
+    }
+
+    fn cancel_rename(&mut self) {
+        self.browser_input.leave_mode();
+        self.file_operations.cancel();
     }
 
     fn show_new_folder(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        self.explorer.pending_name = Some(PendingName::NewFolder);
-        self.dialog = DialogState::Name {
-            title: "New Folder".to_owned(),
-            value: String::new(),
-            error: String::new(),
-        };
-        widget::operation::focus(Id::new(DIALOG_ID))
+        self.open_file_operation(|session| session.begin_new_folder());
+        widget::operation::focus(Id::new(NEW_FOLDER_ID))
     }
 
-    fn submit_name(&mut self) -> Task<Message> {
-        let DialogState::Name { value, .. } = &self.dialog else {
-            return Task::none();
-        };
-        if let Err(error) = fs::validate_name(value) {
-            if let DialogState::Name { error: target, .. } = &mut self.dialog {
-                *target = error.to_owned();
-            }
+    fn submit_rename(&mut self) -> Task<Message> {
+        if self.browser_input.mode() != InputMode::Rename {
             return Task::none();
         }
-        let Some(pending) = self.explorer.pending_name.clone() else {
+        self.submit_file_operation_name()
+    }
+
+    fn submit_file_operation_name(&mut self) -> Task<Message> {
+        let Some(work) = self
+            .file_operations
+            .submit_name(self.navigation.current().to_path_buf())
+        else {
             return Task::none();
         };
-        let value = value.clone();
-        let current = self.explorer.current.clone();
-        self.busy = true;
-        let lane = Arc::clone(&self.lanes.mutation);
-        Task::perform(
-            run_blocking(lane, move || {
-                match pending {
-                    PendingName::NewFolder => fs::create_folder(&current, &value),
-                    PendingName::Rename(entry) => fs::rename_entry(&entry.path, &value),
-                }
-                .map_err(|error| error.to_string())
-            }),
-            Message::NameFinished,
-        )
+        self.start_file_operation(work)
     }
 
-    fn finish_name(&mut self, result: Result<PathBuf, String>) -> Task<Message> {
-        self.busy = false;
-        match result {
-            Ok(path) => {
-                self.dialog = DialogState::None;
-                self.explorer.pending_name = None;
-                Task::batch([
-                    self.invalidate_tree(vec![self.explorer.current.clone()]),
-                    self.refresh(Some(path)),
-                ])
-            }
-            Err(error) => {
-                if let DialogState::Name { error: target, .. } = &mut self.dialog {
-                    *target = error;
-                }
-                Task::none()
-            }
-        }
-    }
-
-    fn show_trash_dialog(&mut self) -> Task<Message> {
+    fn show_trash_prompt(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
@@ -1367,115 +1202,86 @@ impl App {
         if entries.is_empty() {
             return Task::none();
         }
-        let message = deletion_confirmation(&entries);
-        self.explorer.pending_delete = entries;
-        self.dialog = DialogState::Trash { message };
+        self.open_file_operation(move |session| {
+            session.begin_trash(entries);
+        });
         Task::none()
     }
 
-    fn confirm_dialog(&mut self) -> Task<Message> {
-        match self.dialog {
-            DialogState::Trash { .. } => self.move_pending_to_trash(),
-            DialogState::PermanentDelete { .. } => self.delete_pending_permanently(),
-            DialogState::Error { .. } => self.update(Message::DialogCancel),
-            DialogState::Name { .. } => self.submit_name(),
-            DialogState::None => Task::none(),
+    fn confirm_prompt(&mut self) -> Task<Message> {
+        if let Some(work) = self
+            .file_operations
+            .confirm(self.navigation.current().to_path_buf())
+        {
+            self.start_file_operation(work)
+        } else {
+            self.sync_bottom_bar();
+            Task::none()
         }
     }
 
-    fn move_pending_to_trash(&mut self) -> Task<Message> {
-        let pending = self.explorer.pending_delete.clone();
-        if pending.is_empty() {
-            return Task::none();
+    fn cancel_prompt(&mut self) -> Task<Message> {
+        if self.file_operations.cancel() {
+            self.sync_bottom_bar();
         }
+        Task::none()
+    }
+
+    fn prompt_blocks_action(&mut self) -> bool {
+        if !self.file_operations.prompt_active() {
+            return false;
+        }
+        if self.file_operations.is_busy() {
+            return true;
+        }
+        let _ = self.cancel_prompt();
+        false
+    }
+
+    fn open_file_operation(&mut self, open: impl FnOnce(&mut FileOperationSession)) {
+        if self.browser_input.mode() == InputMode::Rename {
+            self.cancel_rename();
+        }
+        self.command.close_output();
+        open(&mut self.file_operations);
+        self.sync_bottom_bar();
+    }
+
+    fn start_file_operation(&mut self, work: FileOperationWork) -> Task<Message> {
         self.busy = true;
-        let lane = Arc::clone(&self.lanes.mutation);
+        let adapter = self.trash_adapter;
         Task::perform(
-            run_blocking(lane, move || {
-                Ok(pending
-                    .iter()
-                    .filter_map(|entry| {
-                        gio::File::for_path(&entry.path)
-                            .trash(None::<&gio::Cancellable>)
-                            .err()
-                            .map(|error| (entry.clone(), error.to_string()))
-                    })
-                    .collect())
-            }),
-            |result| Message::TrashFinished(result.unwrap_or_default()),
+            self.operations
+                .run(OperationKind::Mutation, move |_| Ok(work.run(&adapter))),
+            |completion| match completion {
+                Completion::Finished(Ok(completion)) => Message::FileOperationFinished(completion),
+                Completion::Finished(Err(error)) => Message::OperationError(error),
+                Completion::Cancelled => Message::Noop,
+            },
         )
     }
 
-    fn finish_trash(&mut self, failures: Vec<(FileEntry, String)>) -> Task<Message> {
+    fn finish_file_operation(&mut self, completion: file_operation::Completion) -> Task<Message> {
         self.busy = false;
-        if failures.is_empty() {
-            self.explorer.pending_delete.clear();
-            self.dialog = DialogState::None;
-            return Task::batch([
-                self.invalidate_tree(vec![self.explorer.current.clone()]),
-                self.refresh(None),
-            ]);
+        let consequences = self.file_operations.complete(completion);
+        if consequences.renamed {
+            self.browser_input.leave_mode();
         }
-        let detail = failures
-            .iter()
-            .map(|(entry, reason)| format!("{}: {reason}", fs::display_name(&entry.name)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.explorer.pending_delete = failures.iter().map(|(entry, _)| entry.clone()).collect();
-        self.dialog = DialogState::PermanentDelete {
-            message: permanent_delete_confirmation(failures.len()),
-            detail: format!("{detail}\n\nThis cannot be undone."),
-        };
-        Task::none()
-    }
-
-    fn delete_pending_permanently(&mut self) -> Task<Message> {
-        let pending = self.explorer.pending_delete.clone();
-        self.busy = true;
-        let lane = Arc::clone(&self.lanes.mutation);
-        Task::perform(
-            run_blocking(lane, move || {
-                Ok(pending
-                    .iter()
-                    .filter_map(|entry| {
-                        fs::delete_permanently(&entry.path)
-                            .err()
-                            .map(|error| (entry.clone(), error.to_string()))
-                    })
-                    .collect())
-            }),
-            |result| Message::PermanentDeleteFinished(result.unwrap_or_default()),
-        )
-    }
-
-    fn finish_permanent_delete(&mut self, failures: Vec<(FileEntry, String)>) -> Task<Message> {
-        self.busy = false;
-        if failures.is_empty() {
-            self.explorer.pending_delete.clear();
-            self.dialog = DialogState::None;
-            return Task::batch([
-                self.invalidate_tree(vec![self.explorer.current.clone()]),
-                self.refresh(None),
-            ]);
+        self.sync_bottom_bar();
+        if consequences.refresh {
+            Task::batch([
+                self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
+                self.refresh(consequences.select),
+            ])
+        } else {
+            Task::none()
         }
-        let detail = failures
-            .iter()
-            .map(|(entry, reason)| format!("{}: {reason}", fs::display_name(&entry.name)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.explorer.pending_delete = failures.into_iter().map(|(entry, _)| entry).collect();
-        self.show_error(detail);
-        Task::none()
     }
 
     fn copy_selection(&mut self) {
-        if let Some(entry) = self
-            .explorer
-            .selected_entry
-            .and_then(|index| self.explorer.entries.get(index))
-        {
-            self.explorer.copied_entry = Some(entry.path.clone());
-            self.status = format!("Copied {}", fs::display_name(&entry.name));
+        let entries = self.selected_entries();
+        if let Some(status) = self.transfers.copy(&entries) {
+            self.status = status;
         }
     }
 
@@ -1483,99 +1289,235 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        let Some(source) = self.explorer.copied_entry.clone() else {
+        let Some(request) = self
+            .transfers
+            .paste(self.navigation.current().to_path_buf())
+        else {
             return Task::none();
         };
-        let destination = self.explorer.current.clone();
-        self.busy = true;
-        let lane = Arc::clone(&self.lanes.mutation);
-        Task::perform(
-            run_blocking(lane, move || {
-                fs::copy_entry(&source, &destination).map_err(|error| error.to_string())
-            }),
-            Message::CopyFinished,
-        )
+        self.start_transfer(request)
     }
 
-    fn finish_file_operation(&mut self, result: Result<PathBuf, String>) -> Task<Message> {
-        self.busy = false;
-        match result {
-            Ok(path) => {
-                let mut changed = vec![self.explorer.current.clone()];
-                if let Some(parent) = path.parent() {
-                    changed.push(parent.to_path_buf());
-                }
-                Task::batch([self.invalidate_tree(changed), self.refresh(Some(path))])
-            }
+    fn finish_drag(&mut self, grabbed_index: usize) -> Task<Message> {
+        let action = if self.modifiers.control() {
+            TransferAction::Copy
+        } else {
+            TransferAction::Move
+        };
+        let Some(destination) = self.drop_destination_at(self.grid.cursor(), false) else {
+            return Task::none();
+        };
+        let Some(request) = TransferWorkflow::request(
+            self.navigation.entries(),
+            self.grid.selected_indices(),
+            grabbed_index,
+            destination,
+            action,
+        ) else {
+            return Task::none();
+        };
+        self.start_transfer(request)
+    }
+
+    fn start_external_drag(&mut self) -> Task<Message> {
+        let Some(grabbed_index) = self.transfers.active_drag_index() else {
+            return Task::none();
+        };
+        let Some(source) = self.native_dnd.as_ref() else {
+            self.transfers.cancel_drag();
+            self.status = self.native_dnd_error.clone().unwrap_or_else(|| {
+                "External drag-and-drop is not ready yet; try again in a moment".to_owned()
+            });
+            return Task::none();
+        };
+        let entries = TransferWorkflow::entries_for_drag(
+            self.navigation.entries(),
+            self.grid.selected_indices(),
+            grabbed_index,
+        );
+        let Some(preview) = self.drag_preview(&entries) else {
+            self.transfers.cancel_drag();
+            return Task::none();
+        };
+        let copy_only = self.modifiers.control();
+        let (count, completion) = match self.transfers.start_outgoing(
+            source,
+            self.navigation.entries(),
+            self.grid.selected_indices(),
+            grabbed_index,
+            copy_only,
+            |_| Some(preview),
+        ) {
+            Ok(started) => started,
             Err(error) => {
+                self.transfers.cancel_drag();
+                self.status = format!("Could not start external drag-and-drop: {error}");
+                return Task::none();
+            }
+        };
+        self.status = if count == 1 {
+            "Dragging 1 item outside PolarExp…".to_owned()
+        } else {
+            format!("Dragging {count} items outside PolarExp…")
+        };
+        Task::perform(completion, Message::ExternalDragFinished)
+    }
+
+    fn quit(&mut self) -> Task<Message> {
+        if let Some(source) = self.native_dnd.take() {
+            self.transfers.stop(&source);
+        } else {
+            self.transfers.cancel_drag();
+        }
+        iced::exit()
+    }
+
+    fn drop_destination_at(&self, point: Point, allow_current: bool) -> Option<PathBuf> {
+        let rows = flatten_rows(&self.explorer, self.navigation.current());
+        match self.grid.drop_zone(
+            point,
+            self.navigation.entries().len(),
+            rows.len(),
+            self.status_height(),
+            allow_current,
+        )? {
+            DropZone::Sidebar(index) => rows.get(index).map(|row| row.path.clone()),
+            DropZone::Entry(index) => self
+                .navigation
+                .entries()
+                .get(index)
+                .filter(|entry| entry.is_directory())
+                .map(|entry| entry.path.clone()),
+            DropZone::Current => Some(self.navigation.current().to_path_buf()),
+        }
+    }
+
+    fn drop_highlight_path(&self) -> Option<PathBuf> {
+        if let Some(destination) = self.transfers.native_hover_destination() {
+            return destination.map(Path::to_path_buf);
+        }
+        let grabbed_index = self.transfers.active_drag_index()?;
+        let action = if self.modifiers.control() {
+            TransferAction::Copy
+        } else {
+            TransferAction::Move
+        };
+        let destination = self.drop_destination_at(self.grid.cursor(), false)?;
+        TransferWorkflow::request(
+            self.navigation.entries(),
+            self.grid.selected_indices(),
+            grabbed_index,
+            destination,
+            action,
+        )
+        .map(|request| request.destination)
+    }
+
+    fn handle_native_dnd_event(&mut self, event: TransferEvent) -> Task<Message> {
+        let resolved_destination = match &event {
+            TransferEvent::Hover { position, .. } => self.drop_destination_at(*position, true),
+            _ => None,
+        };
+        let Some(source) = self.native_dnd.as_ref() else {
+            self.show_error("Drag-and-drop adapter is unavailable".to_owned());
+            return Task::none();
+        };
+        match self
+            .transfers
+            .handle_native(source, event, move |_, _| resolved_destination.clone())
+        {
+            NativeUpdate::None => Task::none(),
+            NativeUpdate::Status(status) => {
+                self.status_notice = None;
+                if status.is_empty() {
+                    self.refresh_status();
+                } else {
+                    self.status = status;
+                }
+                Task::none()
+            }
+            NativeUpdate::Notice(message) => {
+                self.status = message.clone();
+                self.status_notice = Some(message);
+                Task::none()
+            }
+            NativeUpdate::Start(request) => self.start_transfer(request),
+            NativeUpdate::Error(error) => {
                 self.show_error(error);
                 Task::none()
             }
         }
     }
 
-    fn finish_drag(&mut self) -> Task<Message> {
-        let Some(drag) = self.drag.take().filter(|drag| drag.active) else {
-            return Task::none();
-        };
-        let Some(destination) = self.drop_destination(&drag.path) else {
-            return Task::none();
-        };
+    fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {
         self.busy = true;
-        let source = drag.path;
-        let lane = Arc::clone(&self.lanes.mutation);
+        let operation = request.clone();
         Task::perform(
-            run_blocking(lane, move || {
-                fs::move_entry(&source, &destination).map_err(|error| error.to_string())
+            self.operations.run(OperationKind::Mutation, move |_| {
+                Ok(fs::transfer_entries(
+                    &operation.paths,
+                    &operation.destination,
+                    operation.action,
+                ))
             }),
-            Message::MoveFinished,
+            move |completion| match completion {
+                Completion::Finished(result) => Message::TransferFinished {
+                    request,
+                    report: result.unwrap_or_else(|error| fs::TransferReport {
+                        completed: Vec::new(),
+                        failures: vec![fs::TransferFailure {
+                            source: PathBuf::new(),
+                            error,
+                        }],
+                    }),
+                },
+                Completion::Cancelled => Message::Noop,
+            },
         )
     }
 
-    fn drop_destination(&self, source: &Path) -> Option<PathBuf> {
-        let target = if self.cursor.x < SIDEBAR_WIDTH {
-            let rows = flatten_rows(&self.explorer);
-            let index = ((self.cursor.y - 42.0) / 32.0).floor() as isize;
-            let index = usize::try_from(index).ok()?;
-            rows.get(index).map(|row| row.path.clone())
-        } else {
-            self.grid_index_at(self.cursor)
-                .and_then(|index| self.explorer.entries.get(index))
-                .filter(|entry| entry.is_directory())
-                .map(|entry| entry.path.clone())
-        }?;
-        (source != target
-            && source.parent() != Some(target.as_path())
-            && !target.starts_with(source))
-        .then_some(target)
+    fn finish_transfer(
+        &mut self,
+        request: TransferRequest,
+        report: fs::TransferReport,
+    ) -> Task<Message> {
+        self.busy = false;
+        let adapter = self
+            .native_dnd
+            .as_ref()
+            .map(|source| source as &dyn Adapter);
+        let consequences =
+            self.transfers
+                .finish_transfer(adapter, &request, &report, self.navigation.current());
+        self.apply_transfer_consequences(consequences)
     }
 
-    fn update_marquee_selection(&mut self) {
-        let Some(marquee) = &self.marquee else {
-            return;
+    fn apply_transfer_consequences(
+        &mut self,
+        consequences: crate::transfer::Consequences,
+    ) -> Task<Message> {
+        if let Some(error) = consequences.error {
+            self.show_error(error);
+        } else if let Some(status) = consequences.status {
+            self.status = status;
+        } else {
+            self.refresh_status();
+        }
+        let tree = if consequences.changed_folders.is_empty() {
+            Task::none()
+        } else {
+            self.invalidate_tree(consequences.changed_folders)
         };
-        let columns = self.grid_columns() as i32;
-        let (start_row, start_column) = self.grid_selection_cell_at(marquee.start);
-        let (end_row, end_column) = self.grid_selection_cell_at(marquee.current);
-        self.explorer
-            .select_rectangle(start_row, start_column, end_row, end_column, columns);
-        self.refresh_status();
+        let refresh = if consequences.refresh {
+            self.refresh_selected(consequences.select)
+        } else {
+            Task::none()
+        };
+        Task::batch([tree, refresh])
     }
 
     fn selected_entries(&self) -> Vec<FileEntry> {
-        if self.explorer.selected_entries.len() > 1 {
-            self.explorer
-                .selected_entries
-                .iter()
-                .filter_map(|index| self.explorer.entries.get(*index).cloned())
-                .collect()
-        } else {
-            self.explorer
-                .selected_entry
-                .and_then(|index| self.explorer.entries.get(index).cloned())
-                .into_iter()
-                .collect()
-        }
+        self.grid.selected_items(self.navigation.entries())
     }
 
     fn invalidate_tree(&mut self, changed_folders: Vec<PathBuf>) -> Task<Message> {
@@ -1588,150 +1530,106 @@ impl App {
     }
 
     fn mutations_allowed(&self) -> bool {
-        !self.busy && !self.navigation_loading && !self.explorer.recursive_search_active
+        !self.busy && !self.navigation_loading && !self.search.is_recursive()
     }
 
     fn delete_operator_pending(&self) -> bool {
-        self.status.starts_with("d  •  awaiting motion")
+        self.browser_input.delete_pending()
     }
 
     fn show_error(&mut self, message: String) {
-        self.dialog = DialogState::Error { message };
         self.busy = false;
+        self.open_file_operation(move |session| session.show_error(message));
     }
 
     fn refresh_status(&mut self) {
         if self.delete_operator_pending() {
             return;
         }
-        self.status = if self.explorer.selected_entries.len() > 1 {
+        self.status = if self.grid.selection_count() > 1 {
             format!(
                 "{} selected  •  {}",
-                self.explorer.selected_entries.len(),
-                self.explorer.current.display()
+                self.grid.selection_count(),
+                self.navigation.current().display()
             )
         } else if let Some(entry) = self
-            .explorer
-            .selected_entry
-            .and_then(|index| self.explorer.entries.get(index))
+            .grid
+            .selected_entry()
+            .and_then(|index| self.navigation.entries().get(index))
         {
             let name = fs::display_name(&entry.name);
-            match &self.explorer.selected_details {
+            match self.grid.details() {
                 Some(details) => format!("{name}  •  {details}"),
                 None => format!("{name}  •  Loading details…"),
             }
         } else {
             format!(
                 "{} items  •  {}",
-                self.explorer.entries.len(),
-                self.explorer.current.display()
+                self.navigation.entries().len(),
+                self.navigation.current().display()
             )
         };
     }
 
-    fn grid_columns(&self) -> usize {
-        let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
-        (width / TILE_PITCH).floor().max(1.0) as usize
-    }
-
-    fn grid_column_width(&self) -> f32 {
-        let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
-        width / self.grid_columns() as f32
-    }
-
-    fn grid_cell_at(&self, point: Point) -> Option<(i32, i32)> {
-        let content_top =
-            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
-        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER || point.y < content_top {
-            return None;
-        }
-        let width = self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER;
-        let column_width = width / self.grid_columns() as f32;
-        let column = ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / column_width).floor() as i32;
-        let row = ((point.y - content_top + self.grid_scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
-        (row >= 0 && column >= 0 && column < self.grid_columns() as i32).then_some((row, column))
-    }
-
-    fn grid_selection_cell_at(&self, point: Point) -> (i32, i32) {
-        let content_top =
-            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
-        let column =
-            ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / self.grid_column_width()).floor() as i32;
-        let row = ((point.y - content_top + self.grid_scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
-        (row, column)
-    }
-
-    fn grid_selection_start_allowed(&self, point: Point) -> bool {
-        if !self.mutations_allowed() {
-            return false;
-        }
-        let content_top =
-            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
-        let status_height = self.output_expansion.interpolate(
+    fn status_height(&self) -> f32 {
+        self.output_expansion.interpolate(
             STATUS_HEIGHT,
-            self.command_output_height,
+            self.expanded_bar_height,
             self.animation_now,
-        );
-        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER
-            || point.x >= self.window_size.width - CONTENT_GUTTER
-            || point.y < content_top
-            || point.y >= self.window_size.height - status_height - CONTENT_GUTTER
-        {
-            return false;
-        }
-        let Some((row, column)) = self.grid_cell_at(point) else {
-            return false;
-        };
-        let index = row as usize * self.grid_columns() + column as usize;
-        if index >= self.explorer.entries.len() {
-            return true;
-        }
-        let column_left = SIDEBAR_WIDTH + CONTENT_GUTTER + column as f32 * self.grid_column_width();
-        let tile_left = column_left + (self.grid_column_width() - TILE_WIDTH) / 2.0;
-        let row_top = content_top - self.grid_scroll_y + row as f32 * TILE_ROW_HEIGHT;
-        let inside_tile = point.x >= tile_left
-            && point.x < tile_left + TILE_WIDTH
-            && point.y >= row_top
-            && point.y < row_top + 108.0;
-        !inside_tile
-    }
-
-    fn marquee_bounds(&self, marquee: &MarqueeState) -> Rectangle {
-        let origin = Point::new(SIDEBAR_WIDTH, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
-        let size = Size::new(
-            (self.window_size.width - origin.x).max(0.0),
-            (self.window_size.height
-                - origin.y
-                - self.output_expansion.interpolate(
-                    STATUS_HEIGHT,
-                    self.command_output_height,
-                    self.animation_now,
-                ))
-            .max(0.0),
-        );
-        let left = (marquee.start.x.min(marquee.current.x) - origin.x).clamp(0.0, size.width);
-        let right = (marquee.start.x.max(marquee.current.x) - origin.x).clamp(0.0, size.width);
-        let top = (marquee.start.y.min(marquee.current.y) - origin.y).clamp(0.0, size.height);
-        let bottom = (marquee.start.y.max(marquee.current.y) - origin.y).clamp(0.0, size.height);
-        Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top))
-    }
-
-    fn grid_index_at(&self, point: Point) -> Option<usize> {
-        let (row, column) = self.grid_cell_at(point)?;
-        let index = row as usize * self.grid_columns() + column as usize;
-        (index < self.explorer.entries.len()).then_some(index)
+        )
     }
 
     fn view(&self) -> Element<'_, Message> {
         let base = self.layout();
         let mut layers: Vec<Element<'_, Message>> = vec![base];
+        if let Some(preview) = self.drag_preview_view() {
+            layers.push(preview);
+        }
         if let Some((_, point)) = self.context_menu {
             layers.push(self.context_menu_view(point));
         }
-        if self.dialog.is_open() {
-            layers.push(self.dialog_view());
-        }
         stack(layers).width(Fill).height(Fill).into()
+    }
+
+    fn drag_preview_view(&self) -> Option<Element<'_, Message>> {
+        let grabbed_index = self.transfers.active_drag_index()?;
+        let entries = TransferWorkflow::entries_for_drag(
+            self.navigation.entries(),
+            self.grid.selected_indices(),
+            grabbed_index,
+        );
+        let preview = self.drag_preview(&entries)?;
+        let preview_bytes = native_dnd::preview_svg(preview).ok()?;
+        let preview = svg(svg::Handle::from_memory(preview_bytes))
+            .width(native_dnd::ICON_SIZE as f32)
+            .height(native_dnd::ICON_SIZE as f32);
+
+        let origin = self.grid.drag_preview_origin();
+        Some(
+            pin(preview)
+                .x(origin.x.max(0.0))
+                .y(origin.y.max(0.0))
+                .into(),
+        )
+    }
+
+    fn drag_preview(&self, entries: &[FileEntry]) -> Option<TransferPreview> {
+        let first = entries.first()?;
+        let icon_kind = entry_icon_kind(first);
+        let palette = self.iced_theme().palette();
+        let background = palette.background;
+        let icon_color = self.entry_icon_color(icon_kind);
+        let accent = self.accent_color();
+        let badge_text = self.selection_text_color();
+        Some(TransferPreview {
+            icon: entry_icon_asset(icon_kind),
+            count: entries.len(),
+            copy: self.modifiers.control(),
+            background: rgba(background, 0.92),
+            icon_color: rgba(icon_color, 1.0),
+            accent: rgba(accent, 1.0),
+            badge_text: rgba(badge_text, 1.0),
+        })
     }
 
     fn layout(&self) -> Element<'_, Message> {
@@ -1744,7 +1642,7 @@ impl App {
 
     fn sidebar(&self) -> Element<'_, Message> {
         let mut rows = Column::new().spacing(0);
-        for tree_row in flatten_rows(&self.explorer) {
+        for tree_row in flatten_rows(&self.explorer, self.navigation.current()) {
             rows = rows.push(self.tree_row(tree_row));
         }
         let content = column![
@@ -1772,6 +1670,7 @@ impl App {
     }
 
     fn tree_row(&self, tree_row: TreeRow) -> Element<'_, Message> {
+        let drop_target = self.drop_highlight_path().as_deref() == Some(tree_row.path.as_path());
         let mut line = Row::new()
             .spacing(6)
             .height(Fill)
@@ -1821,7 +1720,7 @@ impl App {
             .width(Fill)
             .height(32)
             .padding(0)
-            .style(move |theme, status| tree_button_style(theme, status, selected))
+            .style(move |theme, status| tree_button_style(theme, status, selected, drop_target))
             .into()
     }
 
@@ -1842,7 +1741,7 @@ impl App {
         let parent = toolbar_button(
             include_bytes!("../ui/icons/up.svg"),
             "Parent folder",
-            self.explorer.current.parent().is_some(),
+            self.navigation.current().parent().is_some(),
             Message::Parent,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
@@ -1850,7 +1749,7 @@ impl App {
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
             "Back",
-            !self.explorer.history.is_empty(),
+            self.navigation.can_go_back(),
             Message::Back,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
@@ -1858,7 +1757,7 @@ impl App {
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
             "Forward",
-            !self.explorer.forward_history.is_empty(),
+            self.navigation.can_go_forward(),
             Message::Forward,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
@@ -1902,37 +1801,21 @@ impl App {
     }
 
     fn grid_body(&self) -> Element<'_, Message> {
-        let columns = self.grid_columns();
-        let total_rows = self.explorer.entries.len().div_ceil(columns);
-        let viewport_height = (self.window_size.height
-            - TOOLBAR_HEIGHT
-            - TOOLBAR_DIVIDER_HEIGHT
-            - STATUS_HEIGHT
-            - 2.0 * CONTENT_GUTTER
-            - LIST_VIEW_TOP_INSET)
-            .max(TILE_ROW_HEIGHT);
-        let first_row = ((self.grid_scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
-        let visible_rows = (viewport_height / TILE_ROW_HEIGHT).ceil() as usize + 2;
-        let last_row = (first_row + visible_rows).min(total_rows);
-        let first_index = first_row * columns;
-        let last_index = (last_row * columns).min(self.explorer.entries.len());
-        let mut grid = Grid::with_capacity(last_index.saturating_sub(first_index))
-            .columns(columns)
+        let visible = self
+            .grid
+            .visible_range(self.navigation.entries().len(), self.status_height());
+        let mut grid = Grid::with_capacity(visible.last_index.saturating_sub(visible.first_index))
+            .columns(visible.columns)
             .height(widget::grid::aspect_ratio(
-                self.grid_column_width(),
+                visible.column_width,
                 TILE_ROW_HEIGHT,
             ))
             .spacing(0);
-        for index in first_index..last_index {
+        for index in visible.first_index..visible.last_index {
             grid = grid.push(self.file_tile(index));
         }
-        let top = Space::new()
-            .width(Fill)
-            .height(first_row as f32 * TILE_ROW_HEIGHT);
-        let bottom_rows = total_rows.saturating_sub(last_row);
-        let bottom = Space::new()
-            .width(Fill)
-            .height(bottom_rows as f32 * TILE_ROW_HEIGHT);
+        let top = Space::new().width(Fill).height(visible.top_space);
+        let bottom = Space::new().width(Fill).height(visible.bottom_space);
         let content = column![top, grid, bottom];
         let scroll = scrollable(content)
             .id(Id::new(GRID_SCROLL_ID))
@@ -1947,40 +1830,44 @@ impl App {
         }))
         .on_move(Message::GridPointerMoved)
         .into();
-        let content: Element<'_, Message> = if let Some(marquee) = &self.marquee {
-            let bounds = self.marquee_bounds(marquee);
-            let selection = container(Space::new())
-                .width(bounds.width)
-                .height(bounds.height)
-                .style(move |_| marquee_style(self.accent_color()));
-            let overlay = column![
-                Space::new().height(bounds.y),
-                row![
-                    Space::new().width(bounds.x),
-                    selection,
-                    Space::new().width(Fill)
+        let content: Element<'_, Message> =
+            if let Some(bounds) = self.grid.marquee_bounds(self.status_height()) {
+                let selection = container(Space::new())
+                    .width(bounds.width)
+                    .height(bounds.height)
+                    .style(move |_| marquee_style(self.accent_color()));
+                let overlay = column![
+                    Space::new().height(bounds.y),
+                    row![
+                        Space::new().width(bounds.x),
+                        selection,
+                        Space::new().width(Fill)
+                    ]
+                    .height(bounds.height),
+                    Space::new().height(Fill),
                 ]
-                .height(bounds.height),
-                Space::new().height(Fill),
-            ]
-            .width(Fill)
-            .height(Fill);
-            stack![area, overlay].into()
-        } else {
-            area
-        };
+                .width(Fill)
+                .height(Fill);
+                stack![area, overlay].into()
+            } else {
+                area
+            };
+        let current_drop_target =
+            self.drop_highlight_path().as_deref() == Some(self.navigation.current());
         container(content)
             .width(Fill)
             .height(Fill)
             .clip(true)
-            .style(browser_background_style)
+            .style(move |theme| grid_background_style(theme, current_drop_target))
             .into()
     }
 
     fn file_tile(&self, index: usize) -> Element<'_, Message> {
-        let entry = &self.explorer.entries[index];
-        let selected = self.explorer.selected_entries.contains(&index);
-        let hovered = self.hovered_entry == Some(index);
+        let entry = &self.navigation.entries()[index];
+        let selected = self.grid.is_selected(index);
+        let hovered = self.grid.hovered() == Some(index);
+        let drop_target = entry.is_directory()
+            && self.drop_highlight_path().as_deref() == Some(entry.path.as_path());
         let icon_kind = entry_icon_kind(entry);
         let icon = themed_svg(
             entry_icon_asset(icon_kind),
@@ -2020,7 +1907,7 @@ impl App {
                 left: 7.0,
             })
             .clip(true)
-            .style(move |theme| tile_style(theme, selected, hovered));
+            .style(move |theme| tile_style(theme, selected, hovered, drop_target));
         mouse_area(container(tile).width(Fill).center_x(Fill))
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
@@ -2034,29 +1921,27 @@ impl App {
     fn status_bar(&self) -> Element<'_, Message> {
         let height = self.output_expansion.interpolate(
             STATUS_HEIGHT,
-            self.command_output_height,
+            self.expanded_bar_height,
             self.animation_now,
         );
-        let content: Element<'_, Message> = if let Some((summary, detail)) = &self.command_output {
+        let content: Element<'_, Message> = if let Some(output) = self.command.output() {
             let header = row![
-                text(summary)
+                text(&output.summary)
                     .font(MONO_FONT_SEMIBOLD)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .width(Fill),
-                button(text("×").font(UI_FONT).size(17))
-                    .on_press(Message::CloseOutput)
-                    .width(26)
-                    .height(25)
-                    .padding(0)
-                    .style(output_close_button_style),
+                text("Esc close")
+                    .font(MONO_FONT)
+                    .size(11)
+                    .color(self.secondary_text_color()),
             ]
             .height(29)
             .align_y(Alignment::Center);
             let output = column![
                 header,
                 scrollable(
-                    text(detail)
+                    text(&output.detail)
                         .font(MONO_FONT)
                         .size(12)
                         .line_height(iced::Pixels(15.0))
@@ -2080,10 +1965,12 @@ impl App {
                     left: CONTENT_GUTTER,
                 })
                 .into()
+        } else if self.file_operations.prompt_active() {
+            self.prompt_bar()
         } else {
-            let status: Element<'_, Message> = match self.input_mode {
+            let status: Element<'_, Message> = match self.browser_input.mode() {
                 InputMode::Search => {
-                    let prefix = if self.explorer.recursive_search_active {
+                    let prefix = if self.search.is_recursive() {
                         "//"
                     } else {
                         "/"
@@ -2093,7 +1980,7 @@ impl App {
                             .size(12)
                             .line_height(iced::Pixels(15.0))
                             .color(self.accent_color()),
-                        text_input("", &self.search_text)
+                        text_input("", self.search.query())
                             .id(Id::new(SEARCH_ID))
                             .on_input(Message::SearchChanged)
                             .on_submit(Message::SearchSubmitted)
@@ -2109,12 +1996,12 @@ impl App {
                     .align_y(Alignment::Center)
                     .into()
                 }
-                InputMode::Command(prefix) => row![
-                    text(prefix.to_string())
+                InputMode::Command => row![
+                    text(self.command.prefix().unwrap_or(':').to_string())
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(self.accent_color()),
-                    text_input("", &self.command_text)
+                    text_input("", self.command.text())
                         .id(Id::new(COMMAND_ID))
                         .on_input(Message::CommandChanged)
                         .on_submit(Message::CommandSubmitted)
@@ -2128,6 +2015,49 @@ impl App {
                 .spacing(4)
                 .align_y(Alignment::Center)
                 .into(),
+                InputMode::Rename => {
+                    if let FileOperationView::Rename { value, error } = self.file_operations.view()
+                    {
+                        let feedback: Element<'_, Message> = if self.busy {
+                            self.spinner(13.0).into()
+                        } else if error.is_empty() {
+                            text("Enter save  ·  Esc cancel")
+                                .size(11)
+                                .line_height(iced::Pixels(13.0))
+                                .color(self.secondary_text_color())
+                                .into()
+                        } else {
+                            text(error)
+                                .size(11)
+                                .line_height(iced::Pixels(13.0))
+                                .color(self.iced_theme().palette().danger)
+                                .into()
+                        };
+                        row![
+                            text("rename")
+                                .font(MONO_FONT)
+                                .size(11)
+                                .line_height(iced::Pixels(13.0))
+                                .color(self.accent_color()),
+                            text_input("", value)
+                                .id(Id::new(RENAME_ID))
+                                .on_input_maybe((!self.busy).then_some(Message::RenameChanged))
+                                .on_submit_maybe((!self.busy).then_some(Message::RenameSubmitted))
+                                .font(MONO_FONT)
+                                .size(12)
+                                .line_height(iced::Pixels(15.0))
+                                .padding(0)
+                                .style(status_input_style)
+                                .width(Fill),
+                            feedback,
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
+                        .into()
+                    } else {
+                        Space::new().into()
+                    }
+                }
                 _ => {
                     let indicator: Element<'_, Message> = if self.busy || self.navigation_loading {
                         self.spinner(13.0).into()
@@ -2136,10 +2066,14 @@ impl App {
                     };
                     row![
                         indicator,
-                        text(&self.status)
+                        text(self.status_notice.as_deref().unwrap_or(&self.status))
                             .size(11)
                             .line_height(iced::Pixels(13.0))
-                            .color(self.secondary_text_color())
+                            .color(if self.status_notice.is_some() {
+                                self.iced_theme().palette().danger
+                            } else {
+                                self.secondary_text_color()
+                            })
                             .width(Fill),
                     ]
                     .spacing(if self.busy || self.navigation_loading {
@@ -2151,11 +2085,7 @@ impl App {
                     .into()
                 }
             };
-            container(status)
-                .width(Fill)
-                .center_y(Fill)
-                .padding(Padding::from([0, CONTENT_GUTTER as u16]))
-                .into()
+            compact_status_line(status)
         };
         container(content)
             .width(Fill)
@@ -2165,20 +2095,164 @@ impl App {
             .into()
     }
 
+    fn prompt_bar(&self) -> Element<'_, Message> {
+        match self.file_operations.view() {
+            FileOperationView::NewFolder { value, error } => {
+                let feedback: Element<'_, Message> = if self.busy {
+                    self.spinner(13.0).into()
+                } else if error.is_empty() {
+                    text("Enter create  ·  Esc cancel")
+                        .font(MONO_FONT)
+                        .size(11)
+                        .color(self.secondary_text_color())
+                        .into()
+                } else {
+                    text(error)
+                        .size(11)
+                        .line_height(iced::Pixels(13.0))
+                        .color(self.iced_theme().palette().danger)
+                        .into()
+                };
+                compact_status_line(
+                    row![
+                        text("new folder")
+                            .font(MONO_FONT)
+                            .size(11)
+                            .line_height(iced::Pixels(13.0))
+                            .color(self.accent_color()),
+                        text_input("", value)
+                            .id(Id::new(NEW_FOLDER_ID))
+                            .on_input_maybe((!self.busy).then_some(Message::PromptInputChanged))
+                            .on_submit_maybe((!self.busy).then_some(Message::PromptSubmit))
+                            .font(MONO_FONT)
+                            .size(12)
+                            .line_height(iced::Pixels(15.0))
+                            .padding(0)
+                            .style(status_input_style)
+                            .width(Fill),
+                        feedback,
+                    ]
+                    .spacing(7)
+                    .align_y(Alignment::Center),
+                )
+            }
+            FileOperationView::Trash { message } => compact_status_line(
+                row![
+                    text("trash")
+                        .font(MONO_FONT)
+                        .size(11)
+                        .color(self.iced_theme().palette().danger),
+                    text(message)
+                        .size(11)
+                        .line_height(iced::Pixels(13.0))
+                        .width(Fill),
+                    text("Y/n")
+                        .font(MONO_FONT_SEMIBOLD)
+                        .size(11)
+                        .color(self.iced_theme().palette().danger),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ),
+            FileOperationView::PermanentDelete { message, detail } => {
+                let header = row![
+                    text("delete permanently")
+                        .font(MONO_FONT_SEMIBOLD)
+                        .size(11)
+                        .color(self.iced_theme().palette().danger),
+                    text(message).size(11).width(Fill),
+                    text("Y/n")
+                        .font(MONO_FONT_SEMIBOLD)
+                        .size(11)
+                        .color(self.iced_theme().palette().danger),
+                ]
+                .spacing(8)
+                .height(25)
+                .align_y(Alignment::Center);
+                container(
+                    column![
+                        header,
+                        scrollable(
+                            text(detail)
+                                .font(MONO_FONT)
+                                .size(11)
+                                .line_height(iced::Pixels(14.0))
+                                .color(self.secondary_text_color())
+                                .width(Fill),
+                        )
+                        .width(Fill)
+                        .height(Fill),
+                    ]
+                    .spacing(2),
+                )
+                .width(Fill)
+                .height(Fill)
+                .padding(Padding {
+                    top: 1.0,
+                    right: CONTENT_GUTTER,
+                    bottom: 7.0,
+                    left: CONTENT_GUTTER,
+                })
+                .into()
+            }
+            FileOperationView::Error { message } => {
+                let header = row![
+                    text("error")
+                        .font(MONO_FONT_SEMIBOLD)
+                        .size(11)
+                        .color(self.iced_theme().palette().danger),
+                    Space::new().width(Fill),
+                    text("Esc close")
+                        .font(MONO_FONT)
+                        .size(11)
+                        .color(self.secondary_text_color()),
+                ]
+                .height(25)
+                .align_y(Alignment::Center);
+                container(
+                    column![
+                        header,
+                        scrollable(
+                            text(message)
+                                .font(MONO_FONT)
+                                .size(11)
+                                .line_height(iced::Pixels(14.0))
+                                .color(self.secondary_text_color())
+                                .width(Fill),
+                        )
+                        .width(Fill)
+                        .height(Fill),
+                    ]
+                    .spacing(2),
+                )
+                .width(Fill)
+                .height(Fill)
+                .padding(Padding {
+                    top: 1.0,
+                    right: CONTENT_GUTTER,
+                    bottom: 7.0,
+                    left: CONTENT_GUTTER,
+                })
+                .into()
+            }
+            FileOperationView::Idle | FileOperationView::Rename { .. } => Space::new().into(),
+        }
+    }
+
     fn search_count_view(&self) -> Element<'_, Message> {
-        if !self.explorer.recursive_search_active || self.search_text.is_empty() {
+        if !self.search.is_recursive() || self.search.query().is_empty() {
             return Space::new().into();
         }
-        if self.explorer.recursive_search_loading {
+        if self.search.is_loading() {
             return row![Space::new().width(Fill), self.spinner(13.0)]
                 .width(108)
                 .align_y(Alignment::Center)
                 .into();
         }
-        let label = if self.explorer.recursive_search_truncated {
+        let label = if self.search.is_truncated() {
             "1000+ matches".to_owned()
         } else {
-            format!("{} matches", self.explorer.entries.len())
+            format!("{} matches", self.navigation.entries().len())
         };
         text(label)
             .size(11)
@@ -2208,86 +2282,6 @@ impl App {
         let overlay =
             mouse_area(container("").width(Fill).height(Fill)).on_press(Message::CloseContext);
         stack![overlay, pin(menu).x(point.x).y(point.y)].into()
-    }
-
-    fn dialog_view(&self) -> Element<'_, Message> {
-        let (title, body, confirm): (&str, Element<'_, Message>, &str) = match &self.dialog {
-            DialogState::Name {
-                title,
-                value,
-                error,
-            } => (
-                title,
-                column![
-                    text_input("Name", value)
-                        .id(Id::new(DIALOG_ID))
-                        .on_input(Message::DialogInputChanged)
-                        .on_submit(Message::DialogSubmit)
-                        .padding(8),
-                    text(error).size(12).color(Color::from_rgb8(196, 43, 28)),
-                ]
-                .spacing(6)
-                .into(),
-                title,
-            ),
-            DialogState::Trash { message } => (
-                "Move to Trash",
-                text(message).size(14).into(),
-                "Move to Trash",
-            ),
-            DialogState::PermanentDelete { message, detail } => (
-                "Moving to Trash failed",
-                column![
-                    text(message).size(14),
-                    text(detail).size(12).color(self.secondary_text_color())
-                ]
-                .spacing(7)
-                .into(),
-                "Delete Permanently",
-            ),
-            DialogState::Error { message } => ("Error", text(message).size(13).into(), "Close"),
-            DialogState::None => return Space::new().into(),
-        };
-        let cancel: Element<'_, Message> = if matches!(self.dialog, DialogState::Error { .. }) {
-            Space::new().into()
-        } else {
-            button("Cancel")
-                .on_press_maybe((!self.busy).then_some(Message::DialogCancel))
-                .style(button::secondary)
-                .into()
-        };
-        let actions = row![
-            Space::new().width(Fill).height(1),
-            cancel,
-            button(confirm)
-                .on_press_maybe((!self.busy).then_some(Message::DialogConfirm))
-                .style(button::primary),
-        ]
-        .spacing(8);
-        let panel = container(
-            column![
-                text(title).size(18),
-                body,
-                Space::new().width(1).height(Fill),
-                actions
-            ]
-            .spacing(12),
-        )
-        .width(410)
-        .height(if matches!(self.dialog, DialogState::Name { .. }) {
-            210
-        } else {
-            225
-        })
-        .padding(20)
-        .style(dialog_panel_style);
-        opaque(
-            container(panel)
-                .center(Fill)
-                .width(Fill)
-                .height(Fill)
-                .style(dialog_scrim_style),
-        )
     }
 
     fn accent_color(&self) -> Color {
@@ -2322,18 +2316,20 @@ impl App {
     }
 }
 
-async fn run_blocking<T, F>(lane: Arc<Semaphore>, work: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    let _permit = lane
-        .acquire_owned()
-        .await
-        .map_err(|_| "operation queue closed".to_owned())?;
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| format!("background task failed: {error}"))?
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(source) = self.native_dnd.take() {
+            self.transfers.stop(&source);
+        }
+    }
+}
+
+fn compact_status_line<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .width(Fill)
+        .center_y(Fill)
+        .padding(Padding::from([0, CONTENT_GUTTER as u16]))
+        .into()
 }
 
 fn entry_icon_kind(entry: &FileEntry) -> EntryIconKind {
@@ -2412,61 +2408,33 @@ fn entry_icon_asset(kind: EntryIconKind) -> &'static [u8] {
     }
 }
 
-fn find_match(
-    entries: &[FileEntry],
-    query: &str,
-    anchor: Option<usize>,
-    reverse: bool,
-) -> Option<usize> {
-    if entries.is_empty() || query.is_empty() {
-        return None;
-    }
-    let query = query.to_lowercase();
-    let len = entries.len();
-    let first = match (anchor, reverse) {
-        (Some(index), false) => (index + 1) % len,
-        (Some(index), true) => index.checked_sub(1).unwrap_or(len - 1),
-        (None, false) => 0,
-        (None, true) => len - 1,
-    };
-    (0..len)
-        .map(|offset| {
-            if reverse {
-                (first + len - offset) % len
-            } else {
-                (first + offset) % len
-            }
-        })
-        .find(|index| {
-            entries[*index]
-                .name
-                .to_string_lossy()
-                .to_lowercase()
-                .contains(&query)
-        })
+fn find_window_after_delay() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        },
+        |()| Message::FindWindow,
+    )
 }
 
-fn deletion_confirmation(entries: &[FileEntry]) -> String {
-    if let [entry] = entries {
-        format!("Move “{}” to Trash?", fs::display_name(&entry.name))
-    } else {
-        format!("Move {} selected items to Trash?", entries.len())
-    }
+fn clears_status_notice(event: &iced::Event) -> bool {
+    matches!(
+        event,
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+            | iced::Event::Mouse(mouse::Event::ButtonPressed(_))
+    )
 }
 
-fn permanent_delete_confirmation(count: usize) -> String {
-    if count == 1 {
-        "Permanently delete this item instead?".to_owned()
-    } else {
-        format!("Permanently delete these {count} items instead?")
-    }
+fn rgba(color: Color, alpha: f32) -> [u8; 4] {
+    [
+        (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
 }
 
-fn distance(a: Point, b: Point) -> f32 {
-    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
-}
-
-fn command_output_height(detail: &str) -> f32 {
+fn expanded_bar_height(detail: &str) -> f32 {
     let lines = detail.lines().count().max(1) as f32;
     (40.0 + lines * 16.0).clamp(56.0, 280.0)
 }
@@ -2516,14 +2484,33 @@ fn browser_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(theme.palette().background)
 }
 
+fn grid_background_style(theme: &Theme, drop_target: bool) -> container::Style {
+    let mut style = browser_background_style(theme);
+    if drop_target {
+        style.border = Border {
+            width: 2.0,
+            color: theme.palette().primary,
+            radius: 4.0.into(),
+        };
+    }
+    style
+}
+
 fn status_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(lighter(theme.palette().background, 16))
 }
 
-fn tree_button_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+fn tree_button_style(
+    theme: &Theme,
+    status: button::Status,
+    selected: bool,
+    drop_target: bool,
+) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: if selected {
+        background: if drop_target {
+            Some(Background::Color(with_alpha(theme.palette().primary, 0.36)))
+        } else if selected {
             Some(Background::Color(with_alpha(theme.palette().primary, 0.22)))
         } else if hovered {
             Some(Background::Color(with_alpha(theme.palette().text, 0.06)))
@@ -2532,23 +2519,27 @@ fn tree_button_style(theme: &Theme, status: button::Status, selected: bool) -> b
         },
         text_color: theme.palette().text,
         border: Border {
+            width: if drop_target { 1.0 } else { 0.0 },
+            color: theme.palette().primary,
             radius: 5.0.into(),
-            ..Border::default()
         },
         ..button::Style::default()
     }
 }
 
-fn tile_style(theme: &Theme, selected: bool, hovered: bool) -> container::Style {
+fn tile_style(theme: &Theme, selected: bool, hovered: bool, drop_target: bool) -> container::Style {
     let mut style = container::Style::default();
-    if selected {
+    if drop_target {
+        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.30)));
+    } else if selected {
         style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.45)));
     } else if hovered {
         style.background = Some(Background::Color(lighter(theme.palette().background, 16)));
     }
     style.border = Border {
+        width: if drop_target { 2.0 } else { 0.0 },
+        color: theme.palette().primary,
         radius: 7.0.into(),
-        ..Border::default()
     };
     style
 }
@@ -2581,18 +2572,6 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
             radius: 4.0.into(),
             ..Border::default()
         },
-        ..button::Style::default()
-    }
-}
-
-fn output_close_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let opacity = match status {
-        button::Status::Pressed => 0.45,
-        button::Status::Hovered => 1.0,
-        _ => 0.62,
-    };
-    button::Style {
-        text_color: with_alpha(theme.palette().text, opacity),
         ..button::Style::default()
     }
 }
@@ -2655,14 +2634,4 @@ fn menu_style(theme: &Theme) -> container::Style {
         },
         ..container::Style::default()
     }
-}
-
-fn dialog_panel_style(theme: &Theme) -> container::Style {
-    let mut style = menu_style(theme);
-    style.border.radius = 8.0.into();
-    style
-}
-
-fn dialog_scrim_style(_theme: &Theme) -> container::Style {
-    container::Style::default().background(Color::from_rgba8(0, 0, 0, 0.44))
 }

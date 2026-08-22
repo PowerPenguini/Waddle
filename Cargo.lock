@@ -2437,8 +2437,12 @@ dependencies = [
  "gio",
  "iced",
  "libc",
+ "resvg",
+ "smithay-client-toolkit 0.19.2",
  "tempfile",
  "tokio",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]

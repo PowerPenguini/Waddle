@@ -8,6 +8,8 @@ use std::{
 
 use gio::prelude::*;
 
+use crate::transfer::Action;
+
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub path: PathBuf,
@@ -21,10 +23,22 @@ pub struct OpenedDirectory {
     pub entries: Vec<FileEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SearchResults {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransferFailure {
+    pub source: PathBuf,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TransferReport {
+    pub completed: Vec<PathBuf>,
+    pub failures: Vec<TransferFailure>,
 }
 
 impl FileEntry {
@@ -465,6 +479,28 @@ pub fn copy_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf
         return Err(FsError::new("copy", source, error));
     }
     Ok(destination)
+}
+
+pub fn transfer_entries(
+    sources: &[PathBuf],
+    destination_directory: &Path,
+    action: Action,
+) -> TransferReport {
+    let mut report = TransferReport::default();
+    for source in sources {
+        let result = match action {
+            Action::Copy => copy_entry(source, destination_directory),
+            Action::Move => move_entry(source, destination_directory),
+        };
+        match result {
+            Ok(path) => report.completed.push(path),
+            Err(error) => report.failures.push(TransferFailure {
+                source: source.clone(),
+                error: error.to_string(),
+            }),
+        }
+    }
+    report
 }
 
 fn available_copy_destination(directory: &Path, name: &OsStr) -> PathBuf {

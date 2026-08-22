@@ -1,0 +1,289 @@
+# PolarExp roadmap
+
+PolarExp is intended to become a daily Linux file manager for Wayland and X11. It keeps a
+standard desktop interface, but gives keyboard users a faster Vim-style grammar. Data safety
+takes priority over adding more views or integrations.
+
+This document records the agreed product scope. It is not a release schedule.
+
+## Current baseline
+
+PolarExp already has:
+
+- folder navigation, history, a location field, and a lazy folder tree;
+- grid selection, Visual selection, marquee selection, and basic Vim motions;
+- rename, New Folder, Trash, and permanent-delete fallback;
+- local and recursive filename search;
+- internal file drag and drop;
+- native Wayland drag and drop between PolarExp and compatible applications;
+- a shared internal and Wayland drag preview;
+- a private single-file Copy/Paste implementation;
+- shell commands, application commands, and terminal launch;
+- bounded background work with stale-result rejection.
+
+The current Wayland drag and drop code remains the base for native clipboard work. X11 still
+needs external drag and drop and a native clipboard adapter.
+
+## Product rules
+
+- Support Linux on Wayland and X11. Windows and macOS are outside the planned scope.
+- Keep ordinary mouse and keyboard behavior available. Vim commands are an additional, faster
+  path through the same operations.
+- Never hide partial failure, metadata loss, overwrite risk, or an unsafe Undo.
+- Keep conflicts, command sequences, and short prompts in the bottom bar instead of modal
+  dialogs.
+- Run one filesystem mutation at a time. Reads, scans, thumbnails, and other non-mutating work
+  may run concurrently.
+- Do not escalate file operations to root. Mount operations may use the normal GIO and Polkit
+  flow supplied by the desktop.
+- Keep all history and diagnostics local. PolarExp has no telemetry.
+- Keep the interface in English. Translation support is not planned.
+- Keep `!` shell execution available without a warning prompt. Documentation must state plainly
+  that these commands run with the user's permissions and are not sandboxed.
+
+## Milestone 1: system clipboard, Vim operators, and Undo
+
+### System clipboard
+
+- [ ] Replace the private single-path clipboard with a multi-entry system CLIPBOARD model.
+- [ ] Support Copy and Cut between PolarExp, Nautilus, and Dolphin in both directions.
+- [ ] Implement the clipboard on both Wayland and X11.
+- [ ] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
+  `application/x-kde-cutselection` together.
+- [ ] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.
+- [ ] Read all MIME payloads from one clipboard offer and generation.
+- [ ] Accept only absolute local `file:` URIs until remote locations are implemented.
+- [ ] Apply byte and entry-count limits before accepting clipboard data.
+- [ ] Revalidate sources, permissions, descendants, and the destination immediately before
+  Paste.
+- [ ] Clear Cut only if the clipboard still contains the same generation.
+
+### Cut behavior
+
+- [ ] Hide pending Cut entries from the grid immediately without changing the filesystem.
+- [ ] Show a persistent bottom-bar status such as `Cut: 4 items, p paste, Esc cancel`.
+- [ ] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
+- [ ] Let filesystem monitoring confirm when another application actually moves the entries.
+- [ ] Treat Cut followed by Paste into the same directory as a no-op.
+- [ ] Let Copy into the same directory create a non-conflicting copy name.
+- [ ] After a partial Move, keep only the failed entries in the Cut clipboard.
+
+### Vim grammar
+
+- [ ] Make `y` copy the current selection. Yank is a single-key action and does not accept a
+  motion.
+- [ ] Make `dd` cut the active entry.
+- [ ] Make `d{motion}` cut the inclusive range between the active entry and the motion target.
+- [ ] Make `x` cut the current selection.
+- [ ] Make `"_dd`, `"_d{motion}`, and `"_x` move entries to Trash without replacing the system
+  clipboard.
+- [ ] In Visual selection, make `y`, `d`, and `x` act on the complete selection.
+- [ ] Keep `p` as Paste into the current directory.
+- [ ] Add `gg`, `G`, `{count}G`, `H`, `M`, `L`, `Ctrl+D`, and `Ctrl+U`.
+- [ ] Support counts before motions and operators. Examples include `3j`, `4l`, `3dd`, `d3j`,
+  `3dj`, and `5G`.
+- [ ] Interpret operator ranges in current display order so Grid and List behave identically.
+- [ ] Show incomplete sequences such as `3`, `d`, `g`, and `"_` in the bottom bar.
+- [ ] Do not time out an incomplete sequence. `Esc` cancels it, and an invalid key resets it with
+  a short message.
+- [ ] Use `u` for Undo, `Ctrl+R` for Redo, `Ctrl+O` for Back, and `Ctrl+I` for Forward.
+- [ ] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
+  collapses or moves to the parent, `l` expands or opens, and `gg` and `G` jump to the ends.
+- [ ] Disable file operators on technical sidebar roots such as Computer and Recent.
+- [ ] Limit 1.0 to the system clipboard and the `"_` black-hole register. Named registers, macros,
+  and `.` repeat remain reserved.
+
+### Conflict handling
+
+- [ ] Present file conflicts in the bottom bar.
+- [ ] Use `r`, `s`, and `k` for Replace, Skip, and Keep Both on one conflict.
+- [ ] Use `R`, `S`, and `K` to apply the corresponding rule to the remaining batch.
+- [ ] Merge conflicting directories without deleting the existing directory tree.
+- [ ] Route conflicts inside a directory merge through the same bottom-bar flow.
+- [ ] Use an atomic no-clobber implementation for Rename and Replace.
+
+### Persistent Undo and Redo
+
+- [ ] Store the last 100 operations or the last 30 days of history, whichever limit is reached
+  first.
+- [ ] Cover Rename, Move, Trash, New Folder, and Copy.
+- [ ] Never claim that permanent delete can be undone.
+- [ ] Remove a copied result during Undo only if it is still the unchanged result of that Copy.
+- [ ] Remove a newly created directory during Undo only if it is still empty.
+- [ ] Refuse Undo when later filesystem changes make the inverse operation unsafe.
+- [ ] Keep Redo available until the next new mutation.
+- [ ] Execute safe Undo immediately and report the result in the bottom bar.
+- [ ] Persist the operation report needed for recovery after restarting PolarExp.
+
+### Copy fidelity
+
+- [ ] Preserve file contents, timestamps, permissions, extended attributes, ACLs, symlinks, and
+  sparse-file layout where the filesystem permits it.
+- [ ] Preserve hardlink relationships inside a copied tree where possible.
+- [ ] Report unsupported or lost metadata instead of silently dropping it.
+
+## Milestone 2: live directory state
+
+- [ ] Monitor the current directory and other displayed locations for external changes.
+- [ ] Debounce bursts without delaying normal interactive updates.
+- [ ] Preserve selection and scroll position by path rather than by list index.
+- [ ] Keep Rename, command input, conflict handling, and pending Cut active during refresh.
+- [ ] Refresh active local and recursive search results.
+- [ ] Keep pending Cut entries hidden until Cut ends.
+- [ ] If the current directory disappears, navigate to the nearest existing ancestor and report
+  what happened.
+- [ ] Add manual Refresh through `F5`, a toolbar action, and `:refresh`.
+
+## Milestone 3: transfer queue
+
+- [ ] Run filesystem mutations through one ordered queue.
+- [ ] Show the active operation in the bottom bar.
+- [ ] Expand the bottom area to show queue history, bytes, entry counts, speed, estimated time,
+  Cancel, Retry, and error details.
+- [ ] Keep successful items after a partial operation and retain failed items for Retry.
+- [ ] Let users Undo the successful part of a partial operation when it is still safe.
+- [ ] Write copies to private temporary destinations and reveal them atomically where the
+  filesystem supports it.
+- [ ] On Cancel, remove only incomplete results created by the cancelled operation.
+- [ ] Never alter files that existed before the operation started.
+- [ ] Keep operation reports and diagnostics for 30 days and allow copying a report.
+- [ ] Bound shell output while the command runs, not only after it exits.
+
+## Milestone 4: complete browser interaction
+
+### Selection and activation
+
+- [ ] Add `Ctrl+click`, `Shift+click`, `Ctrl+A`, arrow navigation, `Shift+arrows`, Space, Home,
+  and End.
+- [ ] Keep Visual selection and Vim motions as equivalent keyboard paths.
+- [ ] Support configurable single-click or double-click activation, with double-click as the
+  default.
+- [ ] Add breadcrumbs and switch to editable location input with `Ctrl+L`.
+
+### Views and sorting
+
+- [ ] Add List view alongside Grid.
+- [ ] Sort by Name, Modified, Size, or Type in either direction.
+- [ ] Use natural filename ordering.
+- [ ] Make folders-first configurable.
+- [ ] Store global view defaults and optional per-directory overrides.
+- [ ] Add image thumbnails with asynchronous generation and a bounded cache.
+
+### Hidden files and search
+
+- [ ] Toggle hidden files with `Ctrl+H`.
+- [ ] Include hidden entries in local and recursive filename search only while hidden files are
+  visible.
+- [ ] Keep 1.0 filename-only search. Full-text search and structured filters belong to 1.1.
+
+### Drag and drop
+
+- [ ] Add external X11 drag and drop.
+- [ ] Autoscroll the grid and sidebar while dragging near an edge.
+- [ ] Expand sidebar folders after a short hover.
+- [ ] Enter a folder after a longer hover and show progress toward activation.
+- [ ] Let moving the pointer away cancel hover activation.
+
+## Milestone 5: locations and desktop file actions
+
+### Sidebar locations
+
+- [ ] Add Home.
+- [ ] Show Desktop, Documents, Downloads, Music, Pictures, and Videos when their XDG directories
+  exist. Do not create missing directories.
+- [ ] Add Recent using the desktop's shared recent-file history.
+- [ ] Let users clear or disable Recent.
+- [ ] Add user Favorites with custom labels and drag reordering.
+- [ ] Keep mounted volumes and add their normal mount, unmount, and eject actions.
+
+### Trash
+
+- [ ] Add Trash as a sidebar location.
+- [ ] Restore selected entries to their original paths.
+- [ ] Resolve Restore conflicts through the bottom bar.
+- [ ] Permanently delete selected Trash entries after confirmation.
+- [ ] Empty the whole Trash after confirmation.
+- [ ] Keep Trash Undo available without opening the Trash view.
+
+### File actions
+
+- [ ] Add Properties with MIME type, location, size, dates, permissions, and default application.
+- [ ] Let users edit permissions that their current account is allowed to change.
+- [ ] Add Open With and default-application selection.
+- [ ] Add New Empty File.
+- [ ] Create files from the user's XDG Templates directory.
+- [ ] Keep ACL and extended-attribute editing outside 1.0.
+
+## Milestone 6: settings, accessibility, and release
+
+### Settings without a Preferences screen
+
+- [ ] Keep common controls such as Grid/List, sorting, and hidden files discoverable in the
+  toolbar or menus.
+- [ ] Use `:set` for advanced settings and `:setlocal` for per-directory overrides.
+- [ ] Make `:set` show current values and `:set all` show every option with a short description.
+- [ ] Add completion and validation for option names and values.
+- [ ] Persist settings by default.
+- [ ] Let `:setlocal option&` remove a directory override.
+- [ ] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
+  reduced motion, and startup behavior.
+
+### Keyboard access and display preferences
+
+- [ ] Treat the toolbar, location control, sidebar, grid, and bottom bar as composite Tab stops.
+- [ ] Keep arrow navigation inside the sidebar and grid.
+- [ ] Add visible focus rings independent of hover and selection.
+- [ ] Trap focus inside active prompts and menus, then restore the previous focus on close.
+- [ ] Support Enter and Space activation where standard desktop controls expect them.
+- [ ] Add a high-contrast palette with opaque surfaces and non-color state indicators.
+- [ ] Respect reduced-motion and reduced-transparency preferences.
+- [ ] Stop the 16 ms animation subscription when reduced motion is active.
+- [ ] Do not make screen-reader support a 1.0 release gate while stock Iced lacks an accessibility
+  tree.
+
+### Startup and desktop integration
+
+- [ ] Accept `polarexp [PATH|file://URI]`.
+- [ ] Open each invocation in a new process and window for 1.0.
+- [ ] Let an explicit CLI location override remembered startup state.
+- [ ] Remember window size and position, the last directory, view overrides, sorting, Favorites,
+  and Undo history.
+- [ ] Do not restore every previous window automatically.
+- [ ] Add a `.desktop` file with `%U`, application icons, and AppStream metadata.
+- [ ] Publish a Flatpak and a regular binary archive.
+
+### Release gate
+
+Do not publish 1.0 until all of the following pass:
+
+- [ ] Copy and Cut in both directions with Nautilus and Dolphin.
+- [ ] Clipboard, drag and drop, navigation, and file operations on Wayland and X11.
+- [ ] A large transfer with progress, Cancel, Retry, partial failure, and Undo after restart.
+- [ ] A directory with at least 10,000 entries.
+- [ ] Manual conflict, Trash, Restore, clipboard-loss, and pending-Cut tests.
+- [ ] Keyboard-only navigation, focus restoration, high contrast, and reduced motion.
+- [ ] Flatpak and regular binary smoke tests.
+- [ ] Formatting, unit tests, integration tests, Clippy with warnings denied, and a release build.
+
+An Orca test and screen-reader semantics are not part of the 1.0 gate.
+
+## After 1.0
+
+The following work may start after the local 1.0 file manager is stable:
+
+- GVfs network locations such as SFTP and SMB;
+- system-indexed content search;
+- filename search filters for type, modified date, and size;
+- Bulk Rename with numbering, find and replace, prefixes, suffixes, and conflict preview;
+- PDF and video thumbnails;
+- tabs, split view, and quick preview;
+- named Vim registers and carefully designed repeat behavior.
+
+## Not planned
+
+- Windows or macOS support;
+- built-in archive creation, extraction, or browsing;
+- custom user actions beyond shell and terminal commands;
+- a root file-operation mode;
+- application telemetry;
+- interface translations.

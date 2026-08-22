@@ -22,13 +22,13 @@ const ERASE_DISPLAY_SEQUENCES: [&[u8]; 5] =
 const MAX_SCREEN_CONTROL_SEQUENCE_LEN: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CommandMode {
+enum CommandMode {
     Bash,
     PolarExp,
 }
 
 impl CommandMode {
-    pub(super) fn from_prefix(prefix: char) -> Self {
+    fn from_prefix(prefix: char) -> Self {
         if prefix == ':' {
             Self::PolarExp
         } else {
@@ -90,18 +90,6 @@ impl ScreenControlDetector {
         self.tail.extend_from_slice(&scan[tail_start..]);
         false
     }
-}
-
-pub(super) fn is_quit(mode: CommandMode, command: &str) -> bool {
-    mode == CommandMode::PolarExp && command.trim() == "q"
-}
-
-pub(super) fn is_help(mode: CommandMode, command: &str) -> bool {
-    mode == CommandMode::PolarExp && matches!(command.trim(), "help" | "h")
-}
-
-pub(super) fn is_terminal(mode: CommandMode, command: &str) -> bool {
-    mode == CommandMode::PolarExp && matches!(command.trim(), "terminal" | "t")
 }
 
 pub(super) fn launch_terminal(current: &Path) -> io::Result<()> {
@@ -327,17 +315,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn separates_bash_and_internal_commands() {
-        assert!(!is_quit(CommandMode::Bash, "q"));
-        assert!(is_quit(CommandMode::PolarExp, " q "));
-        assert!(!is_quit(CommandMode::PolarExp, "q!"));
-        assert!(!is_help(CommandMode::Bash, "help"));
-        assert!(is_help(CommandMode::PolarExp, " help "));
-        assert!(is_help(CommandMode::PolarExp, "h"));
-        assert!(!is_terminal(CommandMode::Bash, "terminal"));
-        assert!(is_terminal(CommandMode::PolarExp, " terminal "));
-        assert!(is_terminal(CommandMode::PolarExp, "t"));
-        assert!(!is_terminal(CommandMode::PolarExp, "term"));
+    fn builds_terminal_arguments_without_losing_spaces() {
         assert_eq!(
             xdg_directory_argument(Path::new("/tmp/folder with spaces")),
             OsString::from("--dir=/tmp/folder with spaces")

@@ -2,13 +2,17 @@ use std::path::PathBuf;
 
 use iced::{event, keyboard, mouse};
 
-use super::{App, DialogState, InputMode, MarqueeState, Message};
-use crate::app::state::{ExplorerState, MountRoot, NavigationKind, PendingNavigation};
+use super::{App, InputMode, Message};
+use crate::app::file_operation::{
+    Completion as FileOperationCompletion, View as FileOperationView,
+};
+use crate::app::grid::{
+    CONTENT_GUTTER, LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, TILE_ROW_HEIGHT,
+    TOOLBAR_DIVIDER_HEIGHT, TOOLBAR_HEIGHT,
+};
+use crate::app::navigation::NavigationSession;
+use crate::app::state::{ExplorerState, MountRoot};
 use crate::fs::FileEntry;
-
-fn state() -> ExplorerState {
-    ExplorerState::new(PathBuf::from("/start"), Vec::new())
-}
 
 fn entry(name: &str) -> FileEntry {
     FileEntry {
@@ -18,17 +22,37 @@ fn entry(name: &str) -> FileEntry {
     }
 }
 
-fn navigation(path: &str, kind: NavigationKind) -> PendingNavigation {
-    PendingNavigation {
-        requested: PathBuf::from(path),
-        kind,
-        select: None,
-    }
-}
-
 fn press(app: &mut App, value: &'static str) {
     let key = keyboard::Key::Character(value.into());
     let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
+}
+
+#[test]
+fn copy_message_uses_the_complete_visual_selection_in_display_order() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation.replace_displayed_entries(vec![
+        entry("one.txt"),
+        entry("two.txt"),
+        entry("three.txt"),
+    ]);
+    app.grid.select_only(Some(0), 3);
+    app.grid.toggle_visual_selection(3);
+    app.grid.move_selection(Motion::Right, 3);
+    app.grid.move_selection(Motion::Right, 3);
+
+    let _ = app.update(Message::Copy);
+    let request = app.transfers.paste(PathBuf::from("/target")).unwrap();
+
+    assert_eq!(app.status, "Copied 3 items");
+    assert_eq!(
+        request.paths,
+        [
+            PathBuf::from("/start/one.txt"),
+            PathBuf::from("/start/two.txt"),
+            PathBuf::from("/start/three.txt"),
+        ]
+    );
 }
 
 #[test]
@@ -61,70 +85,219 @@ fn iced_browser_modes_follow_the_command_prefixes() {
     let (mut app, _) = App::new();
 
     press(&mut app, "/");
-    assert_eq!(app.input_mode, InputMode::Search);
-    app.input_mode = InputMode::Browser;
+    assert_eq!(app.browser_input.mode(), InputMode::Search);
+    app.browser_input.leave_mode();
 
     press(&mut app, "!");
-    assert_eq!(app.input_mode, InputMode::Command('!'));
-    app.input_mode = InputMode::Browser;
+    assert_eq!(app.browser_input.mode(), InputMode::Command);
+    assert_eq!(app.command.prefix(), Some('!'));
+    app.browser_input.leave_mode();
 
     press(&mut app, ":");
-    assert_eq!(app.input_mode, InputMode::Command(':'));
+    assert_eq!(app.browser_input.mode(), InputMode::Command);
+    assert_eq!(app.command.prefix(), Some(':'));
 }
 
 #[test]
-fn colon_help_opens_the_internal_command_reference() {
+fn r_opens_inline_rename_for_the_active_entry() {
     let (mut app, _) = App::new();
-    app.input_mode = InputMode::Command(':');
-    app.command_text = "help".to_owned();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one.txt"), entry("two.txt")]);
+    app.grid
+        .select_only(Some(1), app.navigation.entries().len());
 
-    let _ = app.submit_command();
+    press(&mut app, "r");
 
-    assert_eq!(app.input_mode, InputMode::Browser);
-    assert!(app.command_text.is_empty());
+    assert_eq!(app.browser_input.mode(), InputMode::Rename);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Rename {
+            value: "two.txt",
+            error: ""
+        }
+    ));
+}
+
+#[test]
+fn inline_rename_validates_and_escape_cancels() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one.txt")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
+    press(&mut app, "r");
+
+    let _ = app.update(Message::RenameChanged("bad/name".to_owned()));
+    let _ = app.update(Message::RenameSubmitted);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Rename { error, .. }
+            if error == "The name cannot contain a slash or NUL character."
+    ));
     assert!(!app.busy);
-    let (summary, detail) = app.command_output.as_ref().expect("help output");
-    assert!(summary.starts_with(":help"));
-    assert!(detail.contains(":cd PATH"));
-    assert!(detail.contains(":terminal, :t"));
-    assert!(detail.contains("h j k l"));
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+    assert_eq!(app.browser_input.mode(), InputMode::Browser);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+}
+
+#[test]
+fn successful_inline_rename_returns_to_the_browser() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one.txt")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
+    press(&mut app, "r");
+    app.busy = true;
+
+    let _ = app.finish_file_operation(FileOperationCompletion::Name {
+        renamed: true,
+        result: Ok(PathBuf::from("/start/renamed.txt")),
+    });
+
+    assert_eq!(app.browser_input.mode(), InputMode::Browser);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+}
+
+#[test]
+fn new_folder_uses_an_inline_prompt_with_validation_and_escape() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+
+    let _ = app.show_new_folder();
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::NewFolder {
+            value: "",
+            error: ""
+        }
+    ));
+
+    let _ = app.update(Message::PromptInputChanged("bad/name".to_owned()));
+    let _ = app.update(Message::PromptSubmit);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::NewFolder { error, .. }
+            if error == "The name cannot contain a slash or NUL character."
+    ));
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+}
+
+#[test]
+fn errors_expand_in_the_bottom_bar_and_escape_closes_them() {
+    let (mut app, _) = App::new();
+    app.show_error("Could not open the selected item".to_owned());
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Error { .. }
+    ));
     assert!(app.output_expansion.value());
+    assert!(app.expanded_bar_height > super::STATUS_HEIGHT);
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+    assert!(!app.output_expansion.value());
+}
+
+#[test]
+fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
+    let (mut app, _) = App::new();
+    app.navigation
+        .replace_displayed_entries(vec![entry("one.txt")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
+    let _ = app.show_trash_prompt();
+    app.busy = true;
+
+    let _ = app.finish_file_operation(FileOperationCompletion::Trash(vec![(
+        entry("one.txt"),
+        "Trash is unavailable".to_owned(),
+    )]));
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::PermanentDelete { message, detail }
+            if message.contains("Permanently delete")
+            && detail.contains("Trash is unavailable")
+            && detail.contains("cannot be undone")
+    ));
+    assert!(app.output_expansion.value());
+
+    let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+    let _ = app.handle_key(enter.clone(), enter, keyboard::Modifiers::empty(), None);
+    assert!(app.busy);
+}
+
+#[test]
+fn deletion_prompt_accepts_y_and_n_from_the_keyboard() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one.txt")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
+
+    let _ = app.show_trash_prompt();
+    press(&mut app, "n");
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+
+    let _ = app.show_trash_prompt();
+    press(&mut app, "Y");
+    assert!(app.busy);
+    assert!(app.file_operations.is_busy());
 }
 
 #[test]
 fn command_output_expands_and_collapses_through_the_animation_state() {
     let (mut app, _) = App::new();
 
-    app.show_command_output("summary".to_owned(), "one\ntwo".to_owned());
-    assert!(app.command_output.is_some());
+    app.command.begin(':');
+    app.command.change("help".to_owned());
+    let _ = app.command.submit(PathBuf::from("/work"));
+    app.sync_bottom_bar();
+    assert!(app.command.output().is_some());
     assert!(app.output_expansion.value());
-    assert!(app.command_output_height > super::STATUS_HEIGHT);
+    assert!(app.expanded_bar_height > super::STATUS_HEIGHT);
 
-    app.hide_command_output();
-    assert!(app.command_output.is_none());
-    assert!(!app.output_expansion.value());
-}
-
-#[test]
-fn command_without_output_keeps_the_bottom_panel_collapsed() {
-    let (mut app, _) = App::new();
-
-    let _ = app.finish_shell(Ok(super::shell::ShellReport {
-        summary: "!true  •  exit 0".to_owned(),
-        detail: "\n  \t".to_owned(),
-        final_directory: None,
-    }));
-
-    assert!(app.command_output.is_none());
+    app.command.close_output();
+    app.sync_bottom_bar();
+    assert!(app.command.output().is_none());
     assert!(!app.output_expansion.value());
 }
 
 #[test]
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
-    app.input_mode = InputMode::Search;
-    app.explorer.recursive_search_active = true;
-    app.search_text = "needle".to_owned();
+    app.browser_input.enter(InputMode::Search);
+    app.search.begin(&app.grid);
+    let _ = app
+        .search
+        .update(&mut app.navigation, &mut app.grid, "/needle".to_owned());
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
 
     let _ = app.handle_event(
@@ -140,27 +313,26 @@ fn captured_escape_leaves_the_recursive_search_input() {
         event::Status::Captured,
     );
 
-    assert_eq!(app.input_mode, InputMode::Browser);
-    assert!(!app.explorer.recursive_search_active);
-    assert!(app.search_text.is_empty());
+    assert_eq!(app.browser_input.mode(), InputMode::Browser);
+    assert!(!app.search.is_active());
+    assert!(app.search.query().is_empty());
 }
 
 #[test]
 fn mouse_side_buttons_request_back_and_forward_navigation() {
     let (mut app, _) = App::new();
-    app.explorer.current = PathBuf::from("/current");
-    app.explorer.history = vec![PathBuf::from("/back")];
-    app.explorer.forward_history = vec![PathBuf::from("/forward")];
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    app.navigation.seed_history(
+        vec![PathBuf::from("/back")],
+        vec![PathBuf::from("/forward")],
+    );
 
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
         event::Status::Captured,
     );
     assert_eq!(
-        app.explorer
-            .pending_navigation
-            .as_ref()
-            .map(|navigation| navigation.requested.as_path()),
+        app.navigation.pending_path(),
         Some(PathBuf::from("/back").as_path())
     );
 
@@ -170,10 +342,7 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
         event::Status::Captured,
     );
     assert_eq!(
-        app.explorer
-            .pending_navigation
-            .as_ref()
-            .map(|navigation| navigation.requested.as_path()),
+        app.navigation.pending_path(),
         Some(PathBuf::from("/forward").as_path())
     );
 }
@@ -182,22 +351,27 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
 fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
-    app.explorer.entries = vec![entry("one"), entry("two")];
-    app.explorer.select_only(Some(0));
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
 
     press(&mut app, "v");
-    assert_eq!(app.explorer.visual_selection_anchor, Some(0));
+    assert!(app.grid.visual_active());
 
     press(&mut app, "v");
-    assert_eq!(app.explorer.visual_selection_anchor, None);
+    assert!(!app.grid.visual_active());
     press(&mut app, "d");
     assert!(app.delete_operator_pending());
 
     press(&mut app, "$");
-    assert!(matches!(app.dialog, DialogState::Trash { .. }));
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Trash { .. }
+    ));
     assert_eq!(
-        app.explorer
-            .selected_entries
+        app.grid
+            .selected_indices()
             .iter()
             .copied()
             .collect::<Vec<_>>(),
@@ -206,11 +380,75 @@ fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
 }
 
 #[test]
+fn dd_prompts_for_only_the_active_item() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two"), entry("three")]);
+    app.grid
+        .select_only(Some(1), app.navigation.entries().len());
+
+    press(&mut app, "d");
+    assert!(app.delete_operator_pending());
+    press(&mut app, "d");
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Trash { message } if message.contains("two")
+    ));
+    assert_eq!(
+        app.grid
+            .selected_indices()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [1]
+    );
+}
+
+#[test]
+fn standalone_row_edge_motions_move_the_active_selection() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation.replace_displayed_entries(
+        (0..8)
+            .map(|index| entry(&format!("entry-{index}")))
+            .collect(),
+    );
+    app.grid
+        .select_only(Some(6), app.navigation.entries().len());
+
+    press(&mut app, "0");
+    assert_eq!(app.grid.selected_entry(), Some(5));
+    assert_eq!(
+        app.grid
+            .selected_indices()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [5]
+    );
+
+    press(&mut app, "$");
+    assert_eq!(app.grid.selected_entry(), Some(7));
+    assert_eq!(
+        app.grid
+            .selected_indices()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [7]
+    );
+}
+
+#[test]
 fn captured_browser_key_still_enters_visual_selection() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
-    app.explorer.entries = vec![entry("one"), entry("two")];
-    app.explorer.select_only(Some(0));
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
     let key = keyboard::Key::Character("v".into());
 
     let _ = app.handle_event(
@@ -226,28 +464,25 @@ fn captured_browser_key_still_enters_visual_selection() {
         event::Status::Captured,
     );
 
-    assert_eq!(app.explorer.visual_selection_anchor, Some(0));
+    assert!(app.grid.visual_active());
 }
 
 #[test]
 fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
-    app.window_size = iced::Size::new(820.0, 560.0);
-    app.explorer.entries = (0..9)
-        .map(|index| entry(&format!("item-{index}")))
-        .collect();
-    let content_top = super::TOOLBAR_HEIGHT
-        + super::TOOLBAR_DIVIDER_HEIGHT
-        + super::CONTENT_GUTTER
-        + super::LIST_VIEW_TOP_INSET;
-    let start = iced::Point::new(
-        super::SIDEBAR_WIDTH + super::CONTENT_GUTTER + 2.0,
-        content_top + 110.0,
+    app.grid.resize(iced::Size::new(820.0, 560.0));
+    app.navigation.replace_displayed_entries(
+        (0..9)
+            .map(|index| entry(&format!("item-{index}")))
+            .collect(),
     );
+    let content_top =
+        TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
+    let start = iced::Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top + 110.0);
     let end = iced::Point::new(
-        super::SIDEBAR_WIDTH + super::CONTENT_GUTTER + app.grid_column_width() + 2.0,
-        content_top + super::TILE_ROW_HEIGHT + 30.0,
+        SIDEBAR_WIDTH + CONTENT_GUTTER + app.grid.column_width() + 2.0,
+        content_top + TILE_ROW_HEIGHT + 30.0,
     );
 
     let _ = app.handle_event(
@@ -258,15 +493,15 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
         event::Status::Ignored,
     );
-    assert!(app.marquee.is_some());
+    assert!(app.grid.marquee_bounds(app.status_height()).is_some());
 
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::CursorMoved { position: end }),
         event::Status::Ignored,
     );
     assert_eq!(
-        app.explorer
-            .selected_entries
+        app.grid
+            .selected_indices()
             .iter()
             .copied()
             .collect::<Vec<_>>(),
@@ -277,83 +512,121 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
         event::Status::Ignored,
     );
-    assert!(app.marquee.is_none());
+    assert!(app.grid.marquee_bounds(app.status_height()).is_none());
 }
 
 #[test]
-fn releasing_a_marquee_over_a_tile_keeps_the_rectangular_selection() {
+fn entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
-    app.explorer.entries = (0..6)
-        .map(|index| entry(&format!("item-{index}")))
-        .collect();
-    app.explorer.select_rectangle(0, 0, 1, 1, 3);
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid
+        .select_only(Some(0), app.navigation.entries().len());
+    app.grid.move_cursor(
+        iced::Point::new(100.0, 100.0),
+        app.navigation.entries().len(),
+    );
 
-    let _ = app.finish_entry_press(4);
+    let _ = app.update(Message::EntryPressed(1));
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(105.0, 100.0),
+        }),
+        event::Status::Ignored,
+    );
+    assert!(app.transfers.active_drag_index().is_none());
 
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(106.0, 100.0),
+        }),
+        event::Status::Ignored,
+    );
+    assert_eq!(app.transfers.active_drag_index(), Some(1));
+    assert_eq!(app.grid.selected_entry(), Some(1));
     assert_eq!(
-        app.explorer
-            .selected_entries
+        app.grid
+            .selected_indices()
             .iter()
             .copied()
             .collect::<Vec<_>>(),
-        [0, 1, 3, 4]
+        [1]
     );
 }
 
 #[test]
-fn marquee_visual_bounds_match_the_pointer_rectangle() {
+fn internal_drag_preview_only_appears_after_the_drag_threshold() {
     let (mut app, _) = App::new();
-    app.window_size = iced::Size::new(820.0, 560.0);
-    let marquee = MarqueeState {
-        start: iced::Point::new(300.0, 400.0),
-        current: iced::Point::new(423.0, 100.0),
-    };
+    app.navigation.replace_displayed_entries(vec![entry("one")]);
+    app.transfers.press(0, iced::Point::ORIGIN, 1);
+    assert!(app.drag_preview_view().is_none());
 
-    let bounds = app.marquee_bounds(&marquee);
-
-    assert_eq!(bounds.x, 80.0);
-    assert_eq!(bounds.y, 53.0);
-    assert_eq!(bounds.width, 123.0);
-    assert_eq!(bounds.height, 300.0);
+    app.transfers.move_pointer(iced::Point::new(6.0, 0.0));
+    assert!(app.drag_preview_view().is_some());
 }
 
 #[test]
-fn grid_local_motion_updates_marquee_in_window_coordinates() {
+fn incoming_drop_targets_folders_empty_grid_and_rejects_files_and_toolbar() {
     let (mut app, _) = App::new();
-    app.explorer.entries = (0..6)
-        .map(|index| entry(&format!("item-{index}")))
-        .collect();
-    app.marquee = Some(MarqueeState {
-        start: iced::Point::new(300.0, 400.0),
-        current: iced::Point::new(300.0, 400.0),
-    });
-
-    let _ = app.update(Message::GridPointerMoved(iced::Point::new(203.0, 53.0)));
+    app.grid.resize(iced::Size::new(820.0, 560.0));
+    app.navigation = NavigationSession::new(PathBuf::from("/start"));
+    let mut folder = entry("folder");
+    folder.directory = true;
+    app.navigation
+        .replace_displayed_entries(vec![folder.clone(), entry("file.txt")]);
 
     assert_eq!(
-        app.marquee.as_ref().map(|marquee| marquee.current),
-        Some(iced::Point::new(423.0, 100.0))
+        app.drop_destination_at(iced::Point::new(250.0, 80.0), true),
+        Some(folder.path)
     );
+    assert_eq!(
+        app.drop_destination_at(iced::Point::new(365.0, 80.0), true),
+        None
+    );
+    assert_eq!(
+        app.drop_destination_at(iced::Point::new(790.0, 400.0), true),
+        Some(PathBuf::from("/start"))
+    );
+    assert_eq!(
+        app.drop_destination_at(iced::Point::new(300.0, 20.0), true),
+        None
+    );
+}
+
+#[test]
+fn drag_notice_survives_refresh_and_clears_on_the_next_interaction() {
+    let (mut app, _) = App::new();
+    app.status_notice = Some("Drop failed".to_owned());
+    app.refresh_status();
+    assert_eq!(app.status_notice.as_deref(), Some("Drop failed"));
+
+    let _ = app.update(Message::Event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        event::Status::Ignored,
+    ));
+    assert!(app.status_notice.is_none());
 }
 
 #[test]
 fn entering_an_earlier_tile_is_not_cleared_by_the_previous_tiles_exit() {
     let (mut app, _) = App::new();
-    app.hovered_entry = Some(1);
+    app.grid.enter(1);
 
     let _ = app.update(Message::EntryHovered(0));
     let _ = app.update(Message::EntryUnhovered(1));
 
-    assert_eq!(app.hovered_entry, Some(0));
+    assert_eq!(app.grid.hovered(), Some(0));
 }
 
 #[test]
 fn sidebar_tree_hover_and_selection_remain_translucent() {
     let (app, _) = App::new();
     let theme = app.iced_theme();
-    let hover = super::tree_button_style(&theme, iced::widget::button::Status::Hovered, false);
-    let selected = super::tree_button_style(&theme, iced::widget::button::Status::Active, true);
+    let hover =
+        super::tree_button_style(&theme, iced::widget::button::Status::Hovered, false, false);
+    let selected =
+        super::tree_button_style(&theme, iced::widget::button::Status::Active, true, false);
 
     assert!(matches!(
         hover.background,
@@ -379,234 +652,12 @@ fn spinner_animation_runs_for_tree_and_background_loading() {
 }
 
 #[test]
-fn successful_navigation_commits_location_and_history() {
-    let mut state = state();
-    let pending = navigation("/next", NavigationKind::Forward { remember: true });
-    state.begin_navigation(pending.clone());
-    assert_eq!(state.current, PathBuf::from("/start"));
-    assert!(state.commit_navigation(pending, PathBuf::from("/next"), Vec::new()));
-    assert_eq!(state.history, [PathBuf::from("/start")]);
-    assert_eq!(state.current, PathBuf::from("/next"));
-}
-
-#[test]
-fn regular_navigation_clears_forward_history() {
-    let mut state = state();
-    state.forward_history.push(PathBuf::from("/abandoned"));
-    let pending = navigation("/next", NavigationKind::Forward { remember: true });
-
-    assert!(state.commit_navigation(pending, PathBuf::from("/next"), Vec::new()));
-    assert!(state.forward_history.is_empty());
-}
-
-#[test]
-fn navigating_to_current_path_does_not_duplicate_history() {
-    let mut state = state();
-    let pending = navigation("/start", NavigationKind::Forward { remember: true });
-    assert!(state.commit_navigation(pending, PathBuf::from("/start"), Vec::new()));
-    assert!(state.history.is_empty());
-}
-
-#[test]
-fn vim_selection_starts_at_the_nearest_edge() {
-    let mut state = state();
-    state.entries = vec![entry("one"), entry("two"), entry("three")];
-
-    assert_eq!(state.move_selection(1, 0, 2), Some(0));
-    state.selected_entry = None;
-    assert_eq!(state.move_selection(0, -1, 2), Some(2));
-}
-
-#[test]
-fn vim_selection_moves_horizontally_without_wrapping_rows() {
-    let mut state = state();
-    state.entries = (0..8).map(|index| entry(&index.to_string())).collect();
-    state.selected_entry = Some(3);
-
-    assert_eq!(state.move_selection(-1, 0, 3), Some(3));
-    assert_eq!(state.move_selection(1, 0, 3), Some(4));
-    assert_eq!(state.move_selection(1, 0, 3), Some(5));
-    assert_eq!(state.move_selection(1, 0, 3), Some(5));
-}
-
-#[test]
-fn vim_selection_moves_vertically_and_handles_a_short_last_row() {
-    let mut state = state();
-    state.entries = (0..8).map(|index| entry(&index.to_string())).collect();
-    state.selected_entry = Some(1);
-
-    assert_eq!(state.move_selection(0, 1, 3), Some(4));
-    assert_eq!(state.move_selection(0, 1, 3), Some(7));
-    assert_eq!(state.move_selection(0, 1, 3), Some(7));
-    assert_eq!(state.move_selection(0, -1, 3), Some(4));
-
-    state.selected_entry = Some(5);
-    assert_eq!(state.move_selection(0, 1, 3), Some(7));
-}
-
-#[test]
-fn vim_selection_ignores_an_empty_folder() {
-    let mut state = state();
-    state.selected_entry = Some(4);
-
-    assert_eq!(state.move_selection(1, 0, 3), None);
-    assert_eq!(state.selected_entry, None);
-}
-
-#[test]
-fn visual_selection_extends_from_its_anchor_and_can_be_cancelled() {
-    let mut state = state();
-    state.entries = (0..8).map(|index| entry(&index.to_string())).collect();
-    state.select_only(Some(1));
-
-    state.toggle_visual_selection();
-    assert_eq!(state.visual_selection_anchor, Some(1));
-    assert_eq!(state.move_selection(0, 1, 3), Some(4));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [1, 2, 3, 4]
-    );
-
-    state.cancel_visual_selection();
-    assert_eq!(state.visual_selection_anchor, None);
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [4]
-    );
-}
-
-#[test]
-fn drag_selection_uses_a_rectangular_grid_range() {
-    let mut state = state();
-    state.entries = (0..8).map(|index| entry(&index.to_string())).collect();
-
-    state.select_rectangle(0, 1, 2, 2, 3);
-
-    assert_eq!(state.selected_entry, Some(7));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [1, 2, 4, 5, 7]
-    );
-
-    state.select_rectangle(8, 0, 8, 0, 3);
-    assert_eq!(state.selected_entry, None);
-    assert!(state.selected_entries.is_empty());
-}
-
-#[test]
-fn delete_operator_selects_vim_style_grid_motions() {
-    let mut state = state();
-    state.entries = (0..8).map(|index| entry(&index.to_string())).collect();
-    state.select_only(Some(4));
-
-    assert!(state.select_delete_motion("0", 3));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [3, 4]
-    );
-    assert!(state.select_delete_motion("$", 3));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [4, 5]
-    );
-    assert!(state.select_delete_motion("d", 3));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [3, 4, 5]
-    );
-    assert!(state.select_delete_motion("j", 3));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [3, 4, 5, 6, 7]
-    );
-    assert!(state.select_delete_motion("k", 3));
-    assert_eq!(
-        state.selected_entries.iter().copied().collect::<Vec<_>>(),
-        [0, 1, 2, 3, 4, 5]
-    );
-    assert!(!state.select_delete_motion("w", 3));
-}
-
-#[test]
-fn only_the_latest_navigation_is_accepted() {
-    let mut state = state();
-    state.begin_navigation(navigation(
-        "/first",
-        NavigationKind::Forward { remember: true },
-    ));
-    state.begin_navigation(navigation(
-        "/second",
-        NavigationKind::Forward { remember: true },
-    ));
-    assert!(
-        state
-            .take_navigation_for(PathBuf::from("/first").as_path())
-            .is_none()
-    );
-    assert!(
-        state
-            .take_navigation_for(PathBuf::from("/second").as_path())
-            .is_some()
-    );
-}
-
-#[test]
-fn failed_navigation_never_changes_location_history_or_selection() {
-    let mut state = state();
-    state.selected_entry = Some(2);
-    state.begin_navigation(navigation(
-        "/unreadable",
-        NavigationKind::Forward { remember: true },
-    ));
-    state.cancel_navigation();
-
-    assert_eq!(state.current, PathBuf::from("/start"));
-    assert_eq!(state.selected_entry, Some(2));
-    assert!(state.history.is_empty());
-}
-
-#[test]
-fn successful_back_navigation_pops_the_expected_history_entry() {
-    let mut state = state();
-    state.current = PathBuf::from("/current");
-    state.history.push(PathBuf::from("/previous"));
-    let pending = navigation(
-        "/previous",
-        NavigationKind::Back {
-            expected: PathBuf::from("/previous"),
-        },
-    );
-    assert!(state.commit_navigation(pending, PathBuf::from("/previous"), Vec::new()));
-    assert_eq!(state.current, PathBuf::from("/previous"));
-    assert!(state.history.is_empty());
-    assert_eq!(state.forward_history, [PathBuf::from("/current")]);
-}
-
-#[test]
-fn successful_forward_navigation_restores_the_newer_location() {
-    let mut state = state();
-    state.current = PathBuf::from("/previous");
-    state.forward_history.push(PathBuf::from("/current"));
-    let pending = navigation(
-        "/current",
-        NavigationKind::HistoryForward {
-            expected: PathBuf::from("/current"),
-        },
-    );
-
-    assert!(state.commit_navigation(pending, PathBuf::from("/current"), Vec::new()));
-    assert_eq!(state.current, PathBuf::from("/current"));
-    assert_eq!(state.history, [PathBuf::from("/previous")]);
-    assert!(state.forward_history.is_empty());
-}
-
-#[test]
 fn mount_reconciliation_preserves_existing_nodes() {
     let first = MountRoot {
         path: PathBuf::from("/media/first"),
         label: "First".to_owned(),
     };
-    let mut state = ExplorerState::new(PathBuf::from("/"), vec![first.clone()]);
+    let mut state = ExplorerState::new(vec![first.clone()]);
     let original_id = state.roots[1].id;
     state.roots[1].expanded = true;
 

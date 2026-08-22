@@ -1,6 +1,7 @@
 mod app;
 mod fs;
 mod theme;
+mod transfer;
 
 fn main() -> iced::Result {
     prefer_transparent_wayland_backend();

@@ -54,9 +54,9 @@ pub(super) fn find_node_mut(nodes: &mut [FolderNode], id: u64) -> Option<&mut Fo
     None
 }
 
-pub(super) fn flatten_rows(state: &ExplorerState) -> Vec<TreeRow> {
+pub(super) fn flatten_rows(state: &ExplorerState, current: &Path) -> Vec<TreeRow> {
     let mut rows = Vec::new();
-    flatten_nodes(&state.roots, 0, &state.current, &mut rows);
+    flatten_nodes(&state.roots, 0, current, &mut rows);
     rows
 }
 

@@ -55,6 +55,18 @@ fn recursive_search_reports_truncation_at_the_result_limit() {
     assert_eq!(result.entries.len(), 2);
 }
 
+#[test]
+fn recursive_search_stops_when_cancellation_is_requested() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("nested/deeper")).unwrap();
+    fs::write(temp.path().join("nested/deeper/needle.txt"), "match").unwrap();
+
+    let result = super::search_directory(temp.path(), "needle", 100, || true).unwrap();
+
+    assert!(result.entries.is_empty());
+    assert!(!result.truncated);
+}
+
 #[cfg(unix)]
 #[test]
 fn sorts_a_directory_symlink_with_directories() {
@@ -225,6 +237,53 @@ fn copy_rejects_a_directory_descendant() {
 
     assert!(copy_entry(&source, &descendant).is_err());
     assert_eq!(fs::read_dir(&descendant).unwrap().count(), 0);
+}
+
+#[test]
+fn batch_copy_keeps_successes_when_one_source_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let first = temp.path().join("first.txt");
+    let missing = temp.path().join("missing.txt");
+    let second = temp.path().join("second.txt");
+    fs::write(&first, "first").unwrap();
+    fs::write(&second, "second").unwrap();
+
+    let report = transfer_entries(
+        &[first, missing.clone(), second],
+        &destination,
+        crate::transfer::Action::Copy,
+    );
+
+    assert_eq!(report.completed.len(), 2);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].source, missing);
+    assert!(destination.join("first.txt").exists());
+    assert!(destination.join("second.txt").exists());
+}
+
+#[test]
+fn batch_move_rejects_conflicts_without_rolling_back_successes() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let first = temp.path().join("first.txt");
+    let conflict = temp.path().join("conflict.txt");
+    fs::write(&first, "first").unwrap();
+    fs::write(&conflict, "source").unwrap();
+    fs::write(destination.join("conflict.txt"), "destination").unwrap();
+
+    let report = transfer_entries(
+        &[first.clone(), conflict.clone()],
+        &destination,
+        crate::transfer::Action::Move,
+    );
+
+    assert_eq!(report.completed, vec![destination.join("first.txt")]);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].source, conflict);
+    assert!(!first.exists());
 }
 
 #[cfg(unix)]
