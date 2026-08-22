@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::{Hash, Hasher},
     sync::{
         Arc, Mutex,
@@ -232,6 +232,8 @@ struct PendingRead {
     owner: Window,
     started: Instant,
     stage: ReadStage,
+    pending: VecDeque<(Atom, &'static str)>,
+    entries: Vec<(&'static str, Vec<u8>)>,
     reply: oneshot::Sender<Result<ClipboardImport, String>>,
 }
 
@@ -397,6 +399,8 @@ impl Worker {
             owner,
             started: Instant::now(),
             stage: ReadStage::Targets,
+            pending: VecDeque::new(),
+            entries: Vec::new(),
             reply,
         });
         if let Err(error) = self.convert(self.atoms.targets) {
@@ -598,25 +602,35 @@ impl Worker {
                     .value32()
                     .map(Iterator::collect::<Vec<_>>)
                     .unwrap_or_default();
-                let Some((target, mime)) = [
+                let mut targets = [
                     clipboard::POLAREXP_MIME,
                     clipboard::GNOME_MIME,
                     clipboard::URI_LIST_MIME,
+                    clipboard::KDE_CUT_MIME,
                 ]
                 .into_iter()
-                .find_map(|mime| {
+                .filter_map(|mime| {
                     self.atoms
                         .atom_by_mime
                         .get(mime)
                         .copied()
                         .filter(|atom| offered.contains(atom))
                         .map(|atom| (atom, mime))
-                }) else {
+                })
+                .collect::<VecDeque<_>>();
+                if !targets.iter().any(|(_, mime)| {
+                    matches!(
+                        *mime,
+                        clipboard::POLAREXP_MIME | clipboard::GNOME_MIME | clipboard::URI_LIST_MIME
+                    )
+                }) {
                     self.finish_read(Err(
                         "the X11 clipboard does not contain local files".to_owned()
                     ));
                     return Ok(());
-                };
+                }
+                let (target, mime) = targets.pop_front().expect("file target checked above");
+                read.pending = targets;
                 read.stage = ReadStage::Data { target, mime };
                 self.convert(target)?;
             }
@@ -653,7 +667,7 @@ impl Worker {
                         "the X11 clipboard returned an unexpected type".to_owned()
                     ));
                 } else {
-                    self.finish_decoded(mime, reply.value);
+                    self.finish_format(mime, reply.value);
                 }
             }
             ReadStage::Incremental { .. } => {}
@@ -687,7 +701,7 @@ impl Worker {
         if reply.value.is_empty() {
             let mime = *mime;
             let data = std::mem::take(data);
-            self.finish_decoded(mime, data);
+            self.finish_format(mime, data);
         } else if data.len().saturating_add(reply.value.len()) > clipboard::MAX_BYTES {
             self.finish_read(Err(
                 "the X11 clipboard payload is larger than 4 MiB".to_owned()
@@ -698,7 +712,7 @@ impl Worker {
         Ok(())
     }
 
-    fn finish_decoded(&mut self, mime: &'static str, data: Vec<u8>) {
+    fn finish_format(&mut self, mime: &'static str, data: Vec<u8>) {
         let same_owner = self.read.as_ref().is_some_and(|read| {
             self.connection
                 .get_selection_owner(self.atoms.clipboard)
@@ -706,11 +720,36 @@ impl Worker {
                 .and_then(|cookie| cookie.reply().ok())
                 .is_some_and(|owner| owner.owner == read.owner)
         });
-        let result = if same_owner {
-            clipboard::decode(mime, &data)
-        } else {
-            Err("the X11 clipboard changed while PolarExp was reading it".to_owned())
-        };
+        if !same_owner {
+            self.finish_read(Err(
+                "the X11 clipboard changed while PolarExp was reading it".to_owned(),
+            ));
+            return;
+        }
+        let next = self.read.as_mut().and_then(|read| {
+            read.entries.push((mime, data));
+            read.pending.pop_front()
+        });
+        if let Some((target, mime)) = next {
+            if let Some(read) = self.read.as_mut() {
+                read.stage = ReadStage::Data { target, mime };
+            }
+            if let Err(error) = self.convert(target) {
+                self.finish_read(Err(error));
+            }
+            return;
+        }
+        let result = self.read.as_ref().map_or_else(
+            || Err("the X11 clipboard read disappeared".to_owned()),
+            |read| {
+                let entries = read
+                    .entries
+                    .iter()
+                    .map(|(mime, data)| (*mime, data.as_slice()))
+                    .collect::<Vec<_>>();
+                clipboard::decode_offer(&entries)
+            },
+        );
         self.finish_read(result);
     }
 

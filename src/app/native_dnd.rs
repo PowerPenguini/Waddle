@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs::File,
     hash::{Hash, Hasher},
     io::{Read, Write},
@@ -23,7 +24,7 @@ use resvg::{tiny_skia, usvg};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     data_device_manager::{
-        DataDeviceManagerState, WritePipe,
+        DataDeviceManagerState, ReadPipe, WritePipe,
         data_device::{DataDevice, DataDeviceHandler},
         data_offer::{DataOfferHandler, DragOffer},
         data_source::{CopyPasteSource, DataSourceHandler, DragSource},
@@ -352,6 +353,8 @@ struct ClipboardRead {
     offer_generation: u64,
     mime: String,
     data: Vec<u8>,
+    pending: VecDeque<String>,
+    entries: Vec<(String, Vec<u8>)>,
     reply: oneshot::Sender<Result<ClipboardImport, String>>,
 }
 
@@ -663,13 +666,31 @@ impl Worker {
             let _ = reply.send(Err("the Wayland clipboard has no file offer".to_owned()));
             return;
         };
-        let Some(mime) = offer.with_mime_types(clipboard::preferred_mime) else {
+        let mut mimes = offer.with_mime_types(|offered| {
+            [
+                clipboard::POLAREXP_MIME,
+                clipboard::GNOME_MIME,
+                clipboard::URI_LIST_MIME,
+                clipboard::KDE_CUT_MIME,
+            ]
+            .into_iter()
+            .filter(|candidate| offered.iter().any(|mime| mime == candidate))
+            .map(str::to_owned)
+            .collect::<VecDeque<_>>()
+        });
+        if !mimes.iter().any(|mime| {
+            matches!(
+                mime.as_str(),
+                clipboard::POLAREXP_MIME | clipboard::GNOME_MIME | clipboard::URI_LIST_MIME
+            )
+        }) {
             let _ = reply.send(Err(
                 "the Wayland clipboard does not contain local files".to_owned()
             ));
             return;
-        };
-        let pipe = match offer.receive(mime.to_owned()) {
+        }
+        let mime = mimes.pop_front().expect("file MIME checked above");
+        let pipe = match offer.receive(mime.clone()) {
             Ok(pipe) => pipe,
             Err(error) => {
                 let _ = reply.send(Err(format!(
@@ -681,16 +702,22 @@ impl Worker {
         let offer_generation = self.clipboard_offer_generation;
         self.clipboard_read = Some(ClipboardRead {
             offer_generation,
-            mime: mime.to_owned(),
+            mime,
             data: Vec::new(),
+            pending: mimes,
+            entries: Vec::new(),
             reply,
         });
+        self.monitor_clipboard_pipe(pipe, offer_generation);
+    }
+
+    fn monitor_clipboard_pipe(&mut self, pipe: ReadPipe, offer_generation: u64) {
         if let Err(error) = self.loop_handle.insert_source(pipe, move |_, file, state| {
             let mut buffer = [0_u8; 8192];
             // SAFETY: calloop owns the file for the callback lifetime and it is not closed here.
             match unsafe { file.get_mut() }.read(&mut buffer) {
                 Ok(0) => {
-                    state.complete_clipboard_read(offer_generation);
+                    state.complete_clipboard_format(offer_generation);
                     PostAction::Remove
                 }
                 Ok(count) => {
@@ -727,18 +754,45 @@ impl Worker {
         }
     }
 
-    fn complete_clipboard_read(&mut self, offer_generation: u64) {
+    fn complete_clipboard_format(&mut self, offer_generation: u64) {
+        let Some(read) = self.clipboard_read.as_mut() else {
+            return;
+        };
+        if read.offer_generation != offer_generation
+            || self.clipboard_offer_generation != offer_generation
+        {
+            self.cancel_clipboard_read("the clipboard changed while PolarExp was reading it");
+            return;
+        }
+        read.entries
+            .push((read.mime.clone(), std::mem::take(&mut read.data)));
+        if let Some(mime) = read.pending.pop_front() {
+            read.mime = mime.clone();
+            let pipe = self
+                .seats
+                .iter()
+                .find_map(|objects| objects.data_device.data().selection_offer())
+                .ok_or_else(|| "the clipboard changed while PolarExp was reading it".to_owned())
+                .and_then(|offer| {
+                    offer.receive(mime).map_err(|error| {
+                        format!("could not receive the Wayland clipboard: {error}")
+                    })
+                });
+            match pipe {
+                Ok(pipe) => self.monitor_clipboard_pipe(pipe, offer_generation),
+                Err(error) => self.cancel_clipboard_read(error),
+            }
+            return;
+        }
         let Some(read) = self.clipboard_read.take() else {
             return;
         };
-        let result = if read.offer_generation != offer_generation
-            || self.clipboard_offer_generation != offer_generation
-        {
-            Err("the clipboard changed while PolarExp was reading it".to_owned())
-        } else {
-            clipboard::decode(&read.mime, &read.data)
-        };
-        let _ = read.reply.send(result);
+        let entries = read
+            .entries
+            .iter()
+            .map(|(mime, data)| (mime.as_str(), data.as_slice()))
+            .collect::<Vec<_>>();
+        let _ = read.reply.send(clipboard::decode_offer(&entries));
     }
 
     fn cancel_clipboard_read(&mut self, message: impl Into<String>) {

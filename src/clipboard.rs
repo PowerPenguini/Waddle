@@ -32,12 +32,6 @@ impl EncodedOffer {
     }
 }
 
-pub(crate) fn preferred_mime(mimes: &[String]) -> Option<&'static str> {
-    [POLAREXP_MIME, GNOME_MIME, URI_LIST_MIME]
-        .into_iter()
-        .find(|candidate| mimes.iter().any(|mime| mime == candidate))
-}
-
 pub(crate) fn encode(payload: &ClipboardPayload) -> Result<EncodedOffer, String> {
     validate_entry_count(payload.paths.len())?;
     let uris = encode_uris(&payload.paths)?;
@@ -108,6 +102,56 @@ pub(crate) fn decode(mime: &str, data: &[u8]) -> Result<ClipboardImport, String>
         POLAREXP_MIME => decode_private(text),
         _ => Err(format!("unsupported clipboard format: {mime}")),
     }
+}
+
+pub(crate) fn decode_offer(entries: &[(&str, &[u8])]) -> Result<ClipboardImport, String> {
+    let mut imports = Vec::new();
+    let mut markers = Vec::new();
+    let mut malformed_marker = false;
+
+    for &(mime, data) in entries {
+        match mime {
+            POLAREXP_MIME | GNOME_MIME | URI_LIST_MIME => match decode(mime, data) {
+                Ok(import) => {
+                    if mime != URI_LIST_MIME {
+                        markers.push(import.action);
+                    }
+                    imports.push(import);
+                }
+                Err(_) if mime == POLAREXP_MIME || mime == GNOME_MIME => {
+                    malformed_marker = true;
+                }
+                Err(error) => return Err(error),
+            },
+            KDE_CUT_MIME => match data {
+                b"1" => markers.push(Action::Move),
+                b"0" => markers.push(Action::Copy),
+                _ => malformed_marker = true,
+            },
+            _ => {}
+        }
+    }
+
+    let Some(primary) = imports.first() else {
+        return Err("the clipboard does not contain local file paths".to_owned());
+    };
+    if imports.iter().any(|import| import.paths != primary.paths) {
+        return Err("the clipboard formats contain different file lists".to_owned());
+    }
+    let action = if !malformed_marker
+        && !markers.is_empty()
+        && markers.iter().all(|action| *action == Action::Move)
+    {
+        Action::Move
+    } else {
+        Action::Copy
+    };
+    let generation = imports.iter().find_map(|import| import.generation);
+    Ok(ClipboardImport {
+        paths: primary.paths.clone(),
+        action,
+        generation,
+    })
 }
 
 fn encode_uris(paths: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -250,5 +294,52 @@ mod tests {
         let contradictory =
             b"polarexp-v1\ngeneration=1\ngeneration=2\naction=copy\nfile:///tmp/one\n";
         assert!(decode(POLAREXP_MIME, contradictory).is_err());
+    }
+
+    #[test]
+    fn one_generation_decodes_all_formats_and_keeps_consistent_move() {
+        let encoded = encode(&payload(Action::Move)).unwrap();
+        let owned = encoded.into_entries();
+        let entries = owned
+            .iter()
+            .map(|(mime, data)| (*mime, data.as_slice()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            decode_offer(&entries).unwrap(),
+            ClipboardImport {
+                paths: payload(Action::Move).paths,
+                action: Action::Move,
+                generation: Some(42),
+            }
+        );
+    }
+
+    #[test]
+    fn contradictory_or_malformed_cut_markers_are_downgraded_to_copy() {
+        let uri = b"file:///tmp/one\r\n";
+        let gnome = b"cut\nfile:///tmp/one\n";
+        let contradictory = [
+            (URI_LIST_MIME, uri.as_slice()),
+            (GNOME_MIME, gnome.as_slice()),
+            (KDE_CUT_MIME, b"0".as_slice()),
+        ];
+        assert_eq!(decode_offer(&contradictory).unwrap().action, Action::Copy);
+
+        let malformed = [
+            (URI_LIST_MIME, uri.as_slice()),
+            (KDE_CUT_MIME, b"maybe".as_slice()),
+        ];
+        assert_eq!(decode_offer(&malformed).unwrap().action, Action::Copy);
+    }
+
+    #[test]
+    fn contradictory_file_lists_are_rejected() {
+        let entries = [
+            (URI_LIST_MIME, b"file:///tmp/one\r\n".as_slice()),
+            (GNOME_MIME, b"copy\nfile:///tmp/two\n".as_slice()),
+        ];
+
+        assert!(decode_offer(&entries).is_err());
     }
 }

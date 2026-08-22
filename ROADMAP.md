@@ -51,7 +51,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
   `application/x-kde-cutselection` together.
 - [x] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.
-- [ ] Read all MIME payloads from one clipboard offer and generation.
+- [x] Read all MIME payloads from one clipboard offer and generation.
 - [x] Accept only absolute local `file:` URIs until remote locations are implemented.
 - [x] Apply byte and entry-count limits before accepting clipboard data.
 - [ ] Revalidate sources, permissions, descendants, and the destination immediately before
