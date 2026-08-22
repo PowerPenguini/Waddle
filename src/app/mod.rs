@@ -8,6 +8,7 @@ mod operations;
 mod search;
 mod shell;
 mod state;
+mod transfer_queue;
 mod tree;
 
 #[cfg(target_os = "linux")]
@@ -118,9 +119,15 @@ enum Message {
     NativeDndEvent(TransferEvent),
     ExternalDragFinished(Result<TransferOutcome, String>),
     TransferBatchFinished {
+        id: u64,
         request: TransferRequest,
         outcome: Box<fs::TransferBatchOutcome>,
     },
+    PollTransfer,
+    CancelTransfer,
+    RetryTransfer,
+    ToggleTransferHistory,
+    CopyTransferReport,
     SystemTheme(iced::theme::Mode),
     PollSystem,
     DirectoryChanged(directory_watch::Event),
@@ -209,6 +216,7 @@ struct App {
     search: SearchSession,
     transfers: TransferWorkflow,
     transfer_conflict: Option<ActiveTransferConflict>,
+    transfer_queue: transfer_queue::Queue,
     command: CommandSession,
     command_adapter: ProcessAdapter,
     file_operations: FileOperationSession,
@@ -265,6 +273,7 @@ impl App {
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
             transfer_conflict: None,
+            transfer_queue: transfer_queue::Queue::open_default(),
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
             file_operations: FileOperationSession::default(),
@@ -323,6 +332,10 @@ impl App {
         if let Some(source) = &self.directory_watch {
             subscriptions.push(source.subscription().map(Message::DirectoryChanged));
         }
+        if self.transfer_queue.active_id().is_some() {
+            subscriptions
+                .push(time::every(Duration::from_millis(100)).map(|_| Message::PollTransfer));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -356,6 +369,7 @@ impl App {
 
     fn spinner_active(&self) -> bool {
         self.busy
+            || self.transfer_queue.active_id().is_some()
             || self.navigation_loading
             || self.search.is_loading()
             || flatten_rows(&self.explorer, self.navigation.current())
@@ -422,8 +436,32 @@ impl App {
                 let consequences = self.transfers.finish_outgoing(result);
                 self.apply_transfer_consequences(consequences)
             }
-            Message::TransferBatchFinished { request, outcome } => {
-                self.finish_transfer_batch(request, *outcome)
+            Message::TransferBatchFinished {
+                id,
+                request,
+                outcome,
+            } => self.finish_transfer_batch(id, request, *outcome),
+            Message::PollTransfer => Task::none(),
+            Message::CancelTransfer => {
+                if self.transfer_conflict.is_some() {
+                    return self.cancel_transfer_conflict();
+                }
+                if self.transfer_queue.cancel() {
+                    self.status = "Cancelling active transfer…".to_owned();
+                }
+                Task::none()
+            }
+            Message::RetryTransfer => self
+                .transfer_queue
+                .retry()
+                .map_or_else(Task::none, |work| self.launch_transfer(work)),
+            Message::ToggleTransferHistory => {
+                self.transfer_queue.toggle_expanded();
+                self.sync_bottom_bar();
+                Task::none()
+            }
+            Message::CopyTransferReport => {
+                iced::clipboard::write(self.transfer_queue.report_text())
             }
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
@@ -1359,7 +1397,8 @@ impl App {
                 self.file_operations
                     .expanded_detail()
                     .map(expanded_bar_height)
-            });
+            })
+            .or_else(|| self.transfer_queue.expanded().then_some(190.0));
         if let Some(height) = expanded_height {
             self.expanded_bar_height = height;
         }
@@ -1816,24 +1855,34 @@ impl App {
             request.destination.clone(),
             request.action,
         );
-        self.run_transfer_batch(request, batch)
+        self.transfer_queue
+            .enqueue(request, batch)
+            .map_or_else(Task::none, |work| self.launch_transfer(work))
     }
 
-    fn run_transfer_batch(
-        &mut self,
-        request: TransferRequest,
-        batch: fs::TransferBatch,
-    ) -> Task<Message> {
-        self.busy = true;
+    fn launch_transfer(&mut self, work: transfer_queue::Work) -> Task<Message> {
+        let transfer_queue::Work {
+            id,
+            request,
+            batch,
+            cancellation,
+            progress,
+        } = work;
         Task::perform(
-            self.operations
-                .run(OperationKind::Mutation, move |_| Ok(batch.run())),
+            self.operations.run(OperationKind::Mutation, move |_| {
+                Ok(batch.run_with(
+                    || cancellation.load(std::sync::atomic::Ordering::Acquire),
+                    |update| progress.update(update),
+                ))
+            }),
             move |completion| match completion {
                 Completion::Finished(Ok(outcome)) => Message::TransferBatchFinished {
+                    id,
                     request,
                     outcome: Box::new(outcome),
                 },
                 Completion::Finished(Err(error)) => Message::TransferBatchFinished {
+                    id,
                     request,
                     outcome: Box::new(fs::TransferBatchOutcome::Complete(fs::TransferReport {
                         completed: Vec::new(),
@@ -1844,6 +1893,7 @@ impl App {
                         retained: Vec::new(),
                         warnings: Vec::new(),
                         receipts: Vec::new(),
+                        cancelled: false,
                     })),
                 },
                 Completion::Cancelled => Message::Noop,
@@ -1853,12 +1903,17 @@ impl App {
 
     fn finish_transfer_batch(
         &mut self,
+        id: u64,
         request: TransferRequest,
         outcome: fs::TransferBatchOutcome,
     ) -> Task<Message> {
-        self.busy = false;
         match outcome {
-            fs::TransferBatchOutcome::Complete(report) => self.finish_transfer(request, report),
+            fs::TransferBatchOutcome::Complete(report) => {
+                let next = self.transfer_queue.finish(id, &report);
+                let finished = self.finish_transfer(request, report);
+                let next = next.map_or_else(Task::none, |work| self.launch_transfer(work));
+                Task::batch([finished, next])
+            }
             fs::TransferBatchOutcome::Conflict { batch, conflict } => {
                 let source = conflict
                     .source
@@ -1894,14 +1949,24 @@ impl App {
                 return Task::none();
             }
         };
-        self.run_transfer_batch(active.request, active.batch.resolve(choice, remaining))
+        let batch = active.batch.resolve(choice, remaining);
+        self.transfer_queue
+            .resume(batch)
+            .map_or_else(Task::none, |work| self.launch_transfer(work))
     }
 
     fn cancel_transfer_conflict(&mut self) -> Task<Message> {
         let Some(active) = self.transfer_conflict.take() else {
             return Task::none();
         };
-        self.finish_transfer(active.request, active.batch.cancel())
+        let Some(id) = self.transfer_queue.active_id() else {
+            return Task::none();
+        };
+        self.finish_transfer_batch(
+            id,
+            active.request,
+            fs::TransferBatchOutcome::Complete(active.batch.cancel()),
+        )
     }
 
     fn finish_transfer(
@@ -1909,7 +1974,6 @@ impl App {
         request: TransferRequest,
         report: fs::TransferReport,
     ) -> Task<Message> {
-        self.busy = false;
         let journal_action = journal::Action::transfer(
             match request.action {
                 TransferAction::Copy => journal::TransferKind::Copy,
@@ -2437,6 +2501,9 @@ impl App {
                 .into()
         } else if self.file_operations.prompt_active() {
             self.prompt_bar()
+        } else if self.transfer_queue.expanded() && self.browser_input.mode() == InputMode::Browser
+        {
+            self.transfer_history_bar()
         } else {
             let status: Element<'_, Message> = match self.browser_input.mode() {
                 InputMode::Search => {
@@ -2529,6 +2596,15 @@ impl App {
                     }
                 }
                 _ => {
+                    if self.transfer_queue.active_id().is_some() || self.transfer_queue.has_retry()
+                    {
+                        return container(compact_status_line(self.transfer_status_line()))
+                            .width(Fill)
+                            .height(Length::Fixed(height))
+                            .clip(true)
+                            .style(status_background_style)
+                            .into();
+                    }
                     let indicator: Element<'_, Message> = if self.busy || self.navigation_loading {
                         self.spinner(13.0).into()
                     } else {
@@ -2563,6 +2639,110 @@ impl App {
             .clip(true)
             .style(status_background_style)
             .into()
+    }
+
+    fn transfer_status_line(&self) -> Element<'_, Message> {
+        let mut line = Row::new().spacing(8).align_y(Alignment::Center);
+        if let Some(snapshot) = self.transfer_queue.snapshot() {
+            line = line
+                .push(self.spinner(13.0))
+                .push(
+                    text(format_transfer_snapshot(
+                        self.transfer_queue.active_action().unwrap_or("Transfer"),
+                        &snapshot,
+                    ))
+                    .font(MONO_FONT)
+                    .size(11)
+                    .width(Fill),
+                )
+                .push(compact_text_button("Cancel", Message::CancelTransfer));
+        } else {
+            line = line.push(
+                text("Transfer finished with retained entries")
+                    .font(MONO_FONT)
+                    .size(11)
+                    .width(Fill),
+            );
+        }
+        if self.transfer_queue.has_retry() {
+            line = line.push(compact_text_button("Retry", Message::RetryTransfer));
+        }
+        line.push(compact_text_button(
+            "History",
+            Message::ToggleTransferHistory,
+        ))
+        .into()
+    }
+
+    fn transfer_history_bar(&self) -> Element<'_, Message> {
+        let mut header = Row::new()
+            .push(
+                text("transfers")
+                    .font(MONO_FONT_SEMIBOLD)
+                    .size(11)
+                    .width(Fill),
+            )
+            .spacing(10)
+            .height(25)
+            .align_y(Alignment::Center);
+        if self.transfer_queue.active_id().is_some() {
+            header = header.push(compact_text_button("Cancel", Message::CancelTransfer));
+        }
+        if self.transfer_queue.has_retry() {
+            header = header.push(compact_text_button("Retry", Message::RetryTransfer));
+        }
+        header = header
+            .push(compact_text_button(
+                "Copy report",
+                Message::CopyTransferReport,
+            ))
+            .push(compact_text_button("Close", Message::ToggleTransferHistory));
+        let active = self
+            .transfer_queue
+            .snapshot()
+            .map(|snapshot| {
+                format_transfer_snapshot(
+                    self.transfer_queue.active_action().unwrap_or("Transfer"),
+                    &snapshot,
+                )
+            })
+            .into_iter();
+        let history = self
+            .transfer_queue
+            .history()
+            .iter()
+            .rev()
+            .map(|entry| entry.summary().to_owned());
+        let detail = active.chain(history).collect::<Vec<_>>().join("\n");
+        let detail = if detail.is_empty() {
+            "No transfer history".to_owned()
+        } else {
+            detail
+        };
+        container(
+            column![
+                header,
+                scrollable(
+                    text(detail)
+                        .font(MONO_FONT)
+                        .size(11)
+                        .line_height(iced::Pixels(14.0))
+                        .width(Fill),
+                )
+                .width(Fill)
+                .height(Fill),
+            ]
+            .spacing(2),
+        )
+        .width(Fill)
+        .height(Fill)
+        .padding(Padding {
+            top: 1.0,
+            right: CONTENT_GUTTER,
+            bottom: 7.0,
+            left: CONTENT_GUTTER,
+        })
+        .into()
     }
 
     fn prompt_bar(&self) -> Element<'_, Message> {
@@ -3055,6 +3235,50 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
             ..Border::default()
         },
         ..button::Style::default()
+    }
+}
+
+fn compact_text_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
+    button(text(label).font(MONO_FONT_SEMIBOLD).size(11))
+        .on_press(message)
+        .padding(Padding::from([1, 4]))
+        .style(toolbar_button_style)
+        .into()
+}
+
+fn format_transfer_snapshot(action: &str, snapshot: &transfer_queue::Snapshot) -> String {
+    let progress = snapshot.progress;
+    let eta = snapshot.estimated_remaining.map_or_else(
+        || "ETA --".to_owned(),
+        |remaining| format!("ETA {}s", remaining.as_secs()),
+    );
+    let queued = if snapshot.queued == 0 {
+        String::new()
+    } else {
+        format!("  •  {} queued", snapshot.queued)
+    };
+    format!(
+        "{action} {}/{}  •  {}/{}  •  {}/s  •  {eta}{queued}",
+        progress.completed_entries,
+        progress.total_entries,
+        format_transfer_bytes(progress.completed_bytes),
+        format_transfer_bytes(progress.total_bytes),
+        format_transfer_bytes(snapshot.bytes_per_second),
+    )
+}
+
+fn format_transfer_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

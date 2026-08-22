@@ -15,6 +15,8 @@ use std::{
 
 const PWD_MARKER: &[u8] = b"\0POLAREXP_PWD\0";
 const OUTPUT_LIMIT: usize = 128 * 1024;
+const OUTPUT_TAIL: usize = 4 * 1024;
+const STREAM_TRUNCATED: &[u8] = b"\n\n... output truncated while command was running ...\n\n";
 const ALTERNATE_SCREEN_SEQUENCES: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h"];
 const CURSOR_HIDE_SEQUENCE: &[u8] = b"\x1b[?25l";
 const ERASE_DISPLAY_SEQUENCES: [&[u8]; 5] =
@@ -224,18 +226,52 @@ where
 
 fn read_output<R: Read>(mut reader: R, screen_detected: &AtomicBool) -> io::Result<Vec<u8>> {
     let mut output = Vec::new();
+    let mut tail = Vec::new();
+    let mut truncated = false;
     let mut chunk = [0_u8; 4096];
     let mut detector = ScreenControlDetector::default();
     loop {
         let read = reader.read(&mut chunk)?;
         if read == 0 {
-            return Ok(output);
+            break;
         }
-        output.extend_from_slice(&chunk[..read]);
+        let bytes = &chunk[..read];
+        if output.len() < OUTPUT_LIMIT {
+            let keep = (OUTPUT_LIMIT - output.len()).min(bytes.len());
+            output.extend_from_slice(&bytes[..keep]);
+            if keep < bytes.len() {
+                truncated = true;
+                append_tail(&mut tail, &bytes[keep..]);
+            }
+        } else {
+            truncated = true;
+            append_tail(&mut tail, bytes);
+        }
         if detector.observe(&chunk[..read]) {
             screen_detected.store(true, Ordering::Release);
         }
     }
+    if truncated {
+        output.extend_from_slice(STREAM_TRUNCATED);
+        output.extend_from_slice(&tail);
+    }
+    Ok(output)
+}
+
+fn append_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.len() >= OUTPUT_TAIL {
+        tail.clear();
+        tail.extend_from_slice(&bytes[bytes.len() - OUTPUT_TAIL..]);
+        return;
+    }
+    let excess = tail
+        .len()
+        .saturating_add(bytes.len())
+        .saturating_sub(OUTPUT_TAIL);
+    if excess > 0 {
+        tail.drain(..excess);
+    }
+    tail.extend_from_slice(bytes);
 }
 
 fn contains_any_sequence(bytes: &[u8], sequences: &[&[u8]]) -> bool {
@@ -335,5 +371,22 @@ mod tests {
         let report = execute(Path::new("."), '!', "true").unwrap();
 
         assert!(report.detail.is_empty());
+    }
+
+    #[test]
+    fn output_is_bounded_while_the_reader_is_still_running() {
+        let input = vec![b'x'; OUTPUT_LIMIT * 8];
+        let output = read_output(input.as_slice(), &AtomicBool::new(false)).unwrap();
+
+        assert!(output.len() <= OUTPUT_LIMIT + OUTPUT_TAIL + STREAM_TRUNCATED.len());
+        assert!(
+            output
+                .windows(STREAM_TRUNCATED.len())
+                .any(|part| part == STREAM_TRUNCATED)
+        );
+        assert_eq!(
+            &output[output.len() - OUTPUT_TAIL..],
+            vec![b'x'; OUTPUT_TAIL]
+        );
     }
 }

@@ -473,6 +473,55 @@ fn skipping_a_conflict_keeps_the_source_and_existing_destination() {
 }
 
 #[test]
+fn cancelled_batch_keeps_completed_results_and_removes_private_incomplete_names() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let first = source.join("first");
+    let second = source.join("second");
+    fs::write(&first, vec![1_u8; 4096]).unwrap();
+    fs::write(&second, vec![2_u8; 4096]).unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&cancelled);
+
+    let outcome = TransferBatch::new(
+        vec![first, second.clone()],
+        destination.clone(),
+        crate::transfer::Action::Copy,
+    )
+    .run_with(
+        || cancelled.load(Ordering::Acquire),
+        move |progress| {
+            if progress.completed_entries == 1 {
+                observed.store(true, Ordering::Release);
+            }
+        },
+    );
+    let TransferBatchOutcome::Complete(report) = outcome else {
+        panic!("cancelled batch must finish with a report");
+    };
+
+    assert!(report.cancelled);
+    assert_eq!(report.completed, [destination.join("first")]);
+    assert_eq!(report.retained, [second]);
+    assert!(!destination.join("second").exists());
+    assert!(fs::read_dir(&destination).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".polarexp-")
+    }));
+}
+
+#[test]
 fn replacing_conflicting_directories_merges_without_deleting_the_existing_tree() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source/folder");

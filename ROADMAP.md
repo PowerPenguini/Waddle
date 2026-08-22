@@ -136,18 +136,18 @@ needs external drag and drop and a native clipboard adapter.
 
 ## Milestone 3: transfer queue
 
-- [ ] Run filesystem mutations through one ordered queue.
-- [ ] Show the active operation in the bottom bar.
-- [ ] Expand the bottom area to show queue history, bytes, entry counts, speed, estimated time,
+- [x] Run filesystem mutations through one ordered queue.
+- [x] Show the active operation in the bottom bar.
+- [x] Expand the bottom area to show queue history, bytes, entry counts, speed, estimated time,
   Cancel, Retry, and error details.
-- [ ] Keep successful items after a partial operation and retain failed items for Retry.
-- [ ] Let users Undo the successful part of a partial operation when it is still safe.
-- [ ] Write copies to private temporary destinations and reveal them atomically where the
+- [x] Keep successful items after a partial operation and retain failed items for Retry.
+- [x] Let users Undo the successful part of a partial operation when it is still safe.
+- [x] Write copies to private temporary destinations and reveal them atomically where the
   filesystem supports it.
-- [ ] On Cancel, remove only incomplete results created by the cancelled operation.
-- [ ] Never alter files that existed before the operation started.
-- [ ] Keep operation reports and diagnostics for 30 days and allow copying a report.
-- [ ] Bound shell output while the command runs, not only after it exits.
+- [x] On Cancel, remove only incomplete results created by the cancelled operation.
+- [x] Never alter files that existed before the operation started.
+- [x] Keep operation reports and diagnostics for 30 days and allow copying a report.
+- [x] Bound shell output while the command runs, not only after it exits.
 
 ## Milestone 4: complete browser interaction
 

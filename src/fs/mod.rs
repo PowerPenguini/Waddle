@@ -57,6 +57,15 @@ pub struct TransferReport {
     pub retained: Vec<PathBuf>,
     pub warnings: Vec<TransferWarning>,
     pub receipts: Vec<TransferReceipt>,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TransferProgress {
+    pub completed_entries: u64,
+    pub total_entries: u64,
+    pub completed_bytes: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +147,9 @@ pub struct TransferBatch {
     retained_roots: BTreeSet<usize>,
     failures: Vec<TransferFailure>,
     warnings: Vec<TransferWarning>,
+    root_bytes: Vec<u64>,
+    progressed_roots: BTreeSet<usize>,
+    cancelled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +181,10 @@ impl TransferBatch {
                 root,
             });
         }
+        let root_bytes = roots
+            .iter()
+            .map(|root| tree_bytes(&root.source).unwrap_or_default())
+            .collect();
         Self {
             action,
             roots,
@@ -179,11 +195,30 @@ impl TransferBatch {
             retained_roots: BTreeSet::new(),
             failures: Vec::new(),
             warnings: Vec::new(),
+            root_bytes,
+            progressed_roots: BTreeSet::new(),
+            cancelled: false,
         }
     }
 
-    pub fn run(mut self) -> TransferBatchOutcome {
+    #[cfg(test)]
+    pub fn run(self) -> TransferBatchOutcome {
+        self.run_with(|| false, |_| {})
+    }
+
+    pub fn run_with(
+        mut self,
+        cancelled: impl Fn() -> bool,
+        mut progress: impl FnMut(TransferProgress),
+    ) -> TransferBatchOutcome {
+        self.publish_progress(&mut progress);
         while let Some(pending) = self.pending.pop_front() {
+            if cancelled() {
+                self.pending.push_front(pending);
+                self.cancelled = true;
+                return TransferBatchOutcome::Complete(self.cancel());
+            }
+            let root = pending.root();
             match pending {
                 PendingTransfer::RemoveSourceDirectory { source, root } => {
                     if let Err(error) = fs::remove_dir(&source) {
@@ -268,7 +303,9 @@ impl TransferBatch {
                     }
                 }
             }
+            self.publish_completed_root(root, &mut progress);
         }
+        self.publish_progress(&mut progress);
         TransferBatchOutcome::Complete(self.report())
     }
 
@@ -404,6 +441,31 @@ impl TransferBatch {
             }));
     }
 
+    fn publish_completed_root(&mut self, root: usize, progress: &mut impl FnMut(TransferProgress)) {
+        let still_pending = self.pending.iter().any(|pending| pending.root() == root)
+            || self
+                .blocked
+                .as_ref()
+                .is_some_and(|blocked| blocked.root == root);
+        if !still_pending {
+            self.progressed_roots.insert(root);
+            self.publish_progress(progress);
+        }
+    }
+
+    fn publish_progress(&self, progress: &mut impl FnMut(TransferProgress)) {
+        progress(TransferProgress {
+            completed_entries: self.progressed_roots.len() as u64,
+            total_entries: self.roots.len() as u64,
+            completed_bytes: self
+                .progressed_roots
+                .iter()
+                .filter_map(|index| self.root_bytes.get(*index))
+                .sum(),
+            total_bytes: self.root_bytes.iter().sum(),
+        });
+    }
+
     fn report(self) -> TransferReport {
         TransferReport {
             completed: self
@@ -429,6 +491,7 @@ impl TransferBatch {
                     destination: root.destination.clone(),
                 })
                 .collect(),
+            cancelled: self.cancelled,
             retained: self
                 .retained_roots
                 .into_iter()
@@ -915,9 +978,25 @@ pub fn copy_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf
 
 fn transfer_exact(source: &Path, destination: &Path, action: Action) -> io::Result<Vec<String>> {
     match action {
-        Action::Copy => copy_item_with_warnings(source, destination),
+        Action::Copy => copy_revealed(source, destination),
         Action::Move => move_exact(source, destination),
     }
+}
+
+fn copy_revealed(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
+    let staging = staging_path(destination)?;
+    let warnings = match copy_item_with_warnings(source, &staging) {
+        Ok(warnings) => warnings,
+        Err(error) => {
+            remove_incomplete_copy(&staging);
+            return Err(error);
+        }
+    };
+    if let Err(error) = rename_noreplace(&staging, destination) {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
+    Ok(warnings)
 }
 
 fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
@@ -1059,9 +1138,20 @@ fn remove_item(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn journal_copy(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_item_with_warnings(source, destination)
+    copy_revealed(source, destination)
         .map(drop)
         .map_err(|error| format!("could not redo Copy: {error}"))
+}
+
+fn tree_bytes(path: &Path) -> io::Result<u64> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::read_dir(path)?.try_fold(0_u64, |total, entry| {
+            tree_bytes(&entry?.path()).map(|bytes| total.saturating_add(bytes))
+        })
+    } else {
+        Ok(metadata.len())
+    }
 }
 
 pub(crate) fn journal_move(source: &Path, destination: &Path) -> Result<(), String> {

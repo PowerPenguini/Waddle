@@ -783,6 +783,7 @@ mod tests {
             retained: Vec::new(),
             warnings: Vec::new(),
             receipts: Vec::new(),
+            cancelled: false,
         };
 
         let consequences =
@@ -814,6 +815,7 @@ mod tests {
             retained: Vec::new(),
             warnings: Vec::new(),
             receipts: Vec::new(),
+            cancelled: false,
         };
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
 
@@ -896,6 +898,7 @@ mod tests {
             retained: Vec::new(),
             warnings: Vec::new(),
             receipts: Vec::new(),
+            cancelled: false,
         };
 
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
@@ -942,6 +945,7 @@ mod tests {
             retained: Vec::new(),
             warnings: Vec::new(),
             receipts: Vec::new(),
+            cancelled: false,
         };
 
         workflow.finish_transfer(None, &request, &report, Path::new("/target"));

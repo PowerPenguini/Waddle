@@ -74,7 +74,7 @@ fn system_clipboard_completion_enters_the_same_transfer_workflow() {
     let request = app.transfers.paste(PathBuf::from("/target")).unwrap();
     assert_eq!(request.paths, paths);
     assert_eq!(request.action, TransferAction::Copy);
-    assert!(app.busy);
+    assert!(app.transfer_queue.active_id().is_some());
 }
 
 #[test]
