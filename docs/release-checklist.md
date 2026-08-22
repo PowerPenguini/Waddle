@@ -36,6 +36,20 @@ shutdown, and partial-Cut remainder in the same sessions.
 - [ ] High contrast has visible selection, focus, drop, and error states; reduced motion has no
   spinner rotation or animated bottom-bar expansion.
 
+### Local smoke evidence, 2026-08-22–23
+
+The release binary was exercised in a Sway Wayland session and in an isolated Weston 15 XWayland
+session. Grid and List layouts, hidden entries, Vim and standard-key selection, Tab focus, Copy,
+Paste, Undo, Keep Both, Skip, high contrast, clipboard ownership loss, and external Cut
+reconciliation behaved as expected. Two screenshots taken 300 ms apart while a command was active
+with reduced motion enabled differed by zero pixels.
+
+The visual pass found and fixed three feedback bugs: an active Transfer conflict now shows its
+`r`/`s`/`k` choices instead of stale progress, a retained Retry no longer hides the current status,
+and clipboard ownership loss remains visible through the following refresh. The isolated XWayland
+run proved pending Cut plus external rename reconciliation without a desktop clipboard manager. It
+does not replace the native X11, Nautilus/Dolphin, or Flatpak rows above.
+
 ## Packages
 
 - [ ] Build the Flatpak with `flatpak-builder`, then run `scripts/smoke-flatpak.sh PolarExp.flatpak`.

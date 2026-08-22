@@ -1,10 +1,10 @@
-use std::path::PathBuf;
+use std::{fs as std_fs, path::PathBuf};
 
 use iced::{event, keyboard, mouse};
 
 use super::{
-    App, BrowserFocus, InputMode, Message, VirtualLocation, breadcrumb_segments,
-    nearest_existing_ancestor,
+    App, BrowserFocus, BrowserStatusPresentation, InputMode, Message, VirtualLocation,
+    breadcrumb_segments, nearest_existing_ancestor,
 };
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
@@ -15,8 +15,30 @@ use crate::app::grid::{
 };
 use crate::app::navigation::NavigationSession;
 use crate::app::state::{ExplorerState, MountRoot};
-use crate::fs::FileEntry;
-use crate::transfer::{Action as TransferAction, ClipboardImport};
+use crate::fs::{FileEntry, TransferBatch};
+use crate::transfer::{
+    Action as TransferAction, Adapter as TransferAdapter, AdapterCompletion, ClipboardImport,
+    Event as TransferEvent, Preview as TransferPreview, TransferWorkflow,
+};
+
+struct NoopTransferAdapter;
+
+impl TransferAdapter for NoopTransferAdapter {
+    fn start(
+        &self,
+        _paths: Vec<PathBuf>,
+        _preview: TransferPreview,
+        _copy_only: bool,
+    ) -> Result<AdapterCompletion, String> {
+        Err("unused test adapter".to_owned())
+    }
+
+    fn set_target(&self, _id: u64, _destination: Option<PathBuf>) {}
+
+    fn finish_inbound(&self, _id: u64) {}
+
+    fn shutdown(&self) {}
+}
 
 fn entry(name: &str) -> FileEntry {
     FileEntry {
@@ -29,6 +51,115 @@ fn entry(name: &str) -> FileEntry {
 fn press(app: &mut App, value: &'static str) {
     let key = keyboard::Key::Character(value.into());
     let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
+}
+
+#[test]
+fn transfer_conflict_replaces_progress_with_keyboard_choices() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_directory = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    std_fs::create_dir_all(&source_directory).unwrap();
+    std_fs::create_dir_all(&destination).unwrap();
+    let source = source_directory.join("notes.txt");
+    std_fs::write(&source, "source").unwrap();
+    std_fs::write(destination.join("notes.txt"), "existing").unwrap();
+
+    let mut workflow = TransferWorkflow::default();
+    workflow
+        .copy(&[FileEntry {
+            path: source.clone(),
+            name: "notes.txt".into(),
+            directory: false,
+        }])
+        .unwrap();
+    let request = workflow.paste(destination.clone()).unwrap();
+    let batch = TransferBatch::try_new(vec![source], destination, TransferAction::Copy).unwrap();
+
+    let (mut app, _) = App::new();
+    let work = app.transfer_queue.enqueue(request.clone(), batch).unwrap();
+    let outcome = work.batch.run_with(|| false, |_| {});
+    let _ = app.finish_transfer_batch(work.id, request, outcome);
+
+    assert!(app.transfer_conflict.is_some());
+    let trashed = FileEntry {
+        path: temp.path().join("trash/files/notes.txt"),
+        name: "notes.txt".into(),
+        directory: false,
+    };
+    app.virtual_location = Some(VirtualLocation::Trash);
+    app.navigation
+        .replace_displayed_entries(vec![trashed.clone()]);
+    app.trash_entries = vec![super::trash::Entry {
+        file: trashed,
+        receipt: crate::journal::TrashReceipt {
+            original: temp.path().join("restored/notes.txt"),
+            trashed: temp.path().join("trash/files/notes.txt"),
+            info: temp.path().join("trash/info/notes.txt.trashinfo"),
+        },
+    }];
+    app.grid.select_only(Some(0), 1);
+    let _ = app.restore_selected_trash();
+    assert!(!app.busy);
+    assert!(app.restore_conflict.is_none());
+
+    app.browser_input.enter(InputMode::Search);
+    app.transfer_queue.toggle_expanded();
+    app.refresh_status();
+    let conflict = app.browser_status_model();
+    assert_eq!(conflict.presentation, BrowserStatusPresentation::Conflict);
+    assert!(conflict.text.contains("r Replace"));
+    assert!(conflict.text.contains("s Skip"));
+    assert!(conflict.text.contains("k Keep Both"));
+    assert!(conflict.text.contains("Esc cancel"));
+    assert!(!conflict.retry);
+    assert!(!conflict.history);
+
+    let _ = app.cancel_transfer_conflict();
+    assert!(app.transfer_queue.has_retry());
+    app.status_notice = Some("External move or removal confirmed".to_owned());
+    let notice = app.browser_status_model();
+    assert_eq!(notice.presentation, BrowserStatusPresentation::General);
+    assert_eq!(notice.text, "External move or removal confirmed");
+    assert!(notice.retry);
+    assert!(notice.history);
+}
+
+#[test]
+fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("notes.txt");
+    std_fs::write(&path, "notes").unwrap();
+    let file = FileEntry {
+        path: path.clone(),
+        name: "notes.txt".into(),
+        directory: false,
+    };
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation.replace_displayed_entries(vec![file.clone()]);
+    app.navigation_loading = false;
+    app.grid.select_only(Some(0), 1);
+
+    let _ = app.cut_selection();
+    let generation = app.transfers.clipboard_payload().unwrap().generation;
+    assert!(app.navigation.entries().is_empty());
+
+    let update = app.transfers.handle_native(
+        &NoopTransferAdapter,
+        TransferEvent::ClipboardOwnershipLost { generation },
+        |_, _| None,
+    );
+    let _ = app.apply_native_update(update);
+    let requested = app.navigation.pending_path().unwrap().to_path_buf();
+    let _ = app.finish_navigation(requested.clone(), Ok((requested, vec![file.clone()])));
+
+    assert!(app.transfers.pending_cut_paths().is_empty());
+    assert_eq!(app.navigation.entries().len(), 1);
+    assert_eq!(app.navigation.entries()[0].path, file.path);
+    assert_eq!(
+        app.status_notice.as_deref(),
+        Some("Cut restored after clipboard ownership changed")
+    );
 }
 
 #[test]

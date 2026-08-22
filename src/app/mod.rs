@@ -337,12 +337,29 @@ struct App {
 struct ActiveTransferConflict {
     request: TransferRequest,
     batch: fs::TransferBatch,
+    prompt: String,
 }
 
 #[derive(Clone, Debug)]
 struct ActiveRestoreConflict {
     batch: fs::TransferBatch,
     entries: Vec<trash::Entry>,
+    prompt: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrowserStatusPresentation {
+    Conflict,
+    Transfer,
+    General,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BrowserStatusModel<'a> {
+    presentation: BrowserStatusPresentation,
+    text: &'a str,
+    retry: bool,
+    history: bool,
 }
 
 impl App {
@@ -2566,6 +2583,7 @@ impl App {
     fn restore_selected_trash(&mut self) -> Task<Message> {
         if self.virtual_location != Some(VirtualLocation::Trash)
             || self.busy
+            || self.transfer_conflict.is_some()
             || self.restore_conflict.is_some()
         {
             return Task::none();
@@ -2616,12 +2634,14 @@ impl App {
                 } else {
                     "file conflict"
                 };
-                self.status = format!(
+                let prompt = format!(
                     "Restore {name}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
                 );
+                self.status.clone_from(&prompt);
                 self.restore_conflict = Some(ActiveRestoreConflict {
                     batch: *batch,
                     entries,
+                    prompt,
                 });
                 Task::none()
             }
@@ -2919,6 +2939,13 @@ impl App {
         }
         self.sync_directory_watches();
         self.status = status.to_owned();
+        self.refresh(None)
+    }
+
+    fn restore_cut_after_clipboard_loss(&mut self) -> Task<Message> {
+        let message = "Cut restored after clipboard ownership changed".to_owned();
+        self.status = message.clone();
+        self.status_notice = Some(message);
         self.refresh(None)
     }
 
@@ -3231,10 +3258,18 @@ impl App {
             self.show_error("Drag-and-drop adapter is unavailable".to_owned());
             return Task::none();
         };
-        let task = match self
+        let update = self
             .transfers
-            .handle_native(source, event, move |_, _| resolved_destination.clone())
-        {
+            .handle_native(source, event, move |_, _| resolved_destination.clone());
+        let task = self.apply_native_update(update);
+        if let Some(position) = hover_position {
+            self.update_drag_hover(position);
+        }
+        task
+    }
+
+    fn apply_native_update(&mut self, update: NativeUpdate) -> Task<Message> {
+        match update {
             NativeUpdate::None => Task::none(),
             NativeUpdate::Status(status) => {
                 self.status_notice = None;
@@ -3255,16 +3290,9 @@ impl App {
                 self.show_error(error);
                 Task::none()
             }
-            NativeUpdate::ClipboardLost(true) => {
-                self.status = "Cut restored after clipboard ownership changed".to_owned();
-                self.refresh(None)
-            }
+            NativeUpdate::ClipboardLost(true) => self.restore_cut_after_clipboard_loss(),
             NativeUpdate::ClipboardLost(false) => Task::none(),
-        };
-        if let Some(position) = hover_position {
-            self.update_drag_hover(position);
         }
-        task
     }
 
     fn x11_dnd_active(&self) -> bool {
@@ -3378,12 +3406,14 @@ impl App {
                 } else {
                     "file conflict"
                 };
-                self.status = format!(
+                let prompt = format!(
                     "{source}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
                 );
+                self.status.clone_from(&prompt);
                 self.transfer_conflict = Some(ActiveTransferConflict {
                     request,
                     batch: *batch,
+                    prompt,
                 });
                 Task::none()
             }
@@ -3542,6 +3572,41 @@ impl App {
             && !self.navigation_loading
             && !self.search.is_recursive()
             && self.virtual_location.is_none()
+    }
+
+    fn browser_status_model(&self) -> BrowserStatusModel<'_> {
+        if let Some(prompt) = self
+            .restore_conflict
+            .as_ref()
+            .map(|conflict| conflict.prompt.as_str())
+            .or_else(|| {
+                self.transfer_conflict
+                    .as_ref()
+                    .map(|conflict| conflict.prompt.as_str())
+            })
+        {
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::Conflict,
+                text: prompt,
+                retry: false,
+                history: false,
+            }
+        } else if self.transfer_queue.active_id().is_some() {
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::Transfer,
+                text: "",
+                retry: false,
+                history: true,
+            }
+        } else {
+            let retry = self.transfer_queue.has_retry();
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::General,
+                text: self.status_notice.as_deref().unwrap_or(&self.status),
+                retry,
+                history: retry,
+            }
+        }
     }
 
     #[cfg(test)]
@@ -4212,7 +4277,18 @@ impl App {
 
     fn status_bar(&self) -> Element<'_, Message> {
         let height = self.status_height();
-        let content: Element<'_, Message> = if let Some(output) = self.command.output() {
+        let status_model = self.browser_status_model();
+        let content: Element<'_, Message> = if status_model.presentation
+            == BrowserStatusPresentation::Conflict
+        {
+            compact_status_line(
+                text(status_model.text)
+                    .size(11)
+                    .line_height(iced::Pixels(13.0))
+                    .color(self.accent_color())
+                    .width(Fill),
+            )
+        } else if let Some(output) = self.command.output() {
             let header = row![
                 text(&output.summary)
                     .font(MONO_FONT_SEMIBOLD)
@@ -4351,8 +4427,7 @@ impl App {
                     }
                 }
                 _ => {
-                    if self.transfer_queue.active_id().is_some() || self.transfer_queue.has_retry()
-                    {
+                    if status_model.presentation == BrowserStatusPresentation::Transfer {
                         return container(compact_status_line(self.transfer_status_line()))
                             .width(Fill)
                             .height(Length::Fixed(height))
@@ -4370,25 +4445,35 @@ impl App {
                     } else {
                         Space::new().width(0).into()
                     };
-                    row![
-                        indicator,
-                        text(self.status_notice.as_deref().unwrap_or(&self.status))
-                            .size(11)
-                            .line_height(iced::Pixels(13.0))
-                            .color(if self.status_notice.is_some() {
-                                self.iced_theme().palette().danger
-                            } else {
-                                self.secondary_text_color()
-                            })
-                            .width(Fill),
-                    ]
-                    .spacing(if self.busy || self.navigation_loading {
-                        7
-                    } else {
-                        0
-                    })
-                    .align_y(Alignment::Center)
-                    .into()
+                    let mut line = Row::new()
+                        .push(indicator)
+                        .push(
+                            text(status_model.text)
+                                .size(11)
+                                .line_height(iced::Pixels(13.0))
+                                .color(if self.status_notice.is_some() {
+                                    self.iced_theme().palette().danger
+                                } else {
+                                    self.secondary_text_color()
+                                })
+                                .width(Fill),
+                        )
+                        .spacing(if self.busy || self.navigation_loading {
+                            7
+                        } else {
+                            0
+                        })
+                        .align_y(Alignment::Center);
+                    if status_model.retry {
+                        line = line.push(compact_text_button("Retry", Message::RetryTransfer));
+                    }
+                    if status_model.history {
+                        line = line.push(compact_text_button(
+                            "History",
+                            Message::ToggleTransferHistory,
+                        ));
+                    }
+                    line.into()
                 }
             };
             compact_status_line(status)
