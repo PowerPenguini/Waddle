@@ -11,6 +11,9 @@ pub(super) enum NodeKind {
     Computer,
     Drive,
     Folder,
+    Home,
+    Place,
+    Favorite,
 }
 
 #[derive(Clone, Debug)]
@@ -23,6 +26,7 @@ pub(super) struct FolderNode {
     pub(super) loading: bool,
     pub(super) loaded: bool,
     pub(super) children: Vec<FolderNode>,
+    pub(super) favorite_index: Option<usize>,
 }
 
 impl FolderNode {
@@ -36,6 +40,7 @@ impl FolderNode {
             loading: true,
             loaded: false,
             children: Vec::new(),
+            favorite_index: None,
         }
     }
 
@@ -49,6 +54,7 @@ impl FolderNode {
             loading: false,
             loaded: false,
             children: Vec::new(),
+            favorite_index: None,
         }
     }
 
@@ -66,6 +72,27 @@ impl FolderNode {
             loading: false,
             loaded: false,
             children: Vec::new(),
+            favorite_index: None,
+        }
+    }
+
+    pub(super) fn location(
+        id: u64,
+        path: PathBuf,
+        label: String,
+        kind: NodeKind,
+        favorite_index: Option<usize>,
+    ) -> Self {
+        Self {
+            id,
+            path,
+            label,
+            kind,
+            expanded: false,
+            loading: false,
+            loaded: false,
+            children: Vec::new(),
+            favorite_index,
         }
     }
 }
@@ -99,7 +126,7 @@ impl ExplorerState {
         let old_signature: Vec<_> = self
             .roots
             .iter()
-            .skip(1)
+            .filter(|root| root.kind == NodeKind::Drive)
             .map(|root| (root.path.clone(), root.label.clone()))
             .collect();
         let new_signature: Vec<_> = mounts
@@ -110,7 +137,12 @@ impl ExplorerState {
             return false;
         }
 
-        let mut previous = self.roots.split_off(1);
+        let mut previous = self
+            .roots
+            .iter()
+            .filter(|root| root.kind == NodeKind::Drive)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut reconciled = Vec::with_capacity(mounts.len());
         for mount in mounts {
             if let Some(position) = previous.iter().position(|node| node.path == mount.path) {
@@ -122,7 +154,30 @@ impl ExplorerState {
                 reconciled.push(FolderNode::drive(id, mount));
             }
         }
+        self.roots.retain(|root| root.kind != NodeKind::Drive);
         self.roots.extend(reconciled);
         true
+    }
+
+    pub(super) fn install_places(&mut self, places: Vec<super::places::Entry>) {
+        self.roots.retain(|node| {
+            !matches!(
+                node.kind,
+                NodeKind::Home | NodeKind::Place | NodeKind::Favorite
+            )
+        });
+        for (index, place) in (1..).zip(places) {
+            let id = self.allocate_node_id();
+            self.roots.insert(
+                index,
+                FolderNode::location(
+                    id,
+                    place.path,
+                    place.label,
+                    place.kind,
+                    place.favorite_index,
+                ),
+            );
+        }
     }
 }

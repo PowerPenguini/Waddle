@@ -188,13 +188,13 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Sidebar locations
 
-- [ ] Add Home.
-- [ ] Show Desktop, Documents, Downloads, Music, Pictures, and Videos when their XDG directories
+- [x] Add Home.
+- [x] Show Desktop, Documents, Downloads, Music, Pictures, and Videos when their XDG directories
   exist. Do not create missing directories.
 - [ ] Add Recent using the desktop's shared recent-file history.
 - [ ] Let users clear or disable Recent.
-- [ ] Add user Favorites with custom labels and drag reordering.
-- [ ] Keep mounted volumes and add their normal mount, unmount, and eject actions.
+- [x] Add user Favorites with custom labels and drag reordering.
+- [x] Keep mounted volumes and add their normal mount, unmount, and eject actions.
 
 ### Trash
 
@@ -246,7 +246,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Accept `polarexp [PATH|file://URI]`.
 - [x] Open each invocation in a new process and window for 1.0.
 - [x] Let an explicit CLI location override remembered startup state.
-- [ ] Remember window size and position, the last directory, view overrides, sorting, Favorites,
+- [x] Remember window size and position, the last directory, view overrides, sorting, Favorites,
   and Undo history.
 - [x] Do not restore every previous window automatically.
 - [ ] Add a `.desktop` file with `%U`, application icons, and AppStream metadata.

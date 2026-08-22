@@ -11,6 +11,8 @@ Commands
   :diagnostics  Show local command failure history
   :set ...      Inspect or change global settings
   :setlocal ... Inspect or change this folder's settings
+  :favorite ... Add, remove, or list Favorites
+  :volume ...   Mount, unmount, or eject a volume
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -102,6 +104,8 @@ pub(super) enum Submission {
     Refresh,
     Diagnostics,
     Settings { local: bool, arguments: String },
+    Favorite(String),
+    Volume(String),
     Execute(Execution),
 }
 
@@ -190,6 +194,24 @@ impl CommandSession {
                 local: command == "setlocal",
                 arguments: arguments.trim().to_owned(),
             };
+        }
+        if prefix == ':' && (trimmed == "favorite" || trimmed.starts_with("favorite ")) {
+            return Submission::Favorite(
+                trimmed
+                    .strip_prefix("favorite")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            );
+        }
+        if prefix == ':' && (trimmed == "volume" || trimmed.starts_with("volume ")) {
+            return Submission::Volume(
+                trimmed
+                    .strip_prefix("volume")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            );
         }
         if trimmed.is_empty() {
             return Submission::None;

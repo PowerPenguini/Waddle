@@ -13,6 +13,7 @@ pub(super) struct TreeRow {
     pub(super) loading: bool,
     pub(super) selected: bool,
     pub(super) kind: NodeKind,
+    pub(super) favorite_index: Option<usize>,
 }
 
 pub(super) fn mounted_roots() -> Vec<MountRoot> {
@@ -70,6 +71,7 @@ fn flatten_nodes(nodes: &[FolderNode], depth: usize, current: &Path, rows: &mut 
             loading: node.loading,
             selected: node.path == current,
             kind: node.kind,
+            favorite_index: node.favorite_index,
         });
         if node.expanded {
             flatten_nodes(&node.children, depth + 1, current, rows);

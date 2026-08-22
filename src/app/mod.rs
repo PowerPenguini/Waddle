@@ -7,6 +7,7 @@ mod file_operation;
 mod grid;
 mod navigation;
 mod operations;
+mod places;
 mod search;
 mod shell;
 mod startup;
@@ -154,6 +155,8 @@ enum Message {
     TreeRow(u64),
     SidebarScrolled(f32),
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
+    FavoritePressed(usize),
+    FavoriteReleased(usize),
     EntryPressed(usize),
     EntryReleased(usize),
     EntryHovered(usize),
@@ -181,6 +184,7 @@ enum Message {
     CommandChanged(String),
     CommandSubmitted,
     CommandFinished(Result<command::Completion, String>),
+    VolumeFinished(Result<String, String>),
     AnimationFrame(Instant),
     RenameChanged(String),
     RenameSubmitted,
@@ -221,6 +225,7 @@ struct App {
     explorer: ExplorerState,
     navigation: NavigationSession,
     startup: startup::State,
+    places: places::Places,
     operations: Operations,
     search: SearchSession,
     transfers: TransferWorkflow,
@@ -240,6 +245,7 @@ struct App {
     browser_input: BrowserInput,
     browser_focus: BrowserFocus,
     sidebar_cursor: Option<u64>,
+    favorite_drag: Option<usize>,
     location_input: String,
     expanded_bar_height: f32,
     output_expansion: Animation<bool>,
@@ -270,7 +276,9 @@ impl App {
         let now = Instant::now();
         let startup = startup::State::open_default();
         let current = startup.initial_directory();
-        let explorer = ExplorerState::new(mounted_roots());
+        let places = places::Places::open_default();
+        let mut explorer = ExplorerState::new(mounted_roots());
+        explorer.install_places(places.entries());
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
@@ -291,6 +299,7 @@ impl App {
             explorer,
             navigation: NavigationSession::new(current.clone()),
             startup,
+            places,
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
@@ -310,6 +319,7 @@ impl App {
             browser_input: BrowserInput::default(),
             browser_focus: BrowserFocus::Entries,
             sidebar_cursor: None,
+            favorite_drag: None,
             location_input: current.display().to_string(),
             expanded_bar_height: STATUS_HEIGHT,
             output_expansion: Animation::new(false)
@@ -620,6 +630,22 @@ impl App {
                 tree::install_children(&mut self.explorer, id, &path, folders);
                 Task::none()
             }
+            Message::FavoritePressed(index) => {
+                self.favorite_drag = Some(index);
+                Task::none()
+            }
+            Message::FavoriteReleased(index) => {
+                let Some(from) = self.favorite_drag.take() else {
+                    return Task::none();
+                };
+                if let Err(error) = self.places.reorder(from, index) {
+                    self.status = error;
+                } else if from != index {
+                    self.explorer.install_places(self.places.entries());
+                    self.status = "Favorite order saved".to_owned();
+                }
+                Task::none()
+            }
             Message::EntryPressed(index) => {
                 if self.prompt_blocks_action() {
                     return Task::none();
@@ -727,6 +753,17 @@ impl App {
             }
             Message::CommandSubmitted => self.submit_command(),
             Message::CommandFinished(result) => self.finish_command(result),
+            Message::VolumeFinished(result) => {
+                self.busy = false;
+                match result {
+                    Ok(status) => {
+                        self.status = status;
+                        self.explorer.reconcile_mounts(mounted_roots());
+                    }
+                    Err(error) => self.status = error,
+                }
+                Task::none()
+            }
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
                 self.tick_drag_hover(now)
@@ -1609,6 +1646,34 @@ impl App {
                         Task::none()
                     }
                 }
+            }
+            CommandSubmission::Favorite(arguments) => {
+                match self.places.command(self.navigation.current(), &arguments) {
+                    Ok(status) => {
+                        self.explorer.install_places(self.places.entries());
+                        if arguments.is_empty() || arguments == "list" {
+                            self.command.show_settings(status);
+                            self.sync_bottom_bar();
+                        } else {
+                            self.status = status;
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+                Task::none()
+            }
+            CommandSubmission::Volume(arguments) => {
+                self.busy = true;
+                self.status = "Waiting for desktop volume authorization…".to_owned();
+                Task::perform(
+                    self.operations.run(OperationKind::Background, move |_| {
+                        places::run_volume_command(&arguments)
+                    }),
+                    |completion| match completion {
+                        Completion::Finished(result) => Message::VolumeFinished(result),
+                        Completion::Cancelled => Message::Noop,
+                    },
+                )
             }
             CommandSubmission::Execute(execution) => {
                 self.busy = true;
@@ -2593,6 +2658,10 @@ impl App {
                 include_bytes!("../ui/icons/folder.svg").as_slice(),
                 self.accent_color(),
             ),
+            state::NodeKind::Home | state::NodeKind::Place | state::NodeKind::Favorite => (
+                include_bytes!("../ui/icons/folder.svg").as_slice(),
+                self.accent_color(),
+            ),
         };
         let selected = tree_row.selected;
         let focused =
@@ -2617,15 +2686,22 @@ impl App {
                 .align_y(Alignment::Center),
         );
         let content = column![line.height(30), self.drag_activation_bar(&tree_row.path)].spacing(0);
-        button(content)
+        let button = button(content)
             .on_press(Message::TreeRow(tree_row.id))
             .width(Fill)
             .height(32)
             .padding(0)
             .style(move |theme, status| {
                 tree_button_style(theme, status, selected || focused, drop_target)
-            })
-            .into()
+            });
+        if let Some(index) = tree_row.favorite_index {
+            mouse_area(button)
+                .on_press(Message::FavoritePressed(index))
+                .on_release(Message::FavoriteReleased(index))
+                .into()
+        } else {
+            button.into()
+        }
     }
 
     fn browser(&self) -> Element<'_, Message> {

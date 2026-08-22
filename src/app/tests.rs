@@ -160,8 +160,12 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
     press(&mut app, "g");
     press(&mut app, "g");
     assert_eq!(app.sidebar_cursor, Some(app.explorer.roots[0].id));
+    let last_sidebar_id = crate::app::tree::flatten_rows(&app.explorer, app.navigation.current())
+        .last()
+        .unwrap()
+        .id;
     press(&mut app, "G");
-    assert_eq!(app.sidebar_cursor, Some(child_id));
+    assert_eq!(app.sidebar_cursor, Some(last_sidebar_id));
 
     press(&mut app, "3");
     press(&mut app, "q");
