@@ -2452,6 +2452,7 @@ dependencies = [
  "tokio",
  "wayland-backend",
  "wayland-client",
+ "x11rb",
 ]
 
 [[package]]

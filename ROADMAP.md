@@ -47,7 +47,7 @@ needs external drag and drop and a native clipboard adapter.
 
 - [x] Replace the private single-path clipboard with a multi-entry system CLIPBOARD model.
 - [ ] Support Copy and Cut between PolarExp, Nautilus, and Dolphin in both directions.
-- [ ] Implement the clipboard on both Wayland and X11.
+- [x] Implement the clipboard on both Wayland and X11.
 - [x] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
   `application/x-kde-cutselection` together.
 - [x] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.

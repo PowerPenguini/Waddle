@@ -16,7 +16,7 @@ Browser
   x             Cut the current selection
   dd            Cut the active item
   d{motion}     Cut through 0, $, h, j, k, or l
-  "_d / "_x    Move entries to Trash without changing the clipboard
+  \"_d / \"_x    Move entries to Trash without changing the clipboard
   Delete        Move the selection to Trash
   y / n         Confirm / cancel a deletion prompt
   /query        Search the current directory

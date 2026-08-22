@@ -26,6 +26,10 @@ impl EncodedOffer {
             .iter()
             .find_map(|(candidate, data)| (*candidate == mime).then_some(data.as_slice()))
     }
+
+    pub(crate) fn into_entries(self) -> Vec<(&'static str, Vec<u8>)> {
+        self.entries
+    }
 }
 
 pub(crate) fn preferred_mime(mimes: &[String]) -> Option<&'static str> {

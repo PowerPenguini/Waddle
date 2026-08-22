@@ -10,7 +10,11 @@ mod state;
 mod tree;
 
 #[cfg(target_os = "linux")]
+mod native_clipboard;
+#[cfg(target_os = "linux")]
 mod native_dnd;
+#[cfg(target_os = "linux")]
+mod x11_clipboard;
 
 #[cfg(test)]
 mod tests;
@@ -109,7 +113,7 @@ enum Message {
     FindWindow,
     WindowAvailable(Option<window::Id>),
     WindowResized(Size),
-    NativeDndReady(Result<native_dnd::Source, String>),
+    NativeReady(Result<native_clipboard::Attached, String>),
     NativeDndEvent(TransferEvent),
     ExternalDragFinished(Result<TransferOutcome, String>),
     TransferFinished {
@@ -216,6 +220,7 @@ struct App {
     navigation_loading: bool,
     context_menu: Option<(usize, Point)>,
     native_dnd: Option<native_dnd::Source>,
+    native_clipboard: Option<native_clipboard::Source>,
     native_dnd_error: Option<String>,
     modifiers: keyboard::Modifiers,
     system_mode: iced::theme::Mode,
@@ -255,6 +260,7 @@ impl App {
             navigation_loading: false,
             context_menu: None,
             native_dnd: None,
+            native_clipboard: None,
             native_dnd_error: None,
             modifiers: keyboard::Modifiers::default(),
             system_mode: iced::theme::Mode::Dark,
@@ -283,7 +289,7 @@ impl App {
             time::every(Duration::from_secs(2)).map(|_| Message::PollSystem),
             animation,
         ];
-        if let Some(source) = &self.native_dnd {
+        if let Some(source) = &self.native_clipboard {
             subscriptions.push(source.subscription().map(Message::NativeDndEvent));
         }
         Subscription::batch(subscriptions)
@@ -359,17 +365,18 @@ impl App {
             }
             Message::FindWindow => window::latest().map(Message::WindowAvailable),
             Message::WindowAvailable(Some(id)) => {
-                window::run(id, native_dnd::Source::attach).map(Message::NativeDndReady)
+                window::run(id, native_clipboard::Attached::attach).map(Message::NativeReady)
             }
             Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
                 self.grid.resize(size);
                 Task::none()
             }
-            Message::NativeDndReady(result) => {
+            Message::NativeReady(result) => {
                 match result {
-                    Ok(source) => {
-                        self.native_dnd = Some(source);
+                    Ok(attached) => {
+                        self.native_dnd = attached.wayland_dnd;
+                        self.native_clipboard = Some(attached.clipboard);
                         self.native_dnd_error = None;
                     }
                     Err(error) => {
@@ -1410,7 +1417,7 @@ impl App {
         if let Some(status) = self.transfers.copy(&entries) {
             self.status = status;
             if let (Some(source), Some(payload)) =
-                (&self.native_dnd, self.transfers.clipboard_payload())
+                (&self.native_clipboard, self.transfers.clipboard_payload())
                 && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
             {
                 self.status = format!("Copied inside PolarExp; system clipboard failed: {error}");
@@ -1430,7 +1437,7 @@ impl App {
         };
         self.status = status;
         if let (Some(source), Some(payload)) =
-            (&self.native_dnd, self.transfers.clipboard_payload())
+            (&self.native_clipboard, self.transfers.clipboard_payload())
             && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
         {
             self.status = format!("Cut inside PolarExp; system clipboard failed: {error}");
@@ -1445,7 +1452,7 @@ impl App {
         let Some(generation) = self.transfers.cancel_cut() else {
             return Task::none();
         };
-        if let Some(source) = self.native_dnd.as_ref() {
+        if let Some(source) = self.native_clipboard.as_ref() {
             ClipboardAdapter::clear_clipboard(source, generation);
         }
         self.status = status.to_owned();
@@ -1456,7 +1463,7 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        let Some(source) = self.native_dnd.as_ref() else {
+        let Some(source) = self.native_clipboard.as_ref() else {
             return self.paste_current();
         };
         match ClipboardAdapter::read_clipboard(source) {
