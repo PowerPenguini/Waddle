@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PolarExp
+Comment=Browse and manage local files with desktop and Vim-style controls
+Exec=polarexp %U
+Icon=io.github.powerpenguini.PolarExp
+Terminal=false
+StartupNotify=true
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=files;folders;explorer;vim;

@@ -1,0 +1,45 @@
+name: Packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install --yes
+          appstream desktop-file-utils librsvg2-bin libglib2.0-dev libwayland-dev
+          libx11-xcb-dev libxcursor-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Build and smoke-test archive
+        run: |
+          scripts/package-archive.sh
+          scripts/smoke-package.sh dist/polarexp-*-linux.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polarexp-linux-archive
+          path: dist/polarexp-*-linux.tar.gz
+          if-no-files-found: error
+
+  flatpak:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: PolarExp.flatpak
+          manifest-path: packaging/io.github.powerpenguini.PolarExp.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          artifact-name: polarexp-linux-flatpak

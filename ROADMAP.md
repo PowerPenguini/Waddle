@@ -249,7 +249,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Remember window size and position, the last directory, view overrides, sorting, Favorites,
   and Undo history.
 - [x] Do not restore every previous window automatically.
-- [ ] Add a `.desktop` file with `%U`, application icons, and AppStream metadata.
+- [x] Add a `.desktop` file with `%U`, application icons, and AppStream metadata.
 - [ ] Publish a Flatpak and a regular binary archive.
 
 ### Release gate

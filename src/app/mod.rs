@@ -259,7 +259,7 @@ pub fn run() -> iced::Result {
     application(App::new, App::update, App::view)
         .title("PolarExp")
         .settings(iced::Settings {
-            id: Some("dev.polarexp.PolarExp".to_owned()),
+            id: Some("io.github.powerpenguini.PolarExp".to_owned()),
             default_font: UI_FONT,
             antialiasing: true,
             ..iced::Settings::default()

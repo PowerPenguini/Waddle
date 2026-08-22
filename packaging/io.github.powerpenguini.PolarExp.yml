@@ -1,0 +1,41 @@
+app-id: io.github.powerpenguini.PolarExp
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: polarexp
+
+finish-args:
+  - --device=dri
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --filesystem=host
+  - --talk-name=org.gtk.vfs.*
+  - --system-talk-name=org.freedesktop.UDisks2
+
+modules:
+  - name: polarexp
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/polarexp/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo build --offline --locked --release
+      - install -Dm0755 target/release/polarexp /app/bin/polarexp
+      - install -Dm0644 data/io.github.powerpenguini.PolarExp.desktop /app/share/applications/io.github.powerpenguini.PolarExp.desktop
+      - install -Dm0644 data/io.github.powerpenguini.PolarExp.metainfo.xml /app/share/metainfo/io.github.powerpenguini.PolarExp.metainfo.xml
+      - install -Dm0644 data/icons/hicolor/scalable/apps/io.github.powerpenguini.PolarExp.svg /app/share/icons/hicolor/scalable/apps/io.github.powerpenguini.PolarExp.svg
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .flatpak-builder
+          - build-flatpak
+          - dist
+          - target
+      - cargo-sources.json

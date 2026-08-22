@@ -26,6 +26,31 @@ For a Wayland-only environment, also install:
 sudo apt install libwayland-dev libxkbcommon-dev
 ```
 
+## Packages
+
+Build the regular Linux archive and verify its desktop entry, AppStream metadata, icon, dynamic
+libraries, and graphical startup with:
+
+```sh
+scripts/package-archive.sh
+scripts/smoke-package.sh dist/polarexp-*-linux.tar.gz
+```
+
+The Flatpak manifest is `packaging/io.github.powerpenguini.PolarExp.yml`. It uses frozen Cargo
+sources generated from `Cargo.lock`, the Freedesktop 25.08 runtime, and the matching stable Rust
+SDK extension. On a machine with Flatpak Builder and Flathub configured, build and launch it with:
+
+```sh
+flatpak-builder --force-clean --user --install-deps-from=flathub \
+  --install build-flatpak packaging/io.github.powerpenguini.PolarExp.yml
+flatpak run io.github.powerpenguini.PolarExp
+```
+
+PolarExp is a general local file manager, so the Flatpak deliberately requests host filesystem
+access together with Wayland/X11, GVfs, and UDisks access. A Flathub submission therefore needs
+the normal host-filesystem exception for this application class. The package workflow builds both
+formats on version tags and can also be started manually.
+
 ## Run
 
 ```sh

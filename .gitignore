@@ -1,2 +1,5 @@
 /target/
+/dist/
+/.flatpak-builder/
+/build-flatpak/
 /nvim.log
