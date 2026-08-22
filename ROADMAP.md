@@ -50,46 +50,46 @@ needs external drag and drop and a native clipboard adapter.
 - [ ] Implement the clipboard on both Wayland and X11.
 - [x] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
   `application/x-kde-cutselection` together.
-- [ ] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.
+- [x] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.
 - [ ] Read all MIME payloads from one clipboard offer and generation.
 - [x] Accept only absolute local `file:` URIs until remote locations are implemented.
 - [x] Apply byte and entry-count limits before accepting clipboard data.
 - [ ] Revalidate sources, permissions, descendants, and the destination immediately before
   Paste.
-- [ ] Clear Cut only if the clipboard still contains the same generation.
+- [x] Clear Cut only if the clipboard still contains the same generation.
 
 ### Cut behavior
 
-- [ ] Hide pending Cut entries from the grid immediately without changing the filesystem.
-- [ ] Show a persistent bottom-bar status such as `Cut: 4 items, p paste, Esc cancel`.
-- [ ] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
+- [x] Hide pending Cut entries from the grid immediately without changing the filesystem.
+- [x] Show a persistent bottom-bar status such as `Cut: 4 items, p paste, Esc cancel`.
+- [x] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
 - [ ] Let filesystem monitoring confirm when another application actually moves the entries.
-- [ ] Treat Cut followed by Paste into the same directory as a no-op.
+- [x] Treat Cut followed by Paste into the same directory as a no-op.
 - [ ] Let Copy into the same directory create a non-conflicting copy name.
-- [ ] After a partial Move, keep only the failed entries in the Cut clipboard.
+- [x] After a partial Move, keep only the failed entries in the Cut clipboard.
 
 ### Vim grammar
 
-- [ ] Make `y` copy the current selection. Yank is a single-key action and does not accept a
+- [x] Make `y` copy the current selection. Yank is a single-key action and does not accept a
   motion.
-- [ ] Make `dd` cut the active entry.
-- [ ] Make `d{motion}` cut the inclusive range between the active entry and the motion target.
-- [ ] Make `x` cut the current selection.
-- [ ] Make `"_dd`, `"_d{motion}`, and `"_x` move entries to Trash without replacing the system
+- [x] Make `dd` cut the active entry.
+- [x] Make `d{motion}` cut the inclusive range between the active entry and the motion target.
+- [x] Make `x` cut the current selection.
+- [x] Make `"_dd`, `"_d{motion}`, and `"_x` move entries to Trash without replacing the system
   clipboard.
-- [ ] In Visual selection, make `y`, `d`, and `x` act on the complete selection.
-- [ ] Keep `p` as Paste into the current directory.
+- [x] In Visual selection, make `y`, `d`, and `x` act on the complete selection.
+- [x] Keep `p` as Paste into the current directory.
 - [x] Add `gg`, `G`, `{count}G`, `H`, `M`, `L`, `Ctrl+D`, and `Ctrl+U`.
 - [x] Support counts before motions and operators. Examples include `3j`, `4l`, `3dd`, `d3j`,
   `3dj`, and `5G`.
-- [ ] Interpret operator ranges in current display order so Grid and List behave identically.
-- [ ] Show incomplete sequences such as `3`, `d`, `g`, and `"_` in the bottom bar.
+- [x] Interpret operator ranges in current display order so Grid and List behave identically.
+- [x] Show incomplete sequences such as `3`, `d`, `g`, and `"_` in the bottom bar.
 - [x] Do not time out an incomplete sequence. `Esc` cancels it, and an invalid key resets it with
   a short message.
 - [ ] Use `u` for Undo, `Ctrl+R` for Redo, `Ctrl+O` for Back, and `Ctrl+I` for Forward.
 - [x] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
   collapses or moves to the parent, `l` expands or opens, and `gg` and `G` jump to the ends.
-- [ ] Disable file operators on technical sidebar roots such as Computer and Recent.
+- [x] Disable file operators on technical sidebar roots such as Computer and Recent.
 - [ ] Limit 1.0 to the system clipboard and the `"_` black-hole register. Named registers, macros,
   and `.` repeat remain reserved.
 

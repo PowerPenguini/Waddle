@@ -174,6 +174,11 @@ impl NavigationSession {
         self.entries = entries;
     }
 
+    pub(super) fn hide_paths(&mut self, paths: &[PathBuf]) {
+        self.entries
+            .retain(|entry| !paths.iter().any(|path| path == &entry.path));
+    }
+
     #[cfg(test)]
     pub(super) fn pending_path(&self) -> Option<&Path> {
         self.pending.as_ref().map(Request::requested)

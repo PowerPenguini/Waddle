@@ -13,9 +13,11 @@ Browser
   u / Ctrl+O    Go back
   v             Toggle visual selection
   r             Rename the selected item
-  x / Delete    Move the selection to Trash
-  dd            Move the active item to Trash
-  d{motion}     Delete with 0, $, h, j, k, or l
+  x             Cut the current selection
+  dd            Cut the active item
+  d{motion}     Cut through 0, $, h, j, k, or l
+  "_d / "_x    Move entries to Trash without changing the clipboard
+  Delete        Move the selection to Trash
   y / n         Confirm / cancel a deletion prompt
   /query        Search the current directory
   //query       Search recursively
@@ -62,6 +64,8 @@ pub(super) struct Context {
     pub(super) visual_active: bool,
     pub(super) selection_count: usize,
     pub(super) has_selection: bool,
+    pub(super) pending_cut: bool,
+    pub(super) file_operators_allowed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,7 +79,9 @@ pub(super) enum Intent {
     CancelLocation,
     CloseCommandOutput,
     CancelVisual,
+    CancelCut,
     Copy,
+    Cut,
     Paste,
     Back,
     BeginSearch,
@@ -87,7 +93,8 @@ pub(super) enum Intent {
     Pending(String),
     InvalidSequence(String),
     Move(Motion, usize),
-    DeleteMotion(DeleteMotion, usize),
+    CutMotion(DeleteMotion, usize),
+    TrashMotion(DeleteMotion, usize),
     Activate,
     Parent,
 }
@@ -97,7 +104,8 @@ pub(super) struct BrowserInput {
     mode: Mode,
     count: Option<usize>,
     g_pending: bool,
-    delete_pending: Option<(usize, Option<usize>)>,
+    delete_pending: Option<(usize, Option<usize>, bool)>,
+    black_hole_stage: u8,
 }
 
 impl BrowserInput {
@@ -122,7 +130,7 @@ impl BrowserInput {
     }
 
     pub(super) fn pending_sequence(&self) -> Option<String> {
-        if let Some((operator_count, motion_count)) = self.delete_pending {
+        if let Some((operator_count, motion_count, black_hole)) = self.delete_pending {
             let operator = if operator_count > 1 {
                 operator_count.to_string()
             } else {
@@ -131,7 +139,16 @@ impl BrowserInput {
             let motion = motion_count
                 .map(|count| count.to_string())
                 .unwrap_or_default();
-            Some(format!("{operator}d{motion}"))
+            Some(format!(
+                "{}{operator}d{motion}",
+                if black_hole { "\"_" } else { "" }
+            ))
+        } else if self.black_hole_stage > 0 {
+            Some(if self.black_hole_stage == 1 {
+                "\"".to_owned()
+            } else {
+                "\"_".to_owned()
+            })
         } else if self.g_pending {
             Some(format!(
                 "{}g",
@@ -148,6 +165,10 @@ impl BrowserInput {
         let sequence = self.pending_sequence().unwrap_or_default();
         let expected = if self.delete_pending.is_some() {
             "awaiting motion: 0, $, h, j, k, l, or d"
+        } else if self.black_hole_stage == 1 {
+            "awaiting _"
+        } else if self.black_hole_stage == 2 {
+            "awaiting d or x"
         } else if self.g_pending {
             "awaiting g"
         } else {
@@ -160,6 +181,7 @@ impl BrowserInput {
         self.count = None;
         self.g_pending = false;
         self.delete_pending = None;
+        self.black_hole_stage = 0;
     }
 
     fn push_count(&mut self, digit: usize) {
@@ -224,6 +246,9 @@ impl BrowserInput {
             if context.visual_active {
                 return Intent::CancelVisual;
             }
+            if context.pending_cut {
+                return Intent::CancelCut;
+            }
             if self.pending_sequence().is_some() {
                 self.clear_sequence();
                 return Intent::Pending("Browser sequence cancelled".to_owned());
@@ -240,6 +265,7 @@ impl BrowserInput {
             let count = self.count.take().unwrap_or(1);
             self.g_pending = false;
             self.delete_pending = None;
+            self.black_hole_stage = 0;
             return match text.map(str::to_ascii_lowercase).as_deref() {
                 Some("c") => Intent::Copy,
                 Some("v") => Intent::Paste,
@@ -255,7 +281,7 @@ impl BrowserInput {
             && let Some(digit) = value.chars().next().and_then(|value| value.to_digit(10))
             && (digit != 0 || self.count.is_some() || self.delete_pending.is_some())
         {
-            if let Some((_, motion_count)) = self.delete_pending.as_mut() {
+            if let Some((_, motion_count, _)) = self.delete_pending.as_mut() {
                 let count = motion_count.unwrap_or_default();
                 *motion_count = Some(
                     count
@@ -283,13 +309,43 @@ impl BrowserInput {
             return self.invalid_sequence(text.unwrap_or("key"));
         }
 
-        if let Some((operator_count, motion_count)) = self.delete_pending.take() {
+        if self.black_hole_stage > 0 {
+            return match (self.black_hole_stage, text) {
+                (1, Some("_")) => {
+                    self.black_hole_stage = 2;
+                    Intent::Pending(self.pending_status())
+                }
+                (2, Some("x")) if context.file_operators_allowed => {
+                    self.clear_sequence();
+                    Intent::Trash
+                }
+                (2, Some("d")) if context.file_operators_allowed && context.has_selection => {
+                    let count = self.count.take().unwrap_or(1);
+                    self.black_hole_stage = 0;
+                    self.delete_pending = Some((count, None, true));
+                    Intent::Pending(self.pending_status())
+                }
+                (2, Some("x" | "d")) => {
+                    self.clear_sequence();
+                    Intent::InvalidSequence(
+                        "File operators are unavailable in the focused sidebar".to_owned(),
+                    )
+                }
+                _ => self.invalid_sequence(text.unwrap_or("key")),
+            };
+        }
+
+        if let Some((operator_count, motion_count, black_hole)) = self.delete_pending.take() {
             let motion_count = motion_count.unwrap_or(1);
             return match text.and_then(delete_motion) {
-                Some(motion) => Intent::DeleteMotion(
-                    motion,
-                    operator_count.saturating_mul(motion_count).min(10_000),
-                ),
+                Some(motion) => {
+                    let count = operator_count.saturating_mul(motion_count).min(10_000);
+                    if black_hole {
+                        Intent::TrashMotion(motion, count)
+                    } else {
+                        Intent::CutMotion(motion, count)
+                    }
+                }
                 None => self.invalid_sequence(text.unwrap_or("key")),
             };
         }
@@ -303,15 +359,28 @@ impl BrowserInput {
             Some("N") => Intent::RepeatSearch(true),
             Some("u") => Intent::Back,
             Some("r") => Intent::Rename,
-            Some("y") => Intent::Copy,
+            Some("y") if context.file_operators_allowed => Intent::Copy,
             Some("p") => Intent::Paste,
             Some("v") => Intent::ToggleVisual,
-            Some("x") => Intent::Trash,
-            Some("d") if context.visual_active || context.selection_count > 1 => Intent::Trash,
-            Some("d") if context.has_selection => {
-                self.delete_pending = Some((count.unwrap_or(1), None));
+            Some("x") if context.file_operators_allowed => Intent::Cut,
+            Some("d")
+                if context.file_operators_allowed
+                    && (context.visual_active || context.selection_count > 1) =>
+            {
+                Intent::Cut
+            }
+            Some("d") if context.file_operators_allowed && context.has_selection => {
+                self.delete_pending = Some((count.unwrap_or(1), None, false));
                 Intent::Pending(self.pending_status())
             }
+            Some("\"") => {
+                self.count = count;
+                self.black_hole_stage = 1;
+                Intent::Pending(self.pending_status())
+            }
+            Some("y" | "x" | "d") => Intent::InvalidSequence(
+                "File operators are unavailable in the focused sidebar".to_owned(),
+            ),
             Some("g") => {
                 self.count = count;
                 self.g_pending = true;
@@ -332,7 +401,7 @@ impl BrowserInput {
             Some("$") => Intent::Move(Motion::RowEnd, 1),
             _ if press.named == NamedKey::Enter => Intent::Activate,
             _ if press.named == NamedKey::Backspace => Intent::Parent,
-            _ if press.named == NamedKey::Delete => Intent::Trash,
+            _ if press.named == NamedKey::Delete && context.file_operators_allowed => Intent::Trash,
             _ if count.is_some() => {
                 self.count = count;
                 self.invalid_sequence(text.unwrap_or("key"))
@@ -370,6 +439,7 @@ mod tests {
         Context {
             selection_count: 1,
             has_selection: true,
+            file_operators_allowed: true,
             ..Context::default()
         }
     }
@@ -385,7 +455,7 @@ mod tests {
         assert!(input.delete_pending());
         assert_eq!(
             input.handle(text("$"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Motion(Motion::RowEnd), 1)
+            Intent::CutMotion(DeleteMotion::Motion(Motion::RowEnd), 1)
         );
         assert!(!input.delete_pending());
 
@@ -434,7 +504,7 @@ mod tests {
         ));
         assert_eq!(
             input.handle(text("d"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Current, 1)
+            Intent::CutMotion(DeleteMotion::Current, 1)
         );
     }
 
@@ -654,7 +724,7 @@ mod tests {
         ));
         assert_eq!(
             input.handle(text("d"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Current, 3)
+            Intent::CutMotion(DeleteMotion::Current, 3)
         );
 
         assert!(matches!(
@@ -667,7 +737,7 @@ mod tests {
         ));
         assert_eq!(
             input.handle(text("j"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Motion(Motion::Down), 3)
+            Intent::CutMotion(DeleteMotion::Motion(Motion::Down), 3)
         );
 
         assert!(matches!(
@@ -684,7 +754,58 @@ mod tests {
         ));
         assert_eq!(
             input.handle(text("j"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Motion(Motion::Down), 6)
+            Intent::CutMotion(DeleteMotion::Motion(Motion::Down), 6)
         );
+    }
+
+    #[test]
+    fn yank_is_single_key_while_cut_and_black_hole_trash_use_distinct_intents() {
+        let mut input = BrowserInput::default();
+
+        assert_eq!(input.handle(text("y"), selected()), Intent::Copy);
+        assert_eq!(
+            input.handle(text("j"), selected()),
+            Intent::Move(Motion::Down, 1)
+        );
+        assert_eq!(input.handle(text("x"), selected()), Intent::Cut);
+
+        assert!(matches!(
+            input.handle(text("\""), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(input.pending_sequence().as_deref(), Some("\""));
+        assert!(matches!(
+            input.handle(text("_"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(input.pending_sequence().as_deref(), Some("\"_"));
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("d"), selected()),
+            Intent::TrashMotion(DeleteMotion::Current, 1)
+        );
+    }
+
+    #[test]
+    fn focused_sidebar_rejects_file_operators() {
+        let mut input = BrowserInput::default();
+        let context = Context {
+            has_selection: true,
+            selection_count: 1,
+            file_operators_allowed: false,
+            ..Context::default()
+        };
+
+        assert!(matches!(
+            input.handle(text("d"), context),
+            Intent::InvalidSequence(message) if message.contains("sidebar")
+        ));
+        assert!(matches!(
+            input.handle(text("x"), context),
+            Intent::InvalidSequence(message) if message.contains("sidebar")
+        ));
     }
 }

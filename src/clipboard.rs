@@ -93,7 +93,7 @@ pub(crate) fn decode(mime: &str, data: &[u8]) -> Result<ClipboardImport, String>
             let action = match lines.next().map(str::trim) {
                 Some("copy") => Action::Copy,
                 Some("cut") => Action::Move,
-                _ => return Err("the GNOME clipboard action is invalid".to_owned()),
+                _ => Action::Copy,
             };
             Ok(ClipboardImport {
                 paths: decode_uri_lines(lines)?,
@@ -226,7 +226,12 @@ mod tests {
         let excessive =
             std::iter::repeat_n("file:///tmp/one\r\n", MAX_ENTRIES + 1).collect::<String>();
         assert!(decode(URI_LIST_MIME, excessive.as_bytes()).is_err());
-        assert!(decode(GNOME_MIME, b"move\nfile:///tmp/one\n").is_err());
+        assert_eq!(
+            decode(GNOME_MIME, b"move\nfile:///tmp/one\n")
+                .unwrap()
+                .action,
+            Action::Copy
+        );
     }
 
     #[test]

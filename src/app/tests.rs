@@ -415,7 +415,7 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
 }
 
 #[test]
-fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
+fn iced_vim_keys_toggle_visual_mode_and_arm_cut_operator() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
     app.navigation
@@ -432,22 +432,16 @@ fn iced_vim_keys_toggle_visual_mode_and_arm_delete_operator() {
     assert!(app.delete_operator_pending());
 
     press(&mut app, "$");
-    assert!(matches!(
-        app.file_operations.view(),
-        FileOperationView::Trash { .. }
-    ));
     assert_eq!(
-        app.grid
-            .selected_indices()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>(),
-        [0, 1]
+        app.transfers.pending_cut_paths(),
+        [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
     );
+    assert!(app.navigation.entries().is_empty());
+    assert_eq!(app.status, "Cut: 2 items, p paste, Esc cancel");
 }
 
 #[test]
-fn dd_prompts_for_only_the_active_item() {
+fn dd_cuts_only_the_active_item() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;
     app.navigation
@@ -459,18 +453,81 @@ fn dd_prompts_for_only_the_active_item() {
     assert!(app.delete_operator_pending());
     press(&mut app, "d");
 
+    assert_eq!(
+        app.transfers.pending_cut_paths(),
+        [PathBuf::from("/start/two")]
+    );
+    assert_eq!(
+        app.navigation
+            .entries()
+            .iter()
+            .map(|entry| entry.name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["one", "three"]
+    );
+}
+
+#[test]
+fn black_hole_delete_trashes_without_replacing_the_clipboard() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid.select_only(Some(0), 2);
+    press(&mut app, "y");
+    let copied = app.transfers.clipboard_payload().unwrap();
+
+    app.grid.select_only(Some(1), 2);
+    for key in ["\"", "_", "d", "d"] {
+        press(&mut app, key);
+    }
+
     assert!(matches!(
         app.file_operations.view(),
         FileOperationView::Trash { message } if message.contains("two")
     ));
+    assert_eq!(app.transfers.clipboard_payload(), Some(copied));
+}
+
+#[test]
+fn visual_cut_hides_the_complete_selection_and_escape_restores_it() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two"), entry("three")]);
+    app.grid.select_only(Some(0), 3);
+    app.grid.toggle_visual_selection(3);
+    app.grid.move_selection(Motion::Right, 3);
+    app.grid.move_selection(Motion::Right, 3);
+
+    press(&mut app, "x");
+
+    assert_eq!(app.transfers.pending_cut_paths().len(), 3);
+    assert!(app.navigation.entries().is_empty());
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+
+    assert!(app.transfers.pending_cut_paths().is_empty());
     assert_eq!(
-        app.grid
-            .selected_indices()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>(),
-        [1]
+        app.navigation.pending_path(),
+        Some(app.navigation.current())
     );
+}
+
+#[test]
+fn focused_sidebar_does_not_apply_file_operators_to_the_grid() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation.replace_displayed_entries(vec![entry("one")]);
+    app.grid.select_only(Some(0), 1);
+    app.browser_focus = BrowserFocus::Sidebar;
+    app.sidebar_cursor = Some(app.explorer.roots[0].id);
+
+    press(&mut app, "d");
+
+    assert!(app.transfers.pending_cut_paths().is_empty());
+    assert!(app.status.contains("sidebar"));
 }
 
 #[test]

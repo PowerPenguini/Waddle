@@ -546,10 +546,7 @@ impl App {
             Message::PromptConfirm => self.confirm_prompt(),
             Message::PromptCancel => self.cancel_prompt(),
             Message::FileOperationFinished(completion) => self.finish_file_operation(completion),
-            Message::Copy => {
-                self.copy_selection();
-                Task::none()
-            }
+            Message::Copy => self.copy_selection(),
             Message::Paste => self.paste(),
             Message::ClipboardRead(result) => match result {
                 Ok(payload) => {
@@ -684,6 +681,8 @@ impl App {
                 visual_active: self.grid.visual_active(),
                 selection_count: self.grid.selection_count(),
                 has_selection: self.grid.selected_entry().is_some(),
+                pending_cut: !self.transfers.pending_cut_paths().is_empty(),
+                file_operators_allowed: self.browser_focus == BrowserFocus::Entries,
             },
         );
         self.apply_input_intent(intent)
@@ -717,7 +716,9 @@ impl App {
                     .cancel_visual_selection(self.navigation.entries().len());
                 self.schedule_details()
             }
+            InputIntent::CancelCut => self.cancel_cut("Cut cancelled"),
             InputIntent::Copy => self.update(Message::Copy),
+            InputIntent::Cut => self.cut_selection(),
             InputIntent::Paste => self.update(Message::Paste),
             InputIntent::Back => self.go_back(),
             InputIntent::BeginSearch => self.begin_search(),
@@ -741,7 +742,16 @@ impl App {
                     self.move_selection(motion, count)
                 }
             }
-            InputIntent::DeleteMotion(motion, count) => {
+            InputIntent::CutMotion(motion, count) => {
+                self.grid.select_delete_motion_count(
+                    motion,
+                    count,
+                    self.navigation.entries().len(),
+                    self.status_height(),
+                );
+                self.cut_selection()
+            }
+            InputIntent::TrashMotion(motion, count) => {
                 self.grid.select_delete_motion_count(
                     motion,
                     count,
@@ -800,6 +810,22 @@ impl App {
         self.navigation_loading = false;
         match self.navigation.complete(&requested, result) {
             NavigationOutcome::Committed { selected } => {
+                let selected_paths = selected
+                    .iter()
+                    .filter_map(|index| self.navigation.entries().get(*index))
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>();
+                self.navigation
+                    .hide_paths(self.transfers.pending_cut_paths());
+                let selected = self
+                    .navigation
+                    .entries()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| {
+                        selected_paths.contains(&entry.path).then_some(index)
+                    })
+                    .collect::<Vec<_>>();
                 self.grid
                     .select_indices(&selected, self.navigation.entries().len());
                 self.grid.clear_details();
@@ -1378,7 +1404,8 @@ impl App {
         }
     }
 
-    fn copy_selection(&mut self) {
+    fn copy_selection(&mut self) -> Task<Message> {
+        let restore_cut = !self.transfers.pending_cut_paths().is_empty();
         let entries = self.selected_entries();
         if let Some(status) = self.transfers.copy(&entries) {
             self.status = status;
@@ -1389,6 +1416,40 @@ impl App {
                 self.status = format!("Copied inside PolarExp; system clipboard failed: {error}");
             }
         }
+        if restore_cut {
+            self.refresh(None)
+        } else {
+            Task::none()
+        }
+    }
+
+    fn cut_selection(&mut self) -> Task<Message> {
+        let entries = self.selected_entries();
+        let Some(status) = self.transfers.cut(&entries) else {
+            return Task::none();
+        };
+        self.status = status;
+        if let (Some(source), Some(payload)) =
+            (&self.native_dnd, self.transfers.clipboard_payload())
+            && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
+        {
+            self.status = format!("Cut inside PolarExp; system clipboard failed: {error}");
+        }
+        self.navigation
+            .hide_paths(self.transfers.pending_cut_paths());
+        self.grid.select_only(None, self.navigation.entries().len());
+        Task::none()
+    }
+
+    fn cancel_cut(&mut self, status: &str) -> Task<Message> {
+        let Some(generation) = self.transfers.cancel_cut() else {
+            return Task::none();
+        };
+        if let Some(source) = self.native_dnd.as_ref() {
+            ClipboardAdapter::clear_clipboard(source, generation);
+        }
+        self.status = status.to_owned();
+        self.refresh(None)
     }
 
     fn paste(&mut self) -> Task<Message> {
@@ -1565,6 +1626,11 @@ impl App {
                 self.show_error(error);
                 Task::none()
             }
+            NativeUpdate::ClipboardLost(true) => {
+                self.status = "Cut restored after clipboard ownership changed".to_owned();
+                self.refresh(None)
+            }
+            NativeUpdate::ClipboardLost(false) => Task::none(),
         }
     }
 
@@ -1664,6 +1730,10 @@ impl App {
 
     fn refresh_status(&mut self) {
         if self.browser_input.pending_sequence().is_some() {
+            return;
+        }
+        if let Some(status) = self.transfers.pending_cut_status() {
+            self.status = status;
             return;
         }
         self.status = if self.grid.selection_count() > 1 {

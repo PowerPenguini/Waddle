@@ -213,11 +213,16 @@ impl Source {
     }
 
     fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
+        let generation = payload.generation;
         let offer = clipboard::encode(&payload)?;
         let (reply, receiver) = std_mpsc::sync_channel(1);
         self.0
             .commands
-            .send(Command::WriteClipboard { offer, reply })
+            .send(Command::WriteClipboard {
+                offer,
+                generation,
+                reply,
+            })
             .map_err(|_| "the Wayland clipboard worker has stopped".to_owned())?;
         receiver
             .recv_timeout(Duration::from_secs(1))
@@ -231,6 +236,10 @@ impl Source {
             .send(Command::ReadClipboard { reply })
             .map_err(|_| "the Wayland clipboard worker has stopped".to_owned())?;
         Ok(receiver)
+    }
+
+    fn clear_clipboard(&self, generation: u64) {
+        let _ = self.0.commands.send(Command::ClearClipboard { generation });
     }
 }
 
@@ -275,6 +284,10 @@ impl ClipboardAdapter for Source {
             })
         }))
     }
+
+    fn clear_clipboard(&self, generation: u64) {
+        Source::clear_clipboard(self, generation);
+    }
 }
 
 impl Drop for SourceInner {
@@ -304,10 +317,14 @@ enum Command {
     },
     WriteClipboard {
         offer: EncodedOffer,
+        generation: u64,
         reply: std_mpsc::SyncSender<Result<(), String>>,
     },
     ReadClipboard {
         reply: oneshot::Sender<Result<ClipboardImport, String>>,
+    },
+    ClearClipboard {
+        generation: u64,
     },
     Shutdown,
 }
@@ -328,6 +345,7 @@ struct SeatObjects {
 struct ActiveClipboard {
     source: CopyPasteSource,
     offer: EncodedOffer,
+    generation: u64,
 }
 
 struct ClipboardRead {
@@ -459,10 +477,23 @@ fn run_worker(
                 state.set_target(id, destination)
             }
             channel::Event::Msg(Command::FinishInbound { id }) => state.finish_inbound(id),
-            channel::Event::Msg(Command::WriteClipboard { offer, reply }) => {
-                let _ = reply.send(state.write_clipboard(offer));
+            channel::Event::Msg(Command::WriteClipboard {
+                offer,
+                generation,
+                reply,
+            }) => {
+                let _ = reply.send(state.write_clipboard(offer, generation));
             }
             channel::Event::Msg(Command::ReadClipboard { reply }) => state.read_clipboard(reply),
+            channel::Event::Msg(Command::ClearClipboard { generation }) => {
+                if state
+                    .clipboard
+                    .as_ref()
+                    .is_some_and(|clipboard| clipboard.generation == generation)
+                {
+                    state.clipboard = None;
+                }
+            }
             channel::Event::Msg(Command::Shutdown) | channel::Event::Closed => {
                 state.finish_active(Outcome::Cancelled);
                 state.cancel_incoming();
@@ -600,7 +631,7 @@ impl Worker {
         }
     }
 
-    fn write_clipboard(&mut self, offer: EncodedOffer) -> Result<(), String> {
+    fn write_clipboard(&mut self, offer: EncodedOffer, generation: u64) -> Result<(), String> {
         let (seat, serial) = self.last_input.clone().ok_or_else(|| {
             "use the keyboard or pointer before copying to the Wayland clipboard".to_owned()
         })?;
@@ -614,7 +645,11 @@ impl Worker {
             .data_device_manager
             .create_copy_paste_source(&self.queue_handle, offer.mime_types());
         source.set_selection(data_device, serial);
-        self.clipboard = Some(ActiveClipboard { source, offer });
+        self.clipboard = Some(ActiveClipboard {
+            source,
+            offer,
+            generation,
+        });
         Ok(())
     }
 
@@ -1399,12 +1434,13 @@ impl DataSourceHandler for Worker {
             .is_some_and(|drag| drag.source.inner() == source)
         {
             self.finish_active(Outcome::Cancelled);
-        } else if self
+        } else if let Some(clipboard) = self
             .clipboard
-            .as_ref()
-            .is_some_and(|clipboard| clipboard.source.inner() == source)
+            .take_if(|clipboard| clipboard.source.inner() == source)
         {
-            self.clipboard = None;
+            let _ = self.events.unbounded_send(Event::ClipboardOwnershipLost {
+                generation: clipboard.generation,
+            });
         }
     }
 

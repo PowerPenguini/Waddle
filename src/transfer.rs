@@ -58,6 +58,9 @@ pub(crate) enum Event {
         action: Action,
     },
     Error(String),
+    ClipboardOwnershipLost {
+        generation: u64,
+    },
 }
 
 pub(crate) type AdapterCompletion = Pin<Box<dyn Future<Output = Result<Outcome, String>> + Send>>;
@@ -83,6 +86,8 @@ pub(crate) trait ClipboardAdapter {
     fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String>;
 
     fn read_clipboard(&self) -> Result<ClipboardCompletion, String>;
+
+    fn clear_clipboard(&self, generation: u64);
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +148,7 @@ pub(crate) enum NativeUpdate {
     Notice(String),
     Start(Request),
     Error(String),
+    ClipboardLost(bool),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -218,8 +224,31 @@ impl TransferWorkflow {
         })
     }
 
+    pub(crate) fn cut(&mut self, entries: &[FileEntry]) -> Option<String> {
+        entries.first()?;
+        self.next_clipboard_generation = self.next_clipboard_generation.wrapping_add(1);
+        self.clipboard = Some(ClipboardPayload {
+            paths: entries.iter().map(|entry| entry.path.clone()).collect(),
+            action: Action::Move,
+            generation: self.next_clipboard_generation,
+        });
+        Some(format!(
+            "Cut: {} item{}, p paste, Esc cancel",
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" }
+        ))
+    }
+
     pub(crate) fn paste(&self, destination: PathBuf) -> Option<Request> {
         let clipboard = self.clipboard.as_ref()?;
+        if clipboard.action == Action::Move
+            && clipboard
+                .paths
+                .iter()
+                .all(|path| path.parent() == Some(destination.as_path()))
+        {
+            return None;
+        }
         Some(Request {
             paths: clipboard.paths.clone(),
             destination,
@@ -232,6 +261,44 @@ impl TransferWorkflow {
 
     pub(crate) fn clipboard_payload(&self) -> Option<ClipboardPayload> {
         self.clipboard.clone()
+    }
+
+    pub(crate) fn pending_cut_paths(&self) -> &[PathBuf] {
+        self.clipboard
+            .as_ref()
+            .filter(|payload| payload.action == Action::Move)
+            .map_or(&[], |payload| payload.paths.as_slice())
+    }
+
+    pub(crate) fn pending_cut_status(&self) -> Option<String> {
+        let count = self.pending_cut_paths().len();
+        (count > 0).then(|| {
+            format!(
+                "Cut: {count} item{}, p paste, Esc cancel",
+                if count == 1 { "" } else { "s" }
+            )
+        })
+    }
+
+    pub(crate) fn cancel_cut(&mut self) -> Option<u64> {
+        let generation = self
+            .clipboard
+            .as_ref()
+            .filter(|payload| payload.action == Action::Move)
+            .map(|payload| payload.generation)?;
+        self.clipboard = None;
+        Some(generation)
+    }
+
+    pub(crate) fn lose_clipboard(&mut self, generation: u64) -> bool {
+        if self.clipboard.as_ref().is_some_and(|payload| {
+            payload.action == Action::Move && payload.generation == generation
+        }) {
+            self.clipboard = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn import_clipboard(&mut self, import: ClipboardImport) -> bool {
@@ -408,6 +475,9 @@ impl TransferWorkflow {
                 self.hover = None;
                 NativeUpdate::Error(format!("Drag-and-drop failed: {error}"))
             }
+            Event::ClipboardOwnershipLost { generation } => {
+                NativeUpdate::ClipboardLost(self.lose_clipboard(generation))
+            }
         }
     }
 
@@ -447,6 +517,22 @@ impl TransferWorkflow {
             }
         });
         let clipboard = request.initiator == Initiator::Clipboard;
+        if clipboard
+            && request.action == Action::Move
+            && request.clipboard_generation
+                == self.clipboard.as_ref().map(|payload| payload.generation)
+        {
+            let failed = report
+                .failures
+                .iter()
+                .map(|failure| failure.source.clone())
+                .collect::<Vec<_>>();
+            if failed.is_empty() {
+                self.clipboard = None;
+            } else if let Some(payload) = self.clipboard.as_mut() {
+                payload.paths = failed;
+            }
+        }
         Consequences {
             status: (!clipboard && error.is_none())
                 .then(|| format!("{} {completed} item(s)", request.action.label())),
@@ -769,5 +855,57 @@ mod tests {
 
         assert_eq!(consequences.select, report.completed);
         assert!(workflow.paste(PathBuf::from("/another-target")).is_some());
+    }
+
+    #[test]
+    fn cut_stays_pending_until_cancel_or_the_matching_ownership_is_lost() {
+        let entries = [entry("/start/one", false), entry("/start/two", false)];
+        let mut workflow = TransferWorkflow::default();
+
+        assert_eq!(
+            workflow.cut(&entries).as_deref(),
+            Some("Cut: 2 items, p paste, Esc cancel")
+        );
+        let generation = workflow.clipboard_payload().unwrap().generation;
+        assert_eq!(
+            workflow.pending_cut_paths(),
+            [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
+        );
+        assert!(!workflow.lose_clipboard(generation + 1));
+        assert!(workflow.lose_clipboard(generation));
+        assert!(workflow.pending_cut_paths().is_empty());
+
+        workflow.cut(&entries).unwrap();
+        assert!(workflow.cancel_cut().is_some());
+        assert!(workflow.pending_cut_paths().is_empty());
+    }
+
+    #[test]
+    fn partial_cut_move_keeps_only_failed_sources_pending() {
+        let entries = [entry("/start/one", false), entry("/start/two", false)];
+        let mut workflow = TransferWorkflow::default();
+        workflow.cut(&entries).unwrap();
+        let request = workflow.paste(PathBuf::from("/target")).unwrap();
+        let report = TransferReport {
+            completed: vec![PathBuf::from("/target/one")],
+            failures: vec![crate::fs::TransferFailure {
+                source: PathBuf::from("/start/two"),
+                error: "denied".to_owned(),
+            }],
+        };
+
+        workflow.finish_transfer(None, &request, &report, Path::new("/target"));
+
+        assert_eq!(workflow.pending_cut_paths(), [PathBuf::from("/start/two")]);
+        assert!(workflow.paste(PathBuf::from("/retry")).is_some());
+    }
+
+    #[test]
+    fn cut_paste_into_the_source_directory_is_a_no_op() {
+        let mut workflow = TransferWorkflow::default();
+        workflow.cut(&[entry("/start/one", false)]).unwrap();
+
+        assert!(workflow.paste(PathBuf::from("/start")).is_none());
+        assert_eq!(workflow.pending_cut_paths(), [PathBuf::from("/start/one")]);
     }
 }
