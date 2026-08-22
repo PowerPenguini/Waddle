@@ -153,9 +153,9 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Selection and activation
 
-- [ ] Add `Ctrl+click`, `Shift+click`, `Ctrl+A`, arrow navigation, `Shift+arrows`, Space, Home,
+- [x] Add `Ctrl+click`, `Shift+click`, `Ctrl+A`, arrow navigation, `Shift+arrows`, Space, Home,
   and End.
-- [ ] Keep Visual selection and Vim motions as equivalent keyboard paths.
+- [x] Keep Visual selection and Vim motions as equivalent keyboard paths.
 - [ ] Support configurable single-click or double-click activation, with double-click as the
   default.
 - [ ] Add breadcrumbs and switch to editable location input with `Ctrl+L`.

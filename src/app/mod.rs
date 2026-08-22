@@ -754,6 +754,13 @@ impl App {
             keyboard::Key::Named(keyboard::key::Named::Backspace) => InputNamedKey::Backspace,
             keyboard::Key::Named(keyboard::key::Named::Delete) => InputNamedKey::Delete,
             keyboard::Key::Named(keyboard::key::Named::F5) => InputNamedKey::Refresh,
+            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => InputNamedKey::ArrowLeft,
+            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => InputNamedKey::ArrowRight,
+            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => InputNamedKey::ArrowUp,
+            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => InputNamedKey::ArrowDown,
+            keyboard::Key::Named(keyboard::key::Named::Home) => InputNamedKey::Home,
+            keyboard::Key::Named(keyboard::key::Named::End) => InputNamedKey::End,
+            keyboard::Key::Named(keyboard::key::Named::Space) => InputNamedKey::Space,
             _ => InputNamedKey::Other,
         };
         let intent = self.browser_input.handle(
@@ -761,6 +768,7 @@ impl App {
                 text,
                 named,
                 control: modifiers.control(),
+                shift: modifiers.shift(),
                 alt: modifiers.alt(),
                 logo: modifiers.logo(),
             },
@@ -820,6 +828,23 @@ impl App {
             InputIntent::Undo => self.run_journal(false),
             InputIntent::Redo => self.run_journal(true),
             InputIntent::Refresh => self.live_refresh(),
+            InputIntent::SelectAll => {
+                self.grid.select_all(self.navigation.entries().len());
+                self.schedule_details()
+            }
+            InputIntent::ToggleActive => {
+                self.grid.toggle_active(self.navigation.entries().len());
+                self.schedule_details()
+            }
+            InputIntent::StandardMove { motion, extend } => {
+                self.grid.move_standard(
+                    motion,
+                    extend,
+                    self.navigation.entries().len(),
+                    self.status_height(),
+                );
+                Task::batch([self.schedule_details(), self.scroll_to_selected()])
+            }
             InputIntent::Back => self.go_back(),
             InputIntent::Forward => self.go_forward(),
             InputIntent::BeginSearch => self.begin_search(),
@@ -1035,13 +1060,23 @@ impl App {
             self.cancel_rename();
         }
         if entry.is_directory() {
-            if double {
-                return Task::none();
+            if !double {
+                self.grid.select_click(
+                    index,
+                    self.modifiers.control(),
+                    self.modifiers.shift(),
+                    self.navigation.entries().len(),
+                );
+                return self.schedule_details();
             }
             return self.navigate(entry.path, true, None);
         }
-        self.grid
-            .select_only(Some(index), self.navigation.entries().len());
+        self.grid.select_click(
+            index,
+            self.modifiers.control(),
+            self.modifiers.shift(),
+            self.navigation.entries().len(),
+        );
         if double {
             return self.open_entry(entry);
         }

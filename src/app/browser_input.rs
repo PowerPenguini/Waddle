@@ -43,6 +43,13 @@ pub(super) enum NamedKey {
     Backspace,
     Delete,
     Refresh,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
+    Home,
+    End,
+    Space,
     #[default]
     Other,
 }
@@ -52,6 +59,7 @@ pub(super) struct Press {
     pub(super) text: Option<String>,
     pub(super) named: NamedKey,
     pub(super) control: bool,
+    pub(super) shift: bool,
     pub(super) alt: bool,
     pub(super) logo: bool,
 }
@@ -91,6 +99,9 @@ pub(super) enum Intent {
     Undo,
     Redo,
     Refresh,
+    SelectAll,
+    ToggleActive,
+    StandardMove { motion: Motion, extend: bool },
     Back,
     Forward,
     BeginSearch,
@@ -306,6 +317,7 @@ impl BrowserInput {
             self.black_hole_stage = 0;
             return match text.map(str::to_ascii_lowercase).as_deref() {
                 Some("c") => Intent::Copy,
+                Some("a") => Intent::SelectAll,
                 Some("v") => Intent::Paste,
                 Some("o") => Intent::Back,
                 Some("i") => Intent::Forward,
@@ -314,6 +326,25 @@ impl BrowserInput {
                 Some("u") => Intent::Move(Motion::HalfPageUp, count),
                 _ => Intent::None,
             };
+        }
+
+        let standard_motion = match press.named {
+            NamedKey::ArrowLeft => Some(Motion::Left),
+            NamedKey::ArrowRight => Some(Motion::Right),
+            NamedKey::ArrowUp => Some(Motion::Up),
+            NamedKey::ArrowDown => Some(Motion::Down),
+            NamedKey::Home => Some(Motion::First),
+            NamedKey::End => Some(Motion::Last),
+            _ => None,
+        };
+        if let Some(motion) = standard_motion {
+            return Intent::StandardMove {
+                motion,
+                extend: press.shift,
+            };
+        }
+        if press.named == NamedKey::Space {
+            return Intent::ToggleActive;
         }
 
         if let Some(value) = text

@@ -72,6 +72,7 @@ pub(super) struct GridInteraction {
     selected: Option<usize>,
     selection: BTreeSet<usize>,
     visual_anchor: Option<usize>,
+    selection_anchor: Option<usize>,
     details: Option<String>,
 }
 
@@ -92,6 +93,7 @@ impl GridInteraction {
             selected: None,
             selection: BTreeSet::new(),
             visual_anchor: None,
+            selection_anchor: None,
             details: None,
         }
     }
@@ -191,6 +193,7 @@ impl GridInteraction {
         self.selection.clear();
         self.selection.extend(self.selected);
         self.visual_anchor = None;
+        self.selection_anchor = self.selected;
     }
 
     pub(super) fn select_indices(&mut self, indices: &[usize], entry_count: usize) {
@@ -201,6 +204,77 @@ impl GridInteraction {
             .collect();
         self.selected = self.selection.first().copied();
         self.visual_anchor = None;
+        self.selection_anchor = self.selected;
+    }
+
+    pub(super) fn select_click(
+        &mut self,
+        index: usize,
+        control: bool,
+        shift: bool,
+        entry_count: usize,
+    ) {
+        if index >= entry_count {
+            return;
+        }
+        if shift {
+            let anchor = self.selection_anchor.or(self.selected).unwrap_or(index);
+            self.selection.clear();
+            self.selection.extend(anchor.min(index)..=anchor.max(index));
+            self.selected = Some(index);
+        } else if control {
+            if !self.selection.remove(&index) {
+                self.selection.insert(index);
+            }
+            self.selected = Some(index);
+            self.selection_anchor = Some(index);
+        } else {
+            self.select_only(Some(index), entry_count);
+        }
+        self.visual_anchor = None;
+    }
+
+    pub(super) fn select_all(&mut self, entry_count: usize) {
+        self.selection = (0..entry_count).collect();
+        self.selected = (entry_count > 0).then_some(0);
+        self.selection_anchor = self.selected;
+        self.visual_anchor = None;
+    }
+
+    pub(super) fn toggle_active(&mut self, entry_count: usize) {
+        let Some(active) = self.selected.filter(|index| *index < entry_count) else {
+            return;
+        };
+        if !self.selection.remove(&active) {
+            self.selection.insert(active);
+        }
+        self.selection_anchor.get_or_insert(active);
+    }
+
+    pub(super) fn move_standard(
+        &mut self,
+        motion: Motion,
+        extend: bool,
+        entry_count: usize,
+        status_height: f32,
+    ) -> Option<usize> {
+        if entry_count == 0 {
+            return None;
+        }
+        let current = self.selected.unwrap_or(0).min(entry_count - 1);
+        let next = self.motion_target(current, motion, 1, entry_count, status_height);
+        let anchor = self.selection_anchor.unwrap_or(current);
+        self.selected = Some(next);
+        if extend {
+            self.selection.clear();
+            self.selection.extend(anchor.min(next)..=anchor.max(next));
+        } else {
+            self.selection.clear();
+            self.selection.insert(next);
+            self.selection_anchor = Some(next);
+        }
+        self.visual_anchor = None;
+        Some(next)
     }
 
     #[cfg(test)]
@@ -649,6 +723,29 @@ mod tests {
             [4]
         );
         assert!(!grid.visual_active());
+    }
+
+    #[test]
+    fn conventional_click_keyboard_and_active_selection_are_distinct() {
+        let mut grid = GridInteraction::new(Size::new(820.0, 560.0));
+        grid.select_click(2, false, false, 12);
+        grid.select_click(5, true, false, 12);
+        assert_eq!(grid.selected_entry(), Some(5));
+        assert_eq!(grid.selected_indices(), &BTreeSet::from([2, 5]));
+
+        grid.select_click(8, false, true, 12);
+        assert_eq!(grid.selected_entry(), Some(8));
+        assert_eq!(grid.selected_indices(), &(5..=8).collect());
+
+        grid.move_standard(Motion::Left, true, 12, 25.0);
+        assert_eq!(grid.selected_entry(), Some(7));
+        assert_eq!(grid.selected_indices(), &(5..=7).collect());
+        grid.toggle_active(12);
+        assert!(!grid.is_selected(7));
+        assert_eq!(grid.selected_entry(), Some(7));
+
+        grid.select_all(12);
+        assert_eq!(grid.selection_count(), 12);
     }
 
     #[test]
