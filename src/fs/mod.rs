@@ -44,12 +44,19 @@ pub struct TransferWarning {
     pub detail: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct TransferReceipt {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TransferReport {
     pub completed: Vec<PathBuf>,
     pub failures: Vec<TransferFailure>,
     pub retained: Vec<PathBuf>,
     pub warnings: Vec<TransferWarning>,
+    pub receipts: Vec<TransferReceipt>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -410,6 +417,18 @@ impl TransferBatch {
                 .collect(),
             failures: self.failures,
             warnings: self.warnings,
+            receipts: self
+                .roots
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !self.failed_roots.contains(index) && !self.retained_roots.contains(index)
+                })
+                .map(|(_, root)| TransferReceipt {
+                    source: root.source.clone(),
+                    destination: root.destination.clone(),
+                })
+                .collect(),
             retained: self
                 .retained_roots
                 .into_iter()
@@ -1037,6 +1056,22 @@ fn remove_item(path: &Path) -> io::Result<()> {
     } else {
         fs::remove_file(path)
     }
+}
+
+pub(crate) fn journal_copy(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_item_with_warnings(source, destination)
+        .map(drop)
+        .map_err(|error| format!("could not redo Copy: {error}"))
+}
+
+pub(crate) fn journal_move(source: &Path, destination: &Path) -> Result<(), String> {
+    move_exact(source, destination)
+        .map(drop)
+        .map_err(|error| format!("could not move entry: {error}"))
+}
+
+pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
+    remove_item(path).map_err(|error| format!("could not remove {}: {error}", path.display()))
 }
 
 #[cfg(test)]

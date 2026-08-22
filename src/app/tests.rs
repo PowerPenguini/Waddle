@@ -299,10 +299,12 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
     let _ = app.show_trash_prompt();
     app.busy = true;
 
-    let _ = app.finish_file_operation(FileOperationCompletion::Trash(vec![(
-        entry("one.txt"),
-        "Trash is unavailable".to_owned(),
-    )]));
+    let _ = app.finish_file_operation(FileOperationCompletion::Trash(
+        super::file_operation::TrashCompletion {
+            failures: vec![(entry("one.txt"), "Trash is unavailable".to_owned())],
+            receipts: Vec::new(),
+        },
+    ));
 
     assert!(matches!(
         app.file_operations.view(),

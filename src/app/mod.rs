@@ -1436,6 +1436,9 @@ impl App {
                 result: Ok(path),
                 ..
             } => journal::Action::new_folder(path.clone()).map(Some),
+            file_operation::Completion::Trash(completion) => {
+                journal::Action::trash(&completion.receipts)
+            }
             _ => Ok(None),
         };
         let consequences = self.file_operations.complete(completion);
@@ -1774,6 +1777,7 @@ impl App {
                         }],
                         retained: Vec::new(),
                         warnings: Vec::new(),
+                        receipts: Vec::new(),
                     })),
                 },
                 Completion::Cancelled => Message::Noop,
@@ -1840,6 +1844,13 @@ impl App {
         report: fs::TransferReport,
     ) -> Task<Message> {
         self.busy = false;
+        let journal_action = journal::Action::transfer(
+            match request.action {
+                TransferAction::Copy => journal::TransferKind::Copy,
+                TransferAction::Move => journal::TransferKind::Move,
+            },
+            &report.receipts,
+        );
         let adapter = self
             .native_dnd
             .as_ref()
@@ -1847,6 +1858,21 @@ impl App {
         let consequences =
             self.transfers
                 .finish_transfer(adapter, &request, &report, self.navigation.current());
+        match journal_action {
+            Ok(Some(action)) => {
+                if let Err(error) = self.journal.record(action) {
+                    self.status_notice = Some(format!(
+                        "Transfer completed but Undo was not saved: {error}"
+                    ));
+                }
+            }
+            Err(error) => {
+                self.status_notice = Some(format!(
+                    "Transfer completed but Undo is unavailable: {error}"
+                ));
+            }
+            Ok(None) => {}
+        }
         self.apply_transfer_consequences(consequences)
     }
 

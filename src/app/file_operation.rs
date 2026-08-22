@@ -1,21 +1,17 @@
 use std::path::{Path, PathBuf};
 
-use gio::prelude::FileExt;
-
-use crate::{fs, fs::FileEntry};
+use crate::{fs, fs::FileEntry, journal};
 
 pub(super) trait TrashAdapter {
-    fn trash(&self, path: &Path) -> Result<(), String>;
+    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GioTrashAdapter;
 
 impl TrashAdapter for GioTrashAdapter {
-    fn trash(&self, path: &Path) -> Result<(), String> {
-        gio::File::for_path(path)
-            .trash(None::<&gio::Cancellable>)
-            .map_err(|error| error.to_string())
+    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
+        journal::trash(path)
     }
 }
 
@@ -99,9 +95,7 @@ impl Work {
                     result,
                 }
             }
-            WorkKind::Trash(entries) => {
-                Completion::Trash(run_entries(entries, |entry| trash.trash(&entry.path)))
-            }
+            WorkKind::Trash(entries) => Completion::Trash(run_trash_entries(entries, trash)),
             WorkKind::PermanentDelete(entries) => {
                 Completion::PermanentDelete(run_entries(entries, |entry| {
                     fs::delete_permanently(&entry.path).map_err(|error| error.to_string())
@@ -121,6 +115,18 @@ fn run_entries(
         .collect()
 }
 
+fn run_trash_entries<A: TrashAdapter>(entries: Vec<FileEntry>, trash: &A) -> TrashCompletion {
+    let mut failures = Vec::new();
+    let mut receipts = Vec::new();
+    for entry in entries {
+        match trash.trash(&entry.path) {
+            Ok(receipt) => receipts.push(receipt),
+            Err(error) => failures.push((entry, error)),
+        }
+    }
+    TrashCompletion { failures, receipts }
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum Completion {
     Name {
@@ -128,8 +134,14 @@ pub(super) enum Completion {
         source: Option<PathBuf>,
         result: Result<PathBuf, String>,
     },
-    Trash(Vec<(FileEntry, String)>),
+    Trash(TrashCompletion),
     PermanentDelete(Vec<(FileEntry, String)>),
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct TrashCompletion {
+    pub(super) failures: Vec<(FileEntry, String)>,
+    pub(super) receipts: Vec<journal::TrashReceipt>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -336,7 +348,7 @@ impl FileOperationSession {
                     Consequences::default()
                 }
             },
-            Completion::Trash(failures) => {
+            Completion::Trash(TrashCompletion { failures, .. }) => {
                 if failures.is_empty() {
                     self.state = State::Idle;
                     return Consequences {
@@ -408,12 +420,16 @@ mod tests {
     }
 
     impl TrashAdapter for MemoryTrashAdapter {
-        fn trash(&self, path: &Path) -> Result<(), String> {
+        fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
             self.calls.lock().unwrap().push(path.to_path_buf());
             if self.failures.contains(path) {
                 Err("Trash unavailable".to_owned())
             } else {
-                Ok(())
+                Ok(journal::TrashReceipt {
+                    original: path.to_path_buf(),
+                    trashed: PathBuf::from("/trash").join(path.file_name().unwrap_or_default()),
+                    info: PathBuf::from("/trash/info"),
+                })
             }
         }
     }
@@ -488,7 +504,7 @@ mod tests {
         let _ = session.confirm(PathBuf::from("/work"));
 
         assert_eq!(
-            session.complete(Completion::Trash(Vec::new())),
+            session.complete(Completion::Trash(TrashCompletion::default())),
             Consequences {
                 refresh: true,
                 ..Consequences::default()
@@ -526,19 +542,19 @@ mod tests {
         let mut session = FileOperationSession::default();
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion::Trash(vec![(
-            failed.clone(),
-            "Trash unavailable".to_owned(),
-        )]));
+        let _ = session.complete(Completion::Trash(TrashCompletion {
+            failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
+            receipts: Vec::new(),
+        }));
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));
 
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion::Trash(vec![(
-            failed.clone(),
-            "Trash unavailable".to_owned(),
-        )]));
+        let _ = session.complete(Completion::Trash(TrashCompletion {
+            failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
+            receipts: Vec::new(),
+        }));
         assert!(session.confirm(PathBuf::from("/work")).is_some());
         let consequences = session.complete(Completion::PermanentDelete(vec![(
             failed,

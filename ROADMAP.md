@@ -106,9 +106,9 @@ needs external drag and drop and a native clipboard adapter.
 
 - [x] Store the last 100 operations or the last 30 days of history, whichever limit is reached
   first.
-- [ ] Cover Rename, Move, Trash, New Folder, and Copy.
-- [ ] Never claim that permanent delete can be undone.
-- [ ] Remove a copied result during Undo only if it is still the unchanged result of that Copy.
+- [x] Cover Rename, Move, Trash, New Folder, and Copy.
+- [x] Never claim that permanent delete can be undone.
+- [x] Remove a copied result during Undo only if it is still the unchanged result of that Copy.
 - [x] Remove a newly created directory during Undo only if it is still empty.
 - [x] Refuse Undo when later filesystem changes make the inverse operation unsafe.
 - [x] Keep Redo available until the next new mutation.
