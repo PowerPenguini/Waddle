@@ -162,17 +162,17 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Views and sorting
 
-- [ ] Add List view alongside Grid.
-- [ ] Sort by Name, Modified, Size, or Type in either direction.
-- [ ] Use natural filename ordering.
-- [ ] Make folders-first configurable.
-- [ ] Store global view defaults and optional per-directory overrides.
+- [x] Add List view alongside Grid.
+- [x] Sort by Name, Modified, Size, or Type in either direction.
+- [x] Use natural filename ordering.
+- [x] Make folders-first configurable.
+- [x] Store global view defaults and optional per-directory overrides.
 - [ ] Add image thumbnails with asynchronous generation and a bounded cache.
 
 ### Hidden files and search
 
-- [ ] Toggle hidden files with `Ctrl+H`.
-- [ ] Include hidden entries in local and recursive filename search only while hidden files are
+- [x] Toggle hidden files with `Ctrl+H`.
+- [x] Include hidden entries in local and recursive filename search only while hidden files are
   visible.
 - [ ] Keep 1.0 filename-only search. Full-text search and structured filters belong to 1.1.
 

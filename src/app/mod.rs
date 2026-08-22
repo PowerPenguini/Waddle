@@ -10,6 +10,7 @@ mod shell;
 mod state;
 mod transfer_queue;
 mod tree;
+mod view_preferences;
 
 #[cfg(target_os = "linux")]
 mod native_clipboard;
@@ -46,8 +47,8 @@ use file_operation::{
 use fs::FileEntry;
 use gio::prelude::*;
 use grid::{
-    CONTENT_GUTTER, DropZone, GridInteraction, LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH,
-    TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT,
+    CONTENT_GUTTER, DropZone, GridInteraction, LIST_ROW_HEIGHT, LIST_VIEW_TOP_INSET, Motion,
+    SIDEBAR_WIDTH, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{
@@ -132,6 +133,11 @@ enum Message {
     PollSystem,
     DirectoryChanged(directory_watch::Event),
     Refresh,
+    ToggleView,
+    CycleSort,
+    ToggleSortDirection,
+    ToggleFoldersFirst,
+    ToggleHidden,
     Parent,
     Back,
     Forward,
@@ -222,6 +228,7 @@ struct App {
     file_operations: FileOperationSession,
     journal: journal::Journal,
     directory_watch: Option<directory_watch::Source>,
+    view_preferences: view_preferences::Preferences,
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -279,6 +286,7 @@ impl App {
             file_operations: FileOperationSession::default(),
             journal,
             directory_watch,
+            view_preferences: view_preferences::Preferences::open_default(),
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
             browser_input: BrowserInput::default(),
@@ -485,6 +493,29 @@ impl App {
                 }
             }
             Message::Refresh => self.live_refresh(),
+            Message::ToggleView => self.change_view_options(|options| {
+                options.view = match options.view {
+                    fs::ViewMode::Grid => fs::ViewMode::List,
+                    fs::ViewMode::List => fs::ViewMode::Grid,
+                };
+            }),
+            Message::CycleSort => self.change_view_options(|options| {
+                options.sort = match options.sort {
+                    fs::SortKey::Name => fs::SortKey::Modified,
+                    fs::SortKey::Modified => fs::SortKey::Size,
+                    fs::SortKey::Size => fs::SortKey::Type,
+                    fs::SortKey::Type => fs::SortKey::Name,
+                };
+            }),
+            Message::ToggleSortDirection => {
+                self.change_view_options(|options| options.descending = !options.descending)
+            }
+            Message::ToggleFoldersFirst => {
+                self.change_view_options(|options| options.folders_first = !options.folders_first)
+            }
+            Message::ToggleHidden => {
+                self.change_view_options(|options| options.show_hidden = !options.show_hidden)
+            }
             Message::Parent => self.go_parent(),
             Message::Back => self.go_back(),
             Message::Forward => self.go_forward(),
@@ -828,6 +859,7 @@ impl App {
             InputIntent::Undo => self.run_journal(false),
             InputIntent::Redo => self.run_journal(true),
             InputIntent::Refresh => self.live_refresh(),
+            InputIntent::ToggleHidden => self.update(Message::ToggleHidden),
             InputIntent::SelectAll => {
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
@@ -896,13 +928,14 @@ impl App {
 
     fn request_navigation(&mut self, navigation: NavigationRequest) -> Task<Message> {
         let requested = navigation.requested().to_path_buf();
+        let options = self.view_preferences.for_directory(&requested);
         self.navigation_loading = true;
         self.status = format!("Opening {}…", requested.display());
         Task::perform(
             self.operations.run(OperationKind::Navigation, {
                 let path = requested.clone();
                 move |_| {
-                    fs::open_directory(&path)
+                    fs::open_directory_with(&path, options)
                         .map(|opened| (opened.canonical_path, opened.entries))
                         .map_err(|error| error.to_string())
                 }
@@ -936,6 +969,12 @@ impl App {
         self.navigation_loading = false;
         match self.navigation.complete(&requested, result) {
             NavigationOutcome::Committed { selected, refresh } => {
+                self.grid.set_list_mode(
+                    self.view_preferences
+                        .for_directory(self.navigation.current())
+                        .view
+                        == fs::ViewMode::List,
+                );
                 let selected_paths = selected
                     .iter()
                     .filter_map(|index| self.navigation.entries().get(*index))
@@ -1047,6 +1086,17 @@ impl App {
             .map(|entry| entry.path)
             .collect();
         self.refresh_selected(selected)
+    }
+
+    fn change_view_options(
+        &mut self,
+        change: impl FnOnce(&mut fs::BrowseOptions),
+    ) -> Task<Message> {
+        let current = self.navigation.current().to_path_buf();
+        let mut options = self.view_preferences.for_directory(&current);
+        change(&mut options);
+        self.view_preferences.set_directory(current, options);
+        self.live_refresh()
     }
 
     fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
@@ -1188,9 +1238,13 @@ impl App {
 
     fn load_tree_node(&self, id: u64, path: PathBuf) -> Task<Message> {
         let worker_path = path.clone();
+        let show_hidden = self.view_preferences.for_directory(&path).show_hidden;
         Task::perform(
             self.operations.run(OperationKind::Background, move |_| {
-                Ok(fs::read_child_folders(&worker_path))
+                Ok(fs::read_child_folders_with_hidden(
+                    &worker_path,
+                    show_hidden,
+                ))
             }),
             move |completion| match completion {
                 Completion::Finished(result) => {
@@ -1308,14 +1362,19 @@ impl App {
     }
 
     fn schedule_recursive_search(&self, root: PathBuf, query: String) -> Task<Message> {
+        let show_hidden = self.view_preferences.for_directory(&root).show_hidden;
         Task::perform(
             self.operations.run_after(
                 OperationKind::Search,
                 Duration::from_millis(160),
                 move |cancellation| {
-                    fs::search_directory(&root, &query, SEARCH_LIMIT, || {
-                        cancellation.is_cancelled()
-                    })
+                    fs::search_directory_with_hidden(
+                        &root,
+                        &query,
+                        SEARCH_LIMIT,
+                        show_hidden,
+                        || cancellation.is_cancelled(),
+                    )
                     .map_err(|error| error.to_string())
                 },
             ),
@@ -2331,6 +2390,18 @@ impl App {
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
         );
+        let options = self
+            .view_preferences
+            .for_directory(self.navigation.current());
+        let view_label = match options.view {
+            fs::ViewMode::Grid => "Grid",
+            fs::ViewMode::List => "List",
+        };
+        let sort_label = format!(
+            "{:?} {}",
+            options.sort,
+            if options.descending { "↓" } else { "↑" }
+        );
         let location_input = text_input("Location", &self.location_input)
             .id(Id::new(LOCATION_ID))
             .on_input(Message::LocationChanged)
@@ -2359,9 +2430,30 @@ impl App {
         .height(34);
         let location = mouse_area(location).on_press(Message::LocationFocused);
         container(
-            row![parent, back, forward, refresh, location]
-                .spacing(4)
-                .align_y(Alignment::Center),
+            row![
+                parent,
+                back,
+                forward,
+                refresh,
+                location,
+                compact_text_button(view_label, Message::ToggleView),
+                button(text(sort_label).font(MONO_FONT_SEMIBOLD).size(11))
+                    .on_press(Message::CycleSort)
+                    .padding(Padding::from([1, 4]))
+                    .style(toolbar_button_style),
+                compact_text_button("Direction", Message::ToggleSortDirection),
+                compact_text_button("Folders", Message::ToggleFoldersFirst),
+                compact_text_button(
+                    if options.show_hidden {
+                        "Hidden on"
+                    } else {
+                        "Hidden off"
+                    },
+                    Message::ToggleHidden,
+                ),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
         )
         .height(TOOLBAR_HEIGHT)
         .padding(Padding::from([6, CONTENT_GUTTER as u16]))
@@ -2370,6 +2462,14 @@ impl App {
     }
 
     fn grid_body(&self) -> Element<'_, Message> {
+        if self
+            .view_preferences
+            .for_directory(self.navigation.current())
+            .view
+            == fs::ViewMode::List
+        {
+            return self.list_body();
+        }
         let visible = self
             .grid
             .visible_range(self.navigation.entries().len(), self.status_height());
@@ -2428,6 +2528,84 @@ impl App {
             .height(Fill)
             .clip(true)
             .style(move |theme| grid_background_style(theme, current_drop_target))
+            .into()
+    }
+
+    fn list_body(&self) -> Element<'_, Message> {
+        let visible = self
+            .grid
+            .list_visible_range(self.navigation.entries().len(), self.status_height());
+        let top = Space::new()
+            .height(visible.start as f32 * LIST_ROW_HEIGHT)
+            .width(Fill);
+        let bottom = Space::new()
+            .height(
+                self.navigation.entries().len().saturating_sub(visible.end) as f32
+                    * LIST_ROW_HEIGHT,
+            )
+            .width(Fill);
+        let mut rows = Column::new().spacing(0).push(top);
+        for index in visible {
+            rows = rows.push(self.file_list_row(index));
+        }
+        rows = rows.push(bottom);
+        container(
+            scrollable(rows)
+                .id(Id::new(GRID_SCROLL_ID))
+                .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
+                .width(Fill)
+                .height(Fill),
+        )
+        .padding(Padding::from([
+            LIST_VIEW_TOP_INSET as u16,
+            CONTENT_GUTTER as u16,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .style(browser_background_style)
+        .into()
+    }
+
+    fn file_list_row(&self, index: usize) -> Element<'_, Message> {
+        let entry = &self.navigation.entries()[index];
+        let selected = self.grid.is_selected(index);
+        let hovered = self.grid.hovered() == Some(index);
+        let icon_kind = entry_icon_kind(entry);
+        let kind = if entry.is_directory() {
+            "Folder".to_owned()
+        } else {
+            entry
+                .path
+                .extension()
+                .map(|extension| extension.to_string_lossy().to_uppercase())
+                .unwrap_or_else(|| "File".to_owned())
+        };
+        let content = row![
+            themed_svg(
+                entry_icon_asset(icon_kind),
+                20.0,
+                self.entry_icon_color(icon_kind),
+            ),
+            text(fs::display_name(&entry.name)).size(13).width(Fill),
+            text(kind)
+                .font(MONO_FONT)
+                .size(11)
+                .color(self.secondary_text_color())
+                .width(100),
+        ]
+        .spacing(9)
+        .align_y(Alignment::Center);
+        let row = container(content)
+            .height(LIST_ROW_HEIGHT)
+            .padding(Padding::from([0, 8]))
+            .style(move |theme| tile_style(theme, selected, hovered, false));
+        mouse_area(row)
+            .on_press(Message::EntryPressed(index))
+            .on_release(Message::EntryReleased(index))
+            .on_double_click(Message::EntryDoubleClicked(index))
+            .on_right_press(Message::EntryContext(index))
+            .on_enter(Message::EntryHovered(index))
+            .on_exit(Message::EntryUnhovered(index))
             .into()
     }
 

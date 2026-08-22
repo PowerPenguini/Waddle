@@ -9,6 +9,7 @@ pub(super) const TILE_WIDTH: f32 = 104.0;
 pub(super) const TILE_ROW_HEIGHT: f32 = 116.0;
 pub(super) const CONTENT_GUTTER: f32 = 14.0;
 pub(super) const LIST_VIEW_TOP_INSET: f32 = 6.0;
+pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
 const TILE_PITCH: f32 = 112.0;
 const TILE_HEIGHT: f32 = 108.0;
@@ -74,6 +75,7 @@ pub(super) struct GridInteraction {
     visual_anchor: Option<usize>,
     selection_anchor: Option<usize>,
     details: Option<String>,
+    list_mode: bool,
 }
 
 impl Default for GridInteraction {
@@ -95,11 +97,16 @@ impl GridInteraction {
             visual_anchor: None,
             selection_anchor: None,
             details: None,
+            list_mode: false,
         }
     }
 
     pub(super) fn resize(&mut self, size: Size) {
         self.window_size = size;
+    }
+
+    pub(super) fn set_list_mode(&mut self, list_mode: bool) {
+        self.list_mode = list_mode;
     }
 
     pub(super) fn cursor(&self) -> Point {
@@ -468,6 +475,9 @@ impl GridInteraction {
     }
 
     pub(super) fn columns(&self) -> usize {
+        if self.list_mode {
+            return 1;
+        }
         let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
         (width / TILE_PITCH).floor().max(1.0) as usize
     }
@@ -478,7 +488,11 @@ impl GridInteraction {
     }
 
     pub(super) fn scroll_target(&self, index: usize) -> f32 {
-        (index / self.columns()) as f32 * TILE_ROW_HEIGHT
+        if self.list_mode {
+            index as f32 * LIST_ROW_HEIGHT
+        } else {
+            (index / self.columns()) as f32 * TILE_ROW_HEIGHT
+        }
     }
 
     pub(super) fn visible_range(&self, entry_count: usize, status_height: f32) -> VisibleRange {
@@ -502,6 +516,18 @@ impl GridInteraction {
             top_space: first_row as f32 * TILE_ROW_HEIGHT,
             bottom_space: total_rows.saturating_sub(last_row) as f32 * TILE_ROW_HEIGHT,
         }
+    }
+
+    pub(super) fn list_visible_range(
+        &self,
+        entry_count: usize,
+        status_height: f32,
+    ) -> std::ops::Range<usize> {
+        let viewport =
+            (self.window_size.height - TOOLBAR_HEIGHT - status_height).max(LIST_ROW_HEIGHT);
+        let first = ((self.scroll_y / LIST_ROW_HEIGHT).floor() as usize).saturating_sub(1);
+        let count = (viewport / LIST_ROW_HEIGHT).ceil() as usize + 2;
+        first..first.saturating_add(count).min(entry_count)
     }
 
     pub(super) fn drop_zone(
@@ -723,6 +749,20 @@ mod tests {
             [4]
         );
         assert!(!grid.visual_active());
+    }
+
+    #[test]
+    fn list_mode_uses_one_column_and_bounds_large_directory_rendering() {
+        let mut grid = grid();
+        grid.set_list_mode(true);
+        grid.set_scroll(3_400.0);
+
+        assert_eq!(grid.columns(), 1);
+        assert_eq!(grid.scroll_target(125), 125.0 * LIST_ROW_HEIGHT);
+        let visible = grid.list_visible_range(10_000, 25.0);
+        assert!(visible.start > 0);
+        assert!(visible.len() < 30);
+        assert!(visible.end < 10_000);
     }
 
     #[test]

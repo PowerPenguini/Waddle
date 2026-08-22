@@ -24,6 +24,56 @@ fn reads_hidden_filtered_and_directories_first() {
 }
 
 #[test]
+fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("file-10.txt"), vec![0; 10]).unwrap();
+    fs::write(temp.path().join("file-2.txt"), vec![0; 2]).unwrap();
+    fs::write(temp.path().join(".hidden"), "x").unwrap();
+    let natural = read_directory_with(
+        temp.path(),
+        BrowseOptions {
+            folders_first: false,
+            ..BrowseOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(display_name(&natural[0].name), "file-2.txt");
+    assert_eq!(display_name(&natural[1].name), "file-10.txt");
+
+    let by_size = read_directory_with(
+        temp.path(),
+        BrowseOptions {
+            sort: SortKey::Size,
+            descending: true,
+            folders_first: false,
+            show_hidden: true,
+            ..BrowseOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(display_name(&by_size[0].name), "file-10.txt");
+    assert!(by_size.iter().any(|entry| entry.name == ".hidden"));
+}
+
+#[test]
+fn hidden_preference_is_shared_by_recursive_search_and_tree_traversal() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join(".private")).unwrap();
+    fs::write(temp.path().join(".private/needle.txt"), "hidden").unwrap();
+
+    let hidden = search_directory_with_hidden(temp.path(), "needle", 100, false, || false).unwrap();
+    assert!(hidden.entries.is_empty());
+    assert!(read_child_folders_with_hidden(temp.path(), false).is_empty());
+
+    let visible = search_directory_with_hidden(temp.path(), "needle", 100, true, || false).unwrap();
+    assert_eq!(visible.entries.len(), 1);
+    assert_eq!(
+        read_child_folders_with_hidden(temp.path(), true),
+        [temp.path().join(".private")]
+    );
+}
+
+#[test]
 fn recursive_search_matches_relative_paths_and_skips_hidden_entries() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("src/nested")).unwrap();
