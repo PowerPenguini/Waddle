@@ -115,9 +115,35 @@ enum EntryIconKind {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum BrowserFocus {
+    Toolbar,
+    Location,
     Sidebar,
     #[default]
     Entries,
+    BottomBar,
+}
+
+impl BrowserFocus {
+    const ORDER: [Self; 5] = [
+        Self::Toolbar,
+        Self::Location,
+        Self::Sidebar,
+        Self::Entries,
+        Self::BottomBar,
+    ];
+
+    fn moved(self, reverse: bool) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        let next = if reverse {
+            index.checked_sub(1).unwrap_or(Self::ORDER.len() - 1)
+        } else {
+            (index + 1) % Self::ORDER.len()
+        };
+        Self::ORDER[next]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -274,6 +300,9 @@ struct App {
     drag_hover: drag_hover::State,
     browser_input: BrowserInput,
     browser_focus: BrowserFocus,
+    toolbar_cursor: usize,
+    breadcrumb_cursor: usize,
+    bottom_cursor: usize,
     sidebar_cursor: Option<u64>,
     favorite_drag: Option<usize>,
     location_input: String,
@@ -286,6 +315,7 @@ struct App {
     busy: bool,
     navigation_loading: bool,
     context_menu: Option<(usize, Point)>,
+    context_menu_cursor: usize,
     native_dnd: Option<native_dnd::Source>,
     native_clipboard: Option<native_clipboard::Source>,
     native_dnd_error: Option<String>,
@@ -365,6 +395,9 @@ impl App {
             drag_hover: drag_hover::State::default(),
             browser_input: BrowserInput::default(),
             browser_focus: BrowserFocus::Entries,
+            toolbar_cursor: 0,
+            breadcrumb_cursor: 0,
+            bottom_cursor: 0,
             sidebar_cursor: None,
             favorite_drag: None,
             location_input: current.display().to_string(),
@@ -379,6 +412,7 @@ impl App {
             busy: false,
             navigation_loading: false,
             context_menu: None,
+            context_menu_cursor: 0,
             native_dnd: None,
             native_clipboard: None,
             native_dnd_error: None,
@@ -563,6 +597,8 @@ impl App {
             } => self.finish_transfer_batch(id, request, *outcome),
             Message::PollTransfer => Task::none(),
             Message::CancelTransfer => {
+                self.browser_focus = BrowserFocus::BottomBar;
+                self.bottom_cursor = 0;
                 if self.transfer_conflict.is_some() {
                     return self.cancel_transfer_conflict();
                 }
@@ -571,21 +607,28 @@ impl App {
                 }
                 Task::none()
             }
-            Message::RetryTransfer => self
-                .transfer_queue
-                .retry()
-                .map_or_else(Task::none, |work| self.launch_transfer(work)),
+            Message::RetryTransfer => {
+                self.browser_focus = BrowserFocus::BottomBar;
+                self.transfer_queue
+                    .retry()
+                    .map_or_else(Task::none, |work| self.launch_transfer(work))
+            }
             Message::ToggleTransferHistory => {
+                self.browser_focus = BrowserFocus::BottomBar;
                 self.transfer_queue.toggle_expanded();
                 self.sync_bottom_bar();
                 Task::none()
             }
             Message::CopyTransferReport => {
+                self.browser_focus = BrowserFocus::BottomBar;
                 iced::clipboard::write(self.transfer_queue.report_text())
             }
-            Message::CopyCommandReport => self.command.output().map_or_else(Task::none, |output| {
-                iced::clipboard::write(format!("{}\n\n{}", output.summary, output.detail))
-            }),
+            Message::CopyCommandReport => {
+                self.browser_focus = BrowserFocus::BottomBar;
+                self.command.output().map_or_else(Task::none, |output| {
+                    iced::clipboard::write(format!("{}\n\n{}", output.summary, output.detail))
+                })
+            }
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
                 Task::none()
@@ -609,31 +652,51 @@ impl App {
                     Task::none()
                 }
             }
-            Message::Refresh => self.refresh_location(),
-            Message::ToggleView => self.change_view_options(|options| {
-                options.view = match options.view {
-                    fs::ViewMode::Grid => fs::ViewMode::List,
-                    fs::ViewMode::List => fs::ViewMode::Grid,
-                };
-            }),
-            Message::CycleSort => self.change_view_options(|options| {
-                options.sort = match options.sort {
-                    fs::SortKey::Name => fs::SortKey::Modified,
-                    fs::SortKey::Modified => fs::SortKey::Size,
-                    fs::SortKey::Size => fs::SortKey::Type,
-                    fs::SortKey::Type => fs::SortKey::Name,
-                };
-            }),
+            Message::Refresh => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 3;
+                self.refresh_location()
+            }
+            Message::ToggleView => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 4;
+                self.change_view_options(|options| {
+                    options.view = match options.view {
+                        fs::ViewMode::Grid => fs::ViewMode::List,
+                        fs::ViewMode::List => fs::ViewMode::Grid,
+                    };
+                })
+            }
+            Message::CycleSort => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 5;
+                self.change_view_options(|options| {
+                    options.sort = match options.sort {
+                        fs::SortKey::Name => fs::SortKey::Modified,
+                        fs::SortKey::Modified => fs::SortKey::Size,
+                        fs::SortKey::Size => fs::SortKey::Type,
+                        fs::SortKey::Type => fs::SortKey::Name,
+                    };
+                })
+            }
             Message::ToggleSortDirection => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 6;
                 self.change_view_options(|options| options.descending = !options.descending)
             }
             Message::ToggleFoldersFirst => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 7;
                 self.change_view_options(|options| options.folders_first = !options.folders_first)
             }
             Message::ToggleHidden => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 8;
                 self.change_view_options(|options| options.show_hidden = !options.show_hidden)
             }
             Message::ToggleClickActivation => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 9;
                 self.view_preferences.toggle_single_click_activation();
                 self.status = format!(
                     "{}-click activation enabled",
@@ -645,9 +708,21 @@ impl App {
                 );
                 Task::none()
             }
-            Message::Parent => self.go_parent(),
-            Message::Back => self.go_back(),
-            Message::Forward => self.go_forward(),
+            Message::Parent => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 0;
+                self.go_parent()
+            }
+            Message::Back => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 1;
+                self.go_back()
+            }
+            Message::Forward => {
+                self.browser_focus = BrowserFocus::Toolbar;
+                self.toolbar_cursor = 2;
+                self.go_forward()
+            }
             Message::LocationChanged(value) => {
                 self.location_input = value;
                 Task::none()
@@ -662,7 +737,14 @@ impl App {
                 };
                 self.navigate(requested, true, None)
             }
-            Message::Breadcrumb(path) => self.navigate(path, true, None),
+            Message::Breadcrumb(path) => {
+                self.browser_focus = BrowserFocus::Location;
+                self.breadcrumb_cursor = breadcrumb_segments(self.navigation.current())
+                    .iter()
+                    .position(|(_, candidate)| candidate == &path)
+                    .unwrap_or_default();
+                self.navigate(path, true, None)
+            }
             Message::TreeRow(id) => {
                 self.browser_focus = BrowserFocus::Sidebar;
                 self.sidebar_cursor = Some(id);
@@ -726,6 +808,7 @@ impl App {
                 self.grid
                     .select_only(Some(index), self.navigation.entries().len());
                 self.context_menu = Some((index, self.grid.cursor()));
+                self.context_menu_cursor = 0;
                 self.schedule_details()
             }
             Message::ContextNewFolder => {
@@ -1065,6 +1148,9 @@ impl App {
             keyboard::Key::Named(keyboard::key::Named::Tab) => InputNamedKey::Tab,
             _ => InputNamedKey::Other,
         };
+        if self.context_menu.is_some() {
+            return self.handle_context_key(named, modifiers.shift());
+        }
         let intent = self.browser_input.handle(
             InputPress {
                 text,
@@ -1134,8 +1220,26 @@ impl App {
             InputIntent::Undo => self.run_journal(false),
             InputIntent::Redo => self.run_journal(true),
             InputIntent::Refresh => self.refresh_location(),
-            InputIntent::ToggleHidden => self.update(Message::ToggleHidden),
+            InputIntent::ToggleHidden => {
+                self.change_view_options(|options| options.show_hidden = !options.show_hidden)
+            }
             InputIntent::BeginLocation => self.begin_location(),
+            InputIntent::MoveFocus { reverse } => {
+                self.browser_focus = self.browser_focus.moved(reverse);
+                if self.browser_focus == BrowserFocus::Sidebar && self.sidebar_cursor.is_none() {
+                    self.sidebar_cursor = flatten_rows(&self.explorer, self.navigation.current())
+                        .into_iter()
+                        .find(|row| row.selected)
+                        .or_else(|| {
+                            flatten_rows(&self.explorer, self.navigation.current())
+                                .into_iter()
+                                .next()
+                        })
+                        .map(|row| row.id);
+                }
+                self.status = format!("Focus: {}", self.focus_label());
+                Task::none()
+            }
             InputIntent::CompleteCommand => {
                 if !self.command.complete_setting() {
                     self.status = "No unique setting completion".to_owned();
@@ -1146,19 +1250,14 @@ impl App {
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
             }
+            InputIntent::ToggleActive if self.browser_focus != BrowserFocus::Entries => {
+                self.activate_focused()
+            }
             InputIntent::ToggleActive => {
                 self.grid.toggle_active(self.navigation.entries().len());
                 self.schedule_details()
             }
-            InputIntent::StandardMove { motion, extend } => {
-                self.grid.move_standard(
-                    motion,
-                    extend,
-                    self.navigation.entries().len(),
-                    self.status_height(),
-                );
-                Task::batch([self.schedule_details(), self.scroll_to_selected()])
-            }
+            InputIntent::StandardMove { motion, extend } => self.move_focused(motion, 1, extend),
             InputIntent::Back => self.go_back(),
             InputIntent::Forward => self.go_forward(),
             InputIntent::BeginSearch => self.begin_search(),
@@ -1175,13 +1274,7 @@ impl App {
                 self.status = status;
                 Task::none()
             }
-            InputIntent::Move(motion, count) => {
-                if self.browser_focus == BrowserFocus::Sidebar {
-                    self.move_sidebar(motion, count)
-                } else {
-                    self.move_selection(motion, count)
-                }
-            }
+            InputIntent::Move(motion, count) => self.move_focused(motion, count, false),
             InputIntent::CutMotion(motion, count) => {
                 self.grid.select_delete_motion_count(
                     motion,
@@ -1200,11 +1293,197 @@ impl App {
                 );
                 self.show_trash_prompt()
             }
-            InputIntent::Activate if self.browser_focus == BrowserFocus::Sidebar => self
+            InputIntent::Activate => self.activate_focused(),
+            InputIntent::Parent => self.go_parent(),
+        }
+    }
+
+    fn focus_label(&self) -> &'static str {
+        match self.browser_focus {
+            BrowserFocus::Toolbar => "toolbar",
+            BrowserFocus::Location => "location",
+            BrowserFocus::Sidebar => "sidebar",
+            BrowserFocus::Entries => "files",
+            BrowserFocus::BottomBar => "bottom bar",
+        }
+    }
+
+    fn move_focused(&mut self, motion: Motion, count: usize, extend: bool) -> Task<Message> {
+        match self.browser_focus {
+            BrowserFocus::Toolbar => {
+                move_composite_cursor(&mut self.toolbar_cursor, 10, motion, count);
+                self.status = format!("Toolbar control {} of 10", self.toolbar_cursor + 1);
+                Task::none()
+            }
+            BrowserFocus::Location => {
+                let count = breadcrumb_segments(self.navigation.current()).len().max(1);
+                move_composite_cursor(&mut self.breadcrumb_cursor, count, motion, 1);
+                self.status = format!("Location segment {} of {count}", self.breadcrumb_cursor + 1);
+                Task::none()
+            }
+            BrowserFocus::Sidebar => self.move_sidebar(motion, count),
+            BrowserFocus::Entries if extend => {
+                self.grid.move_standard(
+                    motion,
+                    true,
+                    self.navigation.entries().len(),
+                    self.status_height(),
+                );
+                Task::batch([self.schedule_details(), self.scroll_to_selected()])
+            }
+            BrowserFocus::Entries => self.move_selection(motion, count),
+            BrowserFocus::BottomBar => {
+                let action_count = self.bottom_actions().len().max(1);
+                move_composite_cursor(&mut self.bottom_cursor, action_count, motion, count);
+                self.status = if action_count == 1 && self.bottom_actions().is_empty() {
+                    "Bottom bar has no actions".to_owned()
+                } else {
+                    format!(
+                        "Bottom bar action {} of {action_count}",
+                        self.bottom_cursor + 1
+                    )
+                };
+                Task::none()
+            }
+        }
+    }
+
+    fn activate_focused(&mut self) -> Task<Message> {
+        match self.browser_focus {
+            BrowserFocus::Toolbar => {
+                let message = match self.toolbar_cursor.min(9) {
+                    0 => Message::Parent,
+                    1 => Message::Back,
+                    2 => Message::Forward,
+                    3 => Message::Refresh,
+                    4 => Message::ToggleView,
+                    5 => Message::CycleSort,
+                    6 => Message::ToggleSortDirection,
+                    7 => Message::ToggleFoldersFirst,
+                    8 => Message::ToggleHidden,
+                    _ => Message::ToggleClickActivation,
+                };
+                self.update(message)
+            }
+            BrowserFocus::Location => {
+                if self.virtual_location.is_some() {
+                    self.status = "This virtual location has no parent breadcrumb".to_owned();
+                    Task::none()
+                } else {
+                    let segments = breadcrumb_segments(self.navigation.current());
+                    segments
+                        .get(self.breadcrumb_cursor.min(segments.len().saturating_sub(1)))
+                        .map(|(_, path)| path.clone())
+                        .map_or_else(Task::none, |path| self.navigate(path, true, None))
+                }
+            }
+            BrowserFocus::Sidebar => self
                 .sidebar_cursor
                 .map_or_else(Task::none, |id| self.activate_tree_row(id)),
-            InputIntent::Activate => self.activate_selected(),
-            InputIntent::Parent => self.go_parent(),
+            BrowserFocus::Entries => self.activate_selected(),
+            BrowserFocus::BottomBar => {
+                let actions = self.bottom_actions();
+                actions
+                    .get(self.bottom_cursor.min(actions.len().saturating_sub(1)))
+                    .cloned()
+                    .map_or_else(Task::none, |message| self.update(message))
+            }
+        }
+    }
+
+    fn bottom_actions(&self) -> Vec<Message> {
+        if self.command.output().is_some() {
+            return vec![Message::CopyCommandReport];
+        }
+        let mut actions = Vec::new();
+        if self.transfer_queue.active_id().is_some() {
+            actions.push(Message::CancelTransfer);
+        }
+        if self.transfer_queue.has_retry() {
+            actions.push(Message::RetryTransfer);
+        }
+        if self.transfer_queue.expanded() {
+            actions.push(Message::CopyTransferReport);
+        }
+        if !actions.is_empty() || self.transfer_queue.expanded() {
+            actions.push(Message::ToggleTransferHistory);
+        }
+        actions
+    }
+
+    fn context_actions(&self) -> Vec<(String, Message)> {
+        if self.virtual_location == Some(VirtualLocation::Trash) {
+            return vec![
+                ("Restore".to_owned(), Message::ContextRestore),
+                (
+                    "Delete permanently".to_owned(),
+                    Message::ContextDeletePermanent,
+                ),
+                ("Empty Trash".to_owned(), Message::ContextEmptyTrash),
+                ("Properties".to_owned(), Message::ContextProperties),
+                ("Open With…".to_owned(), Message::ContextOpenWith),
+            ];
+        }
+        let mut actions = vec![
+            ("New Folder".to_owned(), Message::ContextNewFolder),
+            (
+                "New Empty File".to_owned(),
+                Message::ContextNewFile(None, String::new(), "new file".to_owned()),
+            ),
+        ];
+        actions.extend(self.templates.iter().map(|template| {
+            (
+                format!("New from {}", template.label),
+                Message::ContextNewFile(
+                    Some(template.path.clone()),
+                    template.suggested_name.clone(),
+                    format!("template {}", template.label),
+                ),
+            )
+        }));
+        actions.extend([
+            ("Properties".to_owned(), Message::ContextProperties),
+            ("Open With…".to_owned(), Message::ContextOpenWith),
+            ("Rename".to_owned(), Message::ContextRename),
+            ("Move to Trash".to_owned(), Message::ContextTrash),
+        ]);
+        actions
+    }
+
+    fn handle_context_key(&mut self, key: InputNamedKey, shift: bool) -> Task<Message> {
+        let count = self.context_actions().len().max(1);
+        match key {
+            InputNamedKey::Escape => self.update(Message::CloseContext),
+            InputNamedKey::Tab => {
+                self.context_menu_cursor = if shift {
+                    self.context_menu_cursor.checked_sub(1).unwrap_or(count - 1)
+                } else {
+                    (self.context_menu_cursor + 1) % count
+                };
+                Task::none()
+            }
+            InputNamedKey::ArrowUp => {
+                self.context_menu_cursor = self.context_menu_cursor.saturating_sub(1);
+                Task::none()
+            }
+            InputNamedKey::ArrowDown => {
+                self.context_menu_cursor = (self.context_menu_cursor + 1).min(count - 1);
+                Task::none()
+            }
+            InputNamedKey::Home => {
+                self.context_menu_cursor = 0;
+                Task::none()
+            }
+            InputNamedKey::End => {
+                self.context_menu_cursor = count - 1;
+                Task::none()
+            }
+            InputNamedKey::Enter | InputNamedKey::Space => self
+                .context_actions()
+                .get(self.context_menu_cursor.min(count - 1))
+                .map(|(_, message)| message.clone())
+                .map_or_else(Task::none, |message| self.update(message)),
+            _ => Task::none(),
         }
     }
 
@@ -3273,7 +3552,7 @@ impl App {
             .height(32)
             .padding(0)
             .style(move |theme, status| {
-                tree_button_style(theme, status, selected || focused, drop_target)
+                tree_button_style(theme, status, selected, focused, drop_target)
             });
         if let Some(index) = tree_row.favorite_index {
             mouse_area(button)
@@ -3306,6 +3585,7 @@ impl App {
             Message::Parent,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
+            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 0,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
@@ -3314,6 +3594,7 @@ impl App {
             Message::Back,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
+            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 1,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
@@ -3322,6 +3603,7 @@ impl App {
             Message::Forward,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
+            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 2,
         );
         let refresh = toolbar_button(
             include_bytes!("../ui/icons/refresh.svg"),
@@ -3330,6 +3612,7 @@ impl App {
             Message::Refresh,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
+            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 3,
         );
         let options = self
             .view_preferences
@@ -3380,16 +3663,27 @@ impl App {
                 .into()
         } else {
             let mut crumbs = Row::new().spacing(1).align_y(Alignment::Center);
-            for (label, path) in breadcrumb_segments(self.navigation.current()) {
+            for (index, (label, path)) in breadcrumb_segments(self.navigation.current())
+                .into_iter()
+                .enumerate()
+            {
+                let focused =
+                    self.browser_focus == BrowserFocus::Location && self.breadcrumb_cursor == index;
                 crumbs = crumbs.push(
                     button(text(label).font(UI_FONT).size(13))
                         .on_press(Message::Breadcrumb(path))
                         .padding(Padding::from([4, 7]))
-                        .style(toolbar_button_style),
+                        .style(move |theme, status| focusable_button_style(theme, status, focused)),
                 );
             }
             container(crumbs).width(Fill).height(34).center_y(34).into()
         };
+        let location = container(location)
+            .width(Fill)
+            .height(34)
+            .style(move |theme| {
+                focus_container_style(theme, self.browser_focus == BrowserFocus::Location)
+            });
         container(
             row![
                 parent,
@@ -3397,28 +3691,46 @@ impl App {
                 forward,
                 refresh,
                 location,
-                compact_text_button(view_label, Message::ToggleView),
+                toolbar_text_button(
+                    view_label,
+                    Message::ToggleView,
+                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 4,
+                ),
                 button(text(sort_label).font(MONO_FONT_SEMIBOLD).size(11))
                     .on_press(Message::CycleSort)
                     .padding(Padding::from([1, 4]))
-                    .style(toolbar_button_style),
-                compact_text_button("Direction", Message::ToggleSortDirection),
-                compact_text_button("Folders", Message::ToggleFoldersFirst),
-                compact_text_button(
+                    .style(move |theme, status| focusable_button_style(
+                        theme,
+                        status,
+                        self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 5,
+                    )),
+                toolbar_text_button(
+                    "Direction",
+                    Message::ToggleSortDirection,
+                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 6,
+                ),
+                toolbar_text_button(
+                    "Folders",
+                    Message::ToggleFoldersFirst,
+                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 7,
+                ),
+                toolbar_text_button(
                     if options.show_hidden {
                         "Hidden on"
                     } else {
                         "Hidden off"
                     },
                     Message::ToggleHidden,
+                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 8,
                 ),
-                compact_text_button(
+                toolbar_text_button(
                     if self.view_preferences.single_click_activation() {
                         "1-click"
                     } else {
                         "2-click"
                     },
                     Message::ToggleClickActivation,
+                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 9,
                 ),
             ]
             .spacing(4)
@@ -3496,7 +3808,13 @@ impl App {
             .width(Fill)
             .height(Fill)
             .clip(true)
-            .style(move |theme| grid_background_style(theme, current_drop_target))
+            .style(move |theme| {
+                grid_background_style(
+                    theme,
+                    current_drop_target,
+                    self.browser_focus == BrowserFocus::Entries,
+                )
+            })
             .into()
     }
 
@@ -3531,13 +3849,17 @@ impl App {
         ]))
         .width(Fill)
         .height(Fill)
-        .style(browser_background_style)
+        .style(move |theme| {
+            grid_background_style(theme, false, self.browser_focus == BrowserFocus::Entries)
+        })
         .into()
     }
 
     fn file_list_row(&self, index: usize) -> Element<'_, Message> {
         let entry = &self.navigation.entries()[index];
         let selected = self.grid.is_selected(index);
+        let focused = self.browser_focus == BrowserFocus::Entries
+            && self.grid.selected_entry() == Some(index);
         let hovered = self.grid.hovered() == Some(index);
         let icon_kind = entry_icon_kind(entry);
         let kind = if entry.is_directory() {
@@ -3572,7 +3894,7 @@ impl App {
         let row = container(content)
             .height(LIST_ROW_HEIGHT)
             .padding(Padding::from([0, 8]))
-            .style(move |theme| tile_style(theme, selected, hovered, false));
+            .style(move |theme| tile_style(theme, selected, hovered, focused, false));
         mouse_area(row)
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
@@ -3586,6 +3908,8 @@ impl App {
     fn file_tile(&self, index: usize) -> Element<'_, Message> {
         let entry = &self.navigation.entries()[index];
         let selected = self.grid.is_selected(index);
+        let focused = self.browser_focus == BrowserFocus::Entries
+            && self.grid.selected_entry() == Some(index);
         let hovered = self.grid.hovered() == Some(index);
         let drop_target = entry.is_directory()
             && self.drop_highlight_path().as_deref() == Some(entry.path.as_path());
@@ -3642,7 +3966,7 @@ impl App {
                 left: 7.0,
             })
             .clip(true)
-            .style(move |theme| tile_style(theme, selected, hovered, drop_target));
+            .style(move |theme| tile_style(theme, selected, hovered, focused, drop_target));
         mouse_area(container(tile).width(Fill).center_x(Fill))
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
@@ -3820,7 +4144,12 @@ impl App {
                             .width(Fill)
                             .height(Length::Fixed(height))
                             .clip(true)
-                            .style(status_background_style)
+                            .style(move |theme| {
+                                status_background_style(
+                                    theme,
+                                    self.browser_focus == BrowserFocus::BottomBar,
+                                )
+                            })
                             .into();
                     }
                     let indicator: Element<'_, Message> = if self.busy || self.navigation_loading {
@@ -3855,7 +4184,9 @@ impl App {
             .width(Fill)
             .height(Length::Fixed(height))
             .clip(true)
-            .style(status_background_style)
+            .style(move |theme| {
+                status_background_style(theme, self.browser_focus == BrowserFocus::BottomBar)
+            })
             .into()
     }
 
@@ -4144,88 +4475,16 @@ impl App {
     }
 
     fn context_menu_view(&self, point: Point) -> Element<'_, Message> {
-        let actions: Element<'_, Message> = if self.virtual_location == Some(VirtualLocation::Trash)
-        {
-            column![
-                button(text("Restore").size(13))
-                    .on_press(Message::ContextRestore)
-                    .style(button::text)
+        let mut actions = Column::new();
+        for (index, (label, message)) in self.context_actions().into_iter().enumerate() {
+            let focused = index == self.context_menu_cursor;
+            actions = actions.push(
+                button(text(label).size(13))
+                    .on_press(message)
+                    .style(move |theme, status| context_button_style(theme, status, focused))
                     .width(Fill),
-                button(text("Delete permanently").size(13))
-                    .on_press(Message::ContextDeletePermanent)
-                    .style(button::text)
-                    .width(Fill),
-                button(text("Empty Trash").size(13))
-                    .on_press(Message::ContextEmptyTrash)
-                    .style(button::text)
-                    .width(Fill),
-                button(text("Properties").size(13))
-                    .on_press(Message::ContextProperties)
-                    .style(button::text)
-                    .width(Fill),
-                button(text("Open With…").size(13))
-                    .on_press(Message::ContextOpenWith)
-                    .style(button::text)
-                    .width(Fill),
-            ]
-            .into()
-        } else {
-            let mut actions = Column::new()
-                .push(
-                    button(text("New Folder").size(13))
-                        .on_press(Message::ContextNewFolder)
-                        .style(button::text)
-                        .width(Fill),
-                )
-                .push(
-                    button(text("New Empty File").size(13))
-                        .on_press(Message::ContextNewFile(
-                            None,
-                            String::new(),
-                            "new file".to_owned(),
-                        ))
-                        .style(button::text)
-                        .width(Fill),
-                );
-            for template in &self.templates {
-                actions = actions.push(
-                    button(text(format!("New from {}", template.label)).size(13))
-                        .on_press(Message::ContextNewFile(
-                            Some(template.path.clone()),
-                            template.suggested_name.clone(),
-                            format!("template {}", template.label),
-                        ))
-                        .style(button::text)
-                        .width(Fill),
-                );
-            }
-            actions
-                .push(
-                    button(text("Properties").size(13))
-                        .on_press(Message::ContextProperties)
-                        .style(button::text)
-                        .width(Fill),
-                )
-                .push(
-                    button(text("Open With…").size(13))
-                        .on_press(Message::ContextOpenWith)
-                        .style(button::text)
-                        .width(Fill),
-                )
-                .push(
-                    button(text("Rename").size(13))
-                        .on_press(Message::ContextRename)
-                        .style(button::text)
-                        .width(Fill),
-                )
-                .push(
-                    button(text("Move to Trash").size(13))
-                        .on_press(Message::ContextTrash)
-                        .style(button::text)
-                        .width(Fill),
-                )
-                .into()
-        };
+            );
+        }
         let menu = container(scrollable(actions).height(Length::Shrink))
             .width(220)
             .max_height(420)
@@ -4387,6 +4646,21 @@ fn clears_status_notice(event: &iced::Event) -> bool {
     )
 }
 
+fn move_composite_cursor(cursor: &mut usize, len: usize, motion: Motion, count: usize) {
+    let last = len.saturating_sub(1);
+    let step = count.max(1);
+    *cursor = match motion {
+        Motion::Left | Motion::Up | Motion::HalfPageUp => cursor.saturating_sub(step),
+        Motion::Right | Motion::Down | Motion::HalfPageDown => {
+            cursor.saturating_add(step).min(last)
+        }
+        Motion::RowStart | Motion::First | Motion::ViewportTop => 0,
+        Motion::RowEnd | Motion::Last | Motion::ViewportBottom => last,
+        Motion::DisplayIndex(index) => index.min(last),
+        Motion::ViewportMiddle => last / 2,
+    };
+}
+
 fn nearest_existing_ancestor(path: &Path) -> PathBuf {
     let mut candidate = path.to_path_buf();
     loop {
@@ -4420,6 +4694,7 @@ fn toolbar_button(
     message: Message,
     color: Color,
     background: Color,
+    focused: bool,
 ) -> Button<'static, Message> {
     let icon = themed_svg(
         icon,
@@ -4431,7 +4706,7 @@ fn toolbar_button(
         .width(26)
         .height(30)
         .padding(0)
-        .style(toolbar_button_style)
+        .style(move |theme, status| focusable_button_style(theme, status, focused))
 }
 
 fn sidebar_style(theme: &Theme, opaque: bool) -> container::Style {
@@ -4461,9 +4736,9 @@ fn browser_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(theme.palette().background)
 }
 
-fn grid_background_style(theme: &Theme, drop_target: bool) -> container::Style {
-    let mut style = browser_background_style(theme);
-    if drop_target {
+fn focus_container_style(theme: &Theme, focused: bool) -> container::Style {
+    let mut style = container::Style::default();
+    if focused {
         style.border = Border {
             width: 2.0,
             color: theme.palette().primary,
@@ -4473,14 +4748,41 @@ fn grid_background_style(theme: &Theme, drop_target: bool) -> container::Style {
     style
 }
 
-fn status_background_style(theme: &Theme) -> container::Style {
-    container::Style::default().background(lighter(theme.palette().background, 16))
+fn grid_background_style(theme: &Theme, drop_target: bool, focused: bool) -> container::Style {
+    let mut style = browser_background_style(theme);
+    if drop_target {
+        style.border = Border {
+            width: 2.0,
+            color: theme.palette().primary,
+            radius: 4.0.into(),
+        };
+    } else if focused {
+        style.border = Border {
+            width: 1.0,
+            color: theme.palette().primary,
+            radius: 0.0.into(),
+        };
+    }
+    style
+}
+
+fn status_background_style(theme: &Theme, focused: bool) -> container::Style {
+    let mut style = container::Style::default().background(lighter(theme.palette().background, 16));
+    if focused {
+        style.border = Border {
+            width: 2.0,
+            color: theme.palette().primary,
+            radius: 0.0.into(),
+        };
+    }
+    style
 }
 
 fn tree_button_style(
     theme: &Theme,
     status: button::Status,
     selected: bool,
+    focused: bool,
     drop_target: bool,
 ) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -4507,6 +4809,8 @@ fn tree_button_style(
         border: Border {
             width: if drop_target {
                 3.0
+            } else if focused {
+                2.0
             } else if high_contrast && selected {
                 1.0
             } else {
@@ -4514,6 +4818,8 @@ fn tree_button_style(
             },
             color: if drop_target {
                 theme.palette().text
+            } else if focused {
+                theme.palette().primary
             } else {
                 theme.palette().background
             },
@@ -4523,7 +4829,13 @@ fn tree_button_style(
     }
 }
 
-fn tile_style(theme: &Theme, selected: bool, hovered: bool, drop_target: bool) -> container::Style {
+fn tile_style(
+    theme: &Theme,
+    selected: bool,
+    hovered: bool,
+    focused: bool,
+    drop_target: bool,
+) -> container::Style {
     let mut style = container::Style::default();
     let high_contrast = is_high_contrast_theme(theme);
     if drop_target {
@@ -4544,6 +4856,8 @@ fn tile_style(theme: &Theme, selected: bool, hovered: bool, drop_target: bool) -
     style.border = Border {
         width: if drop_target {
             3.0
+        } else if focused {
+            2.0
         } else if high_contrast && selected {
             1.0
         } else {
@@ -4551,6 +4865,8 @@ fn tile_style(theme: &Theme, selected: bool, hovered: bool, drop_target: bool) -
         },
         color: if drop_target {
             theme.palette().text
+        } else if focused {
+            theme.palette().primary
         } else {
             theme.palette().background
         },
@@ -4593,6 +4909,28 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
         },
         ..button::Style::default()
     }
+}
+
+fn focusable_button_style(theme: &Theme, status: button::Status, focused: bool) -> button::Style {
+    let mut style = toolbar_button_style(theme, status);
+    if focused {
+        style.border.width = 2.0;
+        style.border.color = theme.palette().primary;
+    }
+    style
+}
+
+fn context_button_style(theme: &Theme, status: button::Status, focused: bool) -> button::Style {
+    let mut style = button::text(theme, status);
+    if focused {
+        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.24)));
+        style.border = Border {
+            width: 2.0,
+            color: theme.palette().primary,
+            radius: 4.0.into(),
+        };
+    }
+    style
 }
 
 fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
@@ -4643,6 +4981,18 @@ fn compact_text_button<'a>(label: &'a str, message: Message) -> Element<'a, Mess
         .on_press(message)
         .padding(Padding::from([1, 4]))
         .style(toolbar_button_style)
+        .into()
+}
+
+fn toolbar_text_button<'a>(
+    label: &'a str,
+    message: Message,
+    focused: bool,
+) -> Element<'a, Message> {
+    button(text(label).font(MONO_FONT_SEMIBOLD).size(11))
+        .on_press(message)
+        .padding(Padding::from([1, 4]))
+        .style(move |theme, status| focusable_button_style(theme, status, focused))
         .into()
 }
 

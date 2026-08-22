@@ -48,6 +48,61 @@ fn breadcrumbs_preserve_each_navigable_ancestor() {
 }
 
 #[test]
+fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
+    assert_eq!(BrowserFocus::Toolbar.moved(false), BrowserFocus::Location);
+    assert_eq!(BrowserFocus::Location.moved(false), BrowserFocus::Sidebar);
+    assert_eq!(BrowserFocus::Sidebar.moved(false), BrowserFocus::Entries);
+    assert_eq!(BrowserFocus::Entries.moved(false), BrowserFocus::BottomBar);
+    assert_eq!(BrowserFocus::BottomBar.moved(false), BrowserFocus::Toolbar);
+    assert_eq!(BrowserFocus::Toolbar.moved(true), BrowserFocus::BottomBar);
+
+    let (mut app, _) = App::new();
+    app.browser_focus = BrowserFocus::Sidebar;
+    app.context_menu = Some((0, iced::Point::ORIGIN));
+    let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
+    let _ = app.handle_key(tab.clone(), tab, keyboard::Modifiers::empty(), None);
+    assert_eq!(app.context_menu_cursor, 1);
+    assert_eq!(app.browser_focus, BrowserFocus::Sidebar);
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+    assert!(app.context_menu.is_none());
+    assert_eq!(app.browser_focus, BrowserFocus::Sidebar);
+}
+
+#[test]
+fn space_activates_the_focused_toolbar_control() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.view_preferences =
+        super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation_loading = false;
+    app.browser_focus = BrowserFocus::Toolbar;
+    app.toolbar_cursor = 4;
+    let before = app
+        .view_preferences
+        .for_directory(app.navigation.current())
+        .view;
+
+    let space = keyboard::Key::Named(keyboard::key::Named::Space);
+    let _ = app.handle_key(
+        space.clone(),
+        space,
+        keyboard::Modifiers::empty(),
+        Some(" "),
+    );
+
+    assert_ne!(
+        app.view_preferences
+            .for_directory(app.navigation.current())
+            .view,
+        before
+    );
+    assert_eq!(app.browser_focus, BrowserFocus::Toolbar);
+}
+
+#[test]
 fn single_click_activation_keeps_modified_clicks_for_selection() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");
@@ -881,10 +936,20 @@ fn entering_an_earlier_tile_is_not_cleared_by_the_previous_tiles_exit() {
 fn sidebar_tree_hover_and_selection_remain_translucent() {
     let (app, _) = App::new();
     let theme = app.iced_theme();
-    let hover =
-        super::tree_button_style(&theme, iced::widget::button::Status::Hovered, false, false);
-    let selected =
-        super::tree_button_style(&theme, iced::widget::button::Status::Active, true, false);
+    let hover = super::tree_button_style(
+        &theme,
+        iced::widget::button::Status::Hovered,
+        false,
+        false,
+        false,
+    );
+    let selected = super::tree_button_style(
+        &theme,
+        iced::widget::button::Status::Active,
+        true,
+        false,
+        false,
+    );
 
     assert!(matches!(
         hover.background,

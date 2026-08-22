@@ -104,6 +104,7 @@ pub(super) enum Intent {
     Refresh,
     ToggleHidden,
     BeginLocation,
+    MoveFocus { reverse: bool },
     CompleteCommand,
     SelectAll,
     ToggleActive,
@@ -312,6 +313,13 @@ impl BrowserInput {
         if press.named == NamedKey::Refresh {
             self.clear_sequence();
             return Intent::Refresh;
+        }
+
+        if press.named == NamedKey::Tab {
+            self.clear_sequence();
+            return Intent::MoveFocus {
+                reverse: press.shift,
+            };
         }
 
         if context.busy {
@@ -763,6 +771,32 @@ mod tests {
                 selected(),
             ),
             Intent::CompleteCommand
+        );
+    }
+
+    #[test]
+    fn browser_tab_moves_composite_focus_in_both_directions() {
+        let mut input = BrowserInput::default();
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Tab,
+                    ..Press::default()
+                },
+                Context::default(),
+            ),
+            Intent::MoveFocus { reverse: false }
+        );
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Tab,
+                    shift: true,
+                    ..Press::default()
+                },
+                Context::default(),
+            ),
+            Intent::MoveFocus { reverse: true }
         );
     }
 

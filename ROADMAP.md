@@ -230,11 +230,11 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Keyboard access and display preferences
 
-- [ ] Treat the toolbar, location control, sidebar, grid, and bottom bar as composite Tab stops.
-- [ ] Keep arrow navigation inside the sidebar and grid.
-- [ ] Add visible focus rings independent of hover and selection.
-- [ ] Trap focus inside active prompts and menus, then restore the previous focus on close.
-- [ ] Support Enter and Space activation where standard desktop controls expect them.
+- [x] Treat the toolbar, location control, sidebar, grid, and bottom bar as composite Tab stops.
+- [x] Keep arrow navigation inside the sidebar and grid.
+- [x] Add visible focus rings independent of hover and selection.
+- [x] Trap focus inside active prompts and menus, then restore the previous focus on close.
+- [x] Support Enter and Space activation where standard desktop controls expect them.
 - [x] Add a high-contrast palette with opaque surfaces and non-color state indicators.
 - [x] Respect reduced-motion and reduced-transparency preferences.
 - [x] Stop the 16 ms animation subscription when reduced motion is active.
