@@ -1313,7 +1313,7 @@ fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
         Ok(()) => Ok(Vec::new()),
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
             let staging = staging_path(destination)?;
-            let mut warnings = match copy_item_with_warnings(source, &staging) {
+            let warnings = match copy_item_with_warnings(source, &staging) {
                 Ok(warnings) => warnings,
                 Err(error) => {
                     remove_incomplete_copy(&staging);
@@ -1325,8 +1325,11 @@ fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
                 return Err(error);
             }
             if let Err(error) = remove_item(source) {
-                warnings.push(format!(
-                    "the complete destination was kept, but the source could not be fully removed: {error}"
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "the complete destination was kept, but the source could not be fully removed: {error}"
+                    ),
                 ));
             }
             Ok(warnings)

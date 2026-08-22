@@ -729,7 +729,8 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
     std::fs::rename(&source, destination_directory.join("item")).unwrap();
     let _ = app.update(Message::DirectoryChanged(super::directory_watch::Event {
         path: source_directory.clone(),
-        moved_out: Vec::new(),
+        removed: Vec::new(),
+        watch_failed: false,
     }));
     assert_eq!(
         app.transfers.pending_cut_paths(),
@@ -738,15 +739,56 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
 
     let _ = app.update(Message::DirectoryChanged(super::directory_watch::Event {
         path: source_directory,
-        moved_out: vec![source],
+        removed: vec![source],
+        watch_failed: false,
     }));
     assert!(app.transfers.pending_cut_paths().is_empty());
     assert!(
         app.status_notice
             .as_deref()
             .unwrap()
-            .contains("External move confirmed")
+            .contains("External move or removal confirmed")
     );
+}
+
+#[test]
+fn virtual_locations_install_watches_from_the_newly_displayed_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let recent_parent = temp.path().join("recent-parent");
+    let trash_files = temp.path().join("volume-trash/files");
+    let trash_info = temp.path().join("volume-trash/info");
+    for directory in [&recent_parent, &trash_files, &trash_info] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let (mut app, _) = App::new();
+    let recent_file = recent_parent.join("recent.txt");
+    std::fs::write(&recent_file, "x").unwrap();
+    let _ = app.update(Message::RecentLoaded(Some(Ok(vec![FileEntry {
+        path: recent_file,
+        name: "recent.txt".into(),
+        directory: false,
+    }]))));
+    assert!(app.virtual_watch_paths().contains(&recent_parent));
+
+    let trashed = trash_files.join("trashed.txt");
+    let info = trash_info.join("trashed.txt.trashinfo");
+    std::fs::write(&trashed, "x").unwrap();
+    std::fs::write(&info, "[Trash Info]").unwrap();
+    let _ = app.update(Message::TrashLoaded(Some(Ok(vec![super::trash::Entry {
+        file: FileEntry {
+            path: trashed.clone(),
+            name: "trashed.txt".into(),
+            directory: false,
+        },
+        receipt: crate::journal::TrashReceipt {
+            original: temp.path().join("original.txt"),
+            trashed,
+            info,
+        },
+    }]))));
+    let watched = app.virtual_watch_paths();
+    assert!(watched.contains(&trash_files));
+    assert!(watched.contains(&trash_info));
 }
 
 #[test]

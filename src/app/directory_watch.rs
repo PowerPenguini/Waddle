@@ -27,13 +27,14 @@ const MAX_WATCHES: usize = 2_048;
 #[derive(Clone, Debug)]
 pub(super) struct Event {
     pub(super) path: PathBuf,
-    pub(super) moved_out: Vec<PathBuf>,
+    pub(super) removed: Vec<PathBuf>,
+    pub(super) watch_failed: bool,
 }
 
 #[derive(Default)]
 struct PendingChange {
     changed: Option<Instant>,
-    moved_out: HashMap<u32, PathBuf>,
+    removed: HashSet<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -113,7 +114,20 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
     loop {
         for command in commands.try_iter() {
             match command {
-                Command::Watch(paths) => replace_watches(descriptor, &mut watched, paths),
+                Command::Watch(paths) => {
+                    if replace_watches(descriptor, &mut watched, paths)
+                        && events
+                            .unbounded_send(Event {
+                                path: PathBuf::new(),
+                                removed: Vec::new(),
+                                watch_failed: true,
+                            })
+                            .is_err()
+                    {
+                        close_descriptor(descriptor);
+                        return;
+                    }
+                }
                 Command::Shutdown => {
                     close_descriptor(descriptor);
                     return;
@@ -144,11 +158,18 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
             })
             .collect::<Vec<_>>();
         for path in ready {
-            let moved_out = pending
+            let removed = pending
                 .remove(&path)
-                .map(|change| change.moved_out.into_values().collect())
+                .map(|change| change.removed.into_iter().collect())
                 .unwrap_or_default();
-            if events.unbounded_send(Event { path, moved_out }).is_err() {
+            if events
+                .unbounded_send(Event {
+                    path,
+                    removed,
+                    watch_failed: false,
+                })
+                .is_err()
+            {
                 close_descriptor(descriptor);
                 return;
             }
@@ -185,21 +206,20 @@ fn collect_changed_watches(
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(name_bytes.len());
-            if event.cookie != 0 && name_length > 0 && event.mask & libc::IN_MOVED_FROM != 0 {
+            if name_length > 0 && event.mask & (libc::IN_MOVED_FROM | libc::IN_DELETE) != 0 {
                 let name = std::ffi::OsString::from_vec(name_bytes[..name_length].to_vec());
-                change.moved_out.insert(event.cookie, directory.join(name));
-            }
-            if event.cookie != 0 && event.mask & libc::IN_MOVED_TO != 0 {
-                for pending_change in pending.values_mut() {
-                    pending_change.moved_out.remove(&event.cookie);
-                }
+                change.removed.insert(directory.join(name));
             }
         }
         offset = offset.saturating_add(record_size);
     }
 }
 
-fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths: Vec<PathBuf>) {
+fn replace_watches(
+    descriptor: RawFd,
+    watched: &mut HashMap<i32, PathBuf>,
+    paths: Vec<PathBuf>,
+) -> bool {
     let mut desired = HashSet::new();
     let desired_order = paths
         .into_iter()
@@ -226,6 +246,7 @@ fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
     let current = watched.values().cloned().collect::<HashSet<_>>();
+    let mut failed = false;
     for path in desired_order.iter().filter(|path| !current.contains(*path)) {
         let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
             continue;
@@ -234,8 +255,11 @@ fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths
         let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
         if watch >= 0 {
             watched.insert(watch, path.clone());
+        } else {
+            failed = true;
         }
     }
+    failed
 }
 
 fn close_descriptor(descriptor: RawFd) {
@@ -259,7 +283,8 @@ mod tests {
         let mut events = source.0.events.lock().unwrap().take().unwrap();
         let event = iced::futures::executor::block_on(events.next()).expect("debounced event");
         assert_eq!(event.path, temp.path());
-        assert!(event.moved_out.is_empty());
+        assert!(event.removed.is_empty());
+        assert!(!event.watch_failed);
         thread::sleep(Duration::from_millis(180));
         assert!(events.try_recv().is_err());
     }
@@ -319,6 +344,8 @@ mod tests {
             .into_iter()
             .find(|event| event.path == watched)
             .unwrap();
-        assert_eq!(watched_event.moved_out, [moved]);
+        let mut removed = watched_event.removed;
+        removed.sort();
+        assert_eq!(removed, [deleted, internal, moved]);
     }
 }

@@ -678,6 +678,10 @@ impl App {
                 Task::batch([search, fallback])
             }
             Message::DirectoryChanged(event) => {
+                if event.watch_failed {
+                    self.watch_poll_fallback = true;
+                    return Task::none();
+                }
                 let cut_parent_changed = self
                     .transfers
                     .pending_cut_paths()
@@ -686,16 +690,18 @@ impl App {
                     .any(|parent| parent == event.path);
                 if cut_parent_changed
                     && let Some((generation, removed)) =
-                        self.transfers.reconcile_pending_cut(&event.moved_out)
+                        self.transfers.reconcile_pending_cut(&event.removed)
                 {
                     self.sync_native_cut_clipboard(generation);
                     self.sync_directory_watches();
                     let remaining = self.transfers.pending_cut_paths().len();
                     self.status_notice = Some(if remaining == 0 {
-                        format!("External move confirmed for {removed} item(s); Cut completed")
+                        format!(
+                            "External move or removal confirmed for {removed} item(s); Cut completed"
+                        )
                     } else {
                         format!(
-                            "External move confirmed for {removed} item(s); {remaining} still pending"
+                            "External move or removal confirmed for {removed} item(s); {remaining} still pending"
                         )
                     });
                 }
@@ -991,8 +997,8 @@ impl App {
                 match result {
                     Ok(entries) => {
                         self.virtual_location = Some(VirtualLocation::Recent);
-                        self.sync_directory_watches();
                         self.navigation.replace_displayed_entries(entries);
+                        self.sync_directory_watches();
                         self.grid.select_only(None, self.navigation.entries().len());
                         self.grid.clear_details();
                         self.grid.reset_scroll();
@@ -1015,11 +1021,11 @@ impl App {
                 match result {
                     Ok(entries) => {
                         self.virtual_location = Some(VirtualLocation::Trash);
-                        self.sync_directory_watches();
                         self.navigation.replace_displayed_entries(
                             entries.iter().map(|entry| entry.file.clone()).collect(),
                         );
                         self.trash_entries = entries;
+                        self.sync_directory_watches();
                         self.grid.select_only(None, self.navigation.entries().len());
                         self.grid.clear_details();
                         self.grid.reset_scroll();

@@ -300,6 +300,55 @@ fn failed_cross_filesystem_move_removes_private_staging() {
     }));
 }
 
+#[cfg(unix)]
+#[test]
+fn cross_filesystem_move_reports_failure_and_keeps_complete_destination_if_source_removal_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let Ok(destination_root) = tempfile::tempdir_in("/dev/shm") else {
+        return;
+    };
+    let source_root = tempfile::tempdir().unwrap();
+    if fs::metadata(source_root.path()).unwrap().dev()
+        == fs::metadata(destination_root.path()).unwrap().dev()
+    {
+        return;
+    }
+    let source = source_root.path().join("tree");
+    let destination = destination_root.path().join("tree");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("kept"), "complete").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let TransferBatchOutcome::Complete(report) = TransferBatch::try_new(
+        vec![source.clone()],
+        destination_root.path().to_path_buf(),
+        Action::Move,
+    )
+    .unwrap()
+    .run() else {
+        panic!("source-removal failure must produce a report");
+    };
+
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report.failures.len(), 1);
+    assert!(
+        report.failures[0]
+            .error
+            .contains("complete destination was kept")
+    );
+    assert!(report.completed.is_empty());
+    assert!(report.receipts.is_empty());
+    assert!(source.exists());
+    assert_eq!(
+        fs::read_to_string(destination.join("kept")).unwrap(),
+        "complete"
+    );
+}
+
 #[test]
 fn transfer_preflight_revalidates_sources_destination_and_descendants() {
     let temp = tempfile::tempdir().unwrap();

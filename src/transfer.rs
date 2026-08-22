@@ -318,7 +318,7 @@ impl TransferWorkflow {
         })
     }
 
-    pub(crate) fn reconcile_pending_cut(&mut self, moved_out: &[PathBuf]) -> Option<(u64, usize)> {
+    pub(crate) fn reconcile_pending_cut(&mut self, removed: &[PathBuf]) -> Option<(u64, usize)> {
         let payload = self
             .clipboard
             .as_mut()
@@ -326,7 +326,7 @@ impl TransferWorkflow {
         let generation = payload.generation;
         let before = payload.paths.len();
         payload.paths.retain(|path| {
-            !moved_out.contains(path)
+            !removed.contains(path)
                 || match std::fs::symlink_metadata(path) {
                     Ok(_) => true,
                     Err(error) => error.kind() != std::io::ErrorKind::NotFound,
