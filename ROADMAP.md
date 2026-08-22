@@ -63,7 +63,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Hide pending Cut entries from the grid immediately without changing the filesystem.
 - [x] Show a persistent bottom-bar status such as `Cut: 4 items, p paste, Esc cancel`.
 - [x] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
-- [ ] Let filesystem monitoring confirm when another application actually moves the entries.
+- [x] Let filesystem monitoring confirm when another application actually moves the entries.
 - [x] Treat Cut followed by Paste into the same directory as a no-op.
 - [x] Let Copy into the same directory create a non-conflicting copy name.
 - [x] After a partial Move, keep only the failed entries in the Cut clipboard.

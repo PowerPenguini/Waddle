@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     ffi::CString,
     os::{fd::RawFd, unix::ffi::OsStrExt},
     path::PathBuf,
@@ -34,7 +35,7 @@ struct Inner {
 }
 
 enum Command {
-    Watch(PathBuf),
+    Watch(Vec<PathBuf>),
     Shutdown,
 }
 
@@ -54,8 +55,11 @@ impl Source {
         })))
     }
 
-    pub(super) fn watch(&self, path: PathBuf) {
-        let _ = self.0.commands.send(Command::Watch(path));
+    pub(super) fn watch_many(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        let _ = self
+            .0
+            .commands
+            .send(Command::Watch(paths.into_iter().collect()));
     }
 
     pub(super) fn subscription(&self) -> Subscription<Event> {
@@ -92,13 +96,13 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
     if descriptor < 0 {
         return;
     }
-    let mut watched: Option<(i32, PathBuf)> = None;
-    let mut pending: Option<(PathBuf, Instant)> = None;
+    let mut watched = HashMap::<i32, PathBuf>::new();
+    let mut pending = HashMap::<PathBuf, Instant>::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         for command in commands.try_iter() {
             match command {
-                Command::Watch(path) => replace_watch(descriptor, &mut watched, path),
+                Command::Watch(paths) => replace_watches(descriptor, &mut watched, paths),
                 Command::Shutdown => {
                     close_descriptor(descriptor);
                     return;
@@ -115,38 +119,59 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
         if ready > 0 && poll.revents & libc::POLLIN != 0 {
             // SAFETY: buffer is writable and descriptor is a nonblocking inotify fd.
             let read = unsafe { libc::read(descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
-            if read > 0
-                && let Some((_, path)) = &watched
-            {
-                pending = Some((path.clone(), Instant::now()));
+            if read > 0 {
+                collect_changed_watches(&buffer[..read as usize], &watched, &mut pending);
             }
         }
-        if pending
-            .as_ref()
-            .is_some_and(|(_, changed)| changed.elapsed() >= DEBOUNCE)
-            && let Some((path, _)) = pending.take()
-            && events.unbounded_send(Event { path }).is_err()
-        {
-            close_descriptor(descriptor);
-            return;
+        let ready = pending
+            .iter()
+            .filter_map(|(path, changed)| (changed.elapsed() >= DEBOUNCE).then_some(path.clone()))
+            .collect::<Vec<_>>();
+        for path in ready {
+            pending.remove(&path);
+            if events.unbounded_send(Event { path }).is_err() {
+                close_descriptor(descriptor);
+                return;
+            }
         }
     }
 }
 
-fn replace_watch(descriptor: RawFd, watched: &mut Option<(i32, PathBuf)>, path: PathBuf) {
-    if watched
-        .as_ref()
-        .is_some_and(|(_, current)| current == &path)
-    {
-        return;
+fn collect_changed_watches(
+    buffer: &[u8],
+    watched: &HashMap<i32, PathBuf>,
+    pending: &mut HashMap<PathBuf, Instant>,
+) {
+    let mut offset = 0;
+    while offset + std::mem::size_of::<libc::inotify_event>() <= buffer.len() {
+        // SAFETY: one complete record header is in bounds; unaligned reads are supported here.
+        let event = unsafe {
+            buffer
+                .as_ptr()
+                .add(offset)
+                .cast::<libc::inotify_event>()
+                .read_unaligned()
+        };
+        if let Some(path) = watched.get(&event.wd) {
+            pending.insert(path.clone(), Instant::now());
+        }
+        offset = offset
+            .saturating_add(std::mem::size_of::<libc::inotify_event>())
+            .saturating_add(event.len as usize);
     }
-    if let Some((watch, _)) = watched.take() {
+}
+
+fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths: Vec<PathBuf>) {
+    let desired = paths.into_iter().collect::<HashSet<_>>();
+    let removed = watched
+        .iter()
+        .filter_map(|(watch, path)| (!desired.contains(path)).then_some(*watch))
+        .collect::<Vec<_>>();
+    for watch in removed {
         // SAFETY: watch was returned by inotify_add_watch for this descriptor.
         unsafe { libc::inotify_rm_watch(descriptor, watch) };
+        watched.remove(&watch);
     }
-    let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
-        return;
-    };
     let mask = libc::IN_ATTRIB
         | libc::IN_CLOSE_WRITE
         | libc::IN_CREATE
@@ -156,10 +181,16 @@ fn replace_watch(descriptor: RawFd, watched: &mut Option<(i32, PathBuf)>, path: 
         | libc::IN_MOVE_SELF
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
-    // SAFETY: path_bytes is a valid C string for this call.
-    let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
-    if watch >= 0 {
-        *watched = Some((watch, path));
+    let current = watched.values().cloned().collect::<HashSet<_>>();
+    for path in desired.difference(&current) {
+        let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
+            continue;
+        };
+        // SAFETY: path_bytes is a valid C string for this call.
+        let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
+        if watch >= 0 {
+            watched.insert(watch, path.clone());
+        }
     }
 }
 
@@ -176,7 +207,7 @@ mod tests {
     fn inotify_source_debounces_a_burst_for_the_watched_directory() {
         let temp = tempfile::tempdir().unwrap();
         let source = Source::new().unwrap();
-        source.watch(temp.path().to_path_buf());
+        source.watch_many([temp.path().to_path_buf()]);
         thread::sleep(Duration::from_millis(30));
         for index in 0..5 {
             std::fs::write(temp.path().join(format!("file-{index}")), "x").unwrap();
@@ -186,5 +217,31 @@ mod tests {
         assert_eq!(event.path, temp.path());
         thread::sleep(Duration::from_millis(180));
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn inotify_source_keeps_multiple_watched_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let source = Source::new().unwrap();
+        source.watch_many([first.clone(), second.clone()]);
+        thread::sleep(Duration::from_millis(30));
+        std::fs::write(first.join("one"), "x").unwrap();
+        std::fs::write(second.join("two"), "x").unwrap();
+
+        let mut events = source.0.events.lock().unwrap().take().unwrap();
+        let mut paths = [
+            iced::futures::executor::block_on(events.next())
+                .unwrap()
+                .path,
+            iced::futures::executor::block_on(events.next())
+                .unwrap()
+                .path,
+        ];
+        paths.sort();
+        assert_eq!(paths, [first, second]);
     }
 }

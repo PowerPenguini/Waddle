@@ -318,6 +318,29 @@ impl TransferWorkflow {
         })
     }
 
+    pub(crate) fn reconcile_pending_cut(&mut self) -> Option<(u64, usize)> {
+        let payload = self
+            .clipboard
+            .as_mut()
+            .filter(|payload| payload.action == Action::Move)?;
+        let generation = payload.generation;
+        let before = payload.paths.len();
+        payload
+            .paths
+            .retain(|path| match std::fs::symlink_metadata(path) {
+                Ok(_) => true,
+                Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+            });
+        let removed = before.saturating_sub(payload.paths.len());
+        if removed == 0 {
+            return None;
+        }
+        if payload.paths.is_empty() {
+            self.clipboard = None;
+        }
+        Some((generation, removed))
+    }
+
     pub(crate) fn cancel_cut(&mut self) -> Option<u64> {
         let generation = self
             .clipboard
@@ -1046,6 +1069,32 @@ mod tests {
 
         assert_eq!(workflow.pending_cut_paths(), [PathBuf::from("/start/two")]);
         assert!(workflow.paste(PathBuf::from("/retry")).is_some());
+    }
+
+    #[test]
+    fn filesystem_reconciliation_confirms_external_partial_and_complete_cut_moves() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("one");
+        let second = temp.path().join("two");
+        std::fs::write(&first, "x").unwrap();
+        std::fs::write(&second, "x").unwrap();
+        let entries = [
+            entry(first.to_str().unwrap(), false),
+            entry(second.to_str().unwrap(), false),
+        ];
+        let mut workflow = TransferWorkflow::default();
+        workflow.cut(&entries).unwrap();
+        let generation = workflow.clipboard_payload().unwrap().generation;
+
+        std::fs::remove_file(&first).unwrap();
+        assert_eq!(workflow.reconcile_pending_cut(), Some((generation, 1)));
+        assert_eq!(workflow.pending_cut_paths(), std::slice::from_ref(&second));
+        assert_eq!(workflow.reconcile_pending_cut(), None);
+
+        std::fs::remove_file(&second).unwrap();
+        assert_eq!(workflow.reconcile_pending_cut(), Some((generation, 1)));
+        assert!(workflow.pending_cut_paths().is_empty());
+        assert!(workflow.clipboard_payload().is_none());
     }
 
     #[test]

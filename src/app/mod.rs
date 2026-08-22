@@ -656,6 +656,26 @@ impl App {
                 }
             }
             Message::DirectoryChanged(event) => {
+                let cut_parent_changed = self
+                    .transfers
+                    .pending_cut_paths()
+                    .iter()
+                    .filter_map(|path| path.parent())
+                    .any(|parent| parent == event.path);
+                if cut_parent_changed
+                    && let Some((generation, removed)) = self.transfers.reconcile_pending_cut()
+                {
+                    self.sync_native_cut_clipboard(generation);
+                    self.sync_directory_watches();
+                    let remaining = self.transfers.pending_cut_paths().len();
+                    self.status_notice = Some(if remaining == 0 {
+                        format!("External move confirmed for {removed} item(s); Cut completed")
+                    } else {
+                        format!(
+                            "External move confirmed for {removed} item(s); {remaining} still pending"
+                        )
+                    });
+                }
                 if self.virtual_location.is_none() && event.path == self.navigation.current() {
                     self.live_refresh()
                 } else {
@@ -1022,6 +1042,7 @@ impl App {
             Message::ClipboardRead(result) => match result {
                 Ok(payload) => {
                     if self.transfers.import_clipboard(payload) {
+                        self.sync_directory_watches();
                         self.paste_current()
                     } else {
                         self.status = "The clipboard does not contain local files".to_owned();
@@ -1606,9 +1627,7 @@ impl App {
                 if !refresh {
                     self.grid.reset_scroll();
                 }
-                if let Some(source) = &self.directory_watch {
-                    source.watch(self.navigation.current().to_path_buf());
-                }
+                self.sync_directory_watches();
                 self.status.clear();
                 Task::batch([
                     self.load_root_if_needed(),
@@ -2817,6 +2836,7 @@ impl App {
             }
         }
         if restore_cut {
+            self.sync_directory_watches();
             self.refresh(None)
         } else {
             Task::none()
@@ -2837,6 +2857,7 @@ impl App {
         }
         self.navigation
             .hide_paths(self.transfers.pending_cut_paths());
+        self.sync_directory_watches();
         self.grid.select_only(None, self.navigation.entries().len());
         Task::none()
     }
@@ -2848,8 +2869,44 @@ impl App {
         if let Some(source) = self.native_clipboard.as_ref() {
             ClipboardAdapter::clear_clipboard(source, generation);
         }
+        self.sync_directory_watches();
         self.status = status.to_owned();
         self.refresh(None)
+    }
+
+    fn sync_directory_watches(&self) {
+        let Some(source) = &self.directory_watch else {
+            return;
+        };
+        let mut paths = vec![self.navigation.current().to_path_buf()];
+        paths.extend(
+            self.transfers
+                .pending_cut_paths()
+                .iter()
+                .filter_map(|path| path.parent().map(Path::to_path_buf)),
+        );
+        paths.sort();
+        paths.dedup();
+        source.watch_many(paths);
+    }
+
+    fn sync_native_cut_clipboard(&mut self, generation: u64) {
+        let Some(source) = self.native_clipboard.as_ref() else {
+            return;
+        };
+        if let Some(payload) = self
+            .transfers
+            .clipboard_payload()
+            .filter(|payload| payload.generation == generation)
+        {
+            if let Err(error) = ClipboardAdapter::write_clipboard(source, payload) {
+                self.status_notice = Some(format!(
+                    "Cut was updated inside PolarExp; system clipboard failed: {error}"
+                ));
+            }
+        } else {
+            ClipboardAdapter::clear_clipboard(source, generation);
+        }
     }
 
     fn paste(&mut self) -> Task<Message> {
@@ -3349,6 +3406,12 @@ impl App {
         let consequences =
             self.transfers
                 .finish_transfer(adapter, &request, &report, self.navigation.current());
+        if request.action == TransferAction::Move
+            && let Some(generation) = request.clipboard_generation
+        {
+            self.sync_native_cut_clipboard(generation);
+        }
+        self.sync_directory_watches();
         match journal_action {
             Ok(Some(action)) => {
                 if let Err(error) = self.journal.record(action) {
