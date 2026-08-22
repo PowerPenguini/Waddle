@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use iced::{event, keyboard, mouse};
 
 use super::{
-    App, BrowserFocus, InputMode, Message, breadcrumb_segments, nearest_existing_ancestor,
+    App, BrowserFocus, InputMode, Message, VirtualLocation, breadcrumb_segments,
+    nearest_existing_ancestor,
 };
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
@@ -195,6 +196,38 @@ fn popular_file_formats_use_distinct_icons() {
     let mut folder = entry("archive.zip");
     folder.directory = true;
     assert_eq!(super::entry_icon_kind(&folder), EntryIconKind::Folder);
+}
+
+#[test]
+fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation() {
+    let (mut app, _) = App::new();
+    let trashed = PathBuf::from("/tmp/Trash/files/report.txt.2");
+    let original = PathBuf::from("/home/user/report.txt");
+    let file = crate::fs::FileEntry {
+        path: trashed.clone(),
+        name: "report.txt".into(),
+        directory: false,
+    };
+    app.virtual_location = Some(VirtualLocation::Trash);
+    app.trash_entries = vec![crate::app::trash::Entry {
+        file: file.clone(),
+        receipt: crate::journal::TrashReceipt {
+            original: original.clone(),
+            trashed,
+            info: PathBuf::from("/tmp/Trash/info/report.txt.2.trashinfo"),
+        },
+    }];
+    app.navigation.replace_displayed_entries(vec![file]);
+    app.grid.select_only(Some(0), 1);
+
+    app.refresh_status();
+    assert!(app.status.contains(&original.display().to_string()));
+    let _ = app.update(Message::ContextDeletePermanent);
+    assert!(matches!(
+        app.file_operations.view(),
+        crate::app::file_operation::View::PermanentDelete { detail, .. }
+            if detail.contains("cannot be undone")
+    ));
 }
 
 #[test]

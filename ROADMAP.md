@@ -198,12 +198,12 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Trash
 
-- [ ] Add Trash as a sidebar location.
-- [ ] Restore selected entries to their original paths.
-- [ ] Resolve Restore conflicts through the bottom bar.
-- [ ] Permanently delete selected Trash entries after confirmation.
-- [ ] Empty the whole Trash after confirmation.
-- [ ] Keep Trash Undo available without opening the Trash view.
+- [x] Add Trash as a sidebar location.
+- [x] Restore selected entries to their original paths.
+- [x] Resolve Restore conflicts through the bottom bar.
+- [x] Permanently delete selected Trash entries after confirmation.
+- [x] Empty the whole Trash after confirmation.
+- [x] Keep Trash Undo available without opening the Trash view.
 
 ### File actions
 

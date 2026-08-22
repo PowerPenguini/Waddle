@@ -201,13 +201,22 @@ pub enum TransferBatchOutcome {
 
 impl TransferBatch {
     pub fn new(sources: Vec<PathBuf>, destination_directory: PathBuf, action: Action) -> Self {
-        let mut roots = Vec::with_capacity(sources.len());
-        let mut pending = VecDeque::with_capacity(sources.len());
-        for source in sources {
-            let Some(name) = source.file_name() else {
-                continue;
-            };
-            let destination = destination_directory.join(name);
+        Self::new_mapped(
+            sources.into_iter().filter_map(|source| {
+                let name = source.file_name()?.to_owned();
+                Some((source, destination_directory.join(name)))
+            }),
+            action,
+        )
+    }
+
+    pub(crate) fn new_mapped(
+        entries: impl IntoIterator<Item = (PathBuf, PathBuf)>,
+        action: Action,
+    ) -> Self {
+        let mut roots = Vec::new();
+        let mut pending = VecDeque::new();
+        for (source, destination) in entries {
             let root = roots.len();
             roots.push(TransferRoot {
                 source: source.clone(),

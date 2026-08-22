@@ -52,6 +52,9 @@ pub(crate) enum Action {
     Trash {
         items: Vec<TrashItem>,
     },
+    Restore {
+        items: Vec<TrashItem>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -141,6 +144,24 @@ impl Action {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Some(Self::Trash { items }))
+    }
+
+    pub(crate) fn restore(receipts: &[TrashReceipt]) -> Result<Option<Self>, String> {
+        if receipts.is_empty() {
+            return Ok(None);
+        }
+        let items = receipts
+            .iter()
+            .map(|receipt| {
+                Ok(TrashItem {
+                    original: receipt.original.clone(),
+                    trashed: receipt.trashed.clone(),
+                    info: receipt.info.clone(),
+                    fingerprint: TreeFingerprint::read(&receipt.original)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Some(Self::Restore { items }))
     }
 }
 
@@ -414,6 +435,21 @@ fn apply(action: &mut Action, direction: Direction) -> Result<Effect, String> {
         },
         Action::Transfer { kind, items } => apply_transfer(*kind, items, direction),
         Action::Trash { items } => apply_trash(items, direction),
+        Action::Restore { items } => {
+            let mut effect = apply_trash(
+                items,
+                match direction {
+                    Direction::Undo => Direction::Redo,
+                    Direction::Redo => Direction::Undo,
+                },
+            )?;
+            effect.status = match direction {
+                Direction::Undo => "Undid Restore",
+                Direction::Redo => "Redid Restore",
+            }
+            .to_owned();
+            Ok(effect)
+        }
     }
 }
 
@@ -697,6 +733,60 @@ pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, String> {
 }
 
 fn locate_trash(original: &Path) -> Option<TrashReceipt> {
+    locate_desktop_trash(original).or_else(|| locate_home_trash(original))
+}
+
+fn locate_desktop_trash(original: &Path) -> Option<TrashReceipt> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let trash = gio::File::for_uri("trash:///");
+    let enumerator = trash
+        .enumerate_children(
+            "standard::target-uri,trash::orig-path,trash::deletion-date",
+            gio::FileQueryInfoFlags::NONE,
+            None::<&gio::Cancellable>,
+        )
+        .ok()?;
+    let mut matches = Vec::new();
+    while let Some(info) = enumerator.next_file(None::<&gio::Cancellable>).ok()? {
+        let Some(encoded) = info.attribute_byte_string("trash::orig-path") else {
+            continue;
+        };
+        let candidate = PathBuf::from(std::ffi::OsString::from_vec(encoded.as_bytes().to_vec()));
+        if candidate != original {
+            continue;
+        }
+        let Some(target_uri) = info.attribute_string("standard::target-uri") else {
+            continue;
+        };
+        let Some(trashed) = gio::File::for_uri(target_uri.as_str()).path() else {
+            continue;
+        };
+        let Some(trash_root) = trashed.parent().and_then(Path::parent) else {
+            continue;
+        };
+        let Some(trashed_name) = trashed.file_name() else {
+            continue;
+        };
+        let mut info_name = trashed_name.to_os_string();
+        info_name.push(".trashinfo");
+        let deletion_date = info
+            .attribute_string("trash::deletion-date")
+            .map_or_else(String::new, |value| value.to_string());
+        matches.push((
+            deletion_date,
+            TrashReceipt {
+                original: original.to_path_buf(),
+                info: trash_root.join("info").join(info_name),
+                trashed,
+            },
+        ));
+    }
+    matches.sort_by_key(|entry| entry.0.clone());
+    matches.pop().map(|(_, receipt)| receipt)
+}
+
+fn locate_home_trash(original: &Path) -> Option<TrashReceipt> {
     let data_home = std::env::var_os("XDG_DATA_HOME").map_or_else(
         || {
             std::env::var_os("HOME")
@@ -988,6 +1078,34 @@ mod tests {
         assert_eq!(fs::read_to_string(original).unwrap(), "content");
         assert!(!trashed.exists());
         assert!(!info.exists());
+    }
+
+    #[test]
+    fn restore_action_persists_the_restored_identity_for_later_undo() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("restored");
+        fs::write(&original, "content").unwrap();
+        let receipt = TrashReceipt {
+            original,
+            trashed: temp.path().join("Trash/files/restored"),
+            info: temp.path().join("Trash/info/restored.trashinfo"),
+        };
+        let path = temp.path().join("operations.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(
+                Action::restore(std::slice::from_ref(&receipt))
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        let reopened = Journal::open(path).unwrap();
+        assert!(matches!(
+            reopened.stored.entries[0].action,
+            Action::Restore { .. }
+        ));
     }
 
     #[cfg(unix)]

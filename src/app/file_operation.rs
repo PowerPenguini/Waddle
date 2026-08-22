@@ -42,6 +42,11 @@ enum State {
         message: String,
         detail: String,
     },
+    TrashDelete {
+        entries: Vec<super::trash::Entry>,
+        message: String,
+        detail: String,
+    },
     Error {
         message: String,
     },
@@ -69,6 +74,7 @@ enum WorkKind {
     },
     Trash(Vec<FileEntry>),
     PermanentDelete(Vec<FileEntry>),
+    TrashDelete(Vec<super::trash::Entry>),
 }
 
 impl Work {
@@ -100,6 +106,9 @@ impl Work {
                 Completion::PermanentDelete(run_entries(entries, |entry| {
                     fs::delete_permanently(&entry.path).map_err(|error| error.to_string())
                 }))
+            }
+            WorkKind::TrashDelete(entries) => {
+                Completion::TrashDelete(super::trash::delete(entries))
             }
         }
     }
@@ -136,6 +145,7 @@ pub(super) enum Completion {
     },
     Trash(TrashCompletion),
     PermanentDelete(Vec<(FileEntry, String)>),
+    TrashDelete(super::trash::DeleteReport),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -175,6 +185,9 @@ impl FileOperationSession {
             State::Trash { message, .. } => View::Trash { message },
             State::PermanentDelete {
                 message, detail, ..
+            }
+            | State::TrashDelete {
+                message, detail, ..
             } => View::PermanentDelete { message, detail },
             State::Error { message } => View::Error { message },
         }
@@ -190,6 +203,7 @@ impl FileOperationSession {
             State::NewFolder { .. }
                 | State::Trash { .. }
                 | State::PermanentDelete { .. }
+                | State::TrashDelete { .. }
                 | State::Error { .. }
         )
     }
@@ -197,22 +211,25 @@ impl FileOperationSession {
     pub(super) fn prompt_accepts_enter(&self) -> bool {
         matches!(
             self.state,
-            State::Trash { .. } | State::PermanentDelete { .. } | State::Error { .. }
+            State::Trash { .. }
+                | State::PermanentDelete { .. }
+                | State::TrashDelete { .. }
+                | State::Error { .. }
         )
     }
 
     pub(super) fn prompt_uses_yes_no(&self) -> bool {
         matches!(
             self.state,
-            State::Trash { .. } | State::PermanentDelete { .. }
+            State::Trash { .. } | State::PermanentDelete { .. } | State::TrashDelete { .. }
         )
     }
 
     pub(super) fn expanded_detail(&self) -> Option<&str> {
         match &self.state {
-            State::PermanentDelete { detail, .. } | State::Error { message: detail } => {
-                Some(detail)
-            }
+            State::PermanentDelete { detail, .. }
+            | State::TrashDelete { detail, .. }
+            | State::Error { message: detail } => Some(detail),
             _ => None,
         }
     }
@@ -241,6 +258,36 @@ impl FileOperationSession {
         let message = deletion_confirmation(&entries);
         self.busy = false;
         self.state = State::Trash { entries, message };
+        true
+    }
+
+    pub(super) fn begin_trash_delete(
+        &mut self,
+        entries: Vec<super::trash::Entry>,
+        empty: bool,
+    ) -> bool {
+        if entries.is_empty() {
+            return false;
+        }
+        let message = if empty {
+            format!(
+                "Empty Trash and permanently delete {} items?",
+                entries.len()
+            )
+        } else if entries.len() == 1 {
+            format!(
+                "Permanently delete “{}” from Trash?",
+                fs::display_name(&entries[0].file.name)
+            )
+        } else {
+            format!("Permanently delete {} selected Trash items?", entries.len())
+        };
+        self.busy = false;
+        self.state = State::TrashDelete {
+            entries,
+            message,
+            detail: "This cannot be undone.".to_owned(),
+        };
         true
     }
 
@@ -303,6 +350,10 @@ impl FileOperationSession {
             State::PermanentDelete { entries, .. } => {
                 self.busy = true;
                 Some(Work(WorkKind::PermanentDelete(entries.clone())))
+            }
+            State::TrashDelete { entries, .. } => {
+                self.busy = true;
+                Some(Work(WorkKind::TrashDelete(entries.clone())))
             }
             State::Error { .. } => {
                 self.state = State::Idle;
@@ -377,6 +428,13 @@ impl FileOperationSession {
                         message: failure_detail(&failures),
                     };
                     Consequences::default()
+                }
+            }
+            Completion::TrashDelete(_) => {
+                self.state = State::Idle;
+                Consequences {
+                    refresh: true,
+                    ..Consequences::default()
                 }
             }
         }

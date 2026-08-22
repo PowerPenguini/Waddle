@@ -15,6 +15,7 @@ mod startup;
 mod state;
 mod thumbnail;
 mod transfer_queue;
+mod trash;
 mod tree;
 mod view_preferences;
 
@@ -120,6 +121,7 @@ enum BrowserFocus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VirtualLocation {
     Recent,
+    Trash,
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +174,9 @@ enum Message {
     ContextNewFolder,
     ContextRename,
     ContextTrash,
+    ContextRestore,
+    ContextDeletePermanent,
+    ContextEmptyTrash,
     CloseContext,
     GridScrolled(f32),
     GridPointerMoved(Point),
@@ -192,6 +197,11 @@ enum Message {
     CommandFinished(Result<command::Completion, String>),
     VolumeFinished(Result<String, String>),
     RecentLoaded(Option<Result<Vec<FileEntry>, String>>),
+    TrashLoaded(Option<Result<Vec<trash::Entry>, String>>),
+    RestoreFinished {
+        entries: Vec<trash::Entry>,
+        outcome: Box<fs::TransferBatchOutcome>,
+    },
     AnimationFrame(Instant),
     RenameChanged(String),
     RenameSubmitted,
@@ -234,11 +244,14 @@ struct App {
     startup: startup::State,
     places: places::Places,
     recent: recent::Recent,
+    trash: trash::Trash,
+    trash_entries: Vec<trash::Entry>,
     virtual_location: Option<VirtualLocation>,
     operations: Operations,
     search: SearchSession,
     transfers: TransferWorkflow,
     transfer_conflict: Option<ActiveTransferConflict>,
+    restore_conflict: Option<ActiveRestoreConflict>,
     transfer_queue: transfer_queue::Queue,
     command: CommandSession,
     command_adapter: ProcessAdapter,
@@ -280,6 +293,12 @@ struct ActiveTransferConflict {
     batch: fs::TransferBatch,
 }
 
+#[derive(Clone, Debug)]
+struct ActiveRestoreConflict {
+    batch: fs::TransferBatch,
+    entries: Vec<trash::Entry>,
+}
+
 impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
@@ -287,9 +306,11 @@ impl App {
         let current = startup.initial_directory();
         let places = places::Places::open_default();
         let recent = recent::Recent::open_default();
+        let trash = trash::Trash::open_default();
         let mut explorer = ExplorerState::new(mounted_roots());
         let mut locations = places.entries();
         locations.extend(recent.sidebar_entry());
+        locations.push(trash.sidebar_entry());
         explorer.install_places(locations);
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
@@ -313,11 +334,14 @@ impl App {
             startup,
             places,
             recent,
+            trash,
+            trash_entries: Vec::new(),
             virtual_location: None,
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
             transfer_conflict: None,
+            restore_conflict: None,
             transfer_queue: transfer_queue::Queue::open_default(),
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
@@ -711,6 +735,18 @@ impl App {
                 self.context_menu = None;
                 self.show_trash_prompt()
             }
+            Message::ContextRestore => {
+                self.context_menu = None;
+                self.restore_selected_trash()
+            }
+            Message::ContextDeletePermanent => {
+                self.context_menu = None;
+                self.show_trash_delete_prompt(false)
+            }
+            Message::ContextEmptyTrash => {
+                self.context_menu = None;
+                self.show_trash_delete_prompt(true)
+            }
             Message::CloseContext => {
                 self.context_menu = None;
                 Task::none()
@@ -801,6 +837,32 @@ impl App {
                     }
                 }
             }
+            Message::TrashLoaded(result) => {
+                self.busy = false;
+                let Some(result) = result else {
+                    return Task::none();
+                };
+                match result {
+                    Ok(entries) => {
+                        self.virtual_location = Some(VirtualLocation::Trash);
+                        self.navigation.replace_displayed_entries(
+                            entries.iter().map(|entry| entry.file.clone()).collect(),
+                        );
+                        self.trash_entries = entries;
+                        self.grid.select_only(None, self.navigation.entries().len());
+                        self.grid.clear_details();
+                        self.grid.reset_scroll();
+                        self.location_input = "Trash".to_owned();
+                        self.status = format!("{} items  •  Trash", self.trash_entries.len());
+                        Task::none()
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        Task::none()
+                    }
+                }
+            }
+            Message::RestoreFinished { entries, outcome } => self.finish_restore(entries, *outcome),
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
                 self.tick_drag_hover(now)
@@ -972,7 +1034,8 @@ impl App {
                 logo: modifiers.logo(),
             },
             InputContext {
-                transfer_conflict: self.transfer_conflict.is_some(),
+                transfer_conflict: self.transfer_conflict.is_some()
+                    || self.restore_conflict.is_some(),
                 prompt_active: self.file_operations.prompt_active(),
                 prompt_accepts_enter: self.file_operations.prompt_accepts_enter(),
                 prompt_uses_yes_no: self.file_operations.prompt_uses_yes_no(),
@@ -1286,6 +1349,7 @@ impl App {
     fn refresh_location(&mut self) -> Task<Message> {
         match self.virtual_location {
             Some(VirtualLocation::Recent) => self.open_recent(),
+            Some(VirtualLocation::Trash) => self.open_trash(),
             None => self.live_refresh(),
         }
     }
@@ -1308,9 +1372,28 @@ impl App {
         )
     }
 
+    fn open_trash(&mut self) -> Task<Message> {
+        if self.prompt_blocks_action() || self.busy || self.navigation_loading {
+            return Task::none();
+        }
+        self.cancel_search_state();
+        self.busy = true;
+        self.status = "Reading Trash…".to_owned();
+        let trash = self.trash.clone();
+        Task::perform(
+            self.operations
+                .run(OperationKind::Navigation, move |_| trash.entries()),
+            |completion| match completion {
+                Completion::Finished(result) => Message::TrashLoaded(Some(result)),
+                Completion::Cancelled => Message::TrashLoaded(None),
+            },
+        )
+    }
+
     fn install_locations(&mut self) {
         let mut entries = self.places.entries();
         entries.extend(self.recent.sidebar_entry());
+        entries.push(self.trash.sidebar_entry());
         self.explorer.install_places(entries);
     }
 
@@ -1526,6 +1609,11 @@ impl App {
             .is_some_and(|node| node.kind == state::NodeKind::Recent)
         {
             return self.open_recent();
+        }
+        if find_node(&self.explorer.roots, id)
+            .is_some_and(|node| node.kind == state::NodeKind::Trash)
+        {
+            return self.open_trash();
         }
         let current = self.navigation.current().to_path_buf();
         let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
@@ -1924,6 +2012,143 @@ impl App {
         Task::none()
     }
 
+    fn selected_trash_entries(&self) -> Vec<trash::Entry> {
+        let selected = self
+            .grid
+            .selected_items(self.navigation.entries())
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        self.trash_entries
+            .iter()
+            .filter(|entry| selected.contains(&entry.file.path))
+            .cloned()
+            .collect()
+    }
+
+    fn restore_selected_trash(&mut self) -> Task<Message> {
+        if self.virtual_location != Some(VirtualLocation::Trash)
+            || self.busy
+            || self.restore_conflict.is_some()
+        {
+            return Task::none();
+        }
+        let entries = self.selected_trash_entries();
+        if entries.is_empty() {
+            return Task::none();
+        }
+        self.launch_restore(trash::restore_batch(&entries), entries)
+    }
+
+    fn launch_restore(
+        &mut self,
+        batch: fs::TransferBatch,
+        entries: Vec<trash::Entry>,
+    ) -> Task<Message> {
+        self.busy = true;
+        self.status = format!("Restoring {} Trash items…", entries.len());
+        Task::perform(
+            self.operations.run(OperationKind::Mutation, move |cancel| {
+                Ok(batch.run_with(|| cancel.is_cancelled(), |_| {}))
+            }),
+            move |completion| match completion {
+                Completion::Finished(Ok(outcome)) => Message::RestoreFinished {
+                    entries,
+                    outcome: Box::new(outcome),
+                },
+                Completion::Finished(Err(error)) => Message::OperationError(error),
+                Completion::Cancelled => Message::Noop,
+            },
+        )
+    }
+
+    fn finish_restore(
+        &mut self,
+        entries: Vec<trash::Entry>,
+        outcome: fs::TransferBatchOutcome,
+    ) -> Task<Message> {
+        self.busy = false;
+        match outcome {
+            fs::TransferBatchOutcome::Conflict { batch, conflict } => {
+                let name = conflict
+                    .destination
+                    .file_name()
+                    .map_or_else(|| "item".into(), |name| name.to_string_lossy());
+                let kind = if conflict.directories {
+                    "folder conflict; Replace merges"
+                } else {
+                    "file conflict"
+                };
+                self.status = format!(
+                    "Restore {name}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
+                );
+                self.restore_conflict = Some(ActiveRestoreConflict {
+                    batch: *batch,
+                    entries,
+                });
+                Task::none()
+            }
+            fs::TransferBatchOutcome::Complete(report) => {
+                let report = trash::finish_restore(report, &entries);
+                match journal::Action::restore(&report.restored) {
+                    Ok(Some(action)) => {
+                        if let Err(error) = self.journal.record(action) {
+                            self.status_notice =
+                                Some(format!("Restore completed but Undo was not saved: {error}"));
+                        }
+                    }
+                    Err(error) => {
+                        self.status_notice = Some(format!(
+                            "Restore completed but Undo is unavailable: {error}"
+                        ));
+                    }
+                    Ok(None) => {}
+                }
+                let mut detail = report
+                    .failures
+                    .iter()
+                    .map(|(path, error)| format!("{}: {error}", path.display()))
+                    .chain(report.warnings.iter().cloned())
+                    .collect::<Vec<_>>();
+                if report.retained > 0 {
+                    detail.push(format!("{} items stayed in Trash", report.retained));
+                }
+                self.status = format!(
+                    "Restored {}  •  {} failed  •  {} kept",
+                    report.restored.len(),
+                    report.failures.len(),
+                    report.retained
+                );
+                if !detail.is_empty() {
+                    self.command.show_settings(detail.join("\n"));
+                    self.sync_bottom_bar();
+                }
+                let changed = report
+                    .restored
+                    .iter()
+                    .filter_map(|receipt| receipt.original.parent().map(Path::to_path_buf))
+                    .collect::<Vec<_>>();
+                let tree = self.invalidate_tree(changed);
+                Task::batch([tree, self.open_trash()])
+            }
+        }
+    }
+
+    fn show_trash_delete_prompt(&mut self, empty: bool) -> Task<Message> {
+        if self.virtual_location != Some(VirtualLocation::Trash) || self.busy {
+            return Task::none();
+        }
+        let entries = if empty {
+            self.trash_entries.clone()
+        } else {
+            self.selected_trash_entries()
+        };
+        self.open_file_operation(move |session| {
+            session.begin_trash_delete(entries, empty);
+        });
+        Task::none()
+    }
+
     fn confirm_prompt(&mut self) -> Task<Message> {
         if let Some(work) = self
             .file_operations
@@ -1979,6 +2204,10 @@ impl App {
 
     fn finish_file_operation(&mut self, completion: file_operation::Completion) -> Task<Message> {
         self.busy = false;
+        let trash_delete_report = match &completion {
+            file_operation::Completion::TrashDelete(report) => Some(report.clone()),
+            _ => None,
+        };
         let journal_action = match &completion {
             file_operation::Completion::Name {
                 renamed: true,
@@ -1996,6 +2225,24 @@ impl App {
             _ => Ok(None),
         };
         let consequences = self.file_operations.complete(completion);
+        if let Some(report) = trash_delete_report {
+            self.status = format!(
+                "Permanently deleted {}  •  {} failed",
+                report.deleted,
+                report.failures.len()
+            );
+            if !report.failures.is_empty() {
+                self.command.show_settings(
+                    report
+                        .failures
+                        .iter()
+                        .map(|(entry, error)| format!("{}: {error}", fs::display_name(&entry.name)))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                self.sync_bottom_bar();
+            }
+        }
         if consequences.renamed {
             self.browser_input.leave_mode();
         }
@@ -2016,10 +2263,14 @@ impl App {
             Ok(None) => {}
         }
         if consequences.refresh {
-            Task::batch([
-                self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
-                self.refresh(consequences.select),
-            ])
+            if self.virtual_location.is_some() {
+                self.refresh_location()
+            } else {
+                Task::batch([
+                    self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
+                    self.refresh(consequences.select),
+                ])
+            }
         } else {
             Task::none()
         }
@@ -2494,6 +2745,9 @@ impl App {
     }
 
     fn resolve_transfer_conflict(&mut self, key: char, remaining: bool) -> Task<Message> {
+        if self.restore_conflict.is_some() {
+            return self.resolve_restore_conflict(key, remaining);
+        }
         let Some(active) = self.transfer_conflict.take() else {
             return Task::none();
         };
@@ -2513,6 +2767,9 @@ impl App {
     }
 
     fn cancel_transfer_conflict(&mut self) -> Task<Message> {
+        if self.restore_conflict.is_some() {
+            return self.cancel_restore_conflict();
+        }
         let Some(active) = self.transfer_conflict.take() else {
             return Task::none();
         };
@@ -2522,6 +2779,32 @@ impl App {
         self.finish_transfer_batch(
             id,
             active.request,
+            fs::TransferBatchOutcome::Complete(active.batch.cancel()),
+        )
+    }
+
+    fn resolve_restore_conflict(&mut self, key: char, remaining: bool) -> Task<Message> {
+        let Some(active) = self.restore_conflict.take() else {
+            return Task::none();
+        };
+        let choice = match key {
+            'r' => fs::ConflictChoice::Replace,
+            's' => fs::ConflictChoice::Skip,
+            'k' => fs::ConflictChoice::KeepBoth,
+            _ => {
+                self.restore_conflict = Some(active);
+                return Task::none();
+            }
+        };
+        self.launch_restore(active.batch.resolve(choice, remaining), active.entries)
+    }
+
+    fn cancel_restore_conflict(&mut self) -> Task<Message> {
+        let Some(active) = self.restore_conflict.take() else {
+            return Task::none();
+        };
+        self.finish_restore(
+            active.entries,
             fs::TransferBatchOutcome::Complete(active.batch.cancel()),
         )
     }
@@ -2603,6 +2886,7 @@ impl App {
     fn mutations_allowed(&self) -> bool {
         !self.busy
             && self.transfer_conflict.is_none()
+            && self.restore_conflict.is_none()
             && !self.navigation_loading
             && !self.search.is_recursive()
             && self.virtual_location.is_none()
@@ -2628,7 +2912,10 @@ impl App {
         }
         let location = self.virtual_location.map_or_else(
             || self.navigation.current().display().to_string(),
-            |_| "Recent".to_owned(),
+            |location| match location {
+                VirtualLocation::Recent => "Recent".to_owned(),
+                VirtualLocation::Trash => "Trash".to_owned(),
+            },
         );
         self.status = if self.grid.selection_count() > 1 {
             format!("{} selected  •  {}", self.grid.selection_count(), location)
@@ -2638,9 +2925,24 @@ impl App {
             .and_then(|index| self.navigation.entries().get(index))
         {
             let name = fs::display_name(&entry.name);
-            match self.grid.details() {
-                Some(details) => format!("{name}  •  {details}"),
-                None => format!("{name}  •  Loading details…"),
+            if self.virtual_location == Some(VirtualLocation::Trash) {
+                self.trash_entries
+                    .iter()
+                    .find(|trashed| trashed.file.path == entry.path)
+                    .map_or_else(
+                        || format!("{name}  •  Trash"),
+                        |trashed| {
+                            format!(
+                                "{name}  •  originally {}",
+                                trashed.receipt.original.display()
+                            )
+                        },
+                    )
+            } else {
+                match self.grid.details() {
+                    Some(details) => format!("{name}  •  {details}"),
+                    None => format!("{name}  •  Loading details…"),
+                }
             }
         } else {
             format!("{} items  •  {}", self.navigation.entries().len(), location)
@@ -2776,7 +3078,8 @@ impl App {
             state::NodeKind::Home
             | state::NodeKind::Place
             | state::NodeKind::Favorite
-            | state::NodeKind::Recent => (
+            | state::NodeKind::Recent
+            | state::NodeKind::Trash => (
                 include_bytes!("../ui/icons/folder.svg").as_slice(),
                 self.accent_color(),
             ),
@@ -2904,8 +3207,12 @@ impl App {
             .width(Fill)
             .height(34)
             .into()
-        } else if self.virtual_location == Some(VirtualLocation::Recent) {
-            container(text("Recent").font(UI_FONT_SEMIBOLD).size(13))
+        } else if let Some(location) = self.virtual_location {
+            let label = match location {
+                VirtualLocation::Recent => "Recent",
+                VirtualLocation::Trash => "Trash",
+            };
+            container(text(label).font(UI_FONT_SEMIBOLD).size(13))
                 .width(Fill)
                 .height(34)
                 .padding(Padding::from([0, 7]))
@@ -3663,23 +3970,41 @@ impl App {
     }
 
     fn context_menu_view(&self, point: Point) -> Element<'_, Message> {
-        let menu = container(column![
-            button(text("New Folder").size(13))
-                .on_press(Message::ContextNewFolder)
-                .style(button::text)
-                .width(Fill),
-            button(text("Rename").size(13))
-                .on_press(Message::ContextRename)
-                .style(button::text)
-                .width(Fill),
-            button(text("Move to Trash").size(13))
-                .on_press(Message::ContextTrash)
-                .style(button::text)
-                .width(Fill),
-        ])
-        .width(160)
-        .padding(5)
-        .style(menu_style);
+        let actions: Element<'_, Message> = if self.virtual_location == Some(VirtualLocation::Trash)
+        {
+            column![
+                button(text("Restore").size(13))
+                    .on_press(Message::ContextRestore)
+                    .style(button::text)
+                    .width(Fill),
+                button(text("Delete permanently").size(13))
+                    .on_press(Message::ContextDeletePermanent)
+                    .style(button::text)
+                    .width(Fill),
+                button(text("Empty Trash").size(13))
+                    .on_press(Message::ContextEmptyTrash)
+                    .style(button::text)
+                    .width(Fill),
+            ]
+            .into()
+        } else {
+            column![
+                button(text("New Folder").size(13))
+                    .on_press(Message::ContextNewFolder)
+                    .style(button::text)
+                    .width(Fill),
+                button(text("Rename").size(13))
+                    .on_press(Message::ContextRename)
+                    .style(button::text)
+                    .width(Fill),
+                button(text("Move to Trash").size(13))
+                    .on_press(Message::ContextTrash)
+                    .style(button::text)
+                    .width(Fill),
+            ]
+            .into()
+        };
+        let menu = container(actions).width(160).padding(5).style(menu_style);
         let overlay =
             mouse_area(container("").width(Fill).height(Fill)).on_press(Message::CloseContext);
         stack![overlay, pin(menu).x(point.x).y(point.y)].into()

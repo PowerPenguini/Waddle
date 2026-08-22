@@ -492,6 +492,42 @@ fn transfer_batch_supports_one_shot_and_batch_conflict_choices() {
 }
 
 #[test]
+fn mapped_transfer_restores_each_source_to_its_exact_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let trash = temp.path().join("Trash/files");
+    let first_destination = temp.path().join("one/original.txt");
+    let second_destination = temp.path().join("two/renamed.txt");
+    fs::create_dir_all(&trash).unwrap();
+    fs::create_dir_all(first_destination.parent().unwrap()).unwrap();
+    fs::create_dir_all(second_destination.parent().unwrap()).unwrap();
+    let first = trash.join("original.txt.2");
+    let second = trash.join("renamed.txt.8");
+    fs::write(&first, "one").unwrap();
+    fs::write(&second, "two").unwrap();
+
+    let outcome = TransferBatch::new_mapped(
+        [
+            (first.clone(), first_destination.clone()),
+            (second.clone(), second_destination.clone()),
+        ],
+        Action::Move,
+    )
+    .run();
+    let TransferBatchOutcome::Complete(report) = outcome else {
+        panic!("unexpected conflict");
+    };
+
+    assert_eq!(
+        report.completed,
+        [first_destination.clone(), second_destination.clone()]
+    );
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert_eq!(fs::read_to_string(first_destination).unwrap(), "one");
+    assert_eq!(fs::read_to_string(second_destination).unwrap(), "two");
+}
+
+#[test]
 fn skipping_a_conflict_keeps_the_source_and_existing_destination() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("item.txt");
