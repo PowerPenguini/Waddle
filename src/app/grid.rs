@@ -135,6 +135,11 @@ impl GridInteraction {
         self.scroll_y = 0.0;
     }
 
+    #[cfg(test)]
+    pub(super) fn scroll_offset(&self) -> f32 {
+        self.scroll_y
+    }
+
     pub(super) fn enter(&mut self, index: usize) {
         self.hovered = Some(index);
     }

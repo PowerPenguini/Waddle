@@ -1,5 +1,6 @@
 mod browser_input;
 mod command;
+mod directory_watch;
 mod file_operation;
 mod grid;
 mod navigation;
@@ -122,6 +123,8 @@ enum Message {
     },
     SystemTheme(iced::theme::Mode),
     PollSystem,
+    DirectoryChanged(directory_watch::Event),
+    Refresh,
     Parent,
     Back,
     Forward,
@@ -210,6 +213,7 @@ struct App {
     command_adapter: ProcessAdapter,
     file_operations: FileOperationSession,
     journal: journal::Journal,
+    directory_watch: Option<directory_watch::Source>,
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -249,6 +253,11 @@ impl App {
             Ok(journal) => (journal, None),
             Err(error) => (journal::Journal::empty_default(), Some(error)),
         };
+        let (directory_watch, watch_error) = match directory_watch::Source::new() {
+            Ok(source) => (Some(source), None),
+            Err(error) => (None, Some(error)),
+        };
+        let startup_error = journal_error.or(watch_error);
         let mut app = Self {
             explorer,
             navigation: NavigationSession::new(current.clone()),
@@ -260,6 +269,7 @@ impl App {
             command_adapter: ProcessAdapter,
             file_operations: FileOperationSession::default(),
             journal,
+            directory_watch,
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
             browser_input: BrowserInput::default(),
@@ -272,7 +282,7 @@ impl App {
                 .easing(Easing::EaseOut),
             animation_now: now,
             spinner_started: now,
-            status: journal_error.unwrap_or_default(),
+            status: startup_error.unwrap_or_default(),
             status_notice: None,
             busy: false,
             navigation_loading: false,
@@ -309,6 +319,9 @@ impl App {
         ];
         if let Some(source) = &self.native_clipboard {
             subscriptions.push(source.subscription().map(Message::NativeDndEvent));
+        }
+        if let Some(source) = &self.directory_watch {
+            subscriptions.push(source.subscription().map(Message::DirectoryChanged));
         }
         Subscription::batch(subscriptions)
     }
@@ -420,8 +433,20 @@ impl App {
                 self.accent = theme::load(theme::interface_settings().as_ref());
                 let mounts = mounted_roots();
                 self.explorer.reconcile_mounts(mounts);
-                Task::none()
+                if self.search.is_recursive() {
+                    self.live_refresh()
+                } else {
+                    Task::none()
+                }
             }
+            Message::DirectoryChanged(event) => {
+                if event.path == self.navigation.current() {
+                    self.live_refresh()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::Refresh => self.live_refresh(),
             Message::Parent => self.go_parent(),
             Message::Back => self.go_back(),
             Message::Forward => self.go_forward(),
@@ -690,6 +715,7 @@ impl App {
             keyboard::Key::Named(keyboard::key::Named::Enter) => InputNamedKey::Enter,
             keyboard::Key::Named(keyboard::key::Named::Backspace) => InputNamedKey::Backspace,
             keyboard::Key::Named(keyboard::key::Named::Delete) => InputNamedKey::Delete,
+            keyboard::Key::Named(keyboard::key::Named::F5) => InputNamedKey::Refresh,
             _ => InputNamedKey::Other,
         };
         let intent = self.browser_input.handle(
@@ -755,6 +781,7 @@ impl App {
             InputIntent::Paste => self.update(Message::Paste),
             InputIntent::Undo => self.run_journal(false),
             InputIntent::Redo => self.run_journal(true),
+            InputIntent::Refresh => self.live_refresh(),
             InputIntent::Back => self.go_back(),
             InputIntent::Forward => self.go_forward(),
             InputIntent::BeginSearch => self.begin_search(),
@@ -845,7 +872,7 @@ impl App {
     ) -> Task<Message> {
         self.navigation_loading = false;
         match self.navigation.complete(&requested, result) {
-            NavigationOutcome::Committed { selected } => {
+            NavigationOutcome::Committed { selected, refresh } => {
                 let selected_paths = selected
                     .iter()
                     .filter_map(|index| self.navigation.entries().get(*index))
@@ -866,11 +893,29 @@ impl App {
                     .select_indices(&selected, self.navigation.entries().len());
                 self.grid.clear_details();
                 self.location_input = self.navigation.current().display().to_string();
-                self.grid.reset_scroll();
+                if !refresh {
+                    self.grid.reset_scroll();
+                }
+                if let Some(source) = &self.directory_watch {
+                    source.watch(self.navigation.current().to_path_buf());
+                }
                 self.status.clear();
                 Task::batch([self.load_root_if_needed(), self.schedule_details()])
             }
-            NavigationOutcome::Failed(error) => {
+            NavigationOutcome::Failed { error: _, refresh }
+                if refresh && !self.navigation.current().is_dir() =>
+            {
+                let missing = self.navigation.current().to_path_buf();
+                let ancestor = nearest_existing_ancestor(&missing);
+                self.status_notice = Some(format!(
+                    "{} disappeared; opened {}",
+                    missing.display(),
+                    ancestor.display()
+                ));
+                let navigation = self.navigation.forward(ancestor, false, None);
+                self.request_navigation(navigation)
+            }
+            NavigationOutcome::Failed { error, .. } => {
                 self.status = error;
                 Task::none()
             }
@@ -919,6 +964,26 @@ impl App {
     fn refresh_selected(&mut self, select: Vec<PathBuf>) -> Task<Message> {
         let navigation = self.navigation.refresh_selected(select);
         self.request_navigation(navigation)
+    }
+
+    fn live_refresh(&mut self) -> Task<Message> {
+        if self.navigation_loading {
+            return Task::none();
+        }
+        if !self.navigation.current().is_dir() {
+            let navigation = self.navigation.refresh(None);
+            return self.request_navigation(navigation);
+        }
+        if self.search.is_recursive() {
+            return self.update_search(self.search.query().to_owned());
+        }
+        let selected = self
+            .grid
+            .selected_items(self.navigation.entries())
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        self.refresh_selected(selected)
     }
 
     fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
@@ -1246,6 +1311,7 @@ impl App {
                 self.sync_bottom_bar();
                 Task::none()
             }
+            CommandSubmission::Refresh => self.live_refresh(),
             CommandSubmission::Execute(execution) => {
                 self.busy = true;
                 self.status = execution.status();
@@ -2158,6 +2224,14 @@ impl App {
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
         );
+        let refresh = toolbar_button(
+            include_bytes!("../ui/icons/refresh.svg"),
+            "Refresh",
+            !self.navigation_loading,
+            Message::Refresh,
+            self.iced_theme().palette().text,
+            self.iced_theme().palette().background,
+        );
         let location_input = text_input("Location", &self.location_input)
             .id(Id::new(LOCATION_ID))
             .on_input(Message::LocationChanged)
@@ -2186,7 +2260,7 @@ impl App {
         .height(34);
         let location = mouse_area(location).on_press(Message::LocationFocused);
         container(
-            row![parent, back, forward, location]
+            row![parent, back, forward, refresh, location]
                 .spacing(4)
                 .align_y(Alignment::Center),
         )
@@ -2819,6 +2893,18 @@ fn clears_status_notice(event: &iced::Event) -> bool {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
             | iced::Event::Mouse(mouse::Event::ButtonPressed(_))
     )
+}
+
+fn nearest_existing_ancestor(path: &Path) -> PathBuf {
+    let mut candidate = path.to_path_buf();
+    loop {
+        if candidate.is_dir() {
+            return candidate;
+        }
+        if !candidate.pop() {
+            return PathBuf::from("/");
+        }
+    }
 }
 
 fn rgba(color: Color, alpha: f32) -> [u8; 4] {

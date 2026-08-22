@@ -26,8 +26,8 @@ impl Request {
 #[derive(Clone, Debug)]
 pub(super) enum Outcome {
     Ignored,
-    Failed(String),
-    Committed { selected: Vec<usize> },
+    Failed { error: String, refresh: bool },
+    Committed { selected: Vec<usize>, refresh: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -133,8 +133,14 @@ impl NavigationSession {
         };
         let (canonical, entries) = match result {
             Ok(opened) => opened,
-            Err(error) => return Outcome::Failed(error),
+            Err(error) => {
+                return Outcome::Failed {
+                    error,
+                    refresh: matches!(request.kind, Kind::Refresh),
+                };
+            }
         };
+        let refresh = matches!(request.kind, Kind::Refresh);
         match request.kind {
             Kind::Forward { remember } => {
                 if canonical != self.current && remember {
@@ -167,7 +173,7 @@ impl NavigationSession {
             .filter_map(|(index, entry)| request.select.contains(&entry.path).then_some(index))
             .collect();
         self.entries = entries;
-        Outcome::Committed { selected }
+        Outcome::Committed { selected, refresh }
     }
 
     pub(super) fn replace_displayed_entries(&mut self, entries: Vec<FileEntry>) {
@@ -242,7 +248,7 @@ mod tests {
         assert_eq!(session.current(), Path::new("/start"));
         assert!(matches!(
             session.complete(latest.requested(), Err("missing".to_owned())),
-            Outcome::Failed(error) if error == "missing"
+            Outcome::Failed { error, .. } if error == "missing"
         ));
         assert_eq!(session.current(), Path::new("/start"));
     }
@@ -260,7 +266,7 @@ mod tests {
             )),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected } if selected == [1]));
+        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [1]));
         assert!(!session.can_go_back());
         assert_eq!(session.entries()[1].path, selected);
     }
@@ -284,7 +290,7 @@ mod tests {
             )),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected } if selected == [0, 2]));
+        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [0, 2]));
     }
 
     #[test]
@@ -299,7 +305,7 @@ mod tests {
             )),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected } if selected == [0]));
+        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [0]));
         assert_eq!(session.current(), Path::new("/start"));
     }
 

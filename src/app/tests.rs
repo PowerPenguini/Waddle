@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use iced::{event, keyboard, mouse};
 
-use super::{App, BrowserFocus, InputMode, Message};
+use super::{App, BrowserFocus, InputMode, Message, nearest_existing_ancestor};
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
 };
@@ -318,6 +318,51 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
     let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
     let _ = app.handle_key(enter.clone(), enter, keyboard::Modifiers::empty(), None);
     assert!(app.busy);
+}
+
+#[test]
+fn live_refresh_preserves_scroll_selection_rename_and_pending_cut_by_path() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    let current = app.navigation.current().to_path_buf();
+    let first = FileEntry {
+        path: current.join("first"),
+        name: "first".into(),
+        directory: false,
+    };
+    let cut = FileEntry {
+        path: current.join("cut"),
+        name: "cut".into(),
+        directory: false,
+    };
+    app.navigation
+        .replace_displayed_entries(vec![first.clone(), cut.clone()]);
+    app.grid.select_only(Some(0), 2);
+    app.grid.set_scroll(173.0);
+    app.browser_input.enter(InputMode::Rename);
+    app.transfers.cut(std::slice::from_ref(&cut));
+    let request = app.navigation.refresh_selected(vec![first.path.clone()]);
+    let requested = request.requested().to_path_buf();
+
+    let _ = app.finish_navigation(requested, Ok((current, vec![first.clone(), cut])));
+
+    assert_eq!(app.grid.scroll_offset(), 173.0);
+    assert_eq!(app.browser_input.mode(), InputMode::Rename);
+    assert_eq!(app.transfers.pending_cut_paths().len(), 1);
+    assert_eq!(
+        app.grid
+            .selected_entry()
+            .and_then(|index| app.navigation.entries().get(index))
+            .map(|entry| &entry.path),
+        Some(&first.path)
+    );
+}
+
+#[test]
+fn missing_directory_falls_back_to_the_nearest_existing_ancestor() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("gone/child");
+    assert_eq!(nearest_existing_ancestor(&missing), temp.path());
 }
 
 #[test]

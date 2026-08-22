@@ -7,6 +7,7 @@ const COMMAND_HELP: &str = "\
 Commands
   :help, :h     Show this help
   :terminal, :t Open a terminal in the current directory
+  :refresh      Refresh the current view
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -95,6 +96,7 @@ pub(super) enum Submission {
     None,
     Quit,
     Updated,
+    Refresh,
     Execute(Execution),
 }
 
@@ -166,6 +168,9 @@ impl CommandSession {
                 current,
                 kind: ExecutionKind::Terminal,
             });
+        }
+        if prefix == ':' && trimmed == "refresh" {
+            return Submission::Refresh;
         }
         if trimmed.is_empty() {
             return Submission::None;
@@ -284,6 +289,18 @@ mod tests {
         assert!(output.detail.contains(":terminal, :t"));
         assert_eq!(session.prefix(), None);
         assert!(session.text().is_empty());
+    }
+
+    #[test]
+    fn refresh_is_a_builtin_command_not_a_shell_process() {
+        let mut session = CommandSession::default();
+        session.begin(':');
+        session.change("refresh".to_owned());
+
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            Submission::Refresh
+        ));
     }
 
     #[test]

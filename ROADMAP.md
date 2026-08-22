@@ -125,14 +125,14 @@ needs external drag and drop and a native clipboard adapter.
 ## Milestone 2: live directory state
 
 - [ ] Monitor the current directory and other displayed locations for external changes.
-- [ ] Debounce bursts without delaying normal interactive updates.
-- [ ] Preserve selection and scroll position by path rather than by list index.
-- [ ] Keep Rename, command input, conflict handling, and pending Cut active during refresh.
-- [ ] Refresh active local and recursive search results.
-- [ ] Keep pending Cut entries hidden until Cut ends.
-- [ ] If the current directory disappears, navigate to the nearest existing ancestor and report
+- [x] Debounce bursts without delaying normal interactive updates.
+- [x] Preserve selection and scroll position by path rather than by list index.
+- [x] Keep Rename, command input, conflict handling, and pending Cut active during refresh.
+- [x] Refresh active local and recursive search results.
+- [x] Keep pending Cut entries hidden until Cut ends.
+- [x] If the current directory disappears, navigate to the nearest existing ancestor and report
   what happened.
-- [ ] Add manual Refresh through `F5`, a toolbar action, and `:refresh`.
+- [x] Add manual Refresh through `F5`, a toolbar action, and `:refresh`.
 
 ## Milestone 3: transfer queue
 

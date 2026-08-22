@@ -42,6 +42,7 @@ pub(super) enum NamedKey {
     Enter,
     Backspace,
     Delete,
+    Refresh,
     #[default]
     Other,
 }
@@ -89,6 +90,7 @@ pub(super) enum Intent {
     Paste,
     Undo,
     Redo,
+    Refresh,
     Back,
     Forward,
     BeginSearch,
@@ -285,6 +287,11 @@ impl BrowserInput {
                 return Intent::Pending("Browser sequence cancelled".to_owned());
             }
             return Intent::None;
+        }
+
+        if press.named == NamedKey::Refresh {
+            self.clear_sequence();
+            return Intent::Refresh;
         }
 
         if context.busy {
@@ -657,6 +664,21 @@ mod tests {
                 context,
             ),
             Intent::ConflictCancel
+        );
+    }
+
+    #[test]
+    fn f5_requests_an_explicit_refresh() {
+        let mut input = BrowserInput::default();
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Refresh,
+                    ..Press::default()
+                },
+                selected(),
+            ),
+            Intent::Refresh
         );
     }
 
