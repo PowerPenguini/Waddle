@@ -44,6 +44,7 @@ pub(super) struct ShellReport {
     pub(super) summary: String,
     pub(super) detail: String,
     pub(super) final_directory: Option<PathBuf>,
+    pub(super) successful: bool,
 }
 
 #[derive(Debug)]
@@ -196,6 +197,7 @@ exit "$status""#,
         summary: format!("{prefix}{command}  •  {status_text}"),
         detail,
         final_directory,
+        successful: status.success(),
     })
 }
 

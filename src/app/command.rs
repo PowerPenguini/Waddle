@@ -8,6 +8,7 @@ Commands
   :help, :h     Show this help
   :terminal, :t Open a terminal in the current directory
   :refresh      Refresh the current view
+  :diagnostics  Show local command failure history
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -97,6 +98,7 @@ pub(super) enum Submission {
     Quit,
     Updated,
     Refresh,
+    Diagnostics,
     Execute(Execution),
 }
 
@@ -172,6 +174,9 @@ impl CommandSession {
         if prefix == ':' && trimmed == "refresh" {
             return Submission::Refresh;
         }
+        if prefix == ':' && matches!(trimmed, "diagnostics" | "diag") {
+            return Submission::Diagnostics;
+        }
         if trimmed.is_empty() {
             return Submission::None;
         }
@@ -208,6 +213,7 @@ impl CommandSession {
                     summary,
                     detail,
                     final_directory,
+                    successful: _,
                 } = report;
                 let status = if detail.trim().is_empty() {
                     self.output = None;
@@ -240,6 +246,13 @@ impl CommandSession {
                 ..Consequences::default()
             },
         }
+    }
+
+    pub(super) fn show_diagnostics(&mut self, detail: String) {
+        self.output = Some(Output {
+            summary: ":diagnostics  •  local command failures".to_owned(),
+            detail,
+        });
     }
 }
 
@@ -304,12 +317,25 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_is_a_builtin_command_not_a_shell_process() {
+        let mut session = CommandSession::default();
+        session.begin(':');
+        session.change("diagnostics".to_owned());
+
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            Submission::Diagnostics
+        ));
+    }
+
+    #[test]
     fn memory_adapter_is_the_second_adapter_at_the_command_seam() {
         let adapter = MemoryAdapter {
             shell_result: Mutex::new(Some(Ok(ShellReport {
                 summary: "!true  •  exit 0".to_owned(),
                 detail: String::new(),
                 final_directory: None,
+                successful: true,
             }))),
             ..MemoryAdapter::default()
         };
@@ -372,6 +398,7 @@ mod tests {
                 summary: ":cd /tmp  •  exit 0".to_owned(),
                 detail: String::new(),
                 final_directory: Some(PathBuf::from("/tmp")),
+                successful: true,
             }))),
             Path::new("/work"),
         );

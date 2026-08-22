@@ -1,5 +1,6 @@
 mod browser_input;
 mod command;
+mod diagnostics;
 mod directory_watch;
 mod drag_hover;
 mod file_operation;
@@ -132,6 +133,7 @@ enum Message {
     RetryTransfer,
     ToggleTransferHistory,
     CopyTransferReport,
+    CopyCommandReport,
     SystemTheme(iced::theme::Mode),
     PollSystem,
     DirectoryChanged(directory_watch::Event),
@@ -231,6 +233,7 @@ struct App {
     transfer_queue: transfer_queue::Queue,
     command: CommandSession,
     command_adapter: ProcessAdapter,
+    diagnostics: diagnostics::History,
     file_operations: FileOperationSession,
     journal: journal::Journal,
     directory_watch: Option<directory_watch::Source>,
@@ -291,6 +294,7 @@ impl App {
             transfer_queue: transfer_queue::Queue::open_default(),
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
+            diagnostics: diagnostics::History::open_default(),
             file_operations: FileOperationSession::default(),
             journal,
             directory_watch,
@@ -483,6 +487,9 @@ impl App {
             Message::CopyTransferReport => {
                 iced::clipboard::write(self.transfer_queue.report_text())
             }
+            Message::CopyCommandReport => self.command.output().map_or_else(Task::none, |output| {
+                iced::clipboard::write(format!("{}\n\n{}", output.summary, output.detail))
+            }),
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
                 Task::none()
@@ -1523,6 +1530,11 @@ impl App {
                 Task::none()
             }
             CommandSubmission::Refresh => self.live_refresh(),
+            CommandSubmission::Diagnostics => {
+                self.command.show_diagnostics(self.diagnostics.report());
+                self.sync_bottom_bar();
+                Task::none()
+            }
             CommandSubmission::Execute(execution) => {
                 self.busy = true;
                 self.status = execution.status();
@@ -1541,6 +1553,9 @@ impl App {
 
     fn finish_command(&mut self, result: Result<command::Completion, String>) -> Task<Message> {
         self.busy = false;
+        if let Some((summary, detail)) = command_failure_report(&result) {
+            self.diagnostics.record(summary, detail);
+        }
         let consequences = self.command.complete(result, self.navigation.current());
         self.sync_bottom_bar();
         if let Some(error) = consequences.error {
@@ -2920,6 +2935,7 @@ impl App {
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .width(Fill),
+                compact_text_button("Copy", Message::CopyCommandReport),
                 text("Esc close")
                     .font(MONO_FONT)
                     .size(11)
@@ -3708,6 +3724,32 @@ fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
         segments.push((label, current.clone()));
     }
     segments
+}
+
+fn command_failure_report(
+    result: &Result<command::Completion, String>,
+) -> Option<(String, String)> {
+    match result {
+        Ok(command::Completion::Shell(Ok(report))) if !report.successful => {
+            Some((report.summary.clone(), report.detail.clone()))
+        }
+        Ok(command::Completion::Shell(Err(command::Failure::RequiresTerminal))) => Some((
+            "interactive terminal required".to_owned(),
+            "The command attempted terminal screen control and was stopped.".to_owned(),
+        )),
+        Ok(command::Completion::Shell(Err(command::Failure::Other(error)))) => {
+            Some(("Could not run Bash".to_owned(), error.clone()))
+        }
+        Ok(command::Completion::Terminal {
+            directory,
+            result: Err(error),
+        }) => Some((
+            format!("Could not open a terminal in {}", directory.display()),
+            error.clone(),
+        )),
+        Err(error) => Some(("Command operation failed".to_owned(), error.clone())),
+        _ => None,
+    }
 }
 
 fn compact_text_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
