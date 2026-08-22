@@ -167,7 +167,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Use natural filename ordering.
 - [x] Make folders-first configurable.
 - [x] Store global view defaults and optional per-directory overrides.
-- [ ] Add image thumbnails with asynchronous generation and a bounded cache.
+- [x] Add image thumbnails with asynchronous generation and a bounded cache.
 
 ### Hidden files and search
 

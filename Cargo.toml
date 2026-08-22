@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 gio = "0.22.8"
-iced = { version = "=0.14.0", features = ["advanced", "svg", "tokio"] }
+iced = { version = "=0.14.0", features = ["advanced", "image", "svg", "tokio"] }
+image = { version = "0.25.8", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2.189"
 resvg = "=0.45.1"
 serde = { version = "1", features = ["derive"] }

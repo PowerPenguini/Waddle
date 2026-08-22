@@ -8,6 +8,7 @@ mod operations;
 mod search;
 mod shell;
 mod state;
+mod thumbnail;
 mod transfer_queue;
 mod tree;
 mod view_preferences;
@@ -167,6 +168,7 @@ enum Message {
         path: PathBuf,
         result: Result<String, String>,
     },
+    ThumbnailLoaded(thumbnail::Loaded),
     SearchChanged(String),
     SearchSubmitted,
     SearchFinished(Result<fs::SearchResults, String>),
@@ -230,6 +232,7 @@ struct App {
     journal: journal::Journal,
     directory_watch: Option<directory_watch::Source>,
     view_preferences: view_preferences::Preferences,
+    thumbnails: thumbnail::Cache,
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -288,6 +291,7 @@ impl App {
             journal,
             directory_watch,
             view_preferences: view_preferences::Preferences::open_default(),
+            thumbnails: thumbnail::Cache::default(),
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
             browser_input: BrowserInput::default(),
@@ -424,7 +428,7 @@ impl App {
             Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
                 self.grid.resize(size);
-                Task::none()
+                self.load_visible_thumbnails()
             }
             Message::NativeReady(result) => {
                 match result {
@@ -613,7 +617,7 @@ impl App {
             }
             Message::GridScrolled(y) => {
                 self.grid.set_scroll(y);
-                Task::none()
+                self.load_visible_thumbnails()
             }
             Message::GridPointerMoved(point) => {
                 if self
@@ -641,6 +645,10 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ThumbnailLoaded(loaded) => {
+                self.thumbnails.complete(loaded);
+                Task::none()
+            }
             Message::SearchChanged(value) => self.update_search(value),
             Message::SearchSubmitted => self.submit_search(),
             Message::SearchFinished(result) => {
@@ -650,7 +658,7 @@ impl App {
                 {
                     self.status = error;
                 }
-                Task::none()
+                self.load_visible_thumbnails()
             }
             Message::CommandChanged(value) => {
                 self.command.change(value);
@@ -1013,7 +1021,11 @@ impl App {
                     source.watch(self.navigation.current().to_path_buf());
                 }
                 self.status.clear();
-                Task::batch([self.load_root_if_needed(), self.schedule_details()])
+                Task::batch([
+                    self.load_root_if_needed(),
+                    self.schedule_details(),
+                    self.load_visible_thumbnails(),
+                ])
             }
             NavigationOutcome::Failed { error: _, refresh }
                 if refresh && !self.navigation.current().is_dir() =>
@@ -1108,6 +1120,31 @@ impl App {
         change(&mut options);
         self.view_preferences.set_directory(current, options);
         self.live_refresh()
+    }
+
+    fn load_visible_thumbnails(&mut self) -> Task<Message> {
+        if self
+            .view_preferences
+            .for_directory(self.navigation.current())
+            .view
+            != fs::ViewMode::Grid
+        {
+            return Task::none();
+        }
+        let visible = self
+            .grid
+            .visible_range(self.navigation.entries().len(), self.status_height());
+        let paths = self.navigation.entries()[visible.first_index..visible.last_index]
+            .iter()
+            .filter(|entry| !entry.is_directory())
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        Task::batch(
+            self.thumbnails
+                .requests(paths.iter().map(PathBuf::as_path))
+                .into_iter()
+                .map(|request| Task::perform(thumbnail::load(request), Message::ThumbnailLoaded)),
+        )
     }
 
     fn begin_location(&mut self) -> Task<Message> {
@@ -2651,10 +2688,23 @@ impl App {
         let drop_target = entry.is_directory()
             && self.drop_highlight_path().as_deref() == Some(entry.path.as_path());
         let icon_kind = entry_icon_kind(entry);
-        let icon = themed_svg(
-            entry_icon_asset(icon_kind),
-            48.0,
-            self.entry_icon_color(icon_kind),
+        let icon: Element<'_, Message> = self.thumbnails.handle(&entry.path).map_or_else(
+            || {
+                themed_svg(
+                    entry_icon_asset(icon_kind),
+                    48.0,
+                    self.entry_icon_color(icon_kind),
+                )
+                .into()
+            },
+            |handle| {
+                widget::image(handle.clone())
+                    .width(48)
+                    .height(48)
+                    .content_fit(iced::ContentFit::Cover)
+                    .border_radius(5)
+                    .into()
+            },
         );
         let label_color = if selected {
             self.selection_text_color()
