@@ -160,12 +160,18 @@ fn copy_message_uses_the_complete_visual_selection_in_display_order() {
 
 #[test]
 fn system_clipboard_completion_enters_the_same_transfer_workflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_directory = temp.path().join("external");
+    let destination = temp.path().join("target");
+    std::fs::create_dir(&source_directory).unwrap();
+    std::fs::create_dir(&destination).unwrap();
     let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(destination.clone());
     app.navigation_loading = false;
-    let paths = vec![
-        PathBuf::from("/external/one"),
-        PathBuf::from("/external/two"),
-    ];
+    let paths = vec![source_directory.join("one"), source_directory.join("two")];
+    for path in &paths {
+        std::fs::write(path, "x").unwrap();
+    }
 
     let _ = app.update(Message::ClipboardRead(Ok(ClipboardImport {
         paths: paths.clone(),
@@ -173,7 +179,7 @@ fn system_clipboard_completion_enters_the_same_transfer_workflow() {
         generation: None,
     })));
 
-    let request = app.transfers.paste(PathBuf::from("/target")).unwrap();
+    let request = app.transfers.paste(destination).unwrap();
     assert_eq!(request.paths, paths);
     assert_eq!(request.action, TransferAction::Copy);
     assert!(app.transfer_queue.active_id().is_some());

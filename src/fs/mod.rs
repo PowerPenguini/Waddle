@@ -200,6 +200,15 @@ pub enum TransferBatchOutcome {
 }
 
 impl TransferBatch {
+    pub fn try_new(
+        sources: Vec<PathBuf>,
+        destination_directory: PathBuf,
+        action: Action,
+    ) -> Result<Self, FsError> {
+        validate_transfer(&sources, &destination_directory, action)?;
+        Ok(Self::new(sources, destination_directory, action))
+    }
+
     pub fn new(sources: Vec<PathBuf>, destination_directory: PathBuf, action: Action) -> Self {
         Self::new_mapped(
             sources.into_iter().filter_map(|source| {
@@ -545,6 +554,126 @@ impl TransferBatch {
                 .filter_map(|index| self.roots.get(index).map(|root| root.source.clone()))
                 .collect(),
         }
+    }
+}
+
+fn validate_transfer(
+    sources: &[PathBuf],
+    destination_directory: &Path,
+    action: Action,
+) -> Result<(), FsError> {
+    if sources.is_empty() {
+        return Err(FsError::new(
+            "paste into",
+            destination_directory,
+            io::Error::new(io::ErrorKind::InvalidInput, "there are no source entries"),
+        ));
+    }
+    let destination_metadata = fs::metadata(destination_directory)
+        .map_err(|error| FsError::new("inspect", destination_directory, error))?;
+    if !destination_metadata.is_dir() {
+        return Err(FsError::new(
+            "paste into",
+            destination_directory,
+            io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "the destination is not a folder",
+            ),
+        ));
+    }
+    require_access(destination_directory, libc::W_OK | libc::X_OK, "write into")?;
+    let canonical_destination = destination_directory
+        .canonicalize()
+        .map_err(|error| FsError::new("inspect", destination_directory, error))?;
+    let mut unique = BTreeSet::new();
+    for source in sources {
+        if !unique.insert(source) {
+            return Err(FsError::new(
+                "paste",
+                source,
+                io::Error::new(io::ErrorKind::InvalidInput, "the source is duplicated"),
+            ));
+        }
+        let metadata =
+            fs::symlink_metadata(source).map_err(|error| FsError::new("inspect", source, error))?;
+        if source.file_name().is_none() {
+            return Err(FsError::new(
+                "paste",
+                source,
+                io::Error::new(io::ErrorKind::InvalidInput, "the source has no file name"),
+            ));
+        }
+        let crosses_filesystems = metadata.dev() != destination_metadata.dev();
+        if !metadata.file_type().is_symlink() && (action == Action::Copy || crosses_filesystems) {
+            let read_mode = if metadata.is_dir() {
+                libc::R_OK | libc::X_OK
+            } else {
+                libc::R_OK
+            };
+            require_access(source, read_mode, "read")?;
+        }
+        if action == Action::Move {
+            let parent = source.parent().ok_or_else(|| {
+                FsError::new(
+                    "move",
+                    source,
+                    io::Error::new(io::ErrorKind::InvalidInput, "the source has no parent"),
+                )
+            })?;
+            require_access(parent, libc::W_OK | libc::X_OK, "move from")?;
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|error| FsError::new("inspect", parent, error))?;
+            if canonical_parent == canonical_destination {
+                return Err(FsError::new(
+                    "move",
+                    source,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the source is already in the destination folder",
+                    ),
+                ));
+            }
+        }
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            let canonical_source = source
+                .canonicalize()
+                .map_err(|error| FsError::new("inspect", source, error))?;
+            if canonical_destination == canonical_source
+                || canonical_destination.starts_with(&canonical_source)
+            {
+                return Err(FsError::new(
+                    "paste",
+                    source,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "a folder cannot be pasted into itself",
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_access(path: &Path, mode: i32, operation: &'static str) -> Result<(), FsError> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let path_bytes = path.as_os_str().as_bytes();
+    let path_c = CString::new(path_bytes).map_err(|_| {
+        FsError::new(
+            operation,
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "the path contains a null byte"),
+        )
+    })?;
+    // SAFETY: `path_c` is a valid, null-terminated path and `mode` contains access flags only.
+    let result =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path_c.as_ptr(), mode, libc::AT_EACCESS) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(FsError::new(operation, path, io::Error::last_os_error()))
     }
 }
 

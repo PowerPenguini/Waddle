@@ -228,6 +228,61 @@ fn moves_file_into_directory() {
 }
 
 #[test]
+fn transfer_preflight_revalidates_sources_destination_and_descendants() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    let source = temp.path().join("source");
+    fs::create_dir(&destination).unwrap();
+    fs::create_dir(&source).unwrap();
+    let descendant = source.join("child");
+    fs::create_dir(&descendant).unwrap();
+
+    assert!(TransferBatch::try_new(vec![source.clone()], descendant, Action::Copy,).is_err());
+    assert!(
+        TransferBatch::try_new(
+            vec![temp.path().join("missing")],
+            destination.clone(),
+            Action::Copy,
+        )
+        .is_err()
+    );
+    let not_a_directory = temp.path().join("plain");
+    fs::write(&not_a_directory, "x").unwrap();
+    assert!(TransferBatch::try_new(vec![source], not_a_directory, Action::Copy,).is_err());
+}
+
+#[test]
+fn transfer_preflight_rejects_a_move_to_the_existing_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("note");
+    fs::write(&source, "x").unwrap();
+
+    assert!(
+        TransferBatch::try_new(vec![source], temp.path().to_path_buf(), Action::Move,).is_err()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn transfer_preflight_preserves_symlinks_and_checks_destination_permissions() {
+    use std::os::unix::{fs::PermissionsExt, fs::symlink};
+
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let link = temp.path().join("dangling-link");
+    symlink(temp.path().join("missing-target"), &link).unwrap();
+    assert!(TransferBatch::try_new(vec![link], destination.clone(), Action::Copy,).is_ok());
+
+    if unsafe { libc::geteuid() } != 0 {
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o500)).unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, "x").unwrap();
+        assert!(TransferBatch::try_new(vec![source], destination, Action::Copy).is_err());
+    }
+}
+
+#[test]
 fn move_rejects_an_existing_destination() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("note.txt");

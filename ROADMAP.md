@@ -54,7 +54,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Read all MIME payloads from one clipboard offer and generation.
 - [x] Accept only absolute local `file:` URIs until remote locations are implemented.
 - [x] Apply byte and entry-count limits before accepting clipboard data.
-- [ ] Revalidate sources, permissions, descendants, and the destination immediately before
+- [x] Revalidate sources, permissions, descendants, and the destination immediately before
   Paste.
 - [x] Clear Cut only if the clipboard still contains the same generation.
 

@@ -3173,11 +3173,17 @@ impl App {
     }
 
     fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {
-        let batch = fs::TransferBatch::new(
+        let batch = match fs::TransferBatch::try_new(
             request.paths.clone(),
             request.destination.clone(),
             request.action,
-        );
+        ) {
+            Ok(batch) => batch,
+            Err(error) => {
+                self.show_error(error.to_string());
+                return Task::none();
+            }
+        };
         self.transfer_queue
             .enqueue(request, batch)
             .map_or_else(Task::none, |work| self.launch_transfer(work))
