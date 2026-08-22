@@ -67,6 +67,7 @@ struct Marquee {
 pub(super) struct GridInteraction {
     window_size: Size,
     scroll_y: f32,
+    sidebar_scroll_y: f32,
     cursor: Point,
     marquee: Option<Marquee>,
     hovered: Option<usize>,
@@ -89,6 +90,7 @@ impl GridInteraction {
         Self {
             window_size,
             scroll_y: 0.0,
+            sidebar_scroll_y: 0.0,
             cursor: Point::ORIGIN,
             marquee: None,
             hovered: None,
@@ -138,6 +140,10 @@ impl GridInteraction {
 
     pub(super) fn set_scroll(&mut self, y: f32) {
         self.scroll_y = y;
+    }
+
+    pub(super) fn set_sidebar_scroll(&mut self, y: f32) {
+        self.sidebar_scroll_y = y;
     }
 
     pub(super) fn reset_scroll(&mut self) {
@@ -542,7 +548,8 @@ impl GridInteraction {
             return None;
         }
         if point.x < SIDEBAR_WIDTH {
-            let index = ((point.y - TREE_TOP) / TREE_ROW_HEIGHT).floor() as isize;
+            let index =
+                ((point.y - TREE_TOP + self.sidebar_scroll_y) / TREE_ROW_HEIGHT).floor() as isize;
             let index = usize::try_from(index).ok()?;
             return (index < tree_row_count).then_some(DropZone::Sidebar(index));
         }
@@ -572,6 +579,27 @@ impl GridInteraction {
             (self.cursor.x + 14.0).min((self.window_size.width - 62.0).max(0.0)),
             (self.cursor.y + 16.0).min((self.window_size.height - 62.0).max(0.0)),
         )
+    }
+
+    pub(super) fn drag_autoscroll(&self, status_height: f32) -> (f32, f32) {
+        const EDGE: f32 = 44.0;
+        const STEP: f32 = 12.0;
+        let top = TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT;
+        let bottom = self.window_size.height - status_height;
+        let direction = |y: f32, top: f32, bottom: f32| {
+            if y < top + EDGE {
+                -STEP * (1.0 - ((y - top).max(0.0) / EDGE))
+            } else if y > bottom - EDGE {
+                STEP * (1.0 - ((bottom - y).max(0.0) / EDGE))
+            } else {
+                0.0
+            }
+        };
+        if self.cursor.x < SIDEBAR_WIDTH {
+            (0.0, direction(self.cursor.y, 30.0, self.window_size.height))
+        } else {
+            (direction(self.cursor.y, top, bottom), 0.0)
+        }
     }
 
     pub(super) fn selected_items<T: Clone>(&self, items: &[T]) -> Vec<T> {
@@ -1029,5 +1057,22 @@ mod tests {
 
         grid.move_cursor(Point::new(819.9, 559.9), 0);
         assert!(!grid.cursor_outside_window());
+    }
+
+    #[test]
+    fn drag_edges_scroll_only_the_surface_under_the_pointer() {
+        let mut grid = GridInteraction::default();
+        grid.move_cursor(Point::new(400.0, 535.0), 0);
+        let (content, sidebar) = grid.drag_autoscroll(25.0);
+        assert!(content > 0.0);
+        assert_eq!(sidebar, 0.0);
+
+        grid.move_cursor(Point::new(30.0, 31.0), 0);
+        let (content, sidebar) = grid.drag_autoscroll(25.0);
+        assert_eq!(content, 0.0);
+        assert!(sidebar < 0.0);
+
+        grid.move_cursor(Point::new(400.0, 250.0), 0);
+        assert_eq!(grid.drag_autoscroll(25.0), (0.0, 0.0));
     }
 }

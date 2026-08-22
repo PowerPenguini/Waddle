@@ -781,6 +781,8 @@ fn internal_drag_preview_only_appears_after_the_drag_threshold() {
     assert!(app.drag_preview_view().is_none());
 
     app.transfers.move_pointer(iced::Point::new(6.0, 0.0));
+    app.transfers
+        .capture_drag_entries(app.navigation.entries(), app.grid.selected_indices());
     assert!(app.drag_preview_view().is_some());
 }
 

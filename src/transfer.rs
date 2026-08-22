@@ -95,6 +95,7 @@ struct Drag {
     index: usize,
     start: Point,
     active: bool,
+    entries: Vec<FileEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +177,7 @@ impl TransferWorkflow {
                 index,
                 start,
                 active: false,
+                entries: Vec::new(),
             });
         }
     }
@@ -191,10 +193,12 @@ impl TransferWorkflow {
     }
 
     pub(crate) fn release(&mut self, index: usize) -> Release {
-        match self.drag.take() {
-            Some(drag) if drag.active => Release::Drop(drag.index),
-            Some(_) => Release::Click(index),
-            None => Release::None,
+        if let Some(drag) = self.drag.as_ref().filter(|drag| drag.active) {
+            Release::Drop(drag.index)
+        } else if self.drag.take().is_some() {
+            Release::Click(index)
+        } else {
+            Release::None
         }
     }
 
@@ -203,6 +207,40 @@ impl TransferWorkflow {
             .as_ref()
             .filter(|drag| drag.active)
             .map(|drag| drag.index)
+    }
+
+    pub(crate) fn capture_drag_entries(
+        &mut self,
+        entries: &[FileEntry],
+        selected: &BTreeSet<usize>,
+    ) {
+        let Some(drag) = self.drag.as_mut().filter(|drag| drag.active) else {
+            return;
+        };
+        drag.entries = Self::entries_for_drag(entries, selected, drag.index);
+    }
+
+    pub(crate) fn active_drag_entries(&self) -> &[FileEntry] {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.active)
+            .map_or(&[], |drag| drag.entries.as_slice())
+    }
+
+    pub(crate) fn request_active(&self, destination: PathBuf, action: Action) -> Option<Request> {
+        let paths = self
+            .active_drag_entries()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        valid_target(&paths, &destination, action).then_some(Request {
+            paths,
+            destination,
+            action,
+            inbound_id: None,
+            clipboard_generation: None,
+            initiator: Initiator::InternalDrag,
+        })
     }
 
     pub(crate) fn cancel_drag(&mut self) {
@@ -336,6 +374,7 @@ impl TransferWorkflow {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn request(
         entries: &[FileEntry],
         selected: &BTreeSet<usize>,
@@ -357,6 +396,7 @@ impl TransferWorkflow {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn start_outgoing<A, P>(
         &mut self,
         adapter: &A,
@@ -376,6 +416,35 @@ impl TransferWorkflow {
         let paths = entries
             .into_iter()
             .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        let count = paths.len();
+        let completion = adapter.start(paths, preview, copy_only)?;
+        self.drag = None;
+        self.native_active = true;
+        Ok((count, completion))
+    }
+
+    pub(crate) fn start_outgoing_active<A, P>(
+        &mut self,
+        adapter: &A,
+        copy_only: bool,
+        preview: P,
+    ) -> Result<(usize, AdapterCompletion), String>
+    where
+        A: Adapter,
+        P: FnOnce(&[FileEntry]) -> Option<Preview>,
+    {
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.active)
+            .ok_or_else(|| "there is no active drag".to_owned())?;
+        let preview =
+            preview(&drag.entries).ok_or_else(|| "the dragged selection is empty".to_owned())?;
+        let paths = drag
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
         let count = paths.len();
         let completion = adapter.start(paths, preview, copy_only)?;
@@ -707,6 +776,31 @@ mod tests {
                 Action::Move,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn active_drag_keeps_its_sources_across_hover_navigation() {
+        let entries = [entry("/start/one", false), entry("/start/two", false)];
+        let selected = BTreeSet::from([0, 1]);
+        let mut workflow = TransferWorkflow::default();
+        workflow.press(0, Point::ORIGIN, entries.len());
+        assert_eq!(workflow.move_pointer(Point::new(7.0, 0.0)), Some(0));
+        workflow.capture_drag_entries(&entries, &selected);
+
+        let unrelated_new_directory = [entry("/target/other", false)];
+        assert!(
+            workflow
+                .active_drag_entries()
+                .iter()
+                .all(|entry| { entry.path != unrelated_new_directory[0].path })
+        );
+        let request = workflow
+            .request_active(PathBuf::from("/target"), Action::Move)
+            .unwrap();
+        assert_eq!(
+            request.paths,
+            [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
         );
     }
 

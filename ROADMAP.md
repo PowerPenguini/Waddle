@@ -179,10 +179,10 @@ needs external drag and drop and a native clipboard adapter.
 ### Drag and drop
 
 - [ ] Add external X11 drag and drop.
-- [ ] Autoscroll the grid and sidebar while dragging near an edge.
-- [ ] Expand sidebar folders after a short hover.
-- [ ] Enter a folder after a longer hover and show progress toward activation.
-- [ ] Let moving the pointer away cancel hover activation.
+- [x] Autoscroll the grid and sidebar while dragging near an edge.
+- [x] Expand sidebar folders after a short hover.
+- [x] Enter a folder after a longer hover and show progress toward activation.
+- [x] Let moving the pointer away cancel hover activation.
 
 ## Milestone 5: locations and desktop file actions
 

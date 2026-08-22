@@ -1,6 +1,7 @@
 mod browser_input;
 mod command;
 mod directory_watch;
+mod drag_hover;
 mod file_operation;
 mod grid;
 mod navigation;
@@ -88,6 +89,7 @@ const COMMAND_ID: &str = "command";
 const RENAME_ID: &str = "rename";
 const NEW_FOLDER_ID: &str = "new-folder";
 const GRID_SCROLL_ID: &str = "grid-scroll";
+const SIDEBAR_SCROLL_ID: &str = "sidebar-scroll";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryIconKind {
@@ -147,6 +149,7 @@ enum Message {
     LocationSubmitted,
     Breadcrumb(PathBuf),
     TreeRow(u64),
+    SidebarScrolled(f32),
     TreeLoaded(u64, PathBuf, Vec<PathBuf>),
     EntryPressed(usize),
     EntryReleased(usize),
@@ -235,6 +238,7 @@ struct App {
     thumbnails: thumbnail::Cache,
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
+    drag_hover: drag_hover::State,
     browser_input: BrowserInput,
     browser_focus: BrowserFocus,
     sidebar_cursor: Option<u64>,
@@ -294,6 +298,7 @@ impl App {
             thumbnails: thumbnail::Cache::default(),
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
+            drag_hover: drag_hover::State::default(),
             browser_input: BrowserInput::default(),
             browser_focus: BrowserFocus::Entries,
             sidebar_cursor: None,
@@ -326,12 +331,14 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let animation =
-            if self.output_expansion.is_animating(self.animation_now) || self.spinner_active() {
-                time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
-            } else {
-                Subscription::none()
-            };
+        let animation = if self.output_expansion.is_animating(self.animation_now)
+            || self.spinner_active()
+            || self.drag_in_progress()
+        {
+            time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
+        } else {
+            Subscription::none()
+        };
         let mut subscriptions = vec![
             event::listen_with(|event, status, _| Some(Message::Event(event, status))),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
@@ -556,6 +563,11 @@ impl App {
                 self.sidebar_cursor = Some(id);
                 self.activate_tree_row(id)
             }
+            Message::SidebarScrolled(y) => {
+                self.grid.set_sidebar_scroll(y);
+                self.update_drag_hover(self.grid.cursor());
+                Task::none()
+            }
             Message::TreeLoaded(id, path, folders) => {
                 tree::install_children(&mut self.explorer, id, &path, folders);
                 Task::none()
@@ -617,6 +629,7 @@ impl App {
             }
             Message::GridScrolled(y) => {
                 self.grid.set_scroll(y);
+                self.update_drag_hover(self.grid.cursor());
                 self.load_visible_thumbnails()
             }
             Message::GridPointerMoved(point) => {
@@ -668,7 +681,7 @@ impl App {
             Message::CommandFinished(result) => self.finish_command(result),
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
-                Task::none()
+                self.tick_drag_hover(now)
             }
             Message::RenameChanged(value) => {
                 if self.browser_input.mode() == InputMode::Rename {
@@ -725,6 +738,14 @@ impl App {
                         .select_only(Some(index), self.navigation.entries().len());
                     tasks.push(self.schedule_details());
                 }
+                if self.transfers.active_drag_index().is_some()
+                    && self.transfers.active_drag_entries().is_empty()
+                {
+                    self.transfers.capture_drag_entries(
+                        self.navigation.entries(),
+                        self.grid.selected_indices(),
+                    );
+                }
                 if self
                     .grid
                     .move_cursor(position, self.navigation.entries().len())
@@ -734,6 +755,8 @@ impl App {
                 if self.transfers.active_drag_index().is_some() && self.grid.cursor_outside_window()
                 {
                     tasks.push(self.start_external_drag());
+                } else {
+                    self.update_drag_hover(position);
                 }
                 Task::batch(tasks)
             }
@@ -1206,6 +1229,7 @@ impl App {
     }
 
     fn finish_entry_press(&mut self, index: usize) -> Task<Message> {
+        self.drag_hover.cancel();
         match self.transfers.release(index) {
             TransferRelease::None => Task::none(),
             TransferRelease::Click(index) => self.activate_entry(index, false),
@@ -1848,57 +1872,50 @@ impl App {
         } else {
             TransferAction::Move
         };
-        let Some(destination) = self.drop_destination_at(self.grid.cursor(), false) else {
+        let destination = self.drop_destination_at(self.grid.cursor(), false);
+        let request =
+            destination.and_then(|destination| self.transfers.request_active(destination, action));
+        self.transfers.cancel_drag();
+        let Some(request) = request else {
             return Task::none();
         };
-        let Some(request) = TransferWorkflow::request(
-            self.navigation.entries(),
-            self.grid.selected_indices(),
-            grabbed_index,
-            destination,
-            action,
-        ) else {
-            return Task::none();
-        };
+        let _ = grabbed_index;
         self.start_transfer(request)
     }
 
     fn start_external_drag(&mut self) -> Task<Message> {
-        let Some(grabbed_index) = self.transfers.active_drag_index() else {
+        if self.transfers.active_drag_index().is_none() {
             return Task::none();
-        };
+        }
         let Some(source) = self.native_dnd.as_ref() else {
             self.transfers.cancel_drag();
+            self.drag_hover.cancel();
             self.status = self.native_dnd_error.clone().unwrap_or_else(|| {
                 "External drag-and-drop is not ready yet; try again in a moment".to_owned()
             });
             return Task::none();
         };
-        let entries = TransferWorkflow::entries_for_drag(
-            self.navigation.entries(),
-            self.grid.selected_indices(),
-            grabbed_index,
-        );
+        let entries = self.transfers.active_drag_entries().to_vec();
         let Some(preview) = self.drag_preview(&entries) else {
             self.transfers.cancel_drag();
+            self.drag_hover.cancel();
             return Task::none();
         };
         let copy_only = self.modifiers.control();
-        let (count, completion) = match self.transfers.start_outgoing(
-            source,
-            self.navigation.entries(),
-            self.grid.selected_indices(),
-            grabbed_index,
-            copy_only,
-            |_| Some(preview),
-        ) {
-            Ok(started) => started,
-            Err(error) => {
-                self.transfers.cancel_drag();
-                self.status = format!("Could not start external drag-and-drop: {error}");
-                return Task::none();
-            }
-        };
+        let (count, completion) =
+            match self
+                .transfers
+                .start_outgoing_active(source, copy_only, |_| Some(preview))
+            {
+                Ok(started) => started,
+                Err(error) => {
+                    self.transfers.cancel_drag();
+                    self.drag_hover.cancel();
+                    self.status = format!("Could not start external drag-and-drop: {error}");
+                    return Task::none();
+                }
+            };
+        self.drag_hover.cancel();
         self.status = if count == 1 {
             "Dragging 1 item outside PolarExp…".to_owned()
         } else {
@@ -1936,28 +1953,139 @@ impl App {
         }
     }
 
+    fn drag_in_progress(&self) -> bool {
+        self.transfers.active_drag_index().is_some()
+            || self.transfers.native_hover_destination().is_some()
+    }
+
+    fn update_drag_hover(&mut self, point: Point) {
+        if !self.drag_in_progress() {
+            self.drag_hover.cancel();
+            return;
+        }
+        let rows = flatten_rows(&self.explorer, self.navigation.current());
+        let target = match self.grid.drop_zone(
+            point,
+            self.navigation.entries().len(),
+            rows.len(),
+            self.status_height(),
+            false,
+        ) {
+            Some(DropZone::Sidebar(index)) => {
+                rows.get(index).map(|row| drag_hover::Target::Sidebar {
+                    id: row.id,
+                    path: row.path.clone(),
+                })
+            }
+            Some(DropZone::Entry(index)) => self
+                .navigation
+                .entries()
+                .get(index)
+                .filter(|entry| entry.is_directory())
+                .map(|entry| drag_hover::Target::Folder(entry.path.clone())),
+            _ => None,
+        };
+        let target = target.filter(|target| {
+            if self.transfers.active_drag_index().is_none() {
+                return true;
+            }
+            let path = match target {
+                drag_hover::Target::Sidebar { path, .. } | drag_hover::Target::Folder(path) => path,
+            };
+            self.transfers
+                .request_active(
+                    path.clone(),
+                    if self.modifiers.control() {
+                        TransferAction::Copy
+                    } else {
+                        TransferAction::Move
+                    },
+                )
+                .is_some()
+        });
+        self.drag_hover.set(target, Instant::now());
+    }
+
+    fn tick_drag_hover(&mut self, now: Instant) -> Task<Message> {
+        if !self.drag_in_progress() {
+            self.drag_hover.cancel();
+            return Task::none();
+        }
+        let (grid_delta, sidebar_delta) = self.grid.drag_autoscroll(self.status_height());
+        let mut tasks = Vec::new();
+        if grid_delta.abs() > f32::EPSILON {
+            tasks.push(widget::operation::scroll_by(
+                Id::new(GRID_SCROLL_ID),
+                scrollable::AbsoluteOffset {
+                    x: 0.0,
+                    y: grid_delta,
+                },
+            ));
+        }
+        if sidebar_delta.abs() > f32::EPSILON {
+            tasks.push(widget::operation::scroll_by(
+                Id::new(SIDEBAR_SCROLL_ID),
+                scrollable::AbsoluteOffset {
+                    x: 0.0,
+                    y: sidebar_delta,
+                },
+            ));
+        }
+        match self.drag_hover.tick(now) {
+            Some(drag_hover::Effect::Expand(id)) => tasks.push(self.expand_tree_row(id)),
+            Some(drag_hover::Effect::Enter(path)) => tasks.push(self.navigate(path, true, None)),
+            None => {}
+        }
+        Task::batch(tasks)
+    }
+
+    fn expand_tree_row(&mut self, id: u64) -> Task<Message> {
+        let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
+            return Task::none();
+        };
+        if node.expanded {
+            return Task::none();
+        }
+        node.expanded = true;
+        let load = !node.loaded && !node.loading;
+        if load {
+            node.loading = true;
+        }
+        let path = node.path.clone();
+        if load {
+            self.load_tree_node(id, path)
+        } else {
+            Task::none()
+        }
+    }
+
     fn drop_highlight_path(&self) -> Option<PathBuf> {
         if let Some(destination) = self.transfers.native_hover_destination() {
             return destination.map(Path::to_path_buf);
         }
-        let grabbed_index = self.transfers.active_drag_index()?;
+        self.transfers.active_drag_index()?;
         let action = if self.modifiers.control() {
             TransferAction::Copy
         } else {
             TransferAction::Move
         };
         let destination = self.drop_destination_at(self.grid.cursor(), false)?;
-        TransferWorkflow::request(
-            self.navigation.entries(),
-            self.grid.selected_indices(),
-            grabbed_index,
-            destination,
-            action,
-        )
-        .map(|request| request.destination)
+        self.transfers
+            .request_active(destination, action)
+            .map(|request| request.destination)
     }
 
     fn handle_native_dnd_event(&mut self, event: TransferEvent) -> Task<Message> {
+        let hover_position = match &event {
+            TransferEvent::Hover { position, .. } => Some(*position),
+            _ => None,
+        };
+        if let Some(position) = hover_position {
+            self.grid
+                .move_cursor(position, self.navigation.entries().len());
+        } else {
+            self.drag_hover.cancel();
+        }
         let resolved_destination = match &event {
             TransferEvent::Hover { position, .. } => self.drop_destination_at(*position, true),
             _ => None,
@@ -1966,7 +2094,7 @@ impl App {
             self.show_error("Drag-and-drop adapter is unavailable".to_owned());
             return Task::none();
         };
-        match self
+        let task = match self
             .transfers
             .handle_native(source, event, move |_, _| resolved_destination.clone())
         {
@@ -1995,7 +2123,11 @@ impl App {
                 self.refresh(None)
             }
             NativeUpdate::ClipboardLost(false) => Task::none(),
+        };
+        if let Some(position) = hover_position {
+            self.update_drag_hover(position);
         }
+        task
     }
 
     fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {
@@ -2263,13 +2395,9 @@ impl App {
     }
 
     fn drag_preview_view(&self) -> Option<Element<'_, Message>> {
-        let grabbed_index = self.transfers.active_drag_index()?;
-        let entries = TransferWorkflow::entries_for_drag(
-            self.navigation.entries(),
-            self.grid.selected_indices(),
-            grabbed_index,
-        );
-        let preview = self.drag_preview(&entries)?;
+        self.transfers.active_drag_index()?;
+        let entries = self.transfers.active_drag_entries();
+        let preview = self.drag_preview(entries)?;
         let preview_bytes = native_dnd::preview_svg(preview).ok()?;
         let preview = svg(svg::Handle::from_memory(preview_bytes))
             .width(native_dnd::ICON_SIZE as f32)
@@ -2330,6 +2458,8 @@ impl App {
                 top: LIST_VIEW_TOP_INSET,
                 ..Padding::ZERO
             }))
+            .id(Id::new(SIDEBAR_SCROLL_ID))
+            .on_scroll(|viewport| Message::SidebarScrolled(viewport.absolute_offset().y))
             .height(Fill),
         ];
         container(content)
@@ -2388,7 +2518,8 @@ impl App {
                 .height(Fill)
                 .align_y(Alignment::Center),
         );
-        button(line)
+        let content = column![line.height(30), self.drag_activation_bar(&tree_row.path)].spacing(0);
+        button(content)
             .on_press(Message::TreeRow(tree_row.id))
             .width(Fill)
             .height(32)
@@ -2667,6 +2798,11 @@ impl App {
         ]
         .spacing(9)
         .align_y(Alignment::Center);
+        let content = column![
+            content.height(LIST_ROW_HEIGHT - 2.0),
+            self.drag_activation_bar(&entry.path)
+        ]
+        .spacing(0);
         let row = container(content)
             .height(LIST_ROW_HEIGHT)
             .padding(Padding::from([0, 8]))
@@ -2726,8 +2862,9 @@ impl App {
                 .height(34)
                 .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
                 .align_x(Alignment::Center),
+            self.drag_activation_bar(&entry.path),
         ]
-        .spacing(6)
+        .spacing(4)
         .align_x(Alignment::Center);
         let tile = container(content)
             .width(TILE_WIDTH)
@@ -2748,6 +2885,26 @@ impl App {
             .on_enter(Message::EntryHovered(index))
             .on_exit(Message::EntryUnhovered(index))
             .into()
+    }
+
+    fn drag_activation_bar(&self, path: &Path) -> Element<'_, Message> {
+        let Some(progress) = self.drag_hover.progress(path, Instant::now()) else {
+            return Space::new().width(Fill).height(2).into();
+        };
+        let filled = ((progress * 100.0).round() as u16).clamp(1, 99);
+        row![
+            container(Space::new())
+                .width(Length::FillPortion(filled))
+                .height(2)
+                .style(move |_| solid_background_style(self.accent_color())),
+            Space::new()
+                .width(Length::FillPortion(100 - filled))
+                .height(2),
+        ]
+        .spacing(0)
+        .width(Fill)
+        .height(2)
+        .into()
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
