@@ -65,7 +65,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
 - [ ] Let filesystem monitoring confirm when another application actually moves the entries.
 - [x] Treat Cut followed by Paste into the same directory as a no-op.
-- [ ] Let Copy into the same directory create a non-conflicting copy name.
+- [x] Let Copy into the same directory create a non-conflicting copy name.
 - [x] After a partial Move, keep only the failed entries in the Cut clipboard.
 
 ### Vim grammar
@@ -90,17 +90,17 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
   collapses or moves to the parent, `l` expands or opens, and `gg` and `G` jump to the ends.
 - [x] Disable file operators on technical sidebar roots such as Computer and Recent.
-- [ ] Limit 1.0 to the system clipboard and the `"_` black-hole register. Named registers, macros,
+- [x] Limit 1.0 to the system clipboard and the `"_` black-hole register. Named registers, macros,
   and `.` repeat remain reserved.
 
 ### Conflict handling
 
-- [ ] Present file conflicts in the bottom bar.
-- [ ] Use `r`, `s`, and `k` for Replace, Skip, and Keep Both on one conflict.
-- [ ] Use `R`, `S`, and `K` to apply the corresponding rule to the remaining batch.
-- [ ] Merge conflicting directories without deleting the existing directory tree.
-- [ ] Route conflicts inside a directory merge through the same bottom-bar flow.
-- [ ] Use an atomic no-clobber implementation for Rename and Replace.
+- [x] Present file conflicts in the bottom bar.
+- [x] Use `r`, `s`, and `k` for Replace, Skip, and Keep Both on one conflict.
+- [x] Use `R`, `S`, and `K` to apply the corresponding rule to the remaining batch.
+- [x] Merge conflicting directories without deleting the existing directory tree.
+- [x] Route conflicts inside a directory merge through the same bottom-bar flow.
+- [x] Use an atomic no-clobber implementation for Rename and Replace.
 
 ### Persistent Undo and Redo
 

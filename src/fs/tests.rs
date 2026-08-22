@@ -286,6 +286,195 @@ fn batch_move_rejects_conflicts_without_rolling_back_successes() {
     assert!(!first.exists());
 }
 
+#[test]
+fn transfer_batch_pauses_before_a_conflict_and_escape_retains_pending_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let first = temp.path().join("first.txt");
+    let conflict = temp.path().join("conflict.txt");
+    fs::write(&first, "first").unwrap();
+    fs::write(&conflict, "source").unwrap();
+    fs::write(destination.join("conflict.txt"), "destination").unwrap();
+
+    let outcome = TransferBatch::new(
+        vec![first.clone(), conflict.clone()],
+        destination.clone(),
+        crate::transfer::Action::Move,
+    )
+    .run();
+    let TransferBatchOutcome::Conflict {
+        batch,
+        conflict: prompt,
+    } = outcome
+    else {
+        panic!("expected a conflict");
+    };
+
+    assert_eq!(prompt.source, conflict);
+    assert!(!first.exists());
+    assert!(prompt.source.exists());
+    let report = (*batch).cancel();
+    assert_eq!(report.completed, [destination.join("first.txt")]);
+    assert_eq!(report.retained, [prompt.source]);
+}
+
+#[test]
+fn transfer_batch_supports_one_shot_and_batch_conflict_choices() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let first = temp.path().join("first.txt");
+    let second = temp.path().join("second.txt");
+    fs::write(&first, "new first").unwrap();
+    fs::write(&second, "new second").unwrap();
+    fs::write(destination.join("first.txt"), "old first").unwrap();
+    fs::write(destination.join("second.txt"), "old second").unwrap();
+
+    let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::new(
+        vec![first.clone(), second.clone()],
+        destination.clone(),
+        crate::transfer::Action::Copy,
+    )
+    .run() else {
+        panic!("expected first conflict");
+    };
+    let TransferBatchOutcome::Conflict { batch, conflict } =
+        (*batch).resolve(ConflictChoice::KeepBoth, false).run()
+    else {
+        panic!("expected second conflict");
+    };
+    assert_eq!(conflict.source, second);
+    let TransferBatchOutcome::Complete(report) =
+        (*batch).resolve(ConflictChoice::Replace, true).run()
+    else {
+        panic!("expected completion");
+    };
+
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::read_to_string(destination.join("first.txt copy")).unwrap(),
+        "new first"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("second.txt")).unwrap(),
+        "new second"
+    );
+}
+
+#[test]
+fn skipping_a_conflict_keeps_the_source_and_existing_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("item.txt");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, "source").unwrap();
+    fs::write(destination.join("item.txt"), "destination").unwrap();
+
+    let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::new(
+        vec![source.clone()],
+        destination.clone(),
+        crate::transfer::Action::Move,
+    )
+    .run() else {
+        panic!("expected conflict");
+    };
+    let TransferBatchOutcome::Complete(report) =
+        (*batch).resolve(ConflictChoice::Skip, false).run()
+    else {
+        panic!("expected completion");
+    };
+
+    assert_eq!(report.retained.as_slice(), std::slice::from_ref(&source));
+    assert_eq!(fs::read_to_string(source).unwrap(), "source");
+    assert_eq!(
+        fs::read_to_string(destination.join("item.txt")).unwrap(),
+        "destination"
+    );
+}
+
+#[test]
+fn replacing_conflicting_directories_merges_without_deleting_the_existing_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source/folder");
+    let destination = temp.path().join("destination");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(destination.join("folder")).unwrap();
+    fs::write(source.join("incoming.txt"), "incoming").unwrap();
+    fs::write(destination.join("folder/existing.txt"), "existing").unwrap();
+
+    let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::new(
+        vec![source],
+        destination.clone(),
+        crate::transfer::Action::Copy,
+    )
+    .run() else {
+        panic!("expected directory conflict");
+    };
+    let TransferBatchOutcome::Complete(report) =
+        (*batch).resolve(ConflictChoice::Replace, false).run()
+    else {
+        panic!("expected merged completion");
+    };
+
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::read_to_string(destination.join("folder/incoming.txt")).unwrap(),
+        "incoming"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("folder/existing.txt")).unwrap(),
+        "existing"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn atomic_rename_does_not_clobber_a_concurrently_created_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::write(&source, "source").unwrap();
+    let destination = temp.path().join("destination");
+    fs::write(&destination, "concurrent").unwrap();
+
+    let error = rename_noreplace(&source, &destination).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read_to_string(source).unwrap(), "source");
+    assert_eq!(fs::read_to_string(destination).unwrap(), "concurrent");
+}
+
+#[cfg(unix)]
+#[test]
+fn replace_preserves_symlink_identity_and_rejects_a_changed_destination() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target");
+    let other = temp.path().join("other");
+    fs::write(&target, "target").unwrap();
+    fs::write(&other, "other").unwrap();
+    let source = temp.path().join("source-link");
+    let destination = temp.path().join("destination-link");
+    symlink(&target, &source).unwrap();
+    symlink(&target, &destination).unwrap();
+    let observed = FileIdentity::read(&destination).unwrap();
+    fs::remove_file(&destination).unwrap();
+    symlink(&other, &destination).unwrap();
+
+    assert!(
+        replace_exact(
+            &source,
+            &destination,
+            crate::transfer::Action::Move,
+            observed,
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read_link(source).unwrap(), target);
+    assert_eq!(fs::read_link(destination).unwrap(), other);
+}
+
 #[cfg(unix)]
 #[test]
 fn deleting_symlink_preserves_target() {

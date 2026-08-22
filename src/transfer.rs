@@ -526,6 +526,7 @@ impl TransferWorkflow {
                 .failures
                 .iter()
                 .map(|failure| failure.source.clone())
+                .chain(report.retained.iter().cloned())
                 .collect::<Vec<_>>();
             if failed.is_empty() {
                 self.clipboard = None;
@@ -534,8 +535,15 @@ impl TransferWorkflow {
             }
         }
         Consequences {
-            status: (!clipboard && error.is_none())
-                .then(|| format!("{} {completed} item(s)", request.action.label())),
+            status: if !report.retained.is_empty() && error.is_none() {
+                Some(format!(
+                    "Transfer cancelled; {} pending item(s) were left unchanged",
+                    report.retained.len()
+                ))
+            } else {
+                (!clipboard && error.is_none())
+                    .then(|| format!("{} {completed} item(s)", request.action.label()))
+            },
             error,
             changed_folders: if completed > 0 {
                 vec![current.to_path_buf(), request.destination.clone()]
@@ -742,6 +750,7 @@ mod tests {
         let report = TransferReport {
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
+            retained: Vec::new(),
         };
 
         let consequences =
@@ -770,6 +779,7 @@ mod tests {
         let report = TransferReport {
             completed: vec![PathBuf::from("/target/two")],
             failures: Vec::new(),
+            retained: Vec::new(),
         };
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
 
@@ -849,6 +859,7 @@ mod tests {
         let report = TransferReport {
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
+            retained: Vec::new(),
         };
 
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
@@ -892,6 +903,7 @@ mod tests {
                 source: PathBuf::from("/start/two"),
                 error: "denied".to_owned(),
             }],
+            retained: Vec::new(),
         };
 
         workflow.finish_transfer(None, &request, &report, Path::new("/target"));

@@ -56,6 +56,7 @@ pub(super) struct Press {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Context {
+    pub(super) transfer_conflict: bool,
     pub(super) prompt_active: bool,
     pub(super) prompt_accepts_enter: bool,
     pub(super) prompt_uses_yes_no: bool,
@@ -73,6 +74,8 @@ pub(super) enum Intent {
     None,
     PromptCancel,
     PromptConfirm,
+    ConflictCancel,
+    ConflictChoice { key: char, remaining: bool },
     CancelSearch,
     CancelCommand,
     CancelRename,
@@ -196,6 +199,30 @@ impl BrowserInput {
     }
 
     pub(super) fn handle(&mut self, press: Press, context: Context) -> Intent {
+        if context.transfer_conflict {
+            if press.named == NamedKey::Escape {
+                return Intent::ConflictCancel;
+            }
+            return match press.text.as_deref().and_then(|text| text.chars().next()) {
+                Some(key @ ('r' | 's' | 'k'))
+                    if press.text.as_deref().is_some_and(|v| v.len() == 1) =>
+                {
+                    Intent::ConflictChoice {
+                        key,
+                        remaining: false,
+                    }
+                }
+                Some(key @ ('R' | 'S' | 'K'))
+                    if press.text.as_deref().is_some_and(|v| v.len() == 1) =>
+                {
+                    Intent::ConflictChoice {
+                        key: key.to_ascii_lowercase(),
+                        remaining: true,
+                    }
+                }
+                _ => Intent::None,
+            };
+        }
         if context.prompt_active {
             let answer = press.text.as_deref().map(str::to_ascii_lowercase);
             return if context.busy {
@@ -590,6 +617,40 @@ mod tests {
                 context
             ),
             Intent::PromptCancel
+        );
+    }
+
+    #[test]
+    fn transfer_conflict_keys_take_precedence_and_preserve_uppercase_scope() {
+        let context = Context {
+            transfer_conflict: true,
+            ..Context::default()
+        };
+        let mut input = BrowserInput::default();
+
+        assert_eq!(
+            input.handle(text("r"), context),
+            Intent::ConflictChoice {
+                key: 'r',
+                remaining: false,
+            }
+        );
+        assert_eq!(
+            input.handle(text("K"), context),
+            Intent::ConflictChoice {
+                key: 'k',
+                remaining: true,
+            }
+        );
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                context,
+            ),
+            Intent::ConflictCancel
         );
     }
 

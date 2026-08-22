@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     ffi::{OsStr, OsString},
     fmt, fs, io,
     os::unix::fs::MetadataExt,
@@ -39,6 +39,349 @@ pub struct TransferFailure {
 pub struct TransferReport {
     pub completed: Vec<PathBuf>,
     pub failures: Vec<TransferFailure>,
+    pub retained: Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConflictChoice {
+    Replace,
+    Skip,
+    KeepBoth,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferConflict {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub directories: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    kind: u32,
+}
+
+impl FileIdentity {
+    fn read(path: &Path) -> io::Result<Self> {
+        let metadata = fs::symlink_metadata(path)?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            kind: metadata.mode() & libc::S_IFMT,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TransferRoot {
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+enum PendingTransfer {
+    Entry {
+        source: PathBuf,
+        destination: PathBuf,
+        root: usize,
+    },
+    RemoveSourceDirectory {
+        source: PathBuf,
+        root: usize,
+    },
+}
+
+impl PendingTransfer {
+    fn root(&self) -> usize {
+        match self {
+            Self::Entry { root, .. } | Self::RemoveSourceDirectory { root, .. } => *root,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BlockedTransfer {
+    source: PathBuf,
+    destination: PathBuf,
+    root: usize,
+    destination_identity: FileIdentity,
+    directories: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransferBatch {
+    action: Action,
+    roots: Vec<TransferRoot>,
+    pending: VecDeque<PendingTransfer>,
+    blocked: Option<BlockedTransfer>,
+    apply_remaining: Option<ConflictChoice>,
+    failed_roots: BTreeSet<usize>,
+    retained_roots: BTreeSet<usize>,
+    failures: Vec<TransferFailure>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TransferBatchOutcome {
+    Conflict {
+        batch: Box<TransferBatch>,
+        conflict: TransferConflict,
+    },
+    Complete(TransferReport),
+}
+
+impl TransferBatch {
+    pub fn new(sources: Vec<PathBuf>, destination_directory: PathBuf, action: Action) -> Self {
+        let mut roots = Vec::with_capacity(sources.len());
+        let mut pending = VecDeque::with_capacity(sources.len());
+        for source in sources {
+            let Some(name) = source.file_name() else {
+                continue;
+            };
+            let destination = destination_directory.join(name);
+            let root = roots.len();
+            roots.push(TransferRoot {
+                source: source.clone(),
+                destination: destination.clone(),
+            });
+            pending.push_back(PendingTransfer::Entry {
+                source,
+                destination,
+                root,
+            });
+        }
+        Self {
+            action,
+            roots,
+            pending,
+            blocked: None,
+            apply_remaining: None,
+            failed_roots: BTreeSet::new(),
+            retained_roots: BTreeSet::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    pub fn run(mut self) -> TransferBatchOutcome {
+        while let Some(pending) = self.pending.pop_front() {
+            match pending {
+                PendingTransfer::RemoveSourceDirectory { source, root } => {
+                    if let Err(error) = fs::remove_dir(&source) {
+                        self.fail(root, source, error);
+                    }
+                }
+                PendingTransfer::Entry {
+                    source,
+                    destination,
+                    root,
+                } => {
+                    let destination_metadata = match fs::symlink_metadata(&destination) {
+                        Ok(metadata) => Some(metadata),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                        Err(error) => {
+                            self.fail(root, source, error);
+                            continue;
+                        }
+                    };
+                    if let Some(destination_metadata) = destination_metadata {
+                        let source_metadata = match fs::symlink_metadata(&source) {
+                            Ok(metadata) => metadata,
+                            Err(error) => {
+                                self.fail(root, source, error);
+                                continue;
+                            }
+                        };
+                        let blocked = BlockedTransfer {
+                            source,
+                            destination,
+                            root,
+                            destination_identity: FileIdentity {
+                                device: destination_metadata.dev(),
+                                inode: destination_metadata.ino(),
+                                kind: destination_metadata.mode() & libc::S_IFMT,
+                            },
+                            directories: source_metadata.is_dir()
+                                && !source_metadata.file_type().is_symlink()
+                                && destination_metadata.is_dir()
+                                && !destination_metadata.file_type().is_symlink(),
+                        };
+                        let same_directory_copy = self.action == Action::Copy
+                            && blocked.source.parent() == blocked.destination.parent();
+                        if let Some(choice) = self
+                            .apply_remaining
+                            .or(same_directory_copy.then_some(ConflictChoice::KeepBoth))
+                        {
+                            if let Err(error) = self.resolve_blocked(blocked, choice) {
+                                self.fail(root, error.0, error.1);
+                            }
+                            continue;
+                        }
+                        let conflict = TransferConflict {
+                            source: blocked.source.clone(),
+                            destination: blocked.destination.clone(),
+                            directories: blocked.directories,
+                        };
+                        self.blocked = Some(blocked);
+                        return TransferBatchOutcome::Conflict {
+                            batch: Box::new(self),
+                            conflict,
+                        };
+                    }
+                    if let Err(error) = transfer_exact(&source, &destination, self.action) {
+                        if error.kind() == io::ErrorKind::AlreadyExists {
+                            self.pending.push_front(PendingTransfer::Entry {
+                                source,
+                                destination,
+                                root,
+                            });
+                            continue;
+                        }
+                        self.fail(root, source, error);
+                    }
+                }
+            }
+        }
+        TransferBatchOutcome::Complete(self.report())
+    }
+
+    pub fn resolve(mut self, choice: ConflictChoice, remaining: bool) -> Self {
+        if remaining {
+            self.apply_remaining = Some(choice);
+        }
+        if let Some(blocked) = self.blocked.take()
+            && let Err(error) = self.resolve_blocked(blocked.clone(), choice)
+        {
+            if error.1.kind() == io::ErrorKind::AlreadyExists {
+                self.pending.push_front(PendingTransfer::Entry {
+                    source: blocked.source,
+                    destination: blocked.destination,
+                    root: blocked.root,
+                });
+                self.apply_remaining = None;
+            } else {
+                self.fail(blocked.root, error.0, error.1);
+            }
+        }
+        self
+    }
+
+    pub fn cancel(mut self) -> TransferReport {
+        if let Some(blocked) = self.blocked.take() {
+            self.retained_roots.insert(blocked.root);
+        }
+        for pending in &self.pending {
+            self.retained_roots.insert(pending.root());
+        }
+        self.report()
+    }
+
+    fn resolve_blocked(
+        &mut self,
+        blocked: BlockedTransfer,
+        choice: ConflictChoice,
+    ) -> Result<(), (PathBuf, io::Error)> {
+        match choice {
+            ConflictChoice::Skip => {
+                self.retained_roots.insert(blocked.root);
+                self.pending
+                    .retain(|pending| pending.root() != blocked.root);
+                Ok(())
+            }
+            ConflictChoice::KeepBoth => {
+                let Some(name) = blocked.destination.file_name() else {
+                    return Err((
+                        blocked.source,
+                        io::Error::new(io::ErrorKind::InvalidInput, "destination has no name"),
+                    ));
+                };
+                let directory = blocked
+                    .destination
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                let destination = available_copy_destination(directory, name);
+                if self.roots[blocked.root].source == blocked.source {
+                    self.roots[blocked.root].destination = destination.clone();
+                }
+                transfer_exact(&blocked.source, &destination, self.action)
+                    .map_err(|error| (blocked.source, error))
+            }
+            ConflictChoice::Replace if blocked.directories => self.merge_directories(blocked),
+            ConflictChoice::Replace => replace_exact(
+                &blocked.source,
+                &blocked.destination,
+                self.action,
+                blocked.destination_identity,
+            )
+            .map_err(|error| (blocked.source, error)),
+        }
+    }
+
+    fn merge_directories(&mut self, blocked: BlockedTransfer) -> Result<(), (PathBuf, io::Error)> {
+        if FileIdentity::read(&blocked.destination)
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        {
+            return transfer_exact(&blocked.source, &blocked.destination, self.action)
+                .map_err(|error| (blocked.source, error));
+        }
+        if FileIdentity::read(&blocked.destination).ok() != Some(blocked.destination_identity) {
+            return Err((
+                blocked.source,
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "the destination changed while the conflict was open",
+                ),
+            ));
+        }
+        let mut children = fs::read_dir(&blocked.source)
+            .map_err(|error| (blocked.source.clone(), error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| (blocked.source.clone(), error))?;
+        children.sort_by_key(std::fs::DirEntry::file_name);
+        if self.action == Action::Move {
+            self.pending
+                .push_front(PendingTransfer::RemoveSourceDirectory {
+                    source: blocked.source.clone(),
+                    root: blocked.root,
+                });
+        }
+        for child in children.into_iter().rev() {
+            self.pending.push_front(PendingTransfer::Entry {
+                destination: blocked.destination.join(child.file_name()),
+                source: child.path(),
+                root: blocked.root,
+            });
+        }
+        Ok(())
+    }
+
+    fn fail(&mut self, root: usize, source: PathBuf, error: io::Error) {
+        self.failed_roots.insert(root);
+        self.failures.push(TransferFailure {
+            source,
+            error: error.to_string(),
+        });
+    }
+
+    fn report(self) -> TransferReport {
+        TransferReport {
+            completed: self
+                .roots
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !self.failed_roots.contains(index) && !self.retained_roots.contains(index)
+                })
+                .map(|(_, root)| root.destination.clone())
+                .collect(),
+            failures: self.failures,
+            retained: self
+                .retained_roots
+                .into_iter()
+                .filter_map(|index| self.roots.get(index).map(|root| root.source.clone()))
+                .collect(),
+        }
+    }
 }
 
 impl FileEntry {
@@ -343,20 +686,60 @@ pub fn rename_entry(source: &Path, new_name: &str) -> Result<PathBuf, FsError> {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(new_name);
-    if destination.exists() {
-        return Err(FsError::new(
-            "rename",
-            source,
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "the destination already exists",
-            ),
-        ));
-    }
-    fs::rename(source, &destination).map_err(|e| FsError::new("rename", source, e))?;
+    rename_noreplace(source, &destination)
+        .map_err(|error| FsError::new("rename", source, error))?;
     Ok(destination)
 }
 
+#[cfg(target_os = "linux")]
+fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    renameat2(source, destination, libc::RENAME_NOREPLACE)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the destination already exists",
+        ));
+    }
+    fs::rename(source, destination)
+}
+
+#[cfg(target_os = "linux")]
+fn rename_exchange(first: &Path, second: &Path) -> io::Result<()> {
+    renameat2(first, second, libc::RENAME_EXCHANGE)
+}
+
+#[cfg(target_os = "linux")]
+fn renameat2(source: &Path, destination: &Path, flags: libc::c_uint) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
+    })?;
+    // SAFETY: both paths are NUL-terminated for the duration of the syscall.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            flags,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
 pub fn move_destination(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
     let source_metadata =
         fs::symlink_metadata(source).map_err(|error| FsError::new("inspect", source, error))?;
@@ -416,19 +799,14 @@ pub fn move_destination(source: &Path, destination_directory: &Path) -> Result<P
     Ok(destination)
 }
 
+#[cfg(test)]
 pub fn move_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
     let destination = move_destination(source, destination_directory)?;
-    gio::File::for_path(source)
-        .move_(
-            &gio::File::for_path(&destination),
-            gio::FileCopyFlags::NOFOLLOW_SYMLINKS,
-            None::<&gio::Cancellable>,
-            None,
-        )
-        .map_err(|error| FsError::new("move", source, io::Error::other(error.to_string())))?;
+    move_exact(source, &destination).map_err(|error| FsError::new("move", source, error))?;
     Ok(destination)
 }
 
+#[cfg(test)]
 pub fn copy_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
     let source_metadata =
         fs::symlink_metadata(source).map_err(|error| FsError::new("inspect", source, error))?;
@@ -481,6 +859,149 @@ pub fn copy_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf
     Ok(destination)
 }
 
+fn transfer_exact(source: &Path, destination: &Path, action: Action) -> io::Result<()> {
+    match action {
+        Action::Copy => copy_item(source, destination),
+        Action::Move => move_exact(source, destination),
+    }
+}
+
+fn move_exact(source: &Path, destination: &Path) -> io::Result<()> {
+    match rename_noreplace(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+            copy_item(source, destination)?;
+            if let Err(error) = remove_item(source) {
+                remove_incomplete_copy(destination);
+                return Err(error);
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn replace_exact(
+    source: &Path,
+    destination: &Path,
+    action: Action,
+    observed: FileIdentity,
+) -> io::Result<()> {
+    if FileIdentity::read(destination)? != observed {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the destination changed while the conflict was open",
+        ));
+    }
+    match action {
+        Action::Move => match rename_exchange(source, destination) {
+            Ok(()) => {
+                if FileIdentity::read(source)? != observed {
+                    rename_exchange(source, destination)?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "the destination changed while Replace was running",
+                    ));
+                }
+                remove_item(source)
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                replace_by_staging(source, destination, observed, true)
+            }
+            Err(error) => Err(error),
+        },
+        Action::Copy => replace_by_staging(source, destination, observed, false),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn replace_exact(
+    source: &Path,
+    destination: &Path,
+    action: Action,
+    observed: FileIdentity,
+) -> io::Result<()> {
+    if FileIdentity::read(destination)? != observed {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the destination changed while the conflict was open",
+        ));
+    }
+    let staging = staging_path(destination)?;
+    transfer_exact(source, &staging, Action::Copy)?;
+    remove_item(destination)?;
+    fs::rename(&staging, destination)?;
+    if action == Action::Move {
+        remove_item(source)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn replace_by_staging(
+    source: &Path,
+    destination: &Path,
+    observed: FileIdentity,
+    remove_source: bool,
+) -> io::Result<()> {
+    let staging = staging_path(destination)?;
+    if let Err(error) = copy_item(source, &staging) {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
+    if let Err(error) = rename_exchange(&staging, destination) {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
+    if FileIdentity::read(&staging)? != observed {
+        rename_exchange(&staging, destination)?;
+        remove_incomplete_copy(&staging);
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the destination changed while Replace was running",
+        ));
+    }
+    remove_item(&staging)?;
+    if remove_source {
+        remove_item(source)?;
+    }
+    Ok(())
+}
+
+fn staging_path(destination: &Path) -> io::Result<PathBuf> {
+    let directory = destination.parent().unwrap_or_else(|| Path::new("."));
+    let name = destination
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("item"));
+    for nonce in 0_u64..10_000 {
+        let mut candidate = OsString::from(".polarexp-replace-");
+        candidate.push(std::process::id().to_string());
+        candidate.push("-");
+        candidate.push(nonce.to_string());
+        candidate.push("-");
+        candidate.push(name);
+        let path = directory.join(candidate);
+        if fs::symlink_metadata(&path).is_err() {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a replacement staging name",
+    ))
+}
+
+fn remove_item(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+#[cfg(test)]
 pub fn transfer_entries(
     sources: &[PathBuf],
     destination_directory: &Path,

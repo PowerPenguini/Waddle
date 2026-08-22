@@ -116,9 +116,9 @@ enum Message {
     NativeReady(Result<native_clipboard::Attached, String>),
     NativeDndEvent(TransferEvent),
     ExternalDragFinished(Result<TransferOutcome, String>),
-    TransferFinished {
+    TransferBatchFinished {
         request: TransferRequest,
-        report: fs::TransferReport,
+        outcome: Box<fs::TransferBatchOutcome>,
     },
     SystemTheme(iced::theme::Mode),
     PollSystem,
@@ -201,6 +201,7 @@ struct App {
     operations: Operations,
     search: SearchSession,
     transfers: TransferWorkflow,
+    transfer_conflict: Option<ActiveTransferConflict>,
     command: CommandSession,
     command_adapter: ProcessAdapter,
     file_operations: FileOperationSession,
@@ -227,6 +228,12 @@ struct App {
     accent: Option<theme::ThemeColors>,
 }
 
+#[derive(Clone, Debug)]
+struct ActiveTransferConflict {
+    request: TransferRequest,
+    batch: fs::TransferBatch,
+}
+
 impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
@@ -239,6 +246,7 @@ impl App {
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
+            transfer_conflict: None,
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
             file_operations: FileOperationSession::default(),
@@ -391,7 +399,9 @@ impl App {
                 let consequences = self.transfers.finish_outgoing(result);
                 self.apply_transfer_consequences(consequences)
             }
-            Message::TransferFinished { request, report } => self.finish_transfer(request, report),
+            Message::TransferBatchFinished { request, outcome } => {
+                self.finish_transfer_batch(request, *outcome)
+            }
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
                 Task::none()
@@ -680,6 +690,7 @@ impl App {
                 logo: modifiers.logo(),
             },
             InputContext {
+                transfer_conflict: self.transfer_conflict.is_some(),
                 prompt_active: self.file_operations.prompt_active(),
                 prompt_accepts_enter: self.file_operations.prompt_accepts_enter(),
                 prompt_uses_yes_no: self.file_operations.prompt_uses_yes_no(),
@@ -700,6 +711,10 @@ impl App {
             InputIntent::None => Task::none(),
             InputIntent::PromptCancel => self.update(Message::PromptCancel),
             InputIntent::PromptConfirm => self.update(Message::PromptConfirm),
+            InputIntent::ConflictCancel => self.cancel_transfer_conflict(),
+            InputIntent::ConflictChoice { key, remaining } => {
+                self.resolve_transfer_conflict(key, remaining)
+            }
             InputIntent::CancelSearch => self.cancel_search(),
             InputIntent::CancelCommand => {
                 self.command.cancel();
@@ -1642,30 +1657,95 @@ impl App {
     }
 
     fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {
+        let batch = fs::TransferBatch::new(
+            request.paths.clone(),
+            request.destination.clone(),
+            request.action,
+        );
+        self.run_transfer_batch(request, batch)
+    }
+
+    fn run_transfer_batch(
+        &mut self,
+        request: TransferRequest,
+        batch: fs::TransferBatch,
+    ) -> Task<Message> {
         self.busy = true;
-        let operation = request.clone();
         Task::perform(
-            self.operations.run(OperationKind::Mutation, move |_| {
-                Ok(fs::transfer_entries(
-                    &operation.paths,
-                    &operation.destination,
-                    operation.action,
-                ))
-            }),
+            self.operations
+                .run(OperationKind::Mutation, move |_| Ok(batch.run())),
             move |completion| match completion {
-                Completion::Finished(result) => Message::TransferFinished {
+                Completion::Finished(Ok(outcome)) => Message::TransferBatchFinished {
                     request,
-                    report: result.unwrap_or_else(|error| fs::TransferReport {
+                    outcome: Box::new(outcome),
+                },
+                Completion::Finished(Err(error)) => Message::TransferBatchFinished {
+                    request,
+                    outcome: Box::new(fs::TransferBatchOutcome::Complete(fs::TransferReport {
                         completed: Vec::new(),
                         failures: vec![fs::TransferFailure {
                             source: PathBuf::new(),
                             error,
                         }],
-                    }),
+                        retained: Vec::new(),
+                    })),
                 },
                 Completion::Cancelled => Message::Noop,
             },
         )
+    }
+
+    fn finish_transfer_batch(
+        &mut self,
+        request: TransferRequest,
+        outcome: fs::TransferBatchOutcome,
+    ) -> Task<Message> {
+        self.busy = false;
+        match outcome {
+            fs::TransferBatchOutcome::Complete(report) => self.finish_transfer(request, report),
+            fs::TransferBatchOutcome::Conflict { batch, conflict } => {
+                let source = conflict
+                    .source
+                    .file_name()
+                    .map_or_else(|| "item".into(), |name| name.to_string_lossy());
+                let kind = if conflict.directories {
+                    "folder conflict; Replace merges"
+                } else {
+                    "file conflict"
+                };
+                self.status = format!(
+                    "{source}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
+                );
+                self.transfer_conflict = Some(ActiveTransferConflict {
+                    request,
+                    batch: *batch,
+                });
+                Task::none()
+            }
+        }
+    }
+
+    fn resolve_transfer_conflict(&mut self, key: char, remaining: bool) -> Task<Message> {
+        let Some(active) = self.transfer_conflict.take() else {
+            return Task::none();
+        };
+        let choice = match key {
+            'r' => fs::ConflictChoice::Replace,
+            's' => fs::ConflictChoice::Skip,
+            'k' => fs::ConflictChoice::KeepBoth,
+            _ => {
+                self.transfer_conflict = Some(active);
+                return Task::none();
+            }
+        };
+        self.run_transfer_batch(active.request, active.batch.resolve(choice, remaining))
+    }
+
+    fn cancel_transfer_conflict(&mut self) -> Task<Message> {
+        let Some(active) = self.transfer_conflict.take() else {
+            return Task::none();
+        };
+        self.finish_transfer(active.request, active.batch.cancel())
     }
 
     fn finish_transfer(
@@ -1722,7 +1802,10 @@ impl App {
     }
 
     fn mutations_allowed(&self) -> bool {
-        !self.busy && !self.navigation_loading && !self.search.is_recursive()
+        !self.busy
+            && self.transfer_conflict.is_none()
+            && !self.navigation_loading
+            && !self.search.is_recursive()
     }
 
     #[cfg(test)]
