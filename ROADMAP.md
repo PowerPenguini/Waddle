@@ -79,15 +79,15 @@ needs external drag and drop and a native clipboard adapter.
   clipboard.
 - [ ] In Visual selection, make `y`, `d`, and `x` act on the complete selection.
 - [ ] Keep `p` as Paste into the current directory.
-- [ ] Add `gg`, `G`, `{count}G`, `H`, `M`, `L`, `Ctrl+D`, and `Ctrl+U`.
-- [ ] Support counts before motions and operators. Examples include `3j`, `4l`, `3dd`, `d3j`,
+- [x] Add `gg`, `G`, `{count}G`, `H`, `M`, `L`, `Ctrl+D`, and `Ctrl+U`.
+- [x] Support counts before motions and operators. Examples include `3j`, `4l`, `3dd`, `d3j`,
   `3dj`, and `5G`.
 - [ ] Interpret operator ranges in current display order so Grid and List behave identically.
 - [ ] Show incomplete sequences such as `3`, `d`, `g`, and `"_` in the bottom bar.
-- [ ] Do not time out an incomplete sequence. `Esc` cancels it, and an invalid key resets it with
+- [x] Do not time out an incomplete sequence. `Esc` cancels it, and an invalid key resets it with
   a short message.
 - [ ] Use `u` for Undo, `Ctrl+R` for Redo, `Ctrl+O` for Back, and `Ctrl+I` for Forward.
-- [ ] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
+- [x] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
   collapses or moves to the parent, `l` expands or opens, and `gg` and `G` jump to the ends.
 - [ ] Disable file operators on technical sidebar roots such as Computer and Recent.
 - [ ] Limit 1.0 to the system clipboard and the `"_` black-hole register. Named registers, macros,

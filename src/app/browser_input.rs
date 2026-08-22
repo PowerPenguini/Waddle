@@ -2,8 +2,12 @@ use super::grid::{DeleteMotion, Motion};
 
 pub(super) const HELP: &str = "\
 Browser
-  h j k l       Move across the file grid
+  [count]h/j/k/l Move across the file grid
   0 / $         Move to the start / end of the grid row
+  gg / G        Jump to the first / last entry
+  [count]G      Jump to an entry by display position
+  H / M / L     Jump within the visible viewport
+  Ctrl+D/U      Move down / up by half a page
   Enter         Open the selected item
   Backspace     Go to the parent directory
   u / Ctrl+O    Go back
@@ -18,8 +22,6 @@ Browser
   n / N         Repeat search forward / backward
   y / p         Copy / paste
   Esc           Cancel the active mode or close output";
-
-pub(super) const DELETE_PENDING_STATUS: &str = "d  •  awaiting motion: 0, $, h, j, k, l, or d";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Mode {
@@ -62,7 +64,7 @@ pub(super) struct Context {
     pub(super) has_selection: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Intent {
     None,
     PromptCancel,
@@ -82,9 +84,10 @@ pub(super) enum Intent {
     Rename,
     ToggleVisual,
     Trash,
-    ArmDelete,
-    Move(Motion),
-    DeleteMotion(DeleteMotion),
+    Pending(String),
+    InvalidSequence(String),
+    Move(Motion, usize),
+    DeleteMotion(DeleteMotion, usize),
     Activate,
     Parent,
 }
@@ -92,7 +95,9 @@ pub(super) enum Intent {
 #[derive(Clone, Debug, Default)]
 pub(super) struct BrowserInput {
     mode: Mode,
-    delete_pending: bool,
+    count: Option<usize>,
+    g_pending: bool,
+    delete_pending: Option<(usize, Option<usize>)>,
 }
 
 impl BrowserInput {
@@ -103,7 +108,7 @@ impl BrowserInput {
     pub(super) fn enter(&mut self, mode: Mode) {
         self.mode = mode;
         if mode != Mode::Browser {
-            self.delete_pending = false;
+            self.clear_sequence();
         }
     }
 
@@ -111,8 +116,61 @@ impl BrowserInput {
         self.mode = Mode::Browser;
     }
 
+    #[cfg(test)]
     pub(super) fn delete_pending(&self) -> bool {
-        self.delete_pending
+        self.delete_pending.is_some()
+    }
+
+    pub(super) fn pending_sequence(&self) -> Option<String> {
+        if let Some((operator_count, motion_count)) = self.delete_pending {
+            let operator = if operator_count > 1 {
+                operator_count.to_string()
+            } else {
+                String::new()
+            };
+            let motion = motion_count
+                .map(|count| count.to_string())
+                .unwrap_or_default();
+            Some(format!("{operator}d{motion}"))
+        } else if self.g_pending {
+            Some(format!(
+                "{}g",
+                self.count
+                    .map(|count| count.to_string())
+                    .unwrap_or_default()
+            ))
+        } else {
+            self.count.map(|count| count.to_string())
+        }
+    }
+
+    fn pending_status(&self) -> String {
+        let sequence = self.pending_sequence().unwrap_or_default();
+        let expected = if self.delete_pending.is_some() {
+            "awaiting motion: 0, $, h, j, k, l, or d"
+        } else if self.g_pending {
+            "awaiting g"
+        } else {
+            "awaiting motion or operator"
+        };
+        format!("{sequence}  •  {expected}")
+    }
+
+    fn clear_sequence(&mut self) {
+        self.count = None;
+        self.g_pending = false;
+        self.delete_pending = None;
+    }
+
+    fn push_count(&mut self, digit: usize) {
+        let count = self.count.unwrap_or_default();
+        self.count = Some(count.saturating_mul(10).saturating_add(digit).min(10_000));
+    }
+
+    fn invalid_sequence(&mut self, key: &str) -> Intent {
+        let sequence = format!("{}{key}", self.pending_sequence().unwrap_or_default());
+        self.clear_sequence();
+        Intent::InvalidSequence(format!("Invalid Browser sequence: {sequence}"))
     }
 
     pub(super) fn handle(&mut self, press: Press, context: Context) -> Intent {
@@ -166,8 +224,9 @@ impl BrowserInput {
             if context.visual_active {
                 return Intent::CancelVisual;
             }
-            if self.delete_pending {
-                self.delete_pending = false;
+            if self.pending_sequence().is_some() {
+                self.clear_sequence();
+                return Intent::Pending("Browser sequence cancelled".to_owned());
             }
             return Intent::None;
         }
@@ -178,21 +237,64 @@ impl BrowserInput {
 
         let text = press.text.as_deref();
         if press.control && !press.alt && !press.logo {
+            let count = self.count.take().unwrap_or(1);
+            self.g_pending = false;
+            self.delete_pending = None;
             return match text.map(str::to_ascii_lowercase).as_deref() {
                 Some("c") => Intent::Copy,
                 Some("v") => Intent::Paste,
                 Some("o") => Intent::Back,
+                Some("d") => Intent::Move(Motion::HalfPageDown, count),
+                Some("u") => Intent::Move(Motion::HalfPageUp, count),
                 _ => Intent::None,
             };
         }
 
-        if self.delete_pending {
-            self.delete_pending = false;
-            return text
-                .and_then(delete_motion)
-                .map_or(Intent::None, Intent::DeleteMotion);
+        if let Some(value) = text
+            && value.len() == 1
+            && let Some(digit) = value.chars().next().and_then(|value| value.to_digit(10))
+            && (digit != 0 || self.count.is_some() || self.delete_pending.is_some())
+        {
+            if let Some((_, motion_count)) = self.delete_pending.as_mut() {
+                let count = motion_count.unwrap_or_default();
+                *motion_count = Some(
+                    count
+                        .saturating_mul(10)
+                        .saturating_add(digit as usize)
+                        .min(10_000),
+                );
+            } else if self.g_pending {
+                return self.invalid_sequence(value);
+            } else {
+                self.push_count(digit as usize);
+            }
+            return Intent::Pending(self.pending_status());
         }
 
+        if self.g_pending {
+            if text == Some("g") {
+                let count = self.count.take();
+                self.g_pending = false;
+                return Intent::Move(
+                    count.map_or(Motion::First, |count| Motion::DisplayIndex(count - 1)),
+                    1,
+                );
+            }
+            return self.invalid_sequence(text.unwrap_or("key"));
+        }
+
+        if let Some((operator_count, motion_count)) = self.delete_pending.take() {
+            let motion_count = motion_count.unwrap_or(1);
+            return match text.and_then(delete_motion) {
+                Some(motion) => Intent::DeleteMotion(
+                    motion,
+                    operator_count.saturating_mul(motion_count).min(10_000),
+                ),
+                None => self.invalid_sequence(text.unwrap_or("key")),
+            };
+        }
+
+        let count = self.count.take();
         match text {
             Some("/") => Intent::BeginSearch,
             Some("!") => Intent::BeginCommand('!'),
@@ -207,18 +309,34 @@ impl BrowserInput {
             Some("x") => Intent::Trash,
             Some("d") if context.visual_active || context.selection_count > 1 => Intent::Trash,
             Some("d") if context.has_selection => {
-                self.delete_pending = true;
-                Intent::ArmDelete
+                self.delete_pending = Some((count.unwrap_or(1), None));
+                Intent::Pending(self.pending_status())
             }
-            Some("h") => Intent::Move(Motion::Left),
-            Some("j") => Intent::Move(Motion::Down),
-            Some("k") => Intent::Move(Motion::Up),
-            Some("l") => Intent::Move(Motion::Right),
-            Some("0") => Intent::Move(Motion::RowStart),
-            Some("$") => Intent::Move(Motion::RowEnd),
+            Some("g") => {
+                self.count = count;
+                self.g_pending = true;
+                Intent::Pending(self.pending_status())
+            }
+            Some("G") => Intent::Move(
+                count.map_or(Motion::Last, |count| Motion::DisplayIndex(count - 1)),
+                1,
+            ),
+            Some("H") => Intent::Move(Motion::ViewportTop, count.unwrap_or(1)),
+            Some("M") => Intent::Move(Motion::ViewportMiddle, count.unwrap_or(1)),
+            Some("L") => Intent::Move(Motion::ViewportBottom, count.unwrap_or(1)),
+            Some("h") => Intent::Move(Motion::Left, count.unwrap_or(1)),
+            Some("j") => Intent::Move(Motion::Down, count.unwrap_or(1)),
+            Some("k") => Intent::Move(Motion::Up, count.unwrap_or(1)),
+            Some("l") => Intent::Move(Motion::Right, count.unwrap_or(1)),
+            Some("0") => Intent::Move(Motion::RowStart, 1),
+            Some("$") => Intent::Move(Motion::RowEnd, 1),
             _ if press.named == NamedKey::Enter => Intent::Activate,
             _ if press.named == NamedKey::Backspace => Intent::Parent,
             _ if press.named == NamedKey::Delete => Intent::Trash,
+            _ if count.is_some() => {
+                self.count = count;
+                self.invalid_sequence(text.unwrap_or("key"))
+            }
             _ => Intent::None,
         }
     }
@@ -260,19 +378,31 @@ mod tests {
     fn delete_operator_owns_valid_invalid_and_cancelled_sequences() {
         let mut input = BrowserInput::default();
 
-        assert_eq!(input.handle(text("d"), selected()), Intent::ArmDelete);
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
         assert!(input.delete_pending());
         assert_eq!(
             input.handle(text("$"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Motion(Motion::RowEnd))
+            Intent::DeleteMotion(DeleteMotion::Motion(Motion::RowEnd), 1)
         );
         assert!(!input.delete_pending());
 
-        assert_eq!(input.handle(text("d"), selected()), Intent::ArmDelete);
-        assert_eq!(input.handle(text("w"), selected()), Intent::None);
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(text("w"), selected()),
+            Intent::InvalidSequence(_)
+        ));
         assert!(!input.delete_pending());
 
-        assert_eq!(input.handle(text("d"), selected()), Intent::ArmDelete);
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
         assert_eq!(
             input.handle(
                 Press {
@@ -281,7 +411,7 @@ mod tests {
                 },
                 selected()
             ),
-            Intent::None
+            Intent::Pending("Browser sequence cancelled".to_owned())
         );
         assert!(!input.delete_pending());
     }
@@ -292,16 +422,19 @@ mod tests {
 
         assert_eq!(
             input.handle(text("0"), selected()),
-            Intent::Move(Motion::RowStart)
+            Intent::Move(Motion::RowStart, 1)
         );
         assert_eq!(
             input.handle(text("$"), selected()),
-            Intent::Move(Motion::RowEnd)
+            Intent::Move(Motion::RowEnd, 1)
         );
-        assert_eq!(input.handle(text("d"), selected()), Intent::ArmDelete);
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
         assert_eq!(
             input.handle(text("d"), selected()),
-            Intent::DeleteMotion(DeleteMotion::Current)
+            Intent::DeleteMotion(DeleteMotion::Current, 1)
         );
     }
 
@@ -402,6 +535,156 @@ mod tests {
         assert_eq!(input.handle(control("c"), selected()), Intent::Copy);
         assert_eq!(input.handle(control("V"), selected()), Intent::Paste);
         assert_eq!(input.handle(control("o"), selected()), Intent::Back);
-        assert_eq!(input.handle(control("d"), selected()), Intent::None);
+        assert_eq!(
+            input.handle(control("d"), selected()),
+            Intent::Move(Motion::HalfPageDown, 1)
+        );
+    }
+
+    #[test]
+    fn counts_and_g_sequences_compose_into_deterministic_motions() {
+        let mut input = BrowserInput::default();
+
+        assert!(matches!(
+            input.handle(text("3"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("j"), selected()),
+            Intent::Move(Motion::Down, 3)
+        );
+        assert!(matches!(
+            input.handle(text("5"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("G"), selected()),
+            Intent::Move(Motion::DisplayIndex(4), 1)
+        );
+        assert!(matches!(
+            input.handle(text("g"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("g"), selected()),
+            Intent::Move(Motion::First, 1)
+        );
+        assert_eq!(
+            input.handle(text("G"), selected()),
+            Intent::Move(Motion::Last, 1)
+        );
+    }
+
+    #[test]
+    fn viewport_and_half_page_motions_accept_counts() {
+        let mut input = BrowserInput::default();
+
+        assert_eq!(
+            input.handle(text("H"), selected()),
+            Intent::Move(Motion::ViewportTop, 1)
+        );
+        assert_eq!(
+            input.handle(text("M"), selected()),
+            Intent::Move(Motion::ViewportMiddle, 1)
+        );
+        assert_eq!(
+            input.handle(text("L"), selected()),
+            Intent::Move(Motion::ViewportBottom, 1)
+        );
+
+        assert!(matches!(
+            input.handle(text("2"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(
+                Press {
+                    text: Some("d".to_owned()),
+                    control: true,
+                    ..Press::default()
+                },
+                selected()
+            ),
+            Intent::Move(Motion::HalfPageDown, 2)
+        );
+    }
+
+    #[test]
+    fn pending_sequences_wait_for_escape_and_invalid_input_explains_the_reset() {
+        let mut input = BrowserInput::default();
+
+        assert_eq!(
+            input.handle(text("3"), selected()),
+            Intent::Pending("3  •  awaiting motion or operator".to_owned())
+        );
+        assert_eq!(
+            input.handle(text("q"), selected()),
+            Intent::InvalidSequence("Invalid Browser sequence: 3q".to_owned())
+        );
+        assert_eq!(input.pending_sequence(), None);
+
+        assert!(matches!(
+            input.handle(text("g"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                selected()
+            ),
+            Intent::Pending("Browser sequence cancelled".to_owned())
+        );
+        assert_eq!(input.pending_sequence(), None);
+    }
+
+    #[test]
+    fn counts_compose_before_and_after_the_delete_operator() {
+        let mut input = BrowserInput::default();
+
+        assert!(matches!(
+            input.handle(text("3"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("d"), selected()),
+            Intent::DeleteMotion(DeleteMotion::Current, 3)
+        );
+
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(text("3"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("j"), selected()),
+            Intent::DeleteMotion(DeleteMotion::Motion(Motion::Down), 3)
+        );
+
+        assert!(matches!(
+            input.handle(text("3"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(text("2"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("j"), selected()),
+            Intent::DeleteMotion(DeleteMotion::Motion(Motion::Down), 6)
+        );
     }
 }

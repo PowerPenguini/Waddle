@@ -95,6 +95,13 @@ enum EntryIconKind {
     Presentation,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum BrowserFocus {
+    Sidebar,
+    #[default]
+    Entries,
+}
+
 #[derive(Clone, Debug)]
 enum Message {
     Event(iced::Event, event::Status),
@@ -194,6 +201,8 @@ struct App {
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
     browser_input: BrowserInput,
+    browser_focus: BrowserFocus,
+    sidebar_cursor: Option<u64>,
     location_input: String,
     expanded_bar_height: f32,
     output_expansion: Animation<bool>,
@@ -229,6 +238,8 @@ impl App {
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
             browser_input: BrowserInput::default(),
+            browser_focus: BrowserFocus::Entries,
+            sidebar_cursor: None,
             location_input: current.display().to_string(),
             expanded_bar_height: STATUS_HEIGHT,
             output_expansion: Animation::new(false)
@@ -409,7 +420,11 @@ impl App {
                 };
                 self.navigate(requested, true, None)
             }
-            Message::TreeRow(id) => self.activate_tree_row(id),
+            Message::TreeRow(id) => {
+                self.browser_focus = BrowserFocus::Sidebar;
+                self.sidebar_cursor = Some(id);
+                self.activate_tree_row(id)
+            }
             Message::TreeLoaded(id, path, folders) => {
                 tree::install_children(&mut self.explorer, id, &path, folders);
                 Task::none()
@@ -418,6 +433,7 @@ impl App {
                 if self.prompt_blocks_action() {
                     return Task::none();
                 }
+                self.browser_focus = BrowserFocus::Entries;
                 self.transfers
                     .press(index, self.grid.cursor(), self.navigation.entries().len());
                 Task::none()
@@ -436,6 +452,7 @@ impl App {
                 if self.prompt_blocks_action() {
                     return Task::none();
                 }
+                self.browser_focus = BrowserFocus::Entries;
                 self.grid
                     .select_only(Some(index), self.navigation.entries().len());
                 self.context_menu = Some((index, self.grid.cursor()));
@@ -657,11 +674,6 @@ impl App {
     }
 
     fn apply_input_intent(&mut self, intent: InputIntent) -> Task<Message> {
-        if !self.browser_input.delete_pending()
-            && self.status == browser_input::DELETE_PENDING_STATUS
-        {
-            self.status.clear();
-        }
         match intent {
             InputIntent::None => Task::none(),
             InputIntent::PromptCancel => self.update(Message::PromptCancel),
@@ -702,16 +714,29 @@ impl App {
                 self.schedule_details()
             }
             InputIntent::Trash => self.show_trash_prompt(),
-            InputIntent::ArmDelete => {
-                self.status = browser_input::DELETE_PENDING_STATUS.to_owned();
+            InputIntent::Pending(status) | InputIntent::InvalidSequence(status) => {
+                self.status = status;
                 Task::none()
             }
-            InputIntent::Move(motion) => self.move_selection(motion),
-            InputIntent::DeleteMotion(motion) => {
-                self.grid
-                    .select_delete_motion(motion, self.navigation.entries().len());
+            InputIntent::Move(motion, count) => {
+                if self.browser_focus == BrowserFocus::Sidebar {
+                    self.move_sidebar(motion, count)
+                } else {
+                    self.move_selection(motion, count)
+                }
+            }
+            InputIntent::DeleteMotion(motion, count) => {
+                self.grid.select_delete_motion_count(
+                    motion,
+                    count,
+                    self.navigation.entries().len(),
+                    self.status_height(),
+                );
                 self.show_trash_prompt()
             }
+            InputIntent::Activate if self.browser_focus == BrowserFocus::Sidebar => self
+                .sidebar_cursor
+                .map_or_else(Task::none, |id| self.activate_tree_row(id)),
             InputIntent::Activate => self.activate_selected(),
             InputIntent::Parent => self.go_parent(),
         }
@@ -881,9 +906,13 @@ impl App {
         )
     }
 
-    fn move_selection(&mut self, motion: Motion) -> Task<Message> {
-        self.grid
-            .move_selection(motion, self.navigation.entries().len());
+    fn move_selection(&mut self, motion: Motion, count: usize) -> Task<Message> {
+        self.grid.move_selection_count(
+            motion,
+            count,
+            self.navigation.entries().len(),
+            self.status_height(),
+        );
         Task::batch([self.schedule_details(), self.scroll_to_selected()])
     }
 
@@ -981,6 +1010,61 @@ impl App {
         } else {
             Task::batch([load_task, self.navigate(path, true, None)])
         }
+    }
+
+    fn move_sidebar(&mut self, motion: Motion, count: usize) -> Task<Message> {
+        let rows = flatten_rows(&self.explorer, self.navigation.current());
+        let Some(current) = self
+            .sidebar_cursor
+            .and_then(|id| rows.iter().position(|row| row.id == id))
+            .or_else(|| rows.iter().position(|row| row.selected))
+            .or((!rows.is_empty()).then_some(0))
+        else {
+            return Task::none();
+        };
+        let last = rows.len() - 1;
+        let count = count.max(1);
+        let target = match motion {
+            Motion::Down => current.saturating_add(count).min(last),
+            Motion::Up => current.saturating_sub(count),
+            Motion::First => 0,
+            Motion::Last => last,
+            Motion::DisplayIndex(index) => index.min(last),
+            Motion::ViewportTop | Motion::HalfPageUp => current.saturating_sub(count),
+            Motion::ViewportMiddle => current,
+            Motion::ViewportBottom | Motion::HalfPageDown => {
+                current.saturating_add(count).min(last)
+            }
+            Motion::Left => {
+                let row = &rows[current];
+                if find_node_mut(&mut self.explorer.roots, row.id).is_some_and(|node| node.expanded)
+                {
+                    if let Some(node) = find_node_mut(&mut self.explorer.roots, row.id) {
+                        node.expanded = false;
+                    }
+                    current
+                } else {
+                    rows[..current]
+                        .iter()
+                        .rposition(|candidate| candidate.depth < row.depth)
+                        .unwrap_or(current)
+                }
+            }
+            Motion::Right => {
+                let id = rows[current].id;
+                let collapsed =
+                    find_node_mut(&mut self.explorer.roots, id).is_some_and(|node| !node.expanded);
+                if collapsed {
+                    return self.activate_tree_row(id);
+                }
+                current.saturating_add(1).min(last)
+            }
+            Motion::RowStart => 0,
+            Motion::RowEnd => last,
+        };
+        self.sidebar_cursor = Some(rows[target].id);
+        self.status = format!("Sidebar  •  {}", rows[target].label);
+        Task::none()
     }
 
     fn begin_search(&mut self) -> Task<Message> {
@@ -1533,6 +1617,7 @@ impl App {
         !self.busy && !self.navigation_loading && !self.search.is_recursive()
     }
 
+    #[cfg(test)]
     fn delete_operator_pending(&self) -> bool {
         self.browser_input.delete_pending()
     }
@@ -1543,7 +1628,7 @@ impl App {
     }
 
     fn refresh_status(&mut self) {
-        if self.delete_operator_pending() {
+        if self.browser_input.pending_sequence().is_some() {
             return;
         }
         self.status = if self.grid.selection_count() > 1 {
@@ -1696,7 +1781,9 @@ impl App {
             ),
         };
         let selected = tree_row.selected;
-        let label_color = if selected {
+        let focused =
+            self.browser_focus == BrowserFocus::Sidebar && self.sidebar_cursor == Some(tree_row.id);
+        let label_color = if selected || focused {
             self.selection_text_color()
         } else {
             self.iced_theme().palette().text
@@ -1720,7 +1807,9 @@ impl App {
             .width(Fill)
             .height(32)
             .padding(0)
-            .style(move |theme, status| tree_button_style(theme, status, selected, drop_target))
+            .style(move |theme, status| {
+                tree_button_style(theme, status, selected || focused, drop_target)
+            })
             .into()
     }
 

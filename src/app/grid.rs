@@ -30,6 +30,14 @@ pub(super) enum Motion {
     Right,
     RowStart,
     RowEnd,
+    First,
+    Last,
+    DisplayIndex(usize),
+    ViewportTop,
+    ViewportMiddle,
+    ViewportBottom,
+    HalfPageDown,
+    HalfPageUp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,55 +198,104 @@ impl GridInteraction {
         self.visual_anchor = None;
     }
 
+    #[cfg(test)]
     pub(super) fn move_selection(&mut self, motion: Motion, entry_count: usize) -> Option<usize> {
+        self.move_selection_count(motion, 1, entry_count, 25.0)
+    }
+
+    pub(super) fn move_selection_count(
+        &mut self,
+        motion: Motion,
+        count: usize,
+        entry_count: usize,
+        status_height: f32,
+    ) -> Option<usize> {
         if entry_count == 0 {
             self.select_only(None, entry_count);
             return None;
         }
 
         let last = entry_count - 1;
-        let columns = self.columns();
         let Some(current) = self.selected else {
             let next = match motion {
-                Motion::Left | Motion::Up | Motion::RowEnd => last,
-                Motion::Down | Motion::Right | Motion::RowStart => 0,
+                Motion::Left
+                | Motion::Up
+                | Motion::RowEnd
+                | Motion::Last
+                | Motion::ViewportBottom
+                | Motion::HalfPageUp => last,
+                Motion::DisplayIndex(index) => index.min(last),
+                Motion::Down
+                | Motion::Right
+                | Motion::RowStart
+                | Motion::First
+                | Motion::ViewportTop
+                | Motion::ViewportMiddle
+                | Motion::HalfPageDown => 0,
             };
             self.selected = Some(next);
             self.update_keyboard_selection();
             return self.selected;
         };
 
-        let column = current % columns;
-        let row_start = current / columns * columns;
-        let next = match motion {
-            Motion::Left => {
-                if column > 0 {
-                    current - 1
-                } else {
-                    current
-                }
-            }
-            Motion::Right => {
-                if column + 1 < columns && current < last {
-                    current + 1
-                } else {
-                    current
-                }
-            }
-            Motion::Up => current.checked_sub(columns).unwrap_or(current),
-            Motion::Down => {
-                if current / columns == last / columns {
-                    current
-                } else {
-                    current.saturating_add(columns).min(last)
-                }
-            }
-            Motion::RowStart => row_start,
-            Motion::RowEnd => row_start.saturating_add(columns - 1).min(last),
-        };
+        let next = self.motion_target(current, motion, count.max(1), entry_count, status_height);
         self.selected = Some(next);
         self.update_keyboard_selection();
         self.selected
+    }
+
+    fn motion_target(
+        &self,
+        current: usize,
+        motion: Motion,
+        count: usize,
+        entry_count: usize,
+        status_height: f32,
+    ) -> usize {
+        let last = entry_count.saturating_sub(1);
+        let columns = self.columns();
+        match motion {
+            Motion::Left => current.saturating_sub(count.min(current % columns)),
+            Motion::Right => current
+                .saturating_add(count.min(columns - 1 - current % columns))
+                .min(last),
+            Motion::Up => current.saturating_sub(columns.saturating_mul(count)),
+            Motion::Down => current
+                .saturating_add(columns.saturating_mul(count))
+                .min(last),
+            Motion::RowStart => current / columns * columns,
+            Motion::RowEnd => (current / columns * columns)
+                .saturating_add(columns - 1)
+                .min(last),
+            Motion::First => 0,
+            Motion::Last => last,
+            Motion::DisplayIndex(index) => index.min(last),
+            Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom => {
+                let visible = self.visible_range(entry_count, status_height);
+                let anchor = match motion {
+                    Motion::ViewportTop => visible.first_index,
+                    Motion::ViewportMiddle => {
+                        (visible.first_index + visible.last_index.saturating_sub(1)) / 2
+                    }
+                    Motion::ViewportBottom => visible.last_index.saturating_sub(1),
+                    _ => unreachable!(),
+                };
+                anchor.min(last)
+            }
+            Motion::HalfPageDown | Motion::HalfPageUp => {
+                let visible = self.visible_range(entry_count, status_height);
+                let half_page = visible
+                    .last_index
+                    .saturating_sub(visible.first_index)
+                    .div_ceil(2);
+                let distance = half_page.max(1).saturating_mul(count);
+                if motion == Motion::HalfPageDown {
+                    current.saturating_add(distance).min(last)
+                } else {
+                    current.saturating_sub(distance)
+                }
+            }
+        }
     }
 
     pub(super) fn toggle_visual_selection(&mut self, entry_count: usize) {
@@ -259,33 +316,35 @@ impl GridInteraction {
         self.select_only(self.selected, entry_count);
     }
 
+    #[cfg(test)]
     pub(super) fn select_delete_motion(
         &mut self,
         motion: DeleteMotion,
         entry_count: usize,
     ) -> bool {
+        self.select_delete_motion_count(motion, 1, entry_count, 25.0)
+    }
+
+    pub(super) fn select_delete_motion_count(
+        &mut self,
+        motion: DeleteMotion,
+        count: usize,
+        entry_count: usize,
+        status_height: f32,
+    ) -> bool {
         let Some(current) = self.selected.filter(|index| *index < entry_count) else {
             return false;
         };
-        let columns = self.columns();
         let last = entry_count - 1;
-        let row_start = current / columns * columns;
-        let row_end = row_start.saturating_add(columns - 1).min(last);
-        let range = match motion {
-            DeleteMotion::Current => current..=current,
-            DeleteMotion::Motion(Motion::RowStart) => row_start..=current,
-            DeleteMotion::Motion(Motion::RowEnd) => current..=row_end,
-            DeleteMotion::Motion(Motion::Left) => {
-                current.saturating_sub(usize::from(current > row_start))..=current
+        let target = match motion {
+            DeleteMotion::Current => current.saturating_add(count.saturating_sub(1)).min(last),
+            DeleteMotion::Motion(motion) => {
+                self.motion_target(current, motion, count.max(1), entry_count, status_height)
             }
-            DeleteMotion::Motion(Motion::Right) => current..=current.saturating_add(1).min(row_end),
-            DeleteMotion::Motion(Motion::Down) => {
-                row_start..=row_end.saturating_add(columns).min(last)
-            }
-            DeleteMotion::Motion(Motion::Up) => row_start.saturating_sub(columns)..=row_end,
         };
         self.selection.clear();
-        self.selection.extend(range);
+        self.selection
+            .extend(current.min(target)..=current.max(target));
         self.visual_anchor = None;
         true
     }
@@ -651,6 +710,48 @@ mod tests {
     }
 
     #[test]
+    fn counted_absolute_and_viewport_motions_use_display_order() {
+        let mut grid = grid();
+        grid.select_only(Some(1), 60);
+
+        assert_eq!(
+            grid.move_selection_count(Motion::Down, 2, 60, 25.0),
+            Some(7)
+        );
+        assert_eq!(
+            grid.move_selection_count(Motion::DisplayIndex(12), 1, 60, 25.0),
+            Some(12)
+        );
+        assert_eq!(
+            grid.move_selection_count(Motion::First, 1, 60, 25.0),
+            Some(0)
+        );
+        assert_eq!(
+            grid.move_selection_count(Motion::Last, 1, 60, 25.0),
+            Some(59)
+        );
+
+        grid.set_scroll(TILE_ROW_HEIGHT * 2.0);
+        assert_eq!(
+            grid.move_selection_count(Motion::ViewportTop, 1, 60, 25.0),
+            Some(3)
+        );
+        assert_eq!(
+            grid.move_selection_count(Motion::ViewportMiddle, 1, 60, 25.0),
+            Some(11)
+        );
+        assert_eq!(
+            grid.move_selection_count(Motion::ViewportBottom, 1, 60, 25.0),
+            Some(20)
+        );
+        grid.select_only(Some(10), 60);
+        assert_eq!(
+            grid.move_selection_count(Motion::HalfPageDown, 1, 60, 25.0),
+            Some(19)
+        );
+    }
+
+    #[test]
     fn delete_motion_uses_the_same_grid_columns() {
         let mut grid = grid();
         grid.select_only(Some(4), 8);
@@ -673,7 +774,7 @@ mod tests {
         assert!(grid.select_delete_motion(DeleteMotion::Motion(Motion::Down), 8));
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
-            [3, 4, 5, 6, 7]
+            [4, 5, 6, 7]
         );
         grid.select_only(None, 8);
         assert!(!grid.select_delete_motion(DeleteMotion::Current, 8));

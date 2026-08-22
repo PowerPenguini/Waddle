@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use iced::{event, keyboard, mouse};
 
-use super::{App, InputMode, Message};
+use super::{App, BrowserFocus, InputMode, Message};
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
 };
@@ -53,6 +53,51 @@ fn copy_message_uses_the_complete_visual_selection_in_display_order() {
             PathBuf::from("/start/three.txt"),
         ]
     );
+}
+
+#[test]
+fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    app.navigation.replace_displayed_entries(
+        (0..20)
+            .map(|index| entry(&format!("{index}.txt")))
+            .collect(),
+    );
+    app.grid.select_only(Some(0), 20);
+
+    press(&mut app, "3");
+    assert_eq!(app.status, "3  •  awaiting motion or operator");
+    press(&mut app, "j");
+    assert_eq!(app.grid.selected_entry(), Some(15));
+    press(&mut app, "g");
+    assert_eq!(app.status, "g  •  awaiting g");
+    press(&mut app, "g");
+    assert_eq!(app.grid.selected_entry(), Some(0));
+
+    let child_id = app.explorer.allocate_node_id();
+    app.explorer.roots[0].loading = false;
+    app.explorer.roots[0].loaded = true;
+    app.explorer.roots[0]
+        .children
+        .push(crate::app::state::FolderNode::folder(
+            child_id,
+            PathBuf::from("/tmp"),
+        ));
+    app.browser_focus = BrowserFocus::Sidebar;
+    app.sidebar_cursor = Some(app.explorer.roots[0].id);
+
+    press(&mut app, "j");
+    assert_eq!(app.sidebar_cursor, Some(child_id));
+    press(&mut app, "g");
+    press(&mut app, "g");
+    assert_eq!(app.sidebar_cursor, Some(app.explorer.roots[0].id));
+    press(&mut app, "G");
+    assert_eq!(app.sidebar_cursor, Some(child_id));
+
+    press(&mut app, "3");
+    press(&mut app, "q");
+    assert_eq!(app.status, "Invalid Browser sequence: 3q");
 }
 
 #[test]
