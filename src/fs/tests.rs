@@ -145,14 +145,18 @@ fn sorts_a_directory_symlink_with_directories() {
 #[test]
 fn scans_a_large_directory_completely_and_in_order() {
     let temp = tempfile::tempdir().unwrap();
-    for index in (0..1000).rev() {
-        fs::write(temp.path().join(format!("item-{index:04}")), "x").unwrap();
+    for index in (0..10_000).rev() {
+        fs::write(temp.path().join(format!("item-{index:05}")), "x").unwrap();
     }
 
     let entries = read_directory(temp.path()).unwrap();
-    assert_eq!(entries.len(), 1000);
-    assert_eq!(display_name(&entries[0].name), "item-0000");
-    assert_eq!(display_name(&entries[999].name), "item-0999");
+    assert_eq!(entries.len(), 10_000);
+    assert_eq!(display_name(&entries[0].name), "item-00000");
+    assert_eq!(display_name(&entries[9_999].name), "item-09999");
+
+    let search = search_directory_with_hidden(temp.path(), "09999", 100, false, || false).unwrap();
+    assert_eq!(search.entries.len(), 1);
+    assert_eq!(display_name(&search.entries[0].name), "item-09999");
 }
 
 #[test]

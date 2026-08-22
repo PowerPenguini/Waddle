@@ -43,3 +43,5 @@ jobs:
           manifest-path: packaging/io.github.powerpenguini.PolarExp.yml
           cache-key: flatpak-builder-${{ github.sha }}
           artifact-name: polarexp-linux-flatpak
+      - name: Install and inspect Flatpak bundle
+        run: scripts/smoke-flatpak.sh PolarExp.flatpak

@@ -259,11 +259,11 @@ Do not publish 1.0 until all of the following pass:
 - [ ] Copy and Cut in both directions with Nautilus and Dolphin.
 - [ ] Clipboard, drag and drop, navigation, and file operations on Wayland and X11.
 - [ ] A large transfer with progress, Cancel, Retry, partial failure, and Undo after restart.
-- [ ] A directory with at least 10,000 entries.
+- [x] A directory with at least 10,000 entries.
 - [ ] Manual conflict, Trash, Restore, clipboard-loss, and pending-Cut tests.
 - [ ] Keyboard-only navigation, focus restoration, high contrast, and reduced motion.
 - [ ] Flatpak and regular binary smoke tests.
-- [ ] Formatting, unit tests, integration tests, Clippy with warnings denied, and a release build.
+- [x] Formatting, unit tests, integration tests, Clippy with warnings denied, and a release build.
 
 An Orca test and screen-reader semantics are not part of the 1.0 gate.
 

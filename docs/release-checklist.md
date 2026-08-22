@@ -1,0 +1,46 @@
+# PolarExp 1.0 release checklist
+
+Run `scripts/release-gate.sh` first. Record the commit SHA, distribution versions, desktop session,
+and application versions beside every manual result. A failure keeps the release blocked.
+
+## Interoperability matrix
+
+Repeat every row on native Wayland and native X11 sessions. Use at least one filename containing a
+space and one two-file selection.
+
+| Flow | Nautilus | Dolphin |
+| --- | --- | --- |
+| Copy into PolarExp | Pending | Pending |
+| Copy out of PolarExp | Pending | Pending |
+| Cut into PolarExp | Pending | Pending |
+| Cut out of PolarExp | Pending | Pending |
+| Drag into PolarExp as Copy | Pending | Pending |
+| Drag out of PolarExp as Copy | Pending | Pending |
+| Drag into PolarExp as Move | Pending | Pending |
+| Drag out of PolarExp as Move | Pending | Pending |
+
+Confirm the preview, target highlight, cancellation, error feedback, ownership loss, source
+shutdown, and partial-Cut remainder in the same sessions.
+
+## Integrated workflows
+
+- [ ] Large Transfer shows progress and supports Cancel, Retry, a partial failure, and Undo after a
+  restart.
+- [ ] Keep Both, Replace, Skip, and apply-to-remaining conflict choices preserve unrelated files.
+- [ ] Trash, Restore, Empty Trash, permanent-delete fallback, and Undo after restart pass.
+- [ ] Clipboard loss restores a pending Cut; an external partial Move leaves only failed entries.
+- [ ] A real 10,000-entry directory remains responsive while sorting, searching, navigating, and
+  scrolling thumbnails.
+- [ ] Tab and Shift+Tab traverse all composite stops; prompts trap and restore focus; Enter, Space,
+  arrows, and Vim motions work without leaking into text input.
+- [ ] High contrast has visible selection, focus, drop, and error states; reduced motion has no
+  spinner rotation or animated bottom-bar expansion.
+
+## Packages
+
+- [ ] Build the Flatpak with `flatpak-builder`, then run `scripts/smoke-flatpak.sh PolarExp.flatpak`.
+- [ ] Install and launch the Flatpak on Wayland and X11; repeat clipboard and drag-and-drop smoke
+  rows from the matrix.
+- [ ] Download the CI-produced regular archive on a clean supported Linux system and run
+  `scripts/smoke-package.sh ARCHIVE`.
+- [ ] Publish the archive and Flatpak only after every item above passes.
