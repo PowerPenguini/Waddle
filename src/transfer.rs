@@ -61,6 +61,8 @@ pub(crate) enum Event {
 }
 
 pub(crate) type AdapterCompletion = Pin<Box<dyn Future<Output = Result<Outcome, String>> + Send>>;
+pub(crate) type ClipboardCompletion =
+    Pin<Box<dyn Future<Output = Result<ClipboardImport, String>> + Send>>;
 
 pub(crate) trait Adapter {
     fn start(
@@ -75,6 +77,12 @@ pub(crate) trait Adapter {
     fn finish_inbound(&self, id: u64);
 
     fn shutdown(&self);
+}
+
+pub(crate) trait ClipboardAdapter {
+    fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String>;
+
+    fn read_clipboard(&self) -> Result<ClipboardCompletion, String>;
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +110,13 @@ pub(crate) struct ClipboardPayload {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) action: Action,
     pub(crate) generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ClipboardImport {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) action: Action,
+    pub(crate) generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,6 +228,30 @@ impl TransferWorkflow {
             clipboard_generation: Some(clipboard.generation),
             initiator: Initiator::Clipboard,
         })
+    }
+
+    pub(crate) fn clipboard_payload(&self) -> Option<ClipboardPayload> {
+        self.clipboard.clone()
+    }
+
+    pub(crate) fn import_clipboard(&mut self, import: ClipboardImport) -> bool {
+        if import.paths.is_empty() {
+            return false;
+        }
+        if let (Some(current), Some(generation)) = (&self.clipboard, import.generation)
+            && current.generation == generation
+            && current.paths == import.paths
+            && current.action == import.action
+        {
+            return true;
+        }
+        self.next_clipboard_generation = self.next_clipboard_generation.wrapping_add(1);
+        self.clipboard = Some(ClipboardPayload {
+            paths: import.paths,
+            action: import.action,
+            generation: self.next_clipboard_generation,
+        });
+        true
     }
 
     pub(crate) fn entries_for_drag(
@@ -689,6 +728,30 @@ mod tests {
             .clipboard_generation;
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn imported_clipboard_reuses_only_an_identical_current_generation() {
+        let mut workflow = TransferWorkflow::default();
+        workflow.copy(&[entry("/start/one", false)]).unwrap();
+        let current = workflow.clipboard_payload().unwrap();
+
+        assert!(workflow.import_clipboard(ClipboardImport {
+            paths: current.paths.clone(),
+            action: current.action,
+            generation: Some(current.generation),
+        }));
+        assert_eq!(workflow.clipboard_payload(), Some(current.clone()));
+
+        assert!(workflow.import_clipboard(ClipboardImport {
+            paths: vec![PathBuf::from("/external/two")],
+            action: Action::Copy,
+            generation: Some(current.generation),
+        }));
+        assert_ne!(
+            workflow.clipboard_payload().unwrap().generation,
+            current.generation
+        );
     }
 
     #[test]

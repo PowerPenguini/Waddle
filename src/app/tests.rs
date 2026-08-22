@@ -13,6 +13,7 @@ use crate::app::grid::{
 use crate::app::navigation::NavigationSession;
 use crate::app::state::{ExplorerState, MountRoot};
 use crate::fs::FileEntry;
+use crate::transfer::{Action as TransferAction, ClipboardImport};
 
 fn entry(name: &str) -> FileEntry {
     FileEntry {
@@ -53,6 +54,27 @@ fn copy_message_uses_the_complete_visual_selection_in_display_order() {
             PathBuf::from("/start/three.txt"),
         ]
     );
+}
+
+#[test]
+fn system_clipboard_completion_enters_the_same_transfer_workflow() {
+    let (mut app, _) = App::new();
+    app.navigation_loading = false;
+    let paths = vec![
+        PathBuf::from("/external/one"),
+        PathBuf::from("/external/two"),
+    ];
+
+    let _ = app.update(Message::ClipboardRead(Ok(ClipboardImport {
+        paths: paths.clone(),
+        action: TransferAction::Copy,
+        generation: None,
+    })));
+
+    let request = app.transfers.paste(PathBuf::from("/target")).unwrap();
+    assert_eq!(request.paths, paths);
+    assert_eq!(request.action, TransferAction::Copy);
+    assert!(app.busy);
 }
 
 #[test]

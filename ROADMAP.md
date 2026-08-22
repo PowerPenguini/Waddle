@@ -45,15 +45,15 @@ needs external drag and drop and a native clipboard adapter.
 
 ### System clipboard
 
-- [ ] Replace the private single-path clipboard with a multi-entry system CLIPBOARD model.
+- [x] Replace the private single-path clipboard with a multi-entry system CLIPBOARD model.
 - [ ] Support Copy and Cut between PolarExp, Nautilus, and Dolphin in both directions.
 - [ ] Implement the clipboard on both Wayland and X11.
-- [ ] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
+- [x] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
   `application/x-kde-cutselection` together.
 - [ ] Treat a missing, malformed, or contradictory Cut marker as Copy, never Move.
 - [ ] Read all MIME payloads from one clipboard offer and generation.
-- [ ] Accept only absolute local `file:` URIs until remote locations are implemented.
-- [ ] Apply byte and entry-count limits before accepting clipboard data.
+- [x] Accept only absolute local `file:` URIs until remote locations are implemented.
+- [x] Apply byte and entry-count limits before accepting clipboard data.
 - [ ] Revalidate sources, permissions, descendants, and the destination immediately before
   Paste.
 - [ ] Clear Cut only if the clipboard still contains the same generation.

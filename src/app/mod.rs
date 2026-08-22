@@ -23,9 +23,10 @@ use std::{
 use crate::{
     fs, theme,
     transfer::{
-        Action as TransferAction, Adapter, Event as TransferEvent, NativeUpdate,
-        Outcome as TransferOutcome, Preview as TransferPreview, Release as TransferRelease,
-        Request as TransferRequest, TransferWorkflow,
+        Action as TransferAction, Adapter, ClipboardAdapter, ClipboardImport,
+        Event as TransferEvent, NativeUpdate, Outcome as TransferOutcome,
+        Preview as TransferPreview, Release as TransferRelease, Request as TransferRequest,
+        TransferWorkflow,
     },
 };
 use browser_input::{
@@ -161,6 +162,7 @@ enum Message {
     FileOperationFinished(file_operation::Completion),
     Copy,
     Paste,
+    ClipboardRead(Result<ClipboardImport, String>),
     OperationError(String),
     Noop,
 }
@@ -549,6 +551,20 @@ impl App {
                 Task::none()
             }
             Message::Paste => self.paste(),
+            Message::ClipboardRead(result) => match result {
+                Ok(payload) => {
+                    if self.transfers.import_clipboard(payload) {
+                        self.paste_current()
+                    } else {
+                        self.status = "The clipboard does not contain local files".to_owned();
+                        Task::none()
+                    }
+                }
+                Err(error) => {
+                    self.status = error;
+                    Task::none()
+                }
+            },
             Message::OperationError(error) => {
                 self.show_error(error);
                 Task::none()
@@ -1366,6 +1382,12 @@ impl App {
         let entries = self.selected_entries();
         if let Some(status) = self.transfers.copy(&entries) {
             self.status = status;
+            if let (Some(source), Some(payload)) =
+                (&self.native_dnd, self.transfers.clipboard_payload())
+                && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
+            {
+                self.status = format!("Copied inside PolarExp; system clipboard failed: {error}");
+            }
         }
     }
 
@@ -1373,6 +1395,19 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
+        let Some(source) = self.native_dnd.as_ref() else {
+            return self.paste_current();
+        };
+        match ClipboardAdapter::read_clipboard(source) {
+            Ok(completion) => Task::perform(completion, Message::ClipboardRead),
+            Err(error) => {
+                self.status = error;
+                Task::none()
+            }
+        }
+    }
+
+    fn paste_current(&mut self) -> Task<Message> {
         let Some(request) = self
             .transfers
             .paste(self.navigation.current().to_path_buf())

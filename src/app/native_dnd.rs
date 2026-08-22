@@ -26,10 +26,10 @@ use smithay_client_toolkit::{
         DataDeviceManagerState, WritePipe,
         data_device::{DataDevice, DataDeviceHandler},
         data_offer::{DataOfferHandler, DragOffer},
-        data_source::{DataSourceHandler, DragSource},
+        data_source::{CopyPasteSource, DataSourceHandler, DragSource},
     },
-    delegate_compositor, delegate_data_device, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_data_device, delegate_keyboard, delegate_output,
+    delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::{
         calloop::{EventLoop, LoopHandle, PostAction, channel},
@@ -39,6 +39,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
     },
     shm::{
@@ -52,12 +53,18 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{
-        wl_data_device::WlDataDevice, wl_data_device_manager::DndAction, wl_output,
-        wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm, wl_surface::WlSurface,
+        wl_data_device::WlDataDevice, wl_data_device_manager::DndAction, wl_keyboard::WlKeyboard,
+        wl_output, wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm, wl_surface::WlSurface,
     },
 };
 
-use crate::transfer::{Action, Adapter, AdapterCompletion, Event, Outcome, Preview};
+use crate::{
+    clipboard::{self, EncodedOffer},
+    transfer::{
+        Action, Adapter, AdapterCompletion, ClipboardAdapter, ClipboardCompletion, ClipboardImport,
+        ClipboardPayload, Event, Outcome, Preview,
+    },
+};
 
 const URI_LIST_MIME: &str = "text/uri-list";
 const POLAREXP_MIME: &str = "application/x-polarexp-file-list";
@@ -204,6 +211,27 @@ impl Source {
         let _ = self.0.commands.send(Command::Shutdown);
         let _ = worker.join();
     }
+
+    fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
+        let offer = clipboard::encode(&payload)?;
+        let (reply, receiver) = std_mpsc::sync_channel(1);
+        self.0
+            .commands
+            .send(Command::WriteClipboard { offer, reply })
+            .map_err(|_| "the Wayland clipboard worker has stopped".to_owned())?;
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| format!("Wayland clipboard publication timed out: {error}"))?
+    }
+
+    fn read_clipboard(&self) -> Result<oneshot::Receiver<Result<ClipboardImport, String>>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.0
+            .commands
+            .send(Command::ReadClipboard { reply })
+            .map_err(|_| "the Wayland clipboard worker has stopped".to_owned())?;
+        Ok(receiver)
+    }
 }
 
 impl Adapter for Source {
@@ -234,6 +262,21 @@ impl Adapter for Source {
     }
 }
 
+impl ClipboardAdapter for Source {
+    fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
+        Source::write_clipboard(self, payload)
+    }
+
+    fn read_clipboard(&self) -> Result<ClipboardCompletion, String> {
+        let receiver = Source::read_clipboard(self)?;
+        Ok(Box::pin(async move {
+            receiver.await.unwrap_or_else(|_| {
+                Err("the Wayland clipboard worker stopped unexpectedly".to_owned())
+            })
+        }))
+    }
+}
+
 impl Drop for SourceInner {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
@@ -259,6 +302,13 @@ enum Command {
     FinishInbound {
         id: u64,
     },
+    WriteClipboard {
+        offer: EncodedOffer,
+        reply: std_mpsc::SyncSender<Result<(), String>>,
+    },
+    ReadClipboard {
+        reply: oneshot::Sender<Result<ClipboardImport, String>>,
+    },
     Shutdown,
 }
 
@@ -271,7 +321,20 @@ struct HeldPress {
 struct SeatObjects {
     seat: WlSeat,
     pointer: Option<WlPointer>,
+    keyboard: Option<WlKeyboard>,
     data_device: DataDevice,
+}
+
+struct ActiveClipboard {
+    source: CopyPasteSource,
+    offer: EncodedOffer,
+}
+
+struct ClipboardRead {
+    offer_generation: u64,
+    mime: String,
+    data: Vec<u8>,
+    reply: oneshot::Sender<Result<ClipboardImport, String>>,
 }
 
 struct ActiveDrag {
@@ -310,6 +373,10 @@ struct Worker {
     seats: Vec<SeatObjects>,
     held_press: Option<HeldPress>,
     active: Option<ActiveDrag>,
+    clipboard: Option<ActiveClipboard>,
+    clipboard_read: Option<ClipboardRead>,
+    clipboard_offer_generation: u64,
+    last_input: Option<(WlSeat, u32)>,
     incoming: Option<IncomingDrag>,
     next_offer_id: u64,
     events: mpsc::UnboundedSender<Event>,
@@ -359,6 +426,10 @@ fn run_worker(
         seats: Vec::new(),
         held_press: None,
         active: None,
+        clipboard: None,
+        clipboard_read: None,
+        clipboard_offer_generation: 0,
+        last_input: None,
         incoming: None,
         next_offer_id: 1,
         events,
@@ -388,9 +459,15 @@ fn run_worker(
                 state.set_target(id, destination)
             }
             channel::Event::Msg(Command::FinishInbound { id }) => state.finish_inbound(id),
+            channel::Event::Msg(Command::WriteClipboard { offer, reply }) => {
+                let _ = reply.send(state.write_clipboard(offer));
+            }
+            channel::Event::Msg(Command::ReadClipboard { reply }) => state.read_clipboard(reply),
             channel::Event::Msg(Command::Shutdown) | channel::Event::Closed => {
                 state.finish_active(Outcome::Cancelled);
                 state.cancel_incoming();
+                state.cancel_clipboard_read("the Wayland clipboard worker stopped");
+                state.clipboard = None;
                 state.exit = true;
             }
         })
@@ -520,6 +597,118 @@ impl Worker {
             if let Some(reply) = active.reply.take() {
                 let _ = reply.send(Ok(outcome));
             }
+        }
+    }
+
+    fn write_clipboard(&mut self, offer: EncodedOffer) -> Result<(), String> {
+        let (seat, serial) = self.last_input.clone().ok_or_else(|| {
+            "use the keyboard or pointer before copying to the Wayland clipboard".to_owned()
+        })?;
+        let data_device = self
+            .seats
+            .iter()
+            .find(|objects| objects.seat == seat)
+            .map(|objects| &objects.data_device)
+            .ok_or_else(|| "the active Wayland seat has no data device".to_owned())?;
+        let source = self
+            .data_device_manager
+            .create_copy_paste_source(&self.queue_handle, offer.mime_types());
+        source.set_selection(data_device, serial);
+        self.clipboard = Some(ActiveClipboard { source, offer });
+        Ok(())
+    }
+
+    fn read_clipboard(&mut self, reply: oneshot::Sender<Result<ClipboardImport, String>>) {
+        self.cancel_clipboard_read("a newer clipboard read replaced this request");
+        let Some(offer) = self
+            .seats
+            .iter()
+            .find_map(|objects| objects.data_device.data().selection_offer())
+        else {
+            let _ = reply.send(Err("the Wayland clipboard has no file offer".to_owned()));
+            return;
+        };
+        let Some(mime) = offer.with_mime_types(clipboard::preferred_mime) else {
+            let _ = reply.send(Err(
+                "the Wayland clipboard does not contain local files".to_owned()
+            ));
+            return;
+        };
+        let pipe = match offer.receive(mime.to_owned()) {
+            Ok(pipe) => pipe,
+            Err(error) => {
+                let _ = reply.send(Err(format!(
+                    "could not receive the Wayland clipboard: {error}"
+                )));
+                return;
+            }
+        };
+        let offer_generation = self.clipboard_offer_generation;
+        self.clipboard_read = Some(ClipboardRead {
+            offer_generation,
+            mime: mime.to_owned(),
+            data: Vec::new(),
+            reply,
+        });
+        if let Err(error) = self.loop_handle.insert_source(pipe, move |_, file, state| {
+            let mut buffer = [0_u8; 8192];
+            // SAFETY: calloop owns the file for the callback lifetime and it is not closed here.
+            match unsafe { file.get_mut() }.read(&mut buffer) {
+                Ok(0) => {
+                    state.complete_clipboard_read(offer_generation);
+                    PostAction::Remove
+                }
+                Ok(count) => {
+                    let Some(read) = state
+                        .clipboard_read
+                        .as_mut()
+                        .filter(|read| read.offer_generation == offer_generation)
+                    else {
+                        return PostAction::Remove;
+                    };
+                    if read.data.len().saturating_add(count) > clipboard::MAX_BYTES {
+                        state.cancel_clipboard_read("the clipboard payload is larger than 4 MiB");
+                        PostAction::Remove
+                    } else {
+                        read.data.extend_from_slice(&buffer[..count]);
+                        PostAction::Continue
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    PostAction::Continue
+                }
+                Err(error) => {
+                    state.cancel_clipboard_read(format!("could not read the clipboard: {error}"));
+                    PostAction::Remove
+                }
+            }
+        }) {
+            self.cancel_clipboard_read(format!("could not monitor the clipboard: {error}"));
+        }
+    }
+
+    fn complete_clipboard_read(&mut self, offer_generation: u64) {
+        let Some(read) = self.clipboard_read.take() else {
+            return;
+        };
+        let result = if read.offer_generation != offer_generation
+            || self.clipboard_offer_generation != offer_generation
+        {
+            Err("the clipboard changed while PolarExp was reading it".to_owned())
+        } else {
+            clipboard::decode(&read.mime, &read.data)
+        };
+        let _ = read.reply.send(result);
+    }
+
+    fn cancel_clipboard_read(&mut self, message: impl Into<String>) {
+        if let Some(read) = self.clipboard_read.take() {
+            let _ = read.reply.send(Err(message.into()));
         }
     }
 
@@ -796,7 +985,7 @@ impl SeatHandler for Worker {
         seat: WlSeat,
         capability: Capability,
     ) {
-        if capability != Capability::Pointer {
+        if !matches!(capability, Capability::Pointer | Capability::Keyboard) {
             return;
         }
         let index = self.seats.iter().position(|objects| objects.seat == seat);
@@ -805,14 +994,23 @@ impl SeatHandler for Worker {
             self.seats.push(SeatObjects {
                 seat: seat.clone(),
                 pointer: None,
+                keyboard: None,
                 data_device,
             });
             self.seats.len() - 1
         });
-        if self.seats[index].pointer.is_none()
-            && let Ok(pointer) = self.seat_state.get_pointer(queue, &seat)
-        {
-            self.seats[index].pointer = Some(pointer);
+        match capability {
+            Capability::Pointer if self.seats[index].pointer.is_none() => {
+                if let Ok(pointer) = self.seat_state.get_pointer(queue, &seat) {
+                    self.seats[index].pointer = Some(pointer);
+                }
+            }
+            Capability::Keyboard if self.seats[index].keyboard.is_none() => {
+                if let Ok(keyboard) = self.seat_state.get_keyboard(queue, &seat, None) {
+                    self.seats[index].keyboard = Some(keyboard);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -823,22 +1021,34 @@ impl SeatHandler for Worker {
         seat: WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer
-            && let Some(objects) = self.seats.iter_mut().find(|objects| objects.seat == seat)
-            && let Some(pointer) = objects.pointer.take()
-        {
-            if self
-                .held_press
-                .as_ref()
-                .is_some_and(|held| held.pointer == pointer)
+        if let Some(objects) = self.seats.iter_mut().find(|objects| objects.seat == seat) {
+            if capability == Capability::Pointer
+                && let Some(pointer) = objects.pointer.take()
             {
-                self.held_press = None;
+                if self
+                    .held_press
+                    .as_ref()
+                    .is_some_and(|held| held.pointer == pointer)
+                {
+                    self.held_press = None;
+                }
+                pointer.release();
+            } else if capability == Capability::Keyboard
+                && let Some(keyboard) = objects.keyboard.take()
+            {
+                keyboard.release();
             }
-            pointer.release();
         }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+        if self
+            .last_input
+            .as_ref()
+            .is_some_and(|(active, _)| active == &seat)
+        {
+            self.last_input = None;
+        }
         self.seats.retain(|objects| objects.seat != seat);
     }
 }
@@ -854,6 +1064,14 @@ impl PointerHandler for Worker {
         for event in events {
             match event.kind {
                 PointerEventKind::Press { button, serial, .. } if button == BTN_LEFT => {
+                    if let Some(seat) = self
+                        .seats
+                        .iter()
+                        .find(|objects| objects.pointer.as_ref() == Some(pointer))
+                        .map(|objects| objects.seat.clone())
+                    {
+                        self.last_input = Some((seat, serial));
+                    }
                     self.held_press = Some(HeldPress {
                         serial,
                         surface: event.surface.clone(),
@@ -871,6 +1089,78 @@ impl PointerHandler for Worker {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+impl KeyboardHandler for Worker {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        _: &WlSurface,
+        serial: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+        self.remember_keyboard_serial(keyboard, serial);
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: &WlSurface,
+        _: u32,
+    ) {
+    }
+
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        serial: u32,
+        _: KeyEvent,
+    ) {
+        self.remember_keyboard_serial(keyboard, serial);
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        serial: u32,
+        _: KeyEvent,
+    ) {
+        self.remember_keyboard_serial(keyboard, serial);
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        serial: u32,
+        _: Modifiers,
+        _: u32,
+    ) {
+        self.remember_keyboard_serial(keyboard, serial);
+    }
+}
+
+impl Worker {
+    fn remember_keyboard_serial(&mut self, keyboard: &WlKeyboard, serial: u32) {
+        if let Some(seat) = self
+            .seats
+            .iter()
+            .find(|objects| objects.keyboard.as_ref() == Some(keyboard))
+            .map(|objects| objects.seat.clone())
+        {
+            self.last_input = Some((seat, serial));
         }
     }
 }
@@ -955,7 +1245,10 @@ impl DataDeviceHandler for Worker {
             action: incoming.action,
         });
     }
-    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        self.clipboard_offer_generation = self.clipboard_offer_generation.wrapping_add(1);
+        self.cancel_clipboard_read("the clipboard changed while PolarExp was reading it");
+    }
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
         let Some(incoming) = self.incoming.as_mut() else {
             return;
@@ -1078,16 +1371,19 @@ impl DataSourceHandler for Worker {
         mime: String,
         pipe: WritePipe,
     ) {
-        if mime != URI_LIST_MIME && mime != POLAREXP_MIME {
-            return;
-        }
-        if let Some(active) = self
+        let drag_data = self
             .active
             .as_ref()
             .filter(|drag| drag.source.inner() == source)
-        {
+            .map(|active| active.payload.as_slice());
+        let clipboard_data = self
+            .clipboard
+            .as_ref()
+            .filter(|clipboard| clipboard.source.inner() == source)
+            .and_then(|clipboard| clipboard.offer.data(&mime));
+        if let Some(data) = drag_data.or(clipboard_data) {
             let mut file = File::from(OwnedFd::from(pipe));
-            let _ = file.write_all(&active.payload);
+            let _ = file.write_all(data);
         }
     }
 
@@ -1103,6 +1399,12 @@ impl DataSourceHandler for Worker {
             .is_some_and(|drag| drag.source.inner() == source)
         {
             self.finish_active(Outcome::Cancelled);
+        } else if self
+            .clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.source.inner() == source)
+        {
+            self.clipboard = None;
         }
     }
 
@@ -1171,6 +1473,7 @@ delegate_output!(Worker);
 delegate_shm!(Worker);
 delegate_seat!(Worker);
 delegate_pointer!(Worker);
+delegate_keyboard!(Worker);
 delegate_data_device!(Worker);
 delegate_registry!(Worker);
 
