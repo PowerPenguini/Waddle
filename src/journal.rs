@@ -45,6 +45,10 @@ pub(crate) enum Action {
         path: PathBuf,
         fingerprint: Fingerprint,
     },
+    NewFile {
+        path: PathBuf,
+        fingerprint: Fingerprint,
+    },
     Transfer {
         kind: TransferKind,
         items: Vec<TransferItem>,
@@ -97,6 +101,13 @@ impl Action {
 
     pub(crate) fn new_folder(path: PathBuf) -> Result<Self, String> {
         Ok(Self::NewFolder {
+            fingerprint: Fingerprint::read(&path)?,
+            path,
+        })
+    }
+
+    pub(crate) fn new_file(path: PathBuf) -> Result<Self, String> {
+        Ok(Self::NewFile {
             fingerprint: Fingerprint::read(&path)?,
             path,
         })
@@ -428,6 +439,32 @@ fn apply(action: &mut Action, direction: Direction) -> Result<Effect, String> {
                 *fingerprint = Fingerprint::read(path)?;
                 Ok(Effect {
                     status: "Redid New Folder".to_owned(),
+                    changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
+                    select: Some(path.clone()),
+                })
+            }
+        },
+        Action::NewFile { path, fingerprint } => match direction {
+            Direction::Undo => {
+                verify(path, fingerprint)?;
+                fs::remove_file(&*path)
+                    .map_err(|error| format!("could not undo New File: {error}"))?;
+                Ok(Effect {
+                    status: "Undid New File".to_owned(),
+                    changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
+                    select: None,
+                })
+            }
+            Direction::Redo => {
+                ensure_absent(path)?;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&*path)
+                    .map_err(|error| format!("could not redo New File: {error}"))?;
+                *fingerprint = Fingerprint::read(path)?;
+                Ok(Effect {
+                    status: "Redid New File".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
                     select: Some(path.clone()),
                 })
@@ -965,6 +1002,29 @@ mod tests {
 
         assert!(journal.undo().unwrap_err().contains("no longer empty"));
         assert!(folder.join("later").exists());
+    }
+
+    #[test]
+    fn new_file_undo_and_redo_survive_restart_and_refuse_changed_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("new.txt");
+        let path = temp.path().join("operations.json");
+        fs::write(&file, "").unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(Action::new_file(file.clone()).unwrap())
+            .unwrap();
+        drop(journal);
+
+        let mut journal = Journal::open(path).unwrap();
+        fs::write(&file, "later content").unwrap();
+        assert!(journal.undo().unwrap_err().contains("changed"));
+        fs::write(&file, "").unwrap();
+        journal.stored.entries[0].action = Action::new_file(file.clone()).unwrap();
+        journal.undo().unwrap();
+        assert!(!file.exists());
+        journal.redo().unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"");
     }
 
     #[test]

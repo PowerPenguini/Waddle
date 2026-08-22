@@ -946,6 +946,38 @@ pub fn create_folder(parent: &Path, name: &str) -> Result<PathBuf, FsError> {
     Ok(path)
 }
 
+pub fn create_file(parent: &Path, name: &str, template: Option<&Path>) -> Result<PathBuf, FsError> {
+    validate_name(name).map_err(|message| {
+        FsError::new(
+            "create",
+            parent.join(name),
+            io::Error::new(io::ErrorKind::InvalidInput, message),
+        )
+    })?;
+    let destination = parent.join(name);
+    if let Some(template) = template {
+        let metadata = fs::symlink_metadata(template)
+            .map_err(|error| FsError::new("read template", template, error))?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            return Err(FsError::new(
+                "create from template",
+                template,
+                io::Error::new(io::ErrorKind::InvalidInput, "template is a directory"),
+            ));
+        }
+        copy_revealed(template, &destination)
+            .map(drop)
+            .map_err(|error| FsError::new("create from template", &destination, error))?;
+    } else {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map_err(|error| FsError::new("create", &destination, error))?;
+    }
+    Ok(destination)
+}
+
 pub fn rename_entry(source: &Path, new_name: &str) -> Result<PathBuf, FsError> {
     let destination = source
         .parent()

@@ -309,8 +309,9 @@ fn successful_inline_rename_returns_to_the_browser() {
     app.busy = true;
 
     let _ = app.finish_file_operation(FileOperationCompletion::Name {
-        renamed: true,
-        source: None,
+        kind: crate::app::file_operation::NameKind::Rename {
+            source: PathBuf::from("/start/one.txt"),
+        },
         result: Ok(PathBuf::from("/start/renamed.txt")),
     });
 

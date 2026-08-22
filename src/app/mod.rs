@@ -13,6 +13,7 @@ mod search;
 mod shell;
 mod startup;
 mod state;
+mod templates;
 mod thumbnail;
 mod transfer_queue;
 mod trash;
@@ -172,6 +173,7 @@ enum Message {
     EntryDoubleClicked(usize),
     EntryContext(usize),
     ContextNewFolder,
+    ContextNewFile(Option<PathBuf>, String, String),
     ContextRename,
     ContextTrash,
     ContextRestore,
@@ -246,6 +248,7 @@ struct App {
     recent: recent::Recent,
     trash: trash::Trash,
     trash_entries: Vec<trash::Entry>,
+    templates: Vec<templates::Template>,
     virtual_location: Option<VirtualLocation>,
     operations: Operations,
     search: SearchSession,
@@ -336,6 +339,7 @@ impl App {
             recent,
             trash,
             trash_entries: Vec::new(),
+            templates: templates::discover(),
             virtual_location: None,
             operations: Operations::default(),
             search: SearchSession::default(),
@@ -722,6 +726,10 @@ impl App {
             Message::ContextNewFolder => {
                 self.context_menu = None;
                 self.show_new_folder()
+            }
+            Message::ContextNewFile(template, suggested_name, label) => {
+                self.context_menu = None;
+                self.show_new_file(template, suggested_name, label)
             }
             Message::ContextRename => {
                 let index = self.context_menu.take().map(|(index, _)| index);
@@ -1981,6 +1989,21 @@ impl App {
         widget::operation::focus(Id::new(NEW_FOLDER_ID))
     }
 
+    fn show_new_file(
+        &mut self,
+        template: Option<PathBuf>,
+        suggested_name: String,
+        label: String,
+    ) -> Task<Message> {
+        if !self.mutations_allowed() {
+            return Task::none();
+        }
+        self.open_file_operation(move |session| {
+            session.begin_new_file(template, suggested_name, label);
+        });
+        widget::operation::focus(Id::new(NEW_FOLDER_ID))
+    }
+
     fn submit_rename(&mut self) -> Task<Message> {
         if self.browser_input.mode() != InputMode::Rename {
             return Task::none();
@@ -2210,15 +2233,30 @@ impl App {
         };
         let journal_action = match &completion {
             file_operation::Completion::Name {
-                renamed: true,
-                source: Some(source),
+                kind: file_operation::NameKind::Rename { source },
                 result: Ok(destination),
             } => journal::Action::rename(source.clone(), destination.clone()).map(Some),
             file_operation::Completion::Name {
-                renamed: false,
+                kind: file_operation::NameKind::NewFolder,
                 result: Ok(path),
-                ..
             } => journal::Action::new_folder(path.clone()).map(Some),
+            file_operation::Completion::Name {
+                kind:
+                    file_operation::NameKind::NewFile {
+                        template: Some(template),
+                    },
+                result: Ok(path),
+            } => journal::Action::transfer(
+                journal::TransferKind::Copy,
+                &[fs::TransferReceipt {
+                    source: template.clone(),
+                    destination: path.clone(),
+                }],
+            ),
+            file_operation::Completion::Name {
+                kind: file_operation::NameKind::NewFile { template: None },
+                result: Ok(path),
+            } => journal::Action::new_file(path.clone()).map(Some),
             file_operation::Completion::Trash(completion) => {
                 journal::Action::trash(&completion.receipts)
             }
@@ -3806,44 +3844,13 @@ impl App {
     fn prompt_bar(&self) -> Element<'_, Message> {
         match self.file_operations.view() {
             FileOperationView::NewFolder { value, error } => {
-                let feedback: Element<'_, Message> = if self.busy {
-                    self.spinner(13.0).into()
-                } else if error.is_empty() {
-                    text("Enter create  ·  Esc cancel")
-                        .font(MONO_FONT)
-                        .size(11)
-                        .color(self.secondary_text_color())
-                        .into()
-                } else {
-                    text(error)
-                        .size(11)
-                        .line_height(iced::Pixels(13.0))
-                        .color(self.iced_theme().palette().danger)
-                        .into()
-                };
-                compact_status_line(
-                    row![
-                        text("new folder")
-                            .font(MONO_FONT)
-                            .size(11)
-                            .line_height(iced::Pixels(13.0))
-                            .color(self.accent_color()),
-                        text_input("", value)
-                            .id(Id::new(NEW_FOLDER_ID))
-                            .on_input_maybe((!self.busy).then_some(Message::PromptInputChanged))
-                            .on_submit_maybe((!self.busy).then_some(Message::PromptSubmit))
-                            .font(MONO_FONT)
-                            .size(12)
-                            .line_height(iced::Pixels(15.0))
-                            .padding(0)
-                            .style(status_input_style)
-                            .width(Fill),
-                        feedback,
-                    ]
-                    .spacing(7)
-                    .align_y(Alignment::Center),
-                )
+                self.name_prompt_bar("new folder", value, error)
             }
+            FileOperationView::NewFile {
+                value,
+                error,
+                template_label,
+            } => self.name_prompt_bar(template_label, value, error),
             FileOperationView::Trash { message } => compact_status_line(
                 row![
                     text("trash")
@@ -3947,6 +3954,51 @@ impl App {
         }
     }
 
+    fn name_prompt_bar<'a>(
+        &'a self,
+        label: &'a str,
+        value: &'a str,
+        error: &'a str,
+    ) -> Element<'a, Message> {
+        let feedback: Element<'_, Message> = if self.busy {
+            self.spinner(13.0).into()
+        } else if error.is_empty() {
+            text("Enter create  ·  Esc cancel")
+                .font(MONO_FONT)
+                .size(11)
+                .color(self.secondary_text_color())
+                .into()
+        } else {
+            text(error)
+                .size(11)
+                .line_height(iced::Pixels(13.0))
+                .color(self.iced_theme().palette().danger)
+                .into()
+        };
+        compact_status_line(
+            row![
+                text(label)
+                    .font(MONO_FONT)
+                    .size(11)
+                    .line_height(iced::Pixels(13.0))
+                    .color(self.accent_color()),
+                text_input("", value)
+                    .id(Id::new(NEW_FOLDER_ID))
+                    .on_input_maybe((!self.busy).then_some(Message::PromptInputChanged))
+                    .on_submit_maybe((!self.busy).then_some(Message::PromptSubmit))
+                    .font(MONO_FONT)
+                    .size(12)
+                    .line_height(iced::Pixels(15.0))
+                    .padding(0)
+                    .style(status_input_style)
+                    .width(Fill),
+                feedback,
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+        )
+    }
+
     fn search_count_view(&self) -> Element<'_, Message> {
         if !self.search.is_recursive() || self.search.query().is_empty() {
             return Space::new().into();
@@ -3988,23 +4040,55 @@ impl App {
             ]
             .into()
         } else {
-            column![
-                button(text("New Folder").size(13))
-                    .on_press(Message::ContextNewFolder)
-                    .style(button::text)
-                    .width(Fill),
-                button(text("Rename").size(13))
-                    .on_press(Message::ContextRename)
-                    .style(button::text)
-                    .width(Fill),
-                button(text("Move to Trash").size(13))
-                    .on_press(Message::ContextTrash)
-                    .style(button::text)
-                    .width(Fill),
-            ]
-            .into()
+            let mut actions = Column::new()
+                .push(
+                    button(text("New Folder").size(13))
+                        .on_press(Message::ContextNewFolder)
+                        .style(button::text)
+                        .width(Fill),
+                )
+                .push(
+                    button(text("New Empty File").size(13))
+                        .on_press(Message::ContextNewFile(
+                            None,
+                            String::new(),
+                            "new file".to_owned(),
+                        ))
+                        .style(button::text)
+                        .width(Fill),
+                );
+            for template in &self.templates {
+                actions = actions.push(
+                    button(text(format!("New from {}", template.label)).size(13))
+                        .on_press(Message::ContextNewFile(
+                            Some(template.path.clone()),
+                            template.suggested_name.clone(),
+                            format!("template {}", template.label),
+                        ))
+                        .style(button::text)
+                        .width(Fill),
+                );
+            }
+            actions
+                .push(
+                    button(text("Rename").size(13))
+                        .on_press(Message::ContextRename)
+                        .style(button::text)
+                        .width(Fill),
+                )
+                .push(
+                    button(text("Move to Trash").size(13))
+                        .on_press(Message::ContextTrash)
+                        .style(button::text)
+                        .width(Fill),
+                )
+                .into()
         };
-        let menu = container(actions).width(160).padding(5).style(menu_style);
+        let menu = container(scrollable(actions).height(Length::Shrink))
+            .width(220)
+            .max_height(420)
+            .padding(5)
+            .style(menu_style);
         let overlay =
             mouse_area(container("").width(Fill).height(Fill)).on_press(Message::CloseContext);
         stack![overlay, pin(menu).x(point.x).y(point.y)].into()

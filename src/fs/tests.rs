@@ -198,6 +198,21 @@ fn creates_renames_and_deletes() {
 }
 
 #[test]
+fn new_empty_and_template_files_never_overwrite_and_keep_the_template() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = temp.path().join("template.md");
+    fs::write(&template, "# Template").unwrap();
+
+    let empty = create_file(temp.path(), "empty.txt", None).unwrap();
+    let created = create_file(temp.path(), "notes.md", Some(&template)).unwrap();
+    assert_eq!(fs::read_to_string(empty).unwrap(), "");
+    assert_eq!(fs::read_to_string(&created).unwrap(), "# Template");
+    assert_eq!(fs::read_to_string(&template).unwrap(), "# Template");
+    assert!(create_file(temp.path(), "notes.md", Some(&template)).is_err());
+    assert_eq!(fs::read_to_string(created).unwrap(), "# Template");
+}
+
+#[test]
 fn moves_file_into_directory() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("note.txt");

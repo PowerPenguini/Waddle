@@ -18,6 +18,7 @@ impl TrashAdapter for GioTrashAdapter {
 #[derive(Clone, Debug)]
 enum NameOperation {
     NewFolder,
+    NewFile { template: Option<PathBuf> },
     Rename(FileEntry),
 }
 
@@ -32,6 +33,12 @@ enum State {
     NewFolder {
         value: String,
         error: String,
+    },
+    NewFile {
+        value: String,
+        error: String,
+        template: Option<PathBuf>,
+        template_label: String,
     },
     Trash {
         entries: Vec<FileEntry>,
@@ -55,11 +62,29 @@ enum State {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum View<'a> {
     Idle,
-    Rename { value: &'a str, error: &'a str },
-    NewFolder { value: &'a str, error: &'a str },
-    Trash { message: &'a str },
-    PermanentDelete { message: &'a str, detail: &'a str },
-    Error { message: &'a str },
+    Rename {
+        value: &'a str,
+        error: &'a str,
+    },
+    NewFolder {
+        value: &'a str,
+        error: &'a str,
+    },
+    NewFile {
+        value: &'a str,
+        error: &'a str,
+        template_label: &'a str,
+    },
+    Trash {
+        message: &'a str,
+    },
+    PermanentDelete {
+        message: &'a str,
+        detail: &'a str,
+    },
+    Error {
+        message: &'a str,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -85,21 +110,24 @@ impl Work {
                 operation,
                 value,
             } => {
-                let renamed = matches!(operation, NameOperation::Rename(_));
-                let source = match &operation {
-                    NameOperation::Rename(entry) => Some(entry.path.clone()),
-                    NameOperation::NewFolder => None,
+                let kind = match &operation {
+                    NameOperation::Rename(entry) => NameKind::Rename {
+                        source: entry.path.clone(),
+                    },
+                    NameOperation::NewFile { template } => NameKind::NewFile {
+                        template: template.clone(),
+                    },
+                    NameOperation::NewFolder => NameKind::NewFolder,
                 };
                 let result = match operation {
                     NameOperation::NewFolder => fs::create_folder(&current, &value),
+                    NameOperation::NewFile { template } => {
+                        fs::create_file(&current, &value, template.as_deref())
+                    }
                     NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
                 }
                 .map_err(|error| error.to_string());
-                Completion::Name {
-                    renamed,
-                    source,
-                    result,
-                }
+                Completion::Name { kind, result }
             }
             WorkKind::Trash(entries) => Completion::Trash(run_trash_entries(entries, trash)),
             WorkKind::PermanentDelete(entries) => {
@@ -137,10 +165,16 @@ fn run_trash_entries<A: TrashAdapter>(entries: Vec<FileEntry>, trash: &A) -> Tra
 }
 
 #[derive(Clone, Debug)]
+pub(super) enum NameKind {
+    Rename { source: PathBuf },
+    NewFolder,
+    NewFile { template: Option<PathBuf> },
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum Completion {
     Name {
-        renamed: bool,
-        source: Option<PathBuf>,
+        kind: NameKind,
         result: Result<PathBuf, String>,
     },
     Trash(TrashCompletion),
@@ -182,6 +216,16 @@ impl FileOperationSession {
             State::Idle => View::Idle,
             State::Rename { value, error, .. } => View::Rename { value, error },
             State::NewFolder { value, error } => View::NewFolder { value, error },
+            State::NewFile {
+                value,
+                error,
+                template_label,
+                ..
+            } => View::NewFile {
+                value,
+                error,
+                template_label,
+            },
             State::Trash { message, .. } => View::Trash { message },
             State::PermanentDelete {
                 message, detail, ..
@@ -201,6 +245,7 @@ impl FileOperationSession {
         matches!(
             self.state,
             State::NewFolder { .. }
+                | State::NewFile { .. }
                 | State::Trash { .. }
                 | State::PermanentDelete { .. }
                 | State::TrashDelete { .. }
@@ -248,6 +293,21 @@ impl FileOperationSession {
         self.state = State::NewFolder {
             value: String::new(),
             error: String::new(),
+        };
+    }
+
+    pub(super) fn begin_new_file(
+        &mut self,
+        template: Option<PathBuf>,
+        suggested_name: String,
+        template_label: String,
+    ) {
+        self.busy = false;
+        self.state = State::NewFile {
+            value: suggested_name,
+            error: String::new(),
+            template,
+            template_label,
         };
     }
 
@@ -304,6 +364,11 @@ impl FileOperationSession {
             | State::NewFolder {
                 value: target,
                 error,
+            }
+            | State::NewFile {
+                value: target,
+                error,
+                ..
             } => {
                 *target = value;
                 error.clear();
@@ -323,6 +388,18 @@ impl FileOperationSession {
                 error,
             } => (NameOperation::Rename(entry.clone()), value.clone(), error),
             State::NewFolder { value, error } => (NameOperation::NewFolder, value.clone(), error),
+            State::NewFile {
+                value,
+                error,
+                template,
+                ..
+            } => (
+                NameOperation::NewFile {
+                    template: template.clone(),
+                },
+                value.clone(),
+                error,
+            ),
             _ => return None,
         };
         if let Err(validation) = fs::validate_name(&value) {
@@ -343,6 +420,7 @@ impl FileOperationSession {
         }
         match &self.state {
             State::NewFolder { .. } => self.submit_name(current),
+            State::NewFile { .. } => self.submit_name(current),
             State::Trash { entries, .. } => {
                 self.busy = true;
                 Some(Work(WorkKind::Trash(entries.clone())))
@@ -379,10 +457,9 @@ impl FileOperationSession {
     pub(super) fn complete(&mut self, completion: Completion) -> Consequences {
         self.busy = false;
         match completion {
-            Completion::Name {
-                renamed, result, ..
-            } => match result {
+            Completion::Name { kind, result } => match result {
                 Ok(path) => {
+                    let renamed = matches!(kind, NameKind::Rename { .. });
                     self.state = State::Idle;
                     Consequences {
                         refresh: true,
@@ -393,7 +470,8 @@ impl FileOperationSession {
                 Err(error) => {
                     match &mut self.state {
                         State::Rename { error: target, .. }
-                        | State::NewFolder { error: target, .. } => *target = error,
+                        | State::NewFolder { error: target, .. }
+                        | State::NewFile { error: target, .. } => *target = error,
                         _ => self.state = State::Error { message: error },
                     }
                     Consequences::default()
@@ -516,14 +594,56 @@ mod tests {
         session.change_name("new.txt".to_owned());
         assert!(session.submit_name(PathBuf::from("/work")).is_some());
         let consequences = session.complete(Completion::Name {
-            renamed: true,
-            source: None,
+            kind: NameKind::Rename {
+                source: PathBuf::from("/work/old.txt"),
+            },
             result: Err("collision".to_owned()),
         });
         assert_eq!(consequences, Consequences::default());
         assert!(matches!(
             session.view(),
             View::Rename { value, error } if value == "new.txt" && error == "collision"
+        ));
+    }
+
+    #[test]
+    fn new_file_template_uses_the_same_name_prompt_and_reports_conflicts_inline() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("Template.md");
+        std::fs::write(&template, "template body").unwrap();
+        let mut session = FileOperationSession::default();
+        session.begin_new_file(
+            Some(template.clone()),
+            "Template.md".to_owned(),
+            "template Template.md".to_owned(),
+        );
+        session.change_name("created.md".to_owned());
+        let completion = session
+            .submit_name(temp.path().to_path_buf())
+            .unwrap()
+            .run(&MemoryTrashAdapter::default());
+        assert!(matches!(
+            &completion,
+            Completion::Name {
+                kind: NameKind::NewFile {
+                    template: Some(source)
+                },
+                result: Ok(path),
+            } if source == &template && path == &temp.path().join("created.md")
+        ));
+        assert!(session.complete(completion).refresh);
+        assert_eq!(std::fs::read_to_string(template).unwrap(), "template body");
+
+        let mut session = FileOperationSession::default();
+        session.begin_new_file(None, "created.md".to_owned(), "new file".to_owned());
+        let completion = session
+            .submit_name(temp.path().to_path_buf())
+            .unwrap()
+            .run(&MemoryTrashAdapter::default());
+        assert_eq!(session.complete(completion), Consequences::default());
+        assert!(matches!(
+            session.view(),
+            View::NewFile { error, .. } if error.contains("exists")
         ));
     }
 
