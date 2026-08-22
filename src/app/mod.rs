@@ -347,7 +347,9 @@ impl App {
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
         let startup = startup::State::open_default();
-        let current = startup.initial_directory();
+        let view_preferences = view_preferences::Preferences::open_default();
+        let current =
+            startup.initial_directory(view_preferences.remember_last_directory_on_startup());
         let places = places::Places::open_default();
         let recent = recent::Recent::open_default();
         let trash = trash::Trash::open_default();
@@ -394,7 +396,7 @@ impl App {
             file_operations: FileOperationSession::default(),
             journal,
             directory_watch,
-            view_preferences: view_preferences::Preferences::open_default(),
+            view_preferences,
             thumbnails: thumbnail::Cache::default(),
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),

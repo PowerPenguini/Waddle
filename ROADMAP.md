@@ -225,7 +225,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Add completion and validation for option names and values.
 - [x] Persist settings by default.
 - [x] Let `:setlocal option&` remove a directory override.
-- [ ] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
+- [x] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
   reduced motion, and startup behavior.
 
 ### Keyboard access and display preferences
@@ -238,7 +238,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Add a high-contrast palette with opaque surfaces and non-color state indicators.
 - [x] Respect reduced-motion and reduced-transparency preferences.
 - [x] Stop the 16 ms animation subscription when reduced motion is active.
-- [ ] Do not make screen-reader support a 1.0 release gate while stock Iced lacks an accessibility
+- [x] Do not make screen-reader support a 1.0 release gate while stock Iced lacks an accessibility
   tree.
 
 ### Startup and desktop integration

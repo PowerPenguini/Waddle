@@ -16,6 +16,13 @@ pub(super) enum PreferenceOverride {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+enum StartupBehavior {
+    #[default]
+    Last,
+    Cwd,
+}
+
 impl PreferenceOverride {
     pub(super) fn resolve(self, system: bool) -> bool {
         match self {
@@ -35,6 +42,7 @@ struct Stored {
     high_contrast: PreferenceOverride,
     reduced_motion: PreferenceOverride,
     reduced_transparency: PreferenceOverride,
+    startup: StartupBehavior,
 }
 
 pub(super) struct Preferences {
@@ -98,6 +106,10 @@ impl Preferences {
         self.stored.reduced_transparency
     }
 
+    pub(super) fn remember_last_directory_on_startup(&self) -> bool {
+        self.stored.startup == StartupBehavior::Last
+    }
+
     pub(super) fn apply_command(
         &mut self,
         directory: &Path,
@@ -110,7 +122,7 @@ impl Preferences {
         }
         if arguments == "all" {
             return Ok(format!(
-                "{}\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global)\nhigh-contrast: auto, true, or false\nreduced-motion: auto, true, or false\nreduced-transparency: auto, true, or false",
+                "{}\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global)\nhigh-contrast: auto, true, or false\nreduced-motion: auto, true, or false\nreduced-transparency: auto, true, or false\nstartup: last remembered directory or current working directory",
                 self.describe(directory, local)
             ));
         }
@@ -126,6 +138,7 @@ impl Preferences {
             self.stored.reduced_motion,
             self.stored.reduced_transparency,
         );
+        let mut startup = self.stored.startup;
         for argument in arguments.split_whitespace() {
             apply_option(
                 &mut options,
@@ -134,6 +147,7 @@ impl Preferences {
                 local,
                 self.stored.global,
                 &mut visual,
+                &mut startup,
             )?;
         }
         if local {
@@ -150,6 +164,7 @@ impl Preferences {
             self.stored.high_contrast = visual.0;
             self.stored.reduced_motion = visual.1;
             self.stored.reduced_transparency = visual.2;
+            self.stored.startup = startup;
         }
         if let Err(error) = self.save() {
             self.stored = previous;
@@ -166,7 +181,7 @@ impl Preferences {
         };
         let scope = if local { "local" } else { "global" };
         format!(
-            "{scope}: view={} sort={} direction={} folders-first={} hidden={} click={} high-contrast={} reduced-motion={} reduced-transparency={}",
+            "{scope}: view={} sort={} direction={} folders-first={} hidden={} click={} high-contrast={} reduced-motion={} reduced-transparency={} startup={}",
             match options.view {
                 ViewMode::Grid => "grid",
                 ViewMode::List => "list",
@@ -192,6 +207,10 @@ impl Preferences {
             override_label(self.stored.high_contrast),
             override_label(self.stored.reduced_motion),
             override_label(self.stored.reduced_transparency),
+            match self.stored.startup {
+                StartupBehavior::Last => "last",
+                StartupBehavior::Cwd => "cwd",
+            },
         )
     }
 
@@ -215,6 +234,7 @@ fn apply_option(
     local: bool,
     global: BrowseOptions,
     visual: &mut (PreferenceOverride, PreferenceOverride, PreferenceOverride),
+    startup: &mut StartupBehavior,
 ) -> Result<(), String> {
     if let Some(name) = argument.strip_suffix('&') {
         if !local {
@@ -242,6 +262,7 @@ fn apply_option(
                 Ok(())
             }
             "click" => Err("click activation is global and cannot be reset locally".to_owned()),
+            "startup" => Err("startup behavior is global and cannot be reset locally".to_owned()),
             _ => Err(format!("unknown setting: {name}")),
         };
     }
@@ -265,10 +286,12 @@ fn apply_option(
         ("high-contrast", value) if !local => visual.0 = parse_override(name, value)?,
         ("reduced-motion", value) if !local => visual.1 = parse_override(name, value)?,
         ("reduced-transparency", value) if !local => visual.2 = parse_override(name, value)?,
-        ("high-contrast" | "reduced-motion" | "reduced-transparency", _) if local => {
+        ("startup", "last") if !local => *startup = StartupBehavior::Last,
+        ("startup", "cwd") if !local => *startup = StartupBehavior::Cwd,
+        ("high-contrast" | "reduced-motion" | "reduced-transparency" | "startup", _) if local => {
             return Err(format!("{name} is a global setting"));
         }
-        ("view" | "sort" | "direction" | "click", _) => {
+        ("view" | "sort" | "direction" | "click" | "startup", _) => {
             return Err(format!("invalid value for {name}: {value}"));
         }
         _ => return Err(format!("unknown setting: {name}")),
@@ -407,5 +430,28 @@ mod tests {
         assert!(!preferences.reduced_motion().resolve(true));
         assert!(preferences.reduced_transparency().resolve(true));
         assert!(!preferences.reduced_transparency().resolve(false));
+    }
+
+    #[test]
+    fn startup_behavior_is_global_persistent_and_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("view.json");
+        let mut preferences = Preferences::empty_at(path.clone());
+        preferences
+            .apply_command(Path::new("/work"), false, "startup=cwd")
+            .unwrap();
+        assert!(!preferences.remember_last_directory_on_startup());
+        assert!(
+            preferences
+                .apply_command(Path::new("/work"), true, "startup=last")
+                .is_err()
+        );
+
+        let reopened = Preferences {
+            path,
+            stored: serde_json::from_slice(&fs::read(temp.path().join("view.json")).unwrap())
+                .unwrap(),
+        };
+        assert!(!reopened.remember_last_directory_on_startup());
     }
 }

@@ -59,10 +59,14 @@ impl State {
         }
     }
 
-    pub(super) fn initial_directory(&self) -> PathBuf {
+    pub(super) fn initial_directory(&self, remember_last: bool) -> PathBuf {
         self.requested
             .clone()
-            .or_else(|| self.stored.last_directory.clone())
+            .or_else(|| {
+                remember_last
+                    .then(|| self.stored.last_directory.clone())
+                    .flatten()
+            })
             .filter(|path| path.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
     }
@@ -211,7 +215,28 @@ mod tests {
             requested: None,
             error: None,
         };
-        assert_eq!(reopened.initial_directory(), temp.path());
+        assert_eq!(reopened.initial_directory(true), temp.path());
+        assert_eq!(
+            reopened.initial_directory(false),
+            std::env::current_dir().unwrap()
+        );
         assert_eq!(reopened.window_settings().size, Size::new(900.0, 700.0));
+    }
+
+    #[test]
+    fn explicit_location_overrides_startup_behavior() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = State {
+            path: temp.path().join("startup.json"),
+            stored: Stored {
+                last_directory: Some(PathBuf::from("/")),
+                ..Stored::default()
+            },
+            requested: Some(temp.path().to_path_buf()),
+            error: None,
+        };
+
+        assert_eq!(state.initial_directory(true), temp.path());
+        assert_eq!(state.initial_directory(false), temp.path());
     }
 }
