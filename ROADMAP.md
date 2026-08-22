@@ -207,12 +207,12 @@ needs external drag and drop and a native clipboard adapter.
 
 ### File actions
 
-- [ ] Add Properties with MIME type, location, size, dates, permissions, and default application.
-- [ ] Let users edit permissions that their current account is allowed to change.
-- [ ] Add Open With and default-application selection.
+- [x] Add Properties with MIME type, location, size, dates, permissions, and default application.
+- [x] Let users edit permissions that their current account is allowed to change.
+- [x] Add Open With and default-application selection.
 - [x] Add New Empty File.
 - [x] Create files from the user's XDG Templates directory.
-- [ ] Keep ACL and extended-attribute editing outside 1.0.
+- [x] Keep ACL and extended-attribute editing outside 1.0.
 
 ## Milestone 6: settings, accessibility, and release
 

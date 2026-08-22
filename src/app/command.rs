@@ -14,6 +14,10 @@ Commands
   :favorite ... Add, remove, or list Favorites
   :recent ...   Open, clear, enable, or disable Recent
   :volume ...   Mount, unmount, or eject a volume
+  :properties   Inspect the selected entry
+  :chmod MODE   Change selected entry permissions
+  :open-with ID Open the selected entry with an application
+  :default-app ID  Set the selected entry's default application
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -108,6 +112,9 @@ pub(super) enum Submission {
     Favorite(String),
     Recent(String),
     Volume(String),
+    Properties,
+    Chmod(String),
+    OpenWith { application: String, default: bool },
     Execute(Execution),
 }
 
@@ -224,6 +231,29 @@ impl CommandSession {
                     .to_owned(),
             );
         }
+        if prefix == ':' && matches!(trimmed, "properties" | "props") {
+            return Submission::Properties;
+        }
+        if prefix == ':' && (trimmed == "chmod" || trimmed.starts_with("chmod ")) {
+            return Submission::Chmod(
+                trimmed
+                    .strip_prefix("chmod")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            );
+        }
+        if prefix == ':'
+            && let Some((command, application)) = trimmed
+                .split_once(char::is_whitespace)
+                .or(Some((trimmed, "")))
+            && matches!(command, "open-with" | "default-app")
+        {
+            return Submission::OpenWith {
+                application: application.trim().to_owned(),
+                default: command == "default-app",
+            };
+        }
         if trimmed.is_empty() {
             return Submission::None;
         }
@@ -307,6 +337,10 @@ impl CommandSession {
             summary: ":set  •  persistent settings".to_owned(),
             detail,
         });
+    }
+
+    pub(super) fn show_output(&mut self, summary: String, detail: String) {
+        self.output = Some(Output { summary, detail });
     }
 
     pub(super) fn complete_setting(&mut self) -> bool {
@@ -462,6 +496,25 @@ mod tests {
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
             Submission::Diagnostics
+        ));
+    }
+
+    #[test]
+    fn metadata_commands_keep_application_ids_and_permission_modes_as_arguments() {
+        let mut session = CommandSession::default();
+        session.begin(':');
+        session.change("chmod 640".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            Submission::Chmod(mode) if mode == "640"
+        ));
+
+        session.begin(':');
+        session.change("default-app org.example.Editor.desktop".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            Submission::OpenWith { application, default: true }
+                if application == "org.example.Editor.desktop"
         ));
     }
 

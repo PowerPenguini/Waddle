@@ -8,6 +8,7 @@ mod grid;
 mod navigation;
 mod operations;
 mod places;
+mod properties;
 mod recent;
 mod search;
 mod shell;
@@ -174,6 +175,8 @@ enum Message {
     EntryContext(usize),
     ContextNewFolder,
     ContextNewFile(Option<PathBuf>, String, String),
+    ContextProperties,
+    ContextOpenWith,
     ContextRename,
     ContextTrash,
     ContextRestore,
@@ -204,6 +207,8 @@ enum Message {
         entries: Vec<trash::Entry>,
         outcome: Box<fs::TransferBatchOutcome>,
     },
+    PropertiesFinished(Result<properties::Info, String>),
+    MetadataFinished(Result<String, String>),
     AnimationFrame(Instant),
     RenameChanged(String),
     RenameSubmitted,
@@ -731,6 +736,10 @@ impl App {
                 self.context_menu = None;
                 self.show_new_file(template, suggested_name, label)
             }
+            Message::ContextProperties | Message::ContextOpenWith => {
+                self.context_menu = None;
+                self.show_properties()
+            }
             Message::ContextRename => {
                 let index = self.context_menu.take().map(|(index, _)| index);
                 if let Some(index) = index {
@@ -871,6 +880,30 @@ impl App {
                 }
             }
             Message::RestoreFinished { entries, outcome } => self.finish_restore(entries, *outcome),
+            Message::PropertiesFinished(result) => {
+                self.busy = false;
+                match result {
+                    Ok(info) => {
+                        self.command
+                            .show_output(format!("Properties  •  {}", info.name), info.detail);
+                        self.sync_bottom_bar();
+                    }
+                    Err(error) => self.status = error,
+                }
+                Task::none()
+            }
+            Message::MetadataFinished(result) => {
+                self.busy = false;
+                match result {
+                    Ok(status) => self.status = status,
+                    Err(error) => {
+                        self.command
+                            .show_output("File action failed".to_owned(), error);
+                        self.sync_bottom_bar();
+                    }
+                }
+                self.schedule_details()
+            }
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
                 self.tick_drag_hover(now)
@@ -1889,6 +1922,12 @@ impl App {
                     },
                 )
             }
+            CommandSubmission::Properties => self.show_properties(),
+            CommandSubmission::Chmod(mode) => self.run_permission_change(mode),
+            CommandSubmission::OpenWith {
+                application,
+                default,
+            } => self.run_open_with(application, default),
             CommandSubmission::Execute(execution) => {
                 self.busy = true;
                 self.status = execution.status();
@@ -2002,6 +2041,89 @@ impl App {
             session.begin_new_file(template, suggested_name, label);
         });
         widget::operation::focus(Id::new(NEW_FOLDER_ID))
+    }
+
+    fn show_properties(&mut self) -> Task<Message> {
+        let Some(path) = self
+            .grid
+            .selected_entry()
+            .and_then(|index| self.navigation.entries().get(index))
+            .map(|entry| entry.path.clone())
+        else {
+            self.status = "Select one entry to inspect Properties".to_owned();
+            return Task::none();
+        };
+        self.command.close_output();
+        self.busy = true;
+        self.status = "Reading Properties…".to_owned();
+        Task::perform(
+            self.operations
+                .run(OperationKind::Details, move |_| properties::read(&path)),
+            |completion| match completion {
+                Completion::Finished(result) => Message::PropertiesFinished(result),
+                Completion::Cancelled => {
+                    Message::PropertiesFinished(Err("Properties request was replaced".to_owned()))
+                }
+            },
+        )
+    }
+
+    fn run_permission_change(&mut self, mode: String) -> Task<Message> {
+        if !self.mutations_allowed() {
+            return Task::none();
+        }
+        let paths = self
+            .selected_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            self.status = "Select at least one entry before :chmod".to_owned();
+            return Task::none();
+        }
+        self.busy = true;
+        self.status = "Changing permissions…".to_owned();
+        Task::perform(
+            self.operations.run(OperationKind::Mutation, move |_| {
+                properties::chmod(paths, &mode)
+            }),
+            |completion| match completion {
+                Completion::Finished(result) => Message::MetadataFinished(result),
+                Completion::Cancelled => Message::Noop,
+            },
+        )
+    }
+
+    fn run_open_with(&mut self, application: String, make_default: bool) -> Task<Message> {
+        let Some(path) = self
+            .grid
+            .selected_entry()
+            .and_then(|index| self.navigation.entries().get(index))
+            .map(|entry| entry.path.clone())
+        else {
+            self.status = "Select one entry first".to_owned();
+            return Task::none();
+        };
+        self.busy = true;
+        self.status = if make_default {
+            "Changing the default application…".to_owned()
+        } else {
+            "Opening with selected application…".to_owned()
+        };
+        let operation = if make_default {
+            OperationKind::Mutation
+        } else {
+            OperationKind::Background
+        };
+        Task::perform(
+            self.operations.run(operation, move |_| {
+                properties::open_with(path, &application, make_default)
+            }),
+            |completion| match completion {
+                Completion::Finished(result) => Message::MetadataFinished(result),
+                Completion::Cancelled => Message::Noop,
+            },
+        )
     }
 
     fn submit_rename(&mut self) -> Task<Message> {
@@ -4037,6 +4159,14 @@ impl App {
                     .on_press(Message::ContextEmptyTrash)
                     .style(button::text)
                     .width(Fill),
+                button(text("Properties").size(13))
+                    .on_press(Message::ContextProperties)
+                    .style(button::text)
+                    .width(Fill),
+                button(text("Open With…").size(13))
+                    .on_press(Message::ContextOpenWith)
+                    .style(button::text)
+                    .width(Fill),
             ]
             .into()
         } else {
@@ -4070,6 +4200,18 @@ impl App {
                 );
             }
             actions
+                .push(
+                    button(text("Properties").size(13))
+                        .on_press(Message::ContextProperties)
+                        .style(button::text)
+                        .width(Fill),
+                )
+                .push(
+                    button(text("Open With…").size(13))
+                        .on_press(Message::ContextOpenWith)
+                        .style(button::text)
+                        .width(Fill),
+                )
                 .push(
                     button(text("Rename").size(13))
                         .on_press(Message::ContextRename)
