@@ -117,10 +117,10 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Copy fidelity
 
-- [ ] Preserve file contents, timestamps, permissions, extended attributes, ACLs, symlinks, and
+- [x] Preserve file contents, timestamps, permissions, extended attributes, ACLs, symlinks, and
   sparse-file layout where the filesystem permits it.
-- [ ] Preserve hardlink relationships inside a copied tree where possible.
-- [ ] Report unsupported or lost metadata instead of silently dropping it.
+- [x] Preserve hardlink relationships inside a copied tree where possible.
+- [x] Report unsupported or lost metadata instead of silently dropping it.
 
 ## Milestone 2: live directory state
 

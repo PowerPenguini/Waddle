@@ -494,8 +494,8 @@ impl TransferWorkflow {
             adapter.finish_inbound(id);
         }
         let completed = report.completed.len();
-        let error = (!report.failures.is_empty()).then(|| {
-            let details = report
+        let failure_details = (!report.failures.is_empty()).then(|| {
+            report
                 .failures
                 .iter()
                 .map(|failure| {
@@ -506,16 +506,46 @@ impl TransferWorkflow {
                     format!("{name}: {}", failure.error)
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
-            if completed == 0 {
-                details
-            } else {
-                format!(
-                    "{} {completed} item(s); some failed:\n{details}",
-                    request.action.label()
-                )
-            }
+                .join("\n")
         });
+        let warning_details = (!report.warnings.is_empty()).then(|| {
+            report
+                .warnings
+                .iter()
+                .map(|warning| {
+                    let name = warning
+                        .source
+                        .file_name()
+                        .map_or_else(|| "item".into(), |name| name.to_string_lossy());
+                    format!(
+                        "{name} -> {}: {}",
+                        warning.destination.display(),
+                        warning.detail
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        let error = match (failure_details, warning_details) {
+            (Some(details), warnings) => {
+                let warnings = warnings.map_or_else(String::new, |warnings| {
+                    format!("\n\nMetadata warnings:\n{warnings}")
+                });
+                Some(if completed == 0 {
+                    format!("{details}{warnings}")
+                } else {
+                    format!(
+                        "{} {completed} item(s); some failed:\n{details}{warnings}",
+                        request.action.label()
+                    )
+                })
+            }
+            (None, Some(warnings)) => Some(format!(
+                "{} {completed} item(s), but some metadata could not be preserved:\n{warnings}",
+                request.action.label()
+            )),
+            (None, None) => None,
+        };
         let clipboard = request.initiator == Initiator::Clipboard;
         if clipboard
             && request.action == Action::Move
@@ -751,6 +781,7 @@ mod tests {
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
             retained: Vec::new(),
+            warnings: Vec::new(),
         };
 
         let consequences =
@@ -780,6 +811,7 @@ mod tests {
             completed: vec![PathBuf::from("/target/two")],
             failures: Vec::new(),
             retained: Vec::new(),
+            warnings: Vec::new(),
         };
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
 
@@ -860,6 +892,7 @@ mod tests {
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
             retained: Vec::new(),
+            warnings: Vec::new(),
         };
 
         let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
@@ -904,6 +937,7 @@ mod tests {
                 error: "denied".to_owned(),
             }],
             retained: Vec::new(),
+            warnings: Vec::new(),
         };
 
         workflow.finish_transfer(None, &request, &report, Path::new("/target"));

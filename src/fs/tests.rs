@@ -228,6 +228,85 @@ fn copies_directories_recursively() {
     assert!(source.join("nested/note.txt").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn copy_preserves_sparse_hardlink_symlink_timestamp_permission_and_xattr_metadata() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let sparse = source.join("sparse");
+    let file = fs::File::create(&sparse).unwrap();
+    file.set_len(8 * 1024 * 1024).unwrap();
+    fs::set_permissions(&sparse, fs::Permissions::from_mode(0o640)).unwrap();
+    set_times(
+        &sparse,
+        1_700_000_000,
+        123_000_000,
+        1_700_000_000,
+        123_000_000,
+    )
+    .unwrap();
+    let hardlink = source.join("hardlink");
+    fs::hard_link(&sparse, &hardlink).unwrap();
+    symlink("sparse", source.join("symlink")).unwrap();
+    let xattr_supported = set_xattr(&sparse, "user.polarexp-test", b"kept").is_ok();
+
+    let copied = copy_entry(&source, &destination).unwrap();
+    let copied_sparse = copied.join("sparse");
+    let copied_hardlink = copied.join("hardlink");
+    let metadata = fs::symlink_metadata(&copied_sparse).unwrap();
+
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
+    assert_eq!(metadata.mtime(), 1_700_000_000);
+    assert_eq!(metadata.mtime_nsec(), 123_000_000);
+    assert!(metadata.blocks() * 512 < metadata.len());
+    assert_eq!(
+        metadata.ino(),
+        fs::symlink_metadata(copied_hardlink).unwrap().ino()
+    );
+    assert_eq!(
+        fs::read_link(copied.join("symlink")).unwrap(),
+        PathBuf::from("sparse")
+    );
+    if xattr_supported {
+        assert_eq!(
+            get_xattr(&copied_sparse, "user.polarexp-test").unwrap(),
+            b"kept"
+        );
+    }
+}
+
+#[test]
+fn metadata_warning_is_kept_separate_from_content_failure() {
+    let mut warnings = Vec::new();
+    record_metadata_result(
+        "extended attributes",
+        Err(io::Error::new(io::ErrorKind::Unsupported, "not supported")),
+        &mut warnings,
+    );
+    assert_eq!(warnings, ["extended attributes: not supported"]);
+
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let report = TransferBatch::new(
+        vec![temp.path().join("missing")],
+        destination,
+        crate::transfer::Action::Copy,
+    )
+    .run();
+    let TransferBatchOutcome::Complete(report) = report else {
+        panic!("missing content cannot be a conflict");
+    };
+    assert!(report.completed.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.warnings.is_empty());
+}
+
 #[test]
 fn copy_rejects_a_directory_descendant() {
     let temp = tempfile::tempdir().unwrap();

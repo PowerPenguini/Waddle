@@ -1688,6 +1688,7 @@ impl App {
                             error,
                         }],
                         retained: Vec::new(),
+                        warnings: Vec::new(),
                     })),
                 },
                 Completion::Cancelled => Message::Noop,
