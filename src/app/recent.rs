@@ -85,6 +85,14 @@ impl Recent {
         Ok(entries)
     }
 
+    pub(super) fn watch_paths(&self) -> Vec<PathBuf> {
+        self.history_path
+            .parent()
+            .map(PathBuf::from)
+            .into_iter()
+            .collect()
+    }
+
     pub(super) fn command(&mut self, arguments: &str) -> Result<(Effect, String), String> {
         match arguments.trim() {
             "" | "open" if self.preferences.enabled => {

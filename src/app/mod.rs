@@ -678,11 +678,33 @@ impl App {
                         )
                     });
                 }
-                if self.virtual_location.is_none() && event.path == self.navigation.current() {
-                    self.live_refresh()
-                } else {
-                    Task::none()
-                }
+                let current =
+                    self.virtual_location.is_none() && event.path == self.navigation.current();
+                let expanded = tree::expanded_paths(&self.explorer.roots).contains(&event.path);
+                let virtual_location = match self.virtual_location {
+                    Some(VirtualLocation::Recent) => {
+                        self.recent.watch_paths().contains(&event.path)
+                    }
+                    Some(VirtualLocation::Trash) => self.trash.watch_paths().contains(&event.path),
+                    None => false,
+                };
+                Task::batch([
+                    if current {
+                        self.live_refresh()
+                    } else {
+                        Task::none()
+                    },
+                    if expanded {
+                        self.invalidate_tree(vec![event.path])
+                    } else {
+                        Task::none()
+                    },
+                    if virtual_location {
+                        self.refresh_location()
+                    } else {
+                        Task::none()
+                    },
+                ])
             }
             Message::Refresh => {
                 self.browser_focus = BrowserFocus::Toolbar;
@@ -954,6 +976,7 @@ impl App {
                 match result {
                     Ok(entries) => {
                         self.virtual_location = Some(VirtualLocation::Recent);
+                        self.sync_directory_watches();
                         self.navigation.replace_displayed_entries(entries);
                         self.grid.select_only(None, self.navigation.entries().len());
                         self.grid.clear_details();
@@ -977,6 +1000,7 @@ impl App {
                 match result {
                     Ok(entries) => {
                         self.virtual_location = Some(VirtualLocation::Trash);
+                        self.sync_directory_watches();
                         self.navigation.replace_displayed_entries(
                             entries.iter().map(|entry| entry.file.clone()).collect(),
                         );
@@ -2013,6 +2037,7 @@ impl App {
         }
         let path = node.path.clone();
         let already_current = path == current;
+        self.sync_directory_watches();
         let load_task = if load {
             self.load_tree_node(id, path.clone())
         } else {
@@ -2887,6 +2912,13 @@ impl App {
                 .iter()
                 .filter_map(|path| path.parent().map(Path::to_path_buf)),
         );
+        paths.extend(tree::expanded_paths(&self.explorer.roots));
+        match self.virtual_location {
+            Some(VirtualLocation::Recent) => paths.extend(self.recent.watch_paths()),
+            Some(VirtualLocation::Trash) => paths.extend(self.trash.watch_paths()),
+            None => {}
+        }
+        paths.retain(|path| path.is_dir());
         paths.sort();
         paths.dedup();
         source.watch_many(paths);

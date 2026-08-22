@@ -124,7 +124,7 @@ needs external drag and drop and a native clipboard adapter.
 
 ## Milestone 2: live directory state
 
-- [ ] Monitor the current directory and other displayed locations for external changes.
+- [x] Monitor the current directory and other displayed locations for external changes.
 - [x] Debounce bursts without delaying normal interactive updates.
 - [x] Preserve selection and scroll position by path rather than by list index.
 - [x] Keep Rename, command input, conflict handling, and pending Cut active during refresh.

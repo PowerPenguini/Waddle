@@ -61,6 +61,21 @@ pub(super) fn flatten_rows(state: &ExplorerState, current: &Path) -> Vec<TreeRow
     rows
 }
 
+pub(super) fn expanded_paths(nodes: &[FolderNode]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    collect_expanded_paths(nodes, &mut paths);
+    paths
+}
+
+fn collect_expanded_paths(nodes: &[FolderNode], paths: &mut Vec<PathBuf>) {
+    for node in nodes {
+        if node.expanded && !matches!(node.kind, NodeKind::Recent | NodeKind::Trash) {
+            paths.push(node.path.clone());
+            collect_expanded_paths(&node.children, paths);
+        }
+    }
+}
+
 fn flatten_nodes(nodes: &[FolderNode], depth: usize, current: &Path, rows: &mut Vec<TreeRow>) {
     for node in nodes {
         rows.push(TreeRow {
@@ -129,5 +144,26 @@ fn invalidate_tree_folders_inner(
             continue;
         }
         invalidate_tree_folders_inner(&mut node.children, changed_folders, reloads);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expanded_paths_include_only_visible_filesystem_branches() {
+        let mut root = FolderNode::root(1);
+        let mut expanded = FolderNode::folder(2, PathBuf::from("/expanded"));
+        expanded.expanded = true;
+        let nested = FolderNode::folder(3, PathBuf::from("/expanded/nested"));
+        expanded.children.push(nested);
+        let collapsed = FolderNode::folder(4, PathBuf::from("/collapsed"));
+        root.children = vec![expanded, collapsed];
+
+        assert_eq!(
+            expanded_paths(&[root]),
+            [PathBuf::from("/"), PathBuf::from("/expanded")]
+        );
     }
 }

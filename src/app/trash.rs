@@ -65,6 +65,20 @@ impl Trash {
             None => desktop_entries(),
         }
     }
+
+    pub(super) fn watch_paths(&self) -> Vec<PathBuf> {
+        let root = self
+            .physical_root
+            .clone()
+            .unwrap_or_else(|| data_home().join("Trash"));
+        vec![
+            root.parent()
+                .map_or_else(|| root.clone(), Path::to_path_buf),
+            root.clone(),
+            root.join("files"),
+            root.join("info"),
+        ]
+    }
 }
 
 fn physical_entries(root: &Path) -> Result<Vec<Entry>, String> {
