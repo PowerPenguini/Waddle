@@ -1,5 +1,7 @@
 # 20: Asynchronous image thumbnails
 
+Type: feature
+
 **What to build:** Show useful image thumbnails without blocking Grid interaction or growing cache state without a limit.
 
 **Blocked by:** 17: List view, sorting, and directory view overrides.

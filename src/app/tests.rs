@@ -709,6 +709,47 @@ fn visual_cut_hides_the_complete_selection_and_escape_restores_it() {
 }
 
 #[test]
+fn directory_events_confirm_only_observed_external_cut_moves() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_directory = temp.path().join("source");
+    let destination_directory = temp.path().join("destination");
+    std::fs::create_dir(&source_directory).unwrap();
+    std::fs::create_dir(&destination_directory).unwrap();
+    let source = source_directory.join("item");
+    std::fs::write(&source, "x").unwrap();
+    let (mut app, _) = App::new();
+    app.transfers
+        .cut(&[FileEntry {
+            path: source.clone(),
+            name: "item".into(),
+            directory: false,
+        }])
+        .unwrap();
+
+    std::fs::rename(&source, destination_directory.join("item")).unwrap();
+    let _ = app.update(Message::DirectoryChanged(super::directory_watch::Event {
+        path: source_directory.clone(),
+        moved_out: Vec::new(),
+    }));
+    assert_eq!(
+        app.transfers.pending_cut_paths(),
+        std::slice::from_ref(&source)
+    );
+
+    let _ = app.update(Message::DirectoryChanged(super::directory_watch::Event {
+        path: source_directory,
+        moved_out: vec![source],
+    }));
+    assert!(app.transfers.pending_cut_paths().is_empty());
+    assert!(
+        app.status_notice
+            .as_deref()
+            .unwrap()
+            .contains("External move confirmed")
+    );
+}
+
+#[test]
 fn focused_sidebar_does_not_apply_file_operators_to_the_grid() {
     let (mut app, _) = App::new();
     app.navigation_loading = false;

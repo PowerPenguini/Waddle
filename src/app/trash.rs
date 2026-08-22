@@ -66,18 +66,42 @@ impl Trash {
         }
     }
 
-    pub(super) fn watch_paths(&self) -> Vec<PathBuf> {
+    pub(super) fn watch_paths(&self, displayed: &[Entry], mounts: &[PathBuf]) -> Vec<PathBuf> {
         let root = self
             .physical_root
             .clone()
             .unwrap_or_else(|| data_home().join("Trash"));
-        vec![
+        let mut paths = vec![
             root.parent()
                 .map_or_else(|| root.clone(), Path::to_path_buf),
             root.clone(),
             root.join("files"),
             root.join("info"),
-        ]
+        ];
+        for entry in displayed {
+            paths.extend(
+                [
+                    entry.receipt.trashed.parent().map(PathBuf::from),
+                    entry.receipt.info.parent().map(PathBuf::from),
+                ]
+                .into_iter()
+                .flatten(),
+            );
+        }
+        let uid = unsafe { libc::geteuid() };
+        for mount in mounts {
+            let shared = mount.join(".Trash").join(uid.to_string());
+            let private = mount.join(format!(".Trash-{uid}"));
+            paths.push(mount.clone());
+            for trash_root in [shared, private] {
+                paths.extend([
+                    trash_root.clone(),
+                    trash_root.join("files"),
+                    trash_root.join("info"),
+                ]);
+            }
+        }
+        paths
     }
 }
 

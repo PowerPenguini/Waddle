@@ -33,6 +33,7 @@ mod x11_dnd;
 mod tests;
 
 use std::{
+    collections::HashSet,
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -296,6 +297,7 @@ struct App {
     file_operations: FileOperationSession,
     journal: journal::Journal,
     directory_watch: Option<directory_watch::Source>,
+    watch_poll_fallback: bool,
     view_preferences: view_preferences::Preferences,
     thumbnails: thumbnail::Cache,
     trash_adapter: GioTrashAdapter,
@@ -396,6 +398,7 @@ impl App {
             file_operations: FileOperationSession::default(),
             journal,
             directory_watch,
+            watch_poll_fallback: false,
             view_preferences,
             thumbnails: thumbnail::Cache::default(),
             trash_adapter: GioTrashAdapter,
@@ -621,9 +624,14 @@ impl App {
             }
             Message::RetryTransfer => {
                 self.browser_focus = BrowserFocus::BottomBar;
-                self.transfer_queue
-                    .retry()
-                    .map_or_else(Task::none, |work| self.launch_transfer(work))
+                match self.transfer_queue.retry() {
+                    Ok(Some(work)) => self.launch_transfer(work),
+                    Ok(None) => Task::none(),
+                    Err(error) => {
+                        self.show_error(error);
+                        Task::none()
+                    }
+                }
             }
             Message::ToggleTransferHistory => {
                 self.browser_focus = BrowserFocus::BottomBar;
@@ -651,11 +659,23 @@ impl App {
                 self.system_accessibility = theme::accessibility(settings.as_ref());
                 let mounts = mounted_roots();
                 self.explorer.reconcile_mounts(mounts);
-                if self.search.is_recursive() {
+                let search = if self.search.is_recursive() {
                     self.live_refresh()
                 } else {
                     Task::none()
-                }
+                };
+                let fallback = if self.watch_poll_fallback {
+                    let expanded = tree::expanded_paths(&self.explorer.roots);
+                    let location = if self.search.is_recursive() {
+                        Task::none()
+                    } else {
+                        self.refresh_location()
+                    };
+                    Task::batch([self.invalidate_tree(expanded), location])
+                } else {
+                    Task::none()
+                };
+                Task::batch([search, fallback])
             }
             Message::DirectoryChanged(event) => {
                 let cut_parent_changed = self
@@ -665,7 +685,8 @@ impl App {
                     .filter_map(|path| path.parent())
                     .any(|parent| parent == event.path);
                 if cut_parent_changed
-                    && let Some((generation, removed)) = self.transfers.reconcile_pending_cut()
+                    && let Some((generation, removed)) =
+                        self.transfers.reconcile_pending_cut(&event.moved_out)
                 {
                     self.sync_native_cut_clipboard(generation);
                     self.sync_directory_watches();
@@ -681,13 +702,7 @@ impl App {
                 let current =
                     self.virtual_location.is_none() && event.path == self.navigation.current();
                 let expanded = tree::expanded_paths(&self.explorer.roots).contains(&event.path);
-                let virtual_location = match self.virtual_location {
-                    Some(VirtualLocation::Recent) => {
-                        self.recent.watch_paths().contains(&event.path)
-                    }
-                    Some(VirtualLocation::Trash) => self.trash.watch_paths().contains(&event.path),
-                    None => false,
-                };
+                let virtual_location = self.virtual_watch_paths().contains(&event.path);
                 Task::batch([
                     if current {
                         self.live_refresh()
@@ -2901,7 +2916,7 @@ impl App {
         self.refresh(None)
     }
 
-    fn sync_directory_watches(&self) {
+    fn sync_directory_watches(&mut self) {
         let Some(source) = &self.directory_watch else {
             return;
         };
@@ -2913,15 +2928,28 @@ impl App {
                 .filter_map(|path| path.parent().map(Path::to_path_buf)),
         );
         paths.extend(tree::expanded_paths(&self.explorer.roots));
-        match self.virtual_location {
-            Some(VirtualLocation::Recent) => paths.extend(self.recent.watch_paths()),
-            Some(VirtualLocation::Trash) => paths.extend(self.trash.watch_paths()),
-            None => {}
-        }
+        paths.extend(self.virtual_watch_paths());
         paths.retain(|path| path.is_dir());
-        paths.sort();
-        paths.dedup();
-        source.watch_many(paths);
+        let mut seen = HashSet::new();
+        paths.retain(|path| seen.insert(path.clone()));
+        self.watch_poll_fallback = source.watch_many(paths);
+    }
+
+    fn virtual_watch_paths(&self) -> Vec<PathBuf> {
+        match self.virtual_location {
+            Some(VirtualLocation::Recent) => self.recent.watch_paths(self.navigation.entries()),
+            Some(VirtualLocation::Trash) => {
+                let mounts = self
+                    .explorer
+                    .roots
+                    .iter()
+                    .filter(|node| node.kind == state::NodeKind::Drive)
+                    .map(|node| node.path.clone())
+                    .collect::<Vec<_>>();
+                self.trash.watch_paths(&self.trash_entries, &mounts)
+            }
+            None => Vec::new(),
+        }
     }
 
     fn sync_native_cut_clipboard(&mut self, generation: u64) {

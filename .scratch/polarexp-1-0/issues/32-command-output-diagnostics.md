@@ -1,5 +1,7 @@
 # 32: Bounded command output and local diagnostics
 
+Type: feature
+
 **What to build:** Keep shell execution direct while bounding live output and integrating failures with local diagnostic history.
 
 **Blocked by:** 15: Transfer Cancel, Retry, partial results, and history.

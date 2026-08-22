@@ -1,5 +1,7 @@
 # 14: Ordered Transfer queue with progress
 
+Type: feature
+
 **What to build:** Run mutations through one queue and show useful progress for each active Transfer.
 
 **Blocked by:** 09: Atomic Rename and Replace; 10: Metadata-faithful Copy.

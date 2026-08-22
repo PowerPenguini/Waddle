@@ -232,6 +232,75 @@ fn moves_file_into_directory() {
 }
 
 #[test]
+fn cross_filesystem_move_publishes_only_a_complete_destination() {
+    let Ok(destination_root) = tempfile::tempdir_in("/dev/shm") else {
+        return;
+    };
+    let source_root = tempfile::tempdir().unwrap();
+    if fs::metadata(source_root.path()).unwrap().dev()
+        == fs::metadata(destination_root.path()).unwrap().dev()
+    {
+        return;
+    }
+    let source = source_root.path().join("tree");
+    let destination = destination_root.path().join("tree");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("one"), "one").unwrap();
+    fs::write(source.join("two"), "two").unwrap();
+
+    move_exact(&source, &destination).unwrap();
+
+    assert!(!source.exists());
+    assert_eq!(fs::read_to_string(destination.join("one")).unwrap(), "one");
+    assert_eq!(fs::read_to_string(destination.join("two")).unwrap(), "two");
+    assert!(fs::read_dir(destination_root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".polarexp-")
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_cross_filesystem_move_removes_private_staging() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let Ok(destination_root) = tempfile::tempdir_in("/dev/shm") else {
+        return;
+    };
+    let source_root = tempfile::tempdir().unwrap();
+    if fs::metadata(source_root.path()).unwrap().dev()
+        == fs::metadata(destination_root.path()).unwrap().dev()
+    {
+        return;
+    }
+    let source = source_root.path().join("tree");
+    let destination = destination_root.path().join("tree");
+    fs::create_dir(&source).unwrap();
+    let unreadable = source.join("unreadable");
+    fs::write(&unreadable, "secret").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    assert!(move_exact(&source, &destination).is_err());
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(source.exists());
+    assert!(!destination.exists());
+    assert!(fs::read_dir(destination_root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".polarexp-")
+    }));
+}
+
+#[test]
 fn transfer_preflight_revalidates_sources_destination_and_descendants() {
     let temp = tempfile::tempdir().unwrap();
     let destination = temp.path().join("destination");

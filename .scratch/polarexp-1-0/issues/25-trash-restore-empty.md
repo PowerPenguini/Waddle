@@ -1,5 +1,7 @@
 # 25: Trash location, Restore, and Empty Trash
 
+Type: feature
+
 **What to build:** Make Trash a complete location with safe Restore and explicit permanent deletion.
 
 **Blocked by:** 08: Bottom-bar Transfer conflict workflow; 12: Persistent Undo and Redo for Move, Trash, and Copy; 23: Desktop Places, Favorites, and mounted volumes.

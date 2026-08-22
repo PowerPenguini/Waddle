@@ -1,5 +1,7 @@
 # 11: Persistent Undo and Redo for Rename and New Folder
 
+Type: feature
+
 **What to build:** Persist a bounded operation journal and use it to Undo and Redo Rename and New Folder after restart.
 
 **Blocked by:** 02: Counted Browser key grammar and Vim motions; 09: Atomic Rename and Replace.

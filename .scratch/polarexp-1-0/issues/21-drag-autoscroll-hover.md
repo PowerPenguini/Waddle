@@ -1,5 +1,7 @@
 # 21: Drag autoscroll and hover navigation
 
+Type: feature
+
 **What to build:** Reach off-screen and nested destinations while dragging without accidental folder entry.
 
 **Blocked by:** 16: Standard Grid interaction and keyboard focus.

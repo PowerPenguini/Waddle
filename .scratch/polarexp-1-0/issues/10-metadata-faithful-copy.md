@@ -1,5 +1,7 @@
 # 10: Metadata-faithful Copy
 
+Type: feature
+
 **What to build:** Preserve supported filesystem metadata during Copy and report every unsupported loss.
 
 **Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp.

@@ -1,5 +1,7 @@
 # 33: Linux desktop packaging
 
+Type: feature
+
 **What to build:** Install and launch PolarExp as a normal Linux desktop application through Flatpak and a regular binary archive.
 
 **Blocked by:** 31: CLI locations and persisted startup state.

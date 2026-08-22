@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::CString,
-    os::{fd::RawFd, unix::ffi::OsStrExt},
+    os::{
+        fd::RawFd,
+        unix::ffi::{OsStrExt, OsStringExt},
+    },
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -19,10 +22,18 @@ use iced::{
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 const DEBOUNCE: Duration = Duration::from_millis(120);
+const MAX_WATCHES: usize = 2_048;
 
 #[derive(Clone, Debug)]
 pub(super) struct Event {
     pub(super) path: PathBuf,
+    pub(super) moved_out: Vec<PathBuf>,
+}
+
+#[derive(Default)]
+struct PendingChange {
+    changed: Option<Instant>,
+    moved_out: HashMap<u32, PathBuf>,
 }
 
 #[derive(Clone)]
@@ -55,11 +66,11 @@ impl Source {
         })))
     }
 
-    pub(super) fn watch_many(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        let _ = self
-            .0
-            .commands
-            .send(Command::Watch(paths.into_iter().collect()));
+    pub(super) fn watch_many(&self, paths: impl IntoIterator<Item = PathBuf>) -> bool {
+        let paths = paths.into_iter().collect::<Vec<_>>();
+        let overflow = paths.len() > MAX_WATCHES;
+        let _ = self.0.commands.send(Command::Watch(paths));
+        overflow
     }
 
     pub(super) fn subscription(&self) -> Subscription<Event> {
@@ -97,7 +108,7 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
         return;
     }
     let mut watched = HashMap::<i32, PathBuf>::new();
-    let mut pending = HashMap::<PathBuf, Instant>::new();
+    let mut pending = HashMap::<PathBuf, PendingChange>::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         for command in commands.try_iter() {
@@ -125,11 +136,19 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
         }
         let ready = pending
             .iter()
-            .filter_map(|(path, changed)| (changed.elapsed() >= DEBOUNCE).then_some(path.clone()))
+            .filter_map(|(path, change)| {
+                change
+                    .changed
+                    .is_some_and(|changed| changed.elapsed() >= DEBOUNCE)
+                    .then_some(path.clone())
+            })
             .collect::<Vec<_>>();
         for path in ready {
-            pending.remove(&path);
-            if events.unbounded_send(Event { path }).is_err() {
+            let moved_out = pending
+                .remove(&path)
+                .map(|change| change.moved_out.into_values().collect())
+                .unwrap_or_default();
+            if events.unbounded_send(Event { path, moved_out }).is_err() {
                 close_descriptor(descriptor);
                 return;
             }
@@ -140,7 +159,7 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
 fn collect_changed_watches(
     buffer: &[u8],
     watched: &HashMap<i32, PathBuf>,
-    pending: &mut HashMap<PathBuf, Instant>,
+    pending: &mut HashMap<PathBuf, PendingChange>,
 ) {
     let mut offset = 0;
     while offset + std::mem::size_of::<libc::inotify_event>() <= buffer.len() {
@@ -152,17 +171,42 @@ fn collect_changed_watches(
                 .cast::<libc::inotify_event>()
                 .read_unaligned()
         };
-        if let Some(path) = watched.get(&event.wd) {
-            pending.insert(path.clone(), Instant::now());
+        let record_size =
+            std::mem::size_of::<libc::inotify_event>().saturating_add(event.len as usize);
+        if offset.saturating_add(record_size) > buffer.len() {
+            break;
         }
-        offset = offset
-            .saturating_add(std::mem::size_of::<libc::inotify_event>())
-            .saturating_add(event.len as usize);
+        if let Some(directory) = watched.get(&event.wd) {
+            let change = pending.entry(directory.clone()).or_default();
+            change.changed = Some(Instant::now());
+            let name_start = offset + std::mem::size_of::<libc::inotify_event>();
+            let name_bytes = &buffer[name_start..offset + record_size];
+            let name_length = name_bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name_bytes.len());
+            if event.cookie != 0 && name_length > 0 && event.mask & libc::IN_MOVED_FROM != 0 {
+                let name = std::ffi::OsString::from_vec(name_bytes[..name_length].to_vec());
+                change.moved_out.insert(event.cookie, directory.join(name));
+            }
+            if event.cookie != 0 && event.mask & libc::IN_MOVED_TO != 0 {
+                for pending_change in pending.values_mut() {
+                    pending_change.moved_out.remove(&event.cookie);
+                }
+            }
+        }
+        offset = offset.saturating_add(record_size);
     }
 }
 
 fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths: Vec<PathBuf>) {
-    let desired = paths.into_iter().collect::<HashSet<_>>();
+    let mut desired = HashSet::new();
+    let desired_order = paths
+        .into_iter()
+        .filter(|path| desired.insert(path.clone()))
+        .take(MAX_WATCHES)
+        .collect::<Vec<_>>();
+    desired = desired_order.iter().cloned().collect();
     let removed = watched
         .iter()
         .filter_map(|(watch, path)| (!desired.contains(path)).then_some(*watch))
@@ -182,7 +226,7 @@ fn replace_watches(descriptor: RawFd, watched: &mut HashMap<i32, PathBuf>, paths
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
     let current = watched.values().cloned().collect::<HashSet<_>>();
-    for path in desired.difference(&current) {
+    for path in desired_order.iter().filter(|path| !current.contains(*path)) {
         let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
             continue;
         };
@@ -215,6 +259,7 @@ mod tests {
         let mut events = source.0.events.lock().unwrap().take().unwrap();
         let event = iced::futures::executor::block_on(events.next()).expect("debounced event");
         assert_eq!(event.path, temp.path());
+        assert!(event.moved_out.is_empty());
         thread::sleep(Duration::from_millis(180));
         assert!(events.try_recv().is_err());
     }
@@ -243,5 +288,37 @@ mod tests {
         ];
         paths.sort();
         assert_eq!(paths, [first, second]);
+    }
+
+    #[test]
+    fn inotify_distinguishes_delete_internal_rename_and_move_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let watched = temp.path().join("watched");
+        let other_watched = temp.path().join("other-watched");
+        let outside = temp.path().join("outside");
+        for directory in [&watched, &other_watched, &outside] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        let deleted = watched.join("deleted");
+        let internal = watched.join("internal");
+        let moved = watched.join("moved");
+        for path in [&deleted, &internal, &moved] {
+            std::fs::write(path, "x").unwrap();
+        }
+        let source = Source::new().unwrap();
+        source.watch_many([watched.clone(), other_watched.clone()]);
+        thread::sleep(Duration::from_millis(30));
+        std::fs::remove_file(&deleted).unwrap();
+        std::fs::rename(&internal, other_watched.join("internal")).unwrap();
+        std::fs::rename(&moved, outside.join("moved")).unwrap();
+
+        let mut events = source.0.events.lock().unwrap().take().unwrap();
+        let first = iced::futures::executor::block_on(events.next()).unwrap();
+        let second = iced::futures::executor::block_on(events.next()).unwrap();
+        let watched_event = [first, second]
+            .into_iter()
+            .find(|event| event.path == watched)
+            .unwrap();
+        assert_eq!(watched_event.moved_out, [moved]);
     }
 }

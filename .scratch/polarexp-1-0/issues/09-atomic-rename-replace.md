@@ -1,5 +1,7 @@
 # 09: Atomic Rename and Replace
 
+Type: feature
+
 **What to build:** Make Rename and Replace resist concurrent destination creation without silent overwrite.
 
 **Blocked by:** 08: Bottom-bar Transfer conflict workflow.

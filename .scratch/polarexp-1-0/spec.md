@@ -1,6 +1,6 @@
 # PolarExp 1.0 daily Linux file manager
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Problem Statement
 
@@ -262,4 +262,6 @@ entry, discard metadata, claim an unsafe Undo, or leave a partial destination lo
 - The first implementation ticket should establish the shared clipboard payload and adapter contract. Wayland, X11, Browser key grammar, and Undo depend on that contract.
 - Existing uncommitted work already contains the current domain sessions and native Wayland drag and drop. Preserve that work and build on the current checkout rather than historical Slint-era assumptions.
 - The roadmap defines delivery order, not dates.
-- The `ready-for-agent` status means the decisions are settled. It does not mean one agent should implement all six milestones in one change.
+- The implementation tickets are complete or at their recorded human verification gates. The
+  remaining interoperability, Flatpak, and desktop-session checks are listed in
+  `docs/release-checklist.md`.

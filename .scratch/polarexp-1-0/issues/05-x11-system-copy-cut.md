@@ -1,5 +1,7 @@
 # 05: X11 system Copy and Cut
 
+Type: feature
+
 **What to build:** Implement the shared multi-entry clipboard contract on X11, including selection ownership and Cut markers.
 
 **Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp.

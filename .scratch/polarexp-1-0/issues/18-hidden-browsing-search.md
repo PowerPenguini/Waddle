@@ -1,5 +1,7 @@
 # 18: Hidden entries across browsing and search
 
+Type: feature
+
 **What to build:** Make one hidden-entry preference control normal browsing, recursive browsing, and filename Search sessions.
 
 **Blocked by:** 17: List view, sorting, and directory view overrides.

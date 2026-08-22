@@ -1,5 +1,7 @@
 # 04: Wayland Cut lifecycle and pending Cut UI
 
+Type: feature
+
 **What to build:** Add system Cut on Wayland with hidden pending entries, cancellation, ownership-loss recovery, and safe action fallback.
 
 **Blocked by:** 03: Wayland system Copy and Paste.

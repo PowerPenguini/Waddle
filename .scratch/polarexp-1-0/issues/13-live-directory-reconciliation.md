@@ -1,5 +1,7 @@
 # 13: Live directory reconciliation
 
+Type: feature
+
 **What to build:** Keep displayed entries current while preserving active sessions, selection, scroll, and pending Cut.
 
 **Blocked by:** 04: Wayland Cut lifecycle and pending Cut UI.

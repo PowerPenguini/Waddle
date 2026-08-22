@@ -1,5 +1,7 @@
 # 17: List view, sorting, and directory view overrides
 
+Type: feature
+
 **What to build:** Add List view and predictable sorting shared with Grid, including persistent per-directory overrides.
 
 **Blocked by:** 16: Standard Grid interaction and keyboard focus.

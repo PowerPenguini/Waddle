@@ -318,19 +318,20 @@ impl TransferWorkflow {
         })
     }
 
-    pub(crate) fn reconcile_pending_cut(&mut self) -> Option<(u64, usize)> {
+    pub(crate) fn reconcile_pending_cut(&mut self, moved_out: &[PathBuf]) -> Option<(u64, usize)> {
         let payload = self
             .clipboard
             .as_mut()
             .filter(|payload| payload.action == Action::Move)?;
         let generation = payload.generation;
         let before = payload.paths.len();
-        payload
-            .paths
-            .retain(|path| match std::fs::symlink_metadata(path) {
-                Ok(_) => true,
-                Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-            });
+        payload.paths.retain(|path| {
+            !moved_out.contains(path)
+                || match std::fs::symlink_metadata(path) {
+                    Ok(_) => true,
+                    Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+                }
+        });
         let removed = before.saturating_sub(payload.paths.len());
         if removed == 0 {
             return None;
@@ -1087,12 +1088,20 @@ mod tests {
         let generation = workflow.clipboard_payload().unwrap().generation;
 
         std::fs::remove_file(&first).unwrap();
-        assert_eq!(workflow.reconcile_pending_cut(), Some((generation, 1)));
+        assert_eq!(workflow.reconcile_pending_cut(&[]), None);
+        assert_eq!(workflow.pending_cut_paths().len(), 2);
+        assert_eq!(
+            workflow.reconcile_pending_cut(std::slice::from_ref(&first)),
+            Some((generation, 1))
+        );
         assert_eq!(workflow.pending_cut_paths(), std::slice::from_ref(&second));
-        assert_eq!(workflow.reconcile_pending_cut(), None);
+        assert_eq!(workflow.reconcile_pending_cut(&[]), None);
 
         std::fs::remove_file(&second).unwrap();
-        assert_eq!(workflow.reconcile_pending_cut(), Some((generation, 1)));
+        assert_eq!(
+            workflow.reconcile_pending_cut(std::slice::from_ref(&second)),
+            Some((generation, 1))
+        );
         assert!(workflow.pending_cut_paths().is_empty());
         assert!(workflow.clipboard_payload().is_none());
     }

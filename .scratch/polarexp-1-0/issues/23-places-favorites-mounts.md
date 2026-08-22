@@ -1,5 +1,7 @@
 # 23: Desktop Places, Favorites, and mounted volumes
 
+Type: feature
+
 **What to build:** Put common local places, user Favorites, and normal volume actions in the sidebar.
 
 **Blocked by:** None (can start immediately).

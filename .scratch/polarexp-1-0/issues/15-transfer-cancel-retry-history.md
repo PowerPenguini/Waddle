@@ -1,5 +1,7 @@
 # 15: Transfer Cancel, Retry, partial results, and history
 
+Type: feature
+
 **What to build:** Let users stop, retry, inspect, and recover partial Transfers without damaging pre-existing entries.
 
 **Blocked by:** 12: Persistent Undo and Redo for Move, Trash, and Copy; 14: Ordered Transfer queue with progress.

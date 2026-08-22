@@ -1,5 +1,7 @@
 # 02: Counted Browser key grammar and Vim motions
 
+Type: feature
+
 **What to build:** Add counted navigation, `gg`, `G`, viewport motions, pending-sequence feedback, and equivalent sidebar traversal.
 
 **Blocked by:** None (can start immediately).

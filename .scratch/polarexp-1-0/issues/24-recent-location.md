@@ -1,5 +1,7 @@
 # 24: Shared desktop Recent location
 
+Type: feature
+
 **What to build:** Browse the desktop's shared recent-file history without creating a separate PolarExp activity database.
 
 **Blocked by:** 23: Desktop Places, Favorites, and mounted volumes.

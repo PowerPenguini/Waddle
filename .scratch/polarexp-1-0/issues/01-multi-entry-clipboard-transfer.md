@@ -1,5 +1,7 @@
 # 01: Multi-entry clipboard Transfer inside PolarExp
 
+Type: feature
+
 **What to build:** Copy the complete current selection into one generation-aware clipboard payload and Paste it as one Transfer inside PolarExp.
 
 **Blocked by:** None (can start immediately).

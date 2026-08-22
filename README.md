@@ -87,7 +87,7 @@ The sidebar lists the computer root and mounted volumes. Its folders are loaded 
 ## Architecture
 
 - `src/app/mod.rs` is the Iced adapter: it owns messages, subscriptions, views, and orchestration between the deeper modules.
-- `src/app/grid.rs` owns file-grid selection and interaction geometry. `state.rs` owns navigation state, while `tree.rs` manages the lazy sidebar hierarchy.
+- `src/app/grid.rs` owns file-grid selection and interaction geometry. `state.rs` owns the Navigation session, while `tree.rs` manages the lazy sidebar hierarchy.
 - `src/app/operations.rs` runs blocking work through bounded Tokio lanes and rejects cancelled navigation, details, and search results before they reach the UI.
 - `src/app/search.rs` owns each search session. `command.rs` owns command parsing and result policy behind production and in-memory adapters; `shell.rs` is its Bash process adapter.
 - `src/transfer.rs` owns clipboard, internal-drag, and native-drag transfers. `native_dnd.rs` supplies the Wayland adapter, and `fs/mod.rs` performs filesystem work.

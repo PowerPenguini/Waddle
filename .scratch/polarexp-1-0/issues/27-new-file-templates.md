@@ -1,5 +1,7 @@
 # 27: New Empty File and XDG Templates
 
+Type: feature
+
 **What to build:** Create empty files and template-based files through the normal File operation session.
 
 **Blocked by:** 11: Persistent Undo and Redo for Rename and New Folder.

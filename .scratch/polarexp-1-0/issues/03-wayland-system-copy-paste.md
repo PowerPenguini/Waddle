@@ -1,5 +1,7 @@
 # 03: Wayland system Copy and Paste
 
+Type: feature
+
 **What to build:** Exchange multi-entry Copy payloads between PolarExp and other Wayland applications through the system clipboard.
 
 **Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp.

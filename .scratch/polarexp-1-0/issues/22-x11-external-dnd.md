@@ -1,5 +1,7 @@
 # 22: External X11 drag and drop
 
+Type: feature
+
 **What to build:** Bring native external drag and drop to X11 with the same Transfer behavior and feedback as Wayland.
 
 **Blocked by:** 05: X11 system Copy and Cut.

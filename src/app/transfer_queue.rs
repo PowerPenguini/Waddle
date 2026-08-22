@@ -163,14 +163,18 @@ impl Queue {
             .map(|(request, batch)| self.activate(request, batch))
     }
 
-    pub(super) fn retry(&mut self) -> Option<Work> {
-        let request = self.last_retry.take()?;
-        let batch = TransferBatch::new(
+    pub(super) fn retry(&mut self) -> Result<Option<Work>, String> {
+        let Some(request) = self.last_retry.as_ref().cloned() else {
+            return Ok(None);
+        };
+        let batch = TransferBatch::try_new(
             request.paths.clone(),
             request.destination.clone(),
             request.action,
-        );
-        self.enqueue(request, batch)
+        )
+        .map_err(|error| error.to_string())?;
+        self.last_retry = None;
+        Ok(self.enqueue(request, batch))
     }
 
     pub(super) fn cancel(&self) -> bool {
@@ -414,7 +418,13 @@ mod tests {
     fn cancellation_retry_and_progress_snapshot_are_explicit() {
         let temp = tempfile::tempdir().unwrap();
         let mut queue = Queue::open(temp.path().join("transfers.json"));
-        let request = request("/target");
+        let source = temp.path().join("source/item");
+        let destination = temp.path().join("target");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, "x").unwrap();
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source];
         let work = queue
             .enqueue(
                 request.clone(),
@@ -449,6 +459,10 @@ mod tests {
         };
         assert!(queue.finish(work.id, &failed).is_none());
         assert!(queue.has_retry());
-        assert!(queue.retry().is_some());
+        fs::remove_dir(&destination).unwrap();
+        assert!(queue.retry().is_err());
+        assert!(queue.has_retry());
+        fs::create_dir(&destination).unwrap();
+        assert!(queue.retry().unwrap().is_some());
     }
 }

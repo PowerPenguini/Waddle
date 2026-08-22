@@ -1,5 +1,7 @@
 # 19: Breadcrumb navigation and click activation
 
+Type: feature
+
 **What to build:** Add discoverable breadcrumbs, editable locations, and configurable click activation.
 
 **Blocked by:** 16: Standard Grid interaction and keyboard focus.

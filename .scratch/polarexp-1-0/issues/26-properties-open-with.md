@@ -1,5 +1,7 @@
 # 26: Properties, permissions, and Open With
 
+Type: feature
+
 **What to build:** Inspect and change ordinary file metadata and application associations without root mode.
 
 **Blocked by:** None (can start immediately).

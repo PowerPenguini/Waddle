@@ -1,5 +1,7 @@
 # 16: Standard Grid interaction and keyboard focus
 
+Type: feature
+
 **What to build:** Add conventional desktop selection and navigation without weakening Visual selection or Vim motions.
 
 **Blocked by:** 02: Counted Browser key grammar and Vim motions.

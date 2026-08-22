@@ -1,5 +1,7 @@
 # 30: High contrast and reduced motion
 
+Type: feature
+
 **What to build:** Respect visual accessibility preferences without adding a screen-reader requirement to 1.0.
 
 **Blocked by:** 28: Persistent `:set`, `:setlocal`, and common controls.

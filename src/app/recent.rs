@@ -85,12 +85,19 @@ impl Recent {
         Ok(entries)
     }
 
-    pub(super) fn watch_paths(&self) -> Vec<PathBuf> {
-        self.history_path
+    pub(super) fn watch_paths(&self, displayed: &[FileEntry]) -> Vec<PathBuf> {
+        let mut paths = self
+            .history_path
             .parent()
             .map(PathBuf::from)
             .into_iter()
-            .collect()
+            .collect::<Vec<_>>();
+        paths.extend(
+            displayed
+                .iter()
+                .filter_map(|entry| entry.path.parent().map(PathBuf::from)),
+        );
+        paths
     }
 
     pub(super) fn command(&mut self, arguments: &str) -> Result<(Effect, String), String> {

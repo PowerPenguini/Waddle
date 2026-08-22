@@ -1312,10 +1312,22 @@ fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
     match rename_noreplace(source, destination) {
         Ok(()) => Ok(Vec::new()),
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-            let warnings = copy_item_with_warnings(source, destination)?;
-            if let Err(error) = remove_item(source) {
-                remove_incomplete_copy(destination);
+            let staging = staging_path(destination)?;
+            let mut warnings = match copy_item_with_warnings(source, &staging) {
+                Ok(warnings) => warnings,
+                Err(error) => {
+                    remove_incomplete_copy(&staging);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = rename_noreplace(&staging, destination) {
+                remove_incomplete_copy(&staging);
                 return Err(error);
+            }
+            if let Err(error) = remove_item(source) {
+                warnings.push(format!(
+                    "the complete destination was kept, but the source could not be fully removed: {error}"
+                ));
             }
             Ok(warnings)
         }

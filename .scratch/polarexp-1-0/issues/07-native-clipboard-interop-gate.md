@@ -1,5 +1,7 @@
 # 07: Native clipboard interoperability gate
 
+Type: verification
+
 **What to build:** Prove the complete clipboard contract against Nautilus and Dolphin on Wayland and X11.
 
 **Blocked by:** 04: Wayland Cut lifecycle and pending Cut UI; 05: X11 system Copy and Cut.
