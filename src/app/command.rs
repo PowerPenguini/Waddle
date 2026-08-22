@@ -12,6 +12,7 @@ Commands
   :set ...      Inspect or change global settings
   :setlocal ... Inspect or change this folder's settings
   :favorite ... Add, remove, or list Favorites
+  :recent ...   Open, clear, enable, or disable Recent
   :volume ...   Mount, unmount, or eject a volume
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
@@ -105,6 +106,7 @@ pub(super) enum Submission {
     Diagnostics,
     Settings { local: bool, arguments: String },
     Favorite(String),
+    Recent(String),
     Volume(String),
     Execute(Execution),
 }
@@ -199,6 +201,15 @@ impl CommandSession {
             return Submission::Favorite(
                 trimmed
                     .strip_prefix("favorite")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            );
+        }
+        if prefix == ':' && (trimmed == "recent" || trimmed.starts_with("recent ")) {
+            return Submission::Recent(
+                trimmed
+                    .strip_prefix("recent")
                     .unwrap_or_default()
                     .trim()
                     .to_owned(),

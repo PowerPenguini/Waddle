@@ -191,8 +191,8 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Add Home.
 - [x] Show Desktop, Documents, Downloads, Music, Pictures, and Videos when their XDG directories
   exist. Do not create missing directories.
-- [ ] Add Recent using the desktop's shared recent-file history.
-- [ ] Let users clear or disable Recent.
+- [x] Add Recent using the desktop's shared recent-file history.
+- [x] Let users clear or disable Recent.
 - [x] Add user Favorites with custom labels and drag reordering.
 - [x] Keep mounted volumes and add their normal mount, unmount, and eject actions.
 

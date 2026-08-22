@@ -8,6 +8,7 @@ mod grid;
 mod navigation;
 mod operations;
 mod places;
+mod recent;
 mod search;
 mod shell;
 mod startup;
@@ -71,7 +72,7 @@ use navigation::{NavigationSession, Outcome as NavigationOutcome, Request as Nav
 use operations::{Completion, Kind as OperationKind, Operations};
 use search::{SearchSession, Update as SearchUpdate};
 use state::ExplorerState;
-use tree::{TreeRow, find_node_mut, flatten_rows, mounted_roots};
+use tree::{TreeRow, find_node, find_node_mut, flatten_rows, mounted_roots};
 
 const STATUS_HEIGHT: f32 = 25.0;
 const SEARCH_LIMIT: usize = 1000;
@@ -114,6 +115,11 @@ enum BrowserFocus {
     Sidebar,
     #[default]
     Entries,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VirtualLocation {
+    Recent,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +191,7 @@ enum Message {
     CommandSubmitted,
     CommandFinished(Result<command::Completion, String>),
     VolumeFinished(Result<String, String>),
+    RecentLoaded(Option<Result<Vec<FileEntry>, String>>),
     AnimationFrame(Instant),
     RenameChanged(String),
     RenameSubmitted,
@@ -226,6 +233,8 @@ struct App {
     navigation: NavigationSession,
     startup: startup::State,
     places: places::Places,
+    recent: recent::Recent,
+    virtual_location: Option<VirtualLocation>,
     operations: Operations,
     search: SearchSession,
     transfers: TransferWorkflow,
@@ -277,8 +286,11 @@ impl App {
         let startup = startup::State::open_default();
         let current = startup.initial_directory();
         let places = places::Places::open_default();
+        let recent = recent::Recent::open_default();
         let mut explorer = ExplorerState::new(mounted_roots());
-        explorer.install_places(places.entries());
+        let mut locations = places.entries();
+        locations.extend(recent.sidebar_entry());
+        explorer.install_places(locations);
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
@@ -300,6 +312,8 @@ impl App {
             navigation: NavigationSession::new(current.clone()),
             startup,
             places,
+            recent,
+            virtual_location: None,
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferWorkflow::default(),
@@ -556,13 +570,13 @@ impl App {
                 }
             }
             Message::DirectoryChanged(event) => {
-                if event.path == self.navigation.current() {
+                if self.virtual_location.is_none() && event.path == self.navigation.current() {
                     self.live_refresh()
                 } else {
                     Task::none()
                 }
             }
-            Message::Refresh => self.live_refresh(),
+            Message::Refresh => self.refresh_location(),
             Message::ToggleView => self.change_view_options(|options| {
                 options.view = match options.view {
                     fs::ViewMode::Grid => fs::ViewMode::List,
@@ -641,7 +655,7 @@ impl App {
                 if let Err(error) = self.places.reorder(from, index) {
                     self.status = error;
                 } else if from != index {
-                    self.explorer.install_places(self.places.entries());
+                    self.install_locations();
                     self.status = "Favorite order saved".to_owned();
                 }
                 Task::none()
@@ -763,6 +777,29 @@ impl App {
                     Err(error) => self.status = error,
                 }
                 Task::none()
+            }
+            Message::RecentLoaded(result) => {
+                self.busy = false;
+                let Some(result) = result else {
+                    return Task::none();
+                };
+                match result {
+                    Ok(entries) => {
+                        self.virtual_location = Some(VirtualLocation::Recent);
+                        self.navigation.replace_displayed_entries(entries);
+                        self.grid.select_only(None, self.navigation.entries().len());
+                        self.grid.clear_details();
+                        self.grid.reset_scroll();
+                        self.location_input = "Recent".to_owned();
+                        self.status =
+                            format!("{} items  •  Recent", self.navigation.entries().len());
+                        self.load_visible_thumbnails()
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        Task::none()
+                    }
+                }
             }
             Message::AnimationFrame(now) => {
                 self.animation_now = now;
@@ -945,7 +982,8 @@ impl App {
                 selection_count: self.grid.selection_count(),
                 has_selection: self.grid.selected_entry().is_some(),
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
-                file_operators_allowed: self.browser_focus == BrowserFocus::Entries,
+                file_operators_allowed: self.browser_focus == BrowserFocus::Entries
+                    && self.virtual_location.is_none(),
             },
         );
         self.apply_input_intent(intent)
@@ -991,7 +1029,7 @@ impl App {
             InputIntent::Paste => self.update(Message::Paste),
             InputIntent::Undo => self.run_journal(false),
             InputIntent::Redo => self.run_journal(true),
-            InputIntent::Refresh => self.live_refresh(),
+            InputIntent::Refresh => self.refresh_location(),
             InputIntent::ToggleHidden => self.update(Message::ToggleHidden),
             InputIntent::BeginLocation => self.begin_location(),
             InputIntent::CompleteCommand => {
@@ -1096,6 +1134,7 @@ impl App {
         if self.prompt_blocks_action() {
             return Task::none();
         }
+        self.virtual_location = None;
         self.cancel_search_state();
         let navigation = self.navigation.forward(requested, remember, select);
         self.request_navigation(navigation)
@@ -1173,6 +1212,10 @@ impl App {
         if self.prompt_blocks_action() {
             return Task::none();
         }
+        if self.virtual_location.is_some() {
+            let current = self.navigation.current().to_path_buf();
+            return self.navigate(current, false, None);
+        }
         self.cancel_search_state();
         let Some(navigation) = self.navigation.parent() else {
             return Task::none();
@@ -1184,6 +1227,10 @@ impl App {
         if self.prompt_blocks_action() {
             return Task::none();
         }
+        if self.virtual_location.is_some() {
+            let current = self.navigation.current().to_path_buf();
+            return self.navigate(current, false, None);
+        }
         self.cancel_search_state();
         let Some(navigation) = self.navigation.back() else {
             return Task::none();
@@ -1194,6 +1241,10 @@ impl App {
     fn go_forward(&mut self) -> Task<Message> {
         if self.prompt_blocks_action() {
             return Task::none();
+        }
+        if self.virtual_location.is_some() {
+            let current = self.navigation.current().to_path_buf();
+            return self.navigate(current, false, None);
         }
         self.cancel_search_state();
         let Some(navigation) = self.navigation.history_forward() else {
@@ -1232,6 +1283,37 @@ impl App {
         self.refresh_selected(selected)
     }
 
+    fn refresh_location(&mut self) -> Task<Message> {
+        match self.virtual_location {
+            Some(VirtualLocation::Recent) => self.open_recent(),
+            None => self.live_refresh(),
+        }
+    }
+
+    fn open_recent(&mut self) -> Task<Message> {
+        if self.prompt_blocks_action() || self.busy || self.navigation_loading {
+            return Task::none();
+        }
+        self.cancel_search_state();
+        self.busy = true;
+        self.status = "Reading shared Recent history…".to_owned();
+        let recent = self.recent.clone();
+        Task::perform(
+            self.operations
+                .run(OperationKind::Navigation, move |_| recent.entries()),
+            |completion| match completion {
+                Completion::Finished(result) => Message::RecentLoaded(Some(result)),
+                Completion::Cancelled => Message::RecentLoaded(None),
+            },
+        )
+    }
+
+    fn install_locations(&mut self) {
+        let mut entries = self.places.entries();
+        entries.extend(self.recent.sidebar_entry());
+        self.explorer.install_places(entries);
+    }
+
     fn change_view_options(
         &mut self,
         change: impl FnOnce(&mut fs::BrowseOptions),
@@ -1240,6 +1322,10 @@ impl App {
         let mut options = self.view_preferences.for_directory(&current);
         change(&mut options);
         self.view_preferences.set_directory(current, options);
+        if self.virtual_location.is_some() {
+            self.grid.set_list_mode(options.view == fs::ViewMode::List);
+            return self.load_visible_thumbnails();
+        }
         self.live_refresh()
     }
 
@@ -1435,6 +1521,11 @@ impl App {
     fn activate_tree_row(&mut self, id: u64) -> Task<Message> {
         if self.prompt_blocks_action() {
             return Task::none();
+        }
+        if find_node(&self.explorer.roots, id)
+            .is_some_and(|node| node.kind == state::NodeKind::Recent)
+        {
+            return self.open_recent();
         }
         let current = self.navigation.current().to_path_buf();
         let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
@@ -1650,12 +1741,39 @@ impl App {
             CommandSubmission::Favorite(arguments) => {
                 match self.places.command(self.navigation.current(), &arguments) {
                     Ok(status) => {
-                        self.explorer.install_places(self.places.entries());
+                        self.install_locations();
                         if arguments.is_empty() || arguments == "list" {
                             self.command.show_settings(status);
                             self.sync_bottom_bar();
                         } else {
                             self.status = status;
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+                Task::none()
+            }
+            CommandSubmission::Recent(arguments) => {
+                match self.recent.command(&arguments) {
+                    Ok((effect, status)) => {
+                        self.status = status;
+                        self.install_locations();
+                        match effect {
+                            recent::Effect::Open => return self.open_recent(),
+                            recent::Effect::Reload
+                                if self.virtual_location == Some(VirtualLocation::Recent) =>
+                            {
+                                return self.open_recent();
+                            }
+                            recent::Effect::Disabled
+                                if self.virtual_location == Some(VirtualLocation::Recent) =>
+                            {
+                                let current = self.navigation.current().to_path_buf();
+                                return self.navigate(current, false, None);
+                            }
+                            recent::Effect::Reload
+                            | recent::Effect::Disabled
+                            | recent::Effect::Enabled => {}
                         }
                     }
                     Err(error) => self.status = error,
@@ -2487,6 +2605,7 @@ impl App {
             && self.transfer_conflict.is_none()
             && !self.navigation_loading
             && !self.search.is_recursive()
+            && self.virtual_location.is_none()
     }
 
     #[cfg(test)]
@@ -2507,12 +2626,12 @@ impl App {
             self.status = status;
             return;
         }
+        let location = self.virtual_location.map_or_else(
+            || self.navigation.current().display().to_string(),
+            |_| "Recent".to_owned(),
+        );
         self.status = if self.grid.selection_count() > 1 {
-            format!(
-                "{} selected  •  {}",
-                self.grid.selection_count(),
-                self.navigation.current().display()
-            )
+            format!("{} selected  •  {}", self.grid.selection_count(), location)
         } else if let Some(entry) = self
             .grid
             .selected_entry()
@@ -2524,11 +2643,7 @@ impl App {
                 None => format!("{name}  •  Loading details…"),
             }
         } else {
-            format!(
-                "{} items  •  {}",
-                self.navigation.entries().len(),
-                self.navigation.current().display()
-            )
+            format!("{} items  •  {}", self.navigation.entries().len(), location)
         };
     }
 
@@ -2658,7 +2773,10 @@ impl App {
                 include_bytes!("../ui/icons/folder.svg").as_slice(),
                 self.accent_color(),
             ),
-            state::NodeKind::Home | state::NodeKind::Place | state::NodeKind::Favorite => (
+            state::NodeKind::Home
+            | state::NodeKind::Place
+            | state::NodeKind::Favorite
+            | state::NodeKind::Recent => (
                 include_bytes!("../ui/icons/folder.svg").as_slice(),
                 self.accent_color(),
             ),
@@ -2721,7 +2839,7 @@ impl App {
         let parent = toolbar_button(
             include_bytes!("../ui/icons/up.svg"),
             "Parent folder",
-            self.navigation.current().parent().is_some(),
+            self.virtual_location.is_none() && self.navigation.current().parent().is_some(),
             Message::Parent,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
@@ -2786,6 +2904,13 @@ impl App {
             .width(Fill)
             .height(34)
             .into()
+        } else if self.virtual_location == Some(VirtualLocation::Recent) {
+            container(text("Recent").font(UI_FONT_SEMIBOLD).size(13))
+                .width(Fill)
+                .height(34)
+                .padding(Padding::from([0, 7]))
+                .center_y(34)
+                .into()
         } else {
             let mut crumbs = Row::new().spacing(1).align_y(Alignment::Center);
             for (label, path) in breadcrumb_segments(self.navigation.current()) {

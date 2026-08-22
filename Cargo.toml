@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gio = "0.22.8"
+gio = { version = "0.22.8", features = ["v2_76"] }
 iced = { version = "=0.14.0", features = ["advanced", "image", "svg", "tokio"] }
 image = { version = "0.25.8", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2.189"

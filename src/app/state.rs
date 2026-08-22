@@ -14,6 +14,7 @@ pub(super) enum NodeKind {
     Home,
     Place,
     Favorite,
+    Recent,
 }
 
 #[derive(Clone, Debug)]
@@ -163,7 +164,7 @@ impl ExplorerState {
         self.roots.retain(|node| {
             !matches!(
                 node.kind,
-                NodeKind::Home | NodeKind::Place | NodeKind::Favorite
+                NodeKind::Home | NodeKind::Place | NodeKind::Favorite | NodeKind::Recent
             )
         });
         for (index, place) in (1..).zip(places) {
