@@ -4,9 +4,17 @@
 
 **Blocked by:** 17: List view, sorting, and directory view overrides; 18: Hidden entries across browsing and search; 19: Breadcrumb navigation and click activation.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Common view settings remain visible in the toolbar or menus.
-- [ ] `:set` inspects and changes global values with completion and validation.
-- [ ] `:setlocal` stores and removes per-directory overrides.
-- [ ] Invalid settings leave prior values unchanged and explain the error.
+- [x] Common view settings remain visible in the toolbar or menus.
+- [x] `:set` inspects and changes global values with completion and validation.
+- [x] `:setlocal` stores and removes per-directory overrides.
+- [x] Invalid settings leave prior values unchanged and explain the error.
+
+## Answer
+
+The toolbar retains direct view, sort, direction, folders-first, hidden-entry, and click controls.
+`:set` reads or atomically changes their persistent global values, while `:setlocal` writes the
+current directory override and `option&` restores a field from the global value. `:set all` opens
+the documented option list in the bottom bar. Tab completes unambiguous setting names, and parser
+or persistence errors preserve the previous settings and report the rejected value.

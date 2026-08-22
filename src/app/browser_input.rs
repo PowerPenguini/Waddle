@@ -52,6 +52,7 @@ pub(super) enum NamedKey {
     Home,
     End,
     Space,
+    Tab,
     #[default]
     Other,
 }
@@ -103,6 +104,7 @@ pub(super) enum Intent {
     Refresh,
     ToggleHidden,
     BeginLocation,
+    CompleteCommand,
     SelectAll,
     ToggleActive,
     StandardMove { motion: Motion, extend: bool },
@@ -262,6 +264,9 @@ impl BrowserInput {
         }
 
         if self.mode != Mode::Browser {
+            if self.mode == Mode::Command && press.named == NamedKey::Tab {
+                return Intent::CompleteCommand;
+            }
             if press.named != NamedKey::Escape {
                 return Intent::None;
             }
@@ -742,6 +747,22 @@ mod tests {
         assert_eq!(
             input.handle(control("d"), selected()),
             Intent::Move(Motion::HalfPageDown, 1)
+        );
+    }
+
+    #[test]
+    fn tab_is_owned_by_command_completion_only_in_command_mode() {
+        let mut input = BrowserInput::default();
+        input.enter(Mode::Command);
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Tab,
+                    ..Press::default()
+                },
+                selected(),
+            ),
+            Intent::CompleteCommand
         );
     }
 

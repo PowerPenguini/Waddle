@@ -840,6 +840,7 @@ impl App {
             keyboard::Key::Named(keyboard::key::Named::Home) => InputNamedKey::Home,
             keyboard::Key::Named(keyboard::key::Named::End) => InputNamedKey::End,
             keyboard::Key::Named(keyboard::key::Named::Space) => InputNamedKey::Space,
+            keyboard::Key::Named(keyboard::key::Named::Tab) => InputNamedKey::Tab,
             _ => InputNamedKey::Other,
         };
         let intent = self.browser_input.handle(
@@ -909,6 +910,12 @@ impl App {
             InputIntent::Refresh => self.live_refresh(),
             InputIntent::ToggleHidden => self.update(Message::ToggleHidden),
             InputIntent::BeginLocation => self.begin_location(),
+            InputIntent::CompleteCommand => {
+                if !self.command.complete_setting() {
+                    self.status = "No unique setting completion".to_owned();
+                }
+                Task::none()
+            }
             InputIntent::SelectAll => {
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
@@ -1534,6 +1541,27 @@ impl App {
                 self.command.show_diagnostics(self.diagnostics.report());
                 self.sync_bottom_bar();
                 Task::none()
+            }
+            CommandSubmission::Settings { local, arguments } => {
+                match self.view_preferences.apply_command(
+                    self.navigation.current(),
+                    local,
+                    &arguments,
+                ) {
+                    Ok(status) => {
+                        if arguments.is_empty() || arguments == "all" {
+                            self.command.show_settings(status);
+                            self.sync_bottom_bar();
+                            return Task::none();
+                        }
+                        self.status = status;
+                        self.live_refresh()
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        Task::none()
+                    }
+                }
             }
             CommandSubmission::Execute(execution) => {
                 self.busy = true;

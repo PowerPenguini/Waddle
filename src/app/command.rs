@@ -9,6 +9,8 @@ Commands
   :terminal, :t Open a terminal in the current directory
   :refresh      Refresh the current view
   :diagnostics  Show local command failure history
+  :set ...      Inspect or change global settings
+  :setlocal ... Inspect or change this folder's settings
   :cd PATH      Change PolarExp's current directory
   :q            Quit PolarExp
   :COMMAND      Run Bash and keep its final directory
@@ -99,6 +101,7 @@ pub(super) enum Submission {
     Updated,
     Refresh,
     Diagnostics,
+    Settings { local: bool, arguments: String },
     Execute(Execution),
 }
 
@@ -177,6 +180,17 @@ impl CommandSession {
         if prefix == ':' && matches!(trimmed, "diagnostics" | "diag") {
             return Submission::Diagnostics;
         }
+        if prefix == ':'
+            && let Some((command, arguments)) = trimmed
+                .split_once(char::is_whitespace)
+                .or(Some((trimmed, "")))
+            && matches!(command, "set" | "setlocal")
+        {
+            return Submission::Settings {
+                local: command == "setlocal",
+                arguments: arguments.trim().to_owned(),
+            };
+        }
         if trimmed.is_empty() {
             return Submission::None;
         }
@@ -254,6 +268,84 @@ impl CommandSession {
             detail,
         });
     }
+
+    pub(super) fn show_settings(&mut self, detail: String) {
+        self.output = Some(Output {
+            summary: ":set  •  persistent settings".to_owned(),
+            detail,
+        });
+    }
+
+    pub(super) fn complete_setting(&mut self) -> bool {
+        const CANDIDATES: &[&str] = &[
+            "set all",
+            "set view=",
+            "set sort=",
+            "set direction=",
+            "set folders-first=",
+            "set hidden=",
+            "set click=",
+            "set view=grid",
+            "set view=list",
+            "set sort=name",
+            "set sort=modified",
+            "set sort=size",
+            "set sort=type",
+            "set direction=ascending",
+            "set direction=descending",
+            "set folders-first=true",
+            "set folders-first=false",
+            "set hidden=true",
+            "set hidden=false",
+            "set click=single",
+            "set click=double",
+            "setlocal all",
+            "setlocal view=",
+            "setlocal sort=",
+            "setlocal direction=",
+            "setlocal folders-first=",
+            "setlocal hidden=",
+            "setlocal view&",
+            "setlocal sort&",
+            "setlocal hidden&",
+            "setlocal view=grid",
+            "setlocal view=list",
+            "setlocal sort=name",
+            "setlocal sort=modified",
+            "setlocal sort=size",
+            "setlocal sort=type",
+            "setlocal direction=ascending",
+            "setlocal direction=descending",
+            "setlocal folders-first=true",
+            "setlocal folders-first=false",
+            "setlocal hidden=true",
+            "setlocal hidden=false",
+        ];
+        let matches = CANDIDATES
+            .iter()
+            .filter(|candidate| candidate.starts_with(&self.text))
+            .copied()
+            .collect::<Vec<_>>();
+        let Some(first) = matches.first() else {
+            return false;
+        };
+        let common_length = matches
+            .iter()
+            .skip(1)
+            .fold(first.len(), |length, candidate| {
+                first
+                    .bytes()
+                    .zip(candidate.bytes())
+                    .take_while(|(left, right)| left == right)
+                    .count()
+                    .min(length)
+            });
+        if common_length <= self.text.len() {
+            return false;
+        }
+        self.text = first[..common_length].to_owned();
+        true
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +418,28 @@ mod tests {
             session.submit(PathBuf::from("/work")),
             Submission::Diagnostics
         ));
+    }
+
+    #[test]
+    fn setting_commands_preserve_scope_and_complete_unique_names() {
+        let mut session = CommandSession::default();
+        session.begin(':');
+        session.change("setlocal view=list".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            Submission::Settings {
+                local: true,
+                arguments
+            } if arguments == "view=list"
+        ));
+
+        session.begin(':');
+        session.change("set vie".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set view=");
+        session.change("set view=l".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set view=list");
     }
 
     #[test]

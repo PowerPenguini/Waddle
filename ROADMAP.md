@@ -218,13 +218,13 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Settings without a Preferences screen
 
-- [ ] Keep common controls such as Grid/List, sorting, and hidden files discoverable in the
+- [x] Keep common controls such as Grid/List, sorting, and hidden files discoverable in the
   toolbar or menus.
-- [ ] Use `:set` for advanced settings and `:setlocal` for per-directory overrides.
-- [ ] Make `:set` show current values and `:set all` show every option with a short description.
-- [ ] Add completion and validation for option names and values.
-- [ ] Persist settings by default.
-- [ ] Let `:setlocal option&` remove a directory override.
+- [x] Use `:set` for advanced settings and `:setlocal` for per-directory overrides.
+- [x] Make `:set` show current values and `:set all` show every option with a short description.
+- [x] Add completion and validation for option names and values.
+- [x] Persist settings by default.
+- [x] Let `:setlocal option&` remove a directory override.
 - [ ] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
   reduced motion, and startup behavior.
 
