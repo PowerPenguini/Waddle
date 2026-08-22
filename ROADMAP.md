@@ -235,9 +235,9 @@ needs external drag and drop and a native clipboard adapter.
 - [ ] Add visible focus rings independent of hover and selection.
 - [ ] Trap focus inside active prompts and menus, then restore the previous focus on close.
 - [ ] Support Enter and Space activation where standard desktop controls expect them.
-- [ ] Add a high-contrast palette with opaque surfaces and non-color state indicators.
-- [ ] Respect reduced-motion and reduced-transparency preferences.
-- [ ] Stop the 16 ms animation subscription when reduced motion is active.
+- [x] Add a high-contrast palette with opaque surfaces and non-color state indicators.
+- [x] Respect reduced-motion and reduced-transparency preferences.
+- [x] Stop the 16 ms animation subscription when reduced motion is active.
 - [ ] Do not make screen-reader support a 1.0 release gate while stock Iced lacks an accessibility
   tree.
 

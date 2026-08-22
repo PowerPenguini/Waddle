@@ -9,6 +9,13 @@ pub struct ThemeColors {
     pub selection_foreground: Option<Color>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AccessibilityPreferences {
+    pub high_contrast: bool,
+    pub reduced_motion: bool,
+    pub reduced_transparency: bool,
+}
+
 pub fn interface_settings() -> Option<gio::Settings> {
     let source = gio::SettingsSchemaSource::default()?;
     let schema = source.lookup("org.gnome.desktop.interface", true)?;
@@ -24,6 +31,31 @@ pub fn load(settings: Option<&gio::Settings>) -> Option<ThemeColors> {
         .into_iter()
         .filter_map(|path| fs::read_to_string(path).ok())
         .find_map(|css| parse_theme_css(&css))
+}
+
+pub fn accessibility(settings: Option<&gio::Settings>) -> AccessibilityPreferences {
+    let Some(settings) = settings else {
+        return AccessibilityPreferences::default();
+    };
+    let schema = settings.settings_schema();
+    let theme = if schema
+        .as_ref()
+        .is_some_and(|schema| schema.has_key("gtk-theme"))
+    {
+        settings.string("gtk-theme").to_ascii_lowercase()
+    } else {
+        String::new()
+    };
+    let high_contrast = theme.contains("highcontrast") || theme.contains("high-contrast");
+    let reduced_motion = schema
+        .as_ref()
+        .is_some_and(|schema| schema.has_key("enable-animations"))
+        && !settings.boolean("enable-animations");
+    AccessibilityPreferences {
+        high_contrast,
+        reduced_motion,
+        reduced_transparency: high_contrast,
+    }
 }
 
 fn theme_css_candidates(settings: Option<&gio::Settings>) -> Vec<PathBuf> {

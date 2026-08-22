@@ -260,6 +260,7 @@ struct App {
     native_dnd_error: Option<String>,
     modifiers: keyboard::Modifiers,
     system_mode: iced::theme::Mode,
+    system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
 }
 
@@ -274,7 +275,9 @@ impl App {
         let now = Instant::now();
         let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let explorer = ExplorerState::new(mounted_roots());
-        let accent = theme::load(theme::interface_settings().as_ref());
+        let interface_settings = theme::interface_settings();
+        let accent = theme::load(interface_settings.as_ref());
+        let system_accessibility = theme::accessibility(interface_settings.as_ref());
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
             Err(error) => (journal::Journal::empty_default(), Some(error)),
@@ -323,6 +326,7 @@ impl App {
             native_dnd_error: None,
             modifiers: keyboard::Modifiers::default(),
             system_mode: iced::theme::Mode::Dark,
+            system_accessibility,
             accent,
         };
         let navigation = app.navigation.refresh(None);
@@ -335,11 +339,14 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let animation = if self.output_expansion.is_animating(self.animation_now)
-            || self.spinner_active()
-            || self.drag_in_progress()
+        let animation = if !self.reduced_motion()
+            && (self.output_expansion.is_animating(self.animation_now)
+                || self.spinner_active()
+                || self.drag_in_progress())
         {
             time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
+        } else if self.reduced_motion() && self.drag_in_progress() {
+            time::every(Duration::from_millis(100)).map(Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -369,7 +376,16 @@ impl App {
             .accent
             .as_ref()
             .map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent);
-        let palette = if dark {
+        let palette = if self.high_contrast() {
+            iced::theme::Palette {
+                background: Color::BLACK,
+                text: Color::WHITE,
+                primary: Color::from_rgb8(0, 220, 255),
+                success: Color::from_rgb8(80, 255, 120),
+                danger: Color::from_rgb8(255, 80, 80),
+                warning: Color::from_rgb8(255, 230, 0),
+            }
+        } else if dark {
             iced::theme::Palette {
                 background: Color::from_rgb8(28, 28, 28),
                 text: Color::from_rgb8(242, 242, 242),
@@ -402,12 +418,15 @@ impl App {
     }
 
     fn spinner(&self, size: f32) -> widget::Svg<'static> {
-        let angle = self
-            .animation_now
-            .duration_since(self.spinner_started)
-            .as_secs_f32()
-            * std::f32::consts::TAU
-            / 0.9;
+        let angle = if self.reduced_motion() {
+            0.0
+        } else {
+            self.animation_now
+                .duration_since(self.spinner_started)
+                .as_secs_f32()
+                * std::f32::consts::TAU
+                / 0.9
+        };
         themed_svg(
             include_bytes!("../ui/icons/spinner.svg"),
             size,
@@ -422,6 +441,24 @@ impl App {
             background_color: Color::TRANSPARENT,
             text_color: palette.text,
         }
+    }
+
+    fn high_contrast(&self) -> bool {
+        self.view_preferences
+            .high_contrast()
+            .resolve(self.system_accessibility.high_contrast)
+    }
+
+    fn reduced_motion(&self) -> bool {
+        self.view_preferences
+            .reduced_motion()
+            .resolve(self.system_accessibility.reduced_motion)
+    }
+
+    fn reduced_transparency(&self) -> bool {
+        self.view_preferences
+            .reduced_transparency()
+            .resolve(self.system_accessibility.reduced_transparency)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -495,7 +532,9 @@ impl App {
                 Task::none()
             }
             Message::PollSystem => {
-                self.accent = theme::load(theme::interface_settings().as_ref());
+                let settings = theme::interface_settings();
+                self.accent = theme::load(settings.as_ref());
+                self.system_accessibility = theme::accessibility(settings.as_ref());
                 let mounts = mounted_roots();
                 self.explorer.reconcile_mounts(mounts);
                 if self.search.is_recursive() {
@@ -1605,8 +1644,17 @@ impl App {
     }
 
     fn sync_bottom_bar(&mut self) {
-        let expanded_height = self
-            .command
+        let expanded_height = self.desired_expanded_height();
+        if let Some(height) = expanded_height {
+            self.expanded_bar_height = height;
+        }
+        self.animation_now = Instant::now();
+        self.output_expansion
+            .go_mut(expanded_height.is_some(), self.animation_now);
+    }
+
+    fn desired_expanded_height(&self) -> Option<f32> {
+        self.command
             .output()
             .map(|output| expanded_bar_height(&output.detail))
             .or_else(|| {
@@ -1614,13 +1662,7 @@ impl App {
                     .expanded_detail()
                     .map(expanded_bar_height)
             })
-            .or_else(|| self.transfer_queue.expanded().then_some(190.0));
-        if let Some(height) = expanded_height {
-            self.expanded_bar_height = height;
-        }
-        self.animation_now = Instant::now();
-        self.output_expansion
-            .go_mut(expanded_height.is_some(), self.animation_now);
+            .or_else(|| self.transfer_queue.expanded().then_some(190.0))
     }
 
     fn show_rename(&mut self, index: usize) -> Task<Message> {
@@ -2418,6 +2460,9 @@ impl App {
     }
 
     fn status_height(&self) -> f32 {
+        if self.reduced_motion() {
+            return self.desired_expanded_height().unwrap_or(STATUS_HEIGHT);
+        }
         self.output_expansion.interpolate(
             STATUS_HEIGHT,
             self.expanded_bar_height,
@@ -2509,7 +2554,9 @@ impl App {
             .width(SIDEBAR_WIDTH)
             .height(Fill)
             .padding(Padding::from([8, 12]))
-            .style(sidebar_style)
+            .style(move |theme| {
+                sidebar_style(theme, self.high_contrast() || self.reduced_transparency())
+            })
             .into()
     }
 
@@ -2951,11 +2998,7 @@ impl App {
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        let height = self.output_expansion.interpolate(
-            STATUS_HEIGHT,
-            self.expanded_bar_height,
-            self.animation_now,
-        );
+        let height = self.status_height();
         let content: Element<'_, Message> = if let Some(output) = self.command.output() {
             let header = row![
                 text(&output.summary)
@@ -3434,6 +3477,9 @@ impl App {
     }
 
     fn accent_color(&self) -> Color {
+        if self.high_contrast() {
+            return self.iced_theme().palette().primary;
+        }
         self.accent
             .as_ref()
             .map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent)
@@ -3441,11 +3487,18 @@ impl App {
 
     fn secondary_text_color(&self) -> Color {
         let mut color = self.iced_theme().palette().text;
-        color.a = 0.62;
+        color.a = if self.high_contrast() || self.reduced_transparency() {
+            1.0
+        } else {
+            0.62
+        };
         color
     }
 
     fn selection_text_color(&self) -> Color {
+        if self.high_contrast() {
+            return Color::BLACK;
+        }
         self.accent
             .as_ref()
             .and_then(|colors| colors.selection_foreground)
@@ -3621,13 +3674,16 @@ fn toolbar_button(
         .style(toolbar_button_style)
 }
 
-fn sidebar_style(theme: &Theme) -> container::Style {
+fn sidebar_style(theme: &Theme, opaque: bool) -> container::Style {
     let background = theme.palette().background;
     let alternate = if background.r > 0.5 {
         Color::from_rgb8(240, 240, 240)
     } else {
         Color::from_rgb8(44, 44, 44)
     };
+    if opaque {
+        return container::Style::default().background(alternate);
+    }
     // Iced makes differences between transparent stops much more pronounced
     // than Slint. Keep the 112 degree color progression, but use one alpha for
     // the whole surface so the wallpaper remains visible without a hard wedge.
@@ -3668,11 +3724,20 @@ fn tree_button_style(
     drop_target: bool,
 ) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let high_contrast = is_high_contrast_theme(theme);
     button::Style {
         background: if drop_target {
-            Some(Background::Color(with_alpha(theme.palette().primary, 0.36)))
+            Some(Background::Color(if high_contrast {
+                theme.palette().warning
+            } else {
+                with_alpha(theme.palette().primary, 0.36)
+            }))
         } else if selected {
-            Some(Background::Color(with_alpha(theme.palette().primary, 0.22)))
+            Some(Background::Color(if high_contrast {
+                theme.palette().primary
+            } else {
+                with_alpha(theme.palette().primary, 0.22)
+            }))
         } else if hovered {
             Some(Background::Color(with_alpha(theme.palette().text, 0.06)))
         } else {
@@ -3680,8 +3745,18 @@ fn tree_button_style(
         },
         text_color: theme.palette().text,
         border: Border {
-            width: if drop_target { 1.0 } else { 0.0 },
-            color: theme.palette().primary,
+            width: if drop_target {
+                3.0
+            } else if high_contrast && selected {
+                1.0
+            } else {
+                0.0
+            },
+            color: if drop_target {
+                theme.palette().text
+            } else {
+                theme.palette().background
+            },
             radius: 5.0.into(),
         },
         ..button::Style::default()
@@ -3690,19 +3765,42 @@ fn tree_button_style(
 
 fn tile_style(theme: &Theme, selected: bool, hovered: bool, drop_target: bool) -> container::Style {
     let mut style = container::Style::default();
+    let high_contrast = is_high_contrast_theme(theme);
     if drop_target {
-        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.30)));
+        style.background = Some(Background::Color(if high_contrast {
+            theme.palette().warning
+        } else {
+            with_alpha(theme.palette().primary, 0.30)
+        }));
     } else if selected {
-        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.45)));
+        style.background = Some(Background::Color(if high_contrast {
+            theme.palette().primary
+        } else {
+            with_alpha(theme.palette().primary, 0.45)
+        }));
     } else if hovered {
         style.background = Some(Background::Color(lighter(theme.palette().background, 16)));
     }
     style.border = Border {
-        width: if drop_target { 2.0 } else { 0.0 },
-        color: theme.palette().primary,
+        width: if drop_target {
+            3.0
+        } else if high_contrast && selected {
+            1.0
+        } else {
+            0.0
+        },
+        color: if drop_target {
+            theme.palette().text
+        } else {
+            theme.palette().background
+        },
         radius: 7.0.into(),
     };
     style
+}
+
+fn is_high_contrast_theme(theme: &Theme) -> bool {
+    theme.palette().background == Color::BLACK && theme.palette().text == Color::WHITE
 }
 
 fn marquee_style(accent: Color) -> container::Style {

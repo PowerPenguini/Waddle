@@ -8,12 +8,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::fs::{BrowseOptions, SortKey, ViewMode};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) enum PreferenceOverride {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl PreferenceOverride {
+    pub(super) fn resolve(self, system: bool) -> bool {
+        match self {
+            Self::Auto => system,
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct Stored {
     global: BrowseOptions,
     overrides: BTreeMap<PathBuf, BrowseOptions>,
     single_click_activation: bool,
+    high_contrast: PreferenceOverride,
+    reduced_motion: PreferenceOverride,
+    reduced_transparency: PreferenceOverride,
 }
 
 pub(super) struct Preferences {
@@ -65,6 +86,18 @@ impl Preferences {
         let _ = self.save();
     }
 
+    pub(super) fn high_contrast(&self) -> PreferenceOverride {
+        self.stored.high_contrast
+    }
+
+    pub(super) fn reduced_motion(&self) -> PreferenceOverride {
+        self.stored.reduced_motion
+    }
+
+    pub(super) fn reduced_transparency(&self) -> PreferenceOverride {
+        self.stored.reduced_transparency
+    }
+
     pub(super) fn apply_command(
         &mut self,
         directory: &Path,
@@ -77,7 +110,7 @@ impl Preferences {
         }
         if arguments == "all" {
             return Ok(format!(
-                "{}\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global)",
+                "{}\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global)\nhigh-contrast: auto, true, or false\nreduced-motion: auto, true, or false\nreduced-transparency: auto, true, or false",
                 self.describe(directory, local)
             ));
         }
@@ -88,6 +121,11 @@ impl Preferences {
             self.stored.global
         };
         let mut click = self.stored.single_click_activation;
+        let mut visual = (
+            self.stored.high_contrast,
+            self.stored.reduced_motion,
+            self.stored.reduced_transparency,
+        );
         for argument in arguments.split_whitespace() {
             apply_option(
                 &mut options,
@@ -95,6 +133,7 @@ impl Preferences {
                 argument,
                 local,
                 self.stored.global,
+                &mut visual,
             )?;
         }
         if local {
@@ -108,6 +147,9 @@ impl Preferences {
         } else {
             self.stored.global = options;
             self.stored.single_click_activation = click;
+            self.stored.high_contrast = visual.0;
+            self.stored.reduced_motion = visual.1;
+            self.stored.reduced_transparency = visual.2;
         }
         if let Err(error) = self.save() {
             self.stored = previous;
@@ -124,7 +166,7 @@ impl Preferences {
         };
         let scope = if local { "local" } else { "global" };
         format!(
-            "{scope}: view={} sort={} direction={} folders-first={} hidden={} click={}",
+            "{scope}: view={} sort={} direction={} folders-first={} hidden={} click={} high-contrast={} reduced-motion={} reduced-transparency={}",
             match options.view {
                 ViewMode::Grid => "grid",
                 ViewMode::List => "list",
@@ -147,6 +189,9 @@ impl Preferences {
             } else {
                 "double"
             },
+            override_label(self.stored.high_contrast),
+            override_label(self.stored.reduced_motion),
+            override_label(self.stored.reduced_transparency),
         )
     }
 
@@ -169,6 +214,7 @@ fn apply_option(
     argument: &str,
     local: bool,
     global: BrowseOptions,
+    visual: &mut (PreferenceOverride, PreferenceOverride, PreferenceOverride),
 ) -> Result<(), String> {
     if let Some(name) = argument.strip_suffix('&') {
         if !local {
@@ -216,12 +262,35 @@ fn apply_option(
         ("click", _) if local => return Err("click activation is a global setting".to_owned()),
         ("click", "single") => *click = true,
         ("click", "double") => *click = false,
+        ("high-contrast", value) if !local => visual.0 = parse_override(name, value)?,
+        ("reduced-motion", value) if !local => visual.1 = parse_override(name, value)?,
+        ("reduced-transparency", value) if !local => visual.2 = parse_override(name, value)?,
+        ("high-contrast" | "reduced-motion" | "reduced-transparency", _) if local => {
+            return Err(format!("{name} is a global setting"));
+        }
         ("view" | "sort" | "direction" | "click", _) => {
             return Err(format!("invalid value for {name}: {value}"));
         }
         _ => return Err(format!("unknown setting: {name}")),
     }
     Ok(())
+}
+
+fn parse_override(name: &str, value: &str) -> Result<PreferenceOverride, String> {
+    match value {
+        "auto" => Ok(PreferenceOverride::Auto),
+        "true" | "on" | "yes" => Ok(PreferenceOverride::On),
+        "false" | "off" | "no" => Ok(PreferenceOverride::Off),
+        _ => Err(format!("invalid override for {name}: {value}")),
+    }
+}
+
+fn override_label(value: PreferenceOverride) -> &'static str {
+    match value {
+        PreferenceOverride::Auto => "auto",
+        PreferenceOverride::On => "true",
+        PreferenceOverride::Off => "false",
+    }
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
@@ -320,5 +389,23 @@ mod tests {
                 .is_err()
         );
         assert_eq!(preferences.for_directory(directory), before);
+    }
+
+    #[test]
+    fn accessibility_overrides_resolve_against_system_preferences() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut preferences = Preferences::empty_at(temp.path().join("view.json"));
+        preferences
+            .apply_command(
+                Path::new("/work"),
+                false,
+                "high-contrast=true reduced-motion=false reduced-transparency=auto",
+            )
+            .unwrap();
+
+        assert!(preferences.high_contrast().resolve(false));
+        assert!(!preferences.reduced_motion().resolve(true));
+        assert!(preferences.reduced_transparency().resolve(true));
+        assert!(!preferences.reduced_transparency().resolve(false));
     }
 }
