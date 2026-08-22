@@ -27,6 +27,7 @@ mod native_clipboard;
 mod native_dnd;
 #[cfg(target_os = "linux")]
 mod x11_clipboard;
+mod x11_dnd;
 
 #[cfg(test)]
 mod tests;
@@ -97,6 +98,7 @@ const RENAME_ID: &str = "rename";
 const NEW_FOLDER_ID: &str = "new-folder";
 const GRID_SCROLL_ID: &str = "grid-scroll";
 const SIDEBAR_SCROLL_ID: &str = "sidebar-scroll";
+const X11_INBOUND_ID: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryIconKind {
@@ -160,6 +162,7 @@ enum Message {
     WindowResized(Size),
     NativeReady(Result<native_clipboard::Attached, String>),
     NativeDndEvent(TransferEvent),
+    X11DropReady(u64),
     ExternalDragFinished(Result<TransferOutcome, String>),
     TransferBatchFinished {
         id: u64,
@@ -316,9 +319,12 @@ struct App {
     navigation_loading: bool,
     context_menu: Option<(usize, Point)>,
     context_menu_cursor: usize,
-    native_dnd: Option<native_dnd::Source>,
+    native_dnd: Option<native_clipboard::DndSource>,
     native_clipboard: Option<native_clipboard::Source>,
     native_dnd_error: Option<String>,
+    x11_drop_paths: Vec<PathBuf>,
+    x11_drop_generation: u64,
+    x11_drop_action: TransferAction,
     modifiers: keyboard::Modifiers,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
@@ -416,6 +422,9 @@ impl App {
             native_dnd: None,
             native_clipboard: None,
             native_dnd_error: None,
+            x11_drop_paths: Vec::new(),
+            x11_drop_generation: 0,
+            x11_drop_action: TransferAction::Copy,
             modifiers: keyboard::Modifiers::default(),
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
@@ -574,7 +583,7 @@ impl App {
             Message::NativeReady(result) => {
                 match result {
                     Ok(attached) => {
-                        self.native_dnd = attached.wayland_dnd;
+                        self.native_dnd = Some(attached.dnd);
                         self.native_clipboard = Some(attached.clipboard);
                         self.native_dnd_error = None;
                     }
@@ -586,6 +595,7 @@ impl App {
                 Task::none()
             }
             Message::NativeDndEvent(event) => self.handle_native_dnd_event(event),
+            Message::X11DropReady(generation) => self.finish_x11_drop(generation),
             Message::ExternalDragFinished(result) => {
                 let consequences = self.transfers.finish_outgoing(result);
                 self.apply_transfer_consequences(consequences)
@@ -1033,6 +1043,42 @@ impl App {
 
     fn handle_event(&mut self, event: iced::Event, _status: event::Status) -> Task<Message> {
         match event {
+            iced::Event::Window(window::Event::FileHovered(path)) if self.x11_dnd_active() => {
+                let first_path = self.x11_drop_paths.is_empty();
+                if !self.x11_drop_paths.contains(&path) {
+                    self.x11_drop_paths.push(path);
+                }
+                if first_path {
+                    self.x11_drop_action = self.native_dnd.as_ref().map_or(
+                        TransferAction::Copy,
+                        native_clipboard::DndSource::incoming_action,
+                    );
+                }
+                self.handle_native_dnd_event(TransferEvent::Hover {
+                    id: X11_INBOUND_ID,
+                    position: self.grid.cursor(),
+                    action: self.x11_drop_action,
+                })
+            }
+            iced::Event::Window(window::Event::FilesHoveredLeft) if self.x11_dnd_active() => {
+                self.x11_drop_paths.clear();
+                self.x11_drop_action = TransferAction::Copy;
+                self.handle_native_dnd_event(TransferEvent::Leave { id: X11_INBOUND_ID })
+            }
+            iced::Event::Window(window::Event::FileDropped(path)) if self.x11_dnd_active() => {
+                if !self.x11_drop_paths.contains(&path) {
+                    self.x11_drop_paths.push(path);
+                }
+                self.x11_drop_generation = self.x11_drop_generation.wrapping_add(1);
+                let generation = self.x11_drop_generation;
+                Task::perform(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        generation
+                    },
+                    Message::X11DropReady,
+                )
+            }
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 self.modifiers = modifiers;
                 Task::none()
@@ -3094,6 +3140,36 @@ impl App {
             self.update_drag_hover(position);
         }
         task
+    }
+
+    fn x11_dnd_active(&self) -> bool {
+        self.native_dnd
+            .as_ref()
+            .is_some_and(native_clipboard::DndSource::is_x11)
+    }
+
+    fn finish_x11_drop(&mut self, generation: u64) -> Task<Message> {
+        if generation != self.x11_drop_generation || self.x11_drop_paths.is_empty() {
+            return Task::none();
+        }
+        let paths = std::mem::take(&mut self.x11_drop_paths);
+        let destination = self
+            .transfers
+            .native_hover_destination()
+            .flatten()
+            .map(Path::to_path_buf)
+            .or_else(|| self.drop_destination_at(self.grid.cursor(), true));
+        let Some(destination) = destination else {
+            self.status_notice = Some("This is not a valid drop target".to_owned());
+            return self.handle_native_dnd_event(TransferEvent::Leave { id: X11_INBOUND_ID });
+        };
+        let action = std::mem::replace(&mut self.x11_drop_action, TransferAction::Copy);
+        self.handle_native_dnd_event(TransferEvent::Drop {
+            id: X11_INBOUND_ID,
+            paths,
+            destination,
+            action,
+        })
     }
 
     fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {

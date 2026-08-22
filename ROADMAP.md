@@ -174,11 +174,11 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Toggle hidden files with `Ctrl+H`.
 - [x] Include hidden entries in local and recursive filename search only while hidden files are
   visible.
-- [ ] Keep 1.0 filename-only search. Full-text search and structured filters belong to 1.1.
+- [x] Keep 1.0 filename-only search. Full-text search and structured filters belong to 1.1.
 
 ### Drag and drop
 
-- [ ] Add external X11 drag and drop.
+- [x] Add external X11 drag and drop.
 - [x] Autoscroll the grid and sidebar while dragging near an edge.
 - [x] Expand sidebar folders after a short hover.
 - [x] Enter a folder after a longer hover and show progress toward activation.

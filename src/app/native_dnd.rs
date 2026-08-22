@@ -813,7 +813,7 @@ impl Worker {
     }
 }
 
-fn render_icon(preview: Preview) -> Result<Vec<u8>, String> {
+pub(super) fn render_icon(preview: Preview) -> Result<Vec<u8>, String> {
     let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE as u32, ICON_SIZE as u32)
         .ok_or_else(|| "could not allocate the drag icon".to_owned())?;
     let svg = preview_svg(preview)?;
