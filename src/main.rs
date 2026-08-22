@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod fs;
+mod journal;
 mod theme;
 mod transfer;
 

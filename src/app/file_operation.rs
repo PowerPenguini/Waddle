@@ -84,12 +84,20 @@ impl Work {
                 value,
             } => {
                 let renamed = matches!(operation, NameOperation::Rename(_));
+                let source = match &operation {
+                    NameOperation::Rename(entry) => Some(entry.path.clone()),
+                    NameOperation::NewFolder => None,
+                };
                 let result = match operation {
                     NameOperation::NewFolder => fs::create_folder(&current, &value),
                     NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
                 }
                 .map_err(|error| error.to_string());
-                Completion::Name { renamed, result }
+                Completion::Name {
+                    renamed,
+                    source,
+                    result,
+                }
             }
             WorkKind::Trash(entries) => {
                 Completion::Trash(run_entries(entries, |entry| trash.trash(&entry.path)))
@@ -117,6 +125,7 @@ fn run_entries(
 pub(super) enum Completion {
     Name {
         renamed: bool,
+        source: Option<PathBuf>,
         result: Result<PathBuf, String>,
     },
     Trash(Vec<(FileEntry, String)>),
@@ -307,7 +316,9 @@ impl FileOperationSession {
     pub(super) fn complete(&mut self, completion: Completion) -> Consequences {
         self.busy = false;
         match completion {
-            Completion::Name { renamed, result } => match result {
+            Completion::Name {
+                renamed, result, ..
+            } => match result {
                 Ok(path) => {
                     self.state = State::Idle;
                     Consequences {
@@ -432,6 +443,7 @@ mod tests {
         assert!(session.submit_name(PathBuf::from("/work")).is_some());
         let consequences = session.complete(Completion::Name {
             renamed: true,
+            source: None,
             result: Err("collision".to_owned()),
         });
         assert_eq!(consequences, Consequences::default());

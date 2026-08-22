@@ -10,7 +10,8 @@ Browser
   Ctrl+D/U      Move down / up by half a page
   Enter         Open the selected item
   Backspace     Go to the parent directory
-  u / Ctrl+O    Go back
+  u / Ctrl+R    Undo / redo
+  Ctrl+O/I      Go back / forward
   v             Toggle visual selection
   r             Rename the selected item
   x             Cut the current selection
@@ -86,7 +87,10 @@ pub(super) enum Intent {
     Copy,
     Cut,
     Paste,
+    Undo,
+    Redo,
     Back,
+    Forward,
     BeginSearch,
     BeginCommand(char),
     RepeatSearch(bool),
@@ -297,6 +301,8 @@ impl BrowserInput {
                 Some("c") => Intent::Copy,
                 Some("v") => Intent::Paste,
                 Some("o") => Intent::Back,
+                Some("i") => Intent::Forward,
+                Some("r") => Intent::Redo,
                 Some("d") => Intent::Move(Motion::HalfPageDown, count),
                 Some("u") => Intent::Move(Motion::HalfPageUp, count),
                 _ => Intent::None,
@@ -384,7 +390,7 @@ impl BrowserInput {
             Some(":") => Intent::BeginCommand(':'),
             Some("n") => Intent::RepeatSearch(false),
             Some("N") => Intent::RepeatSearch(true),
-            Some("u") => Intent::Back,
+            Some("u") => Intent::Undo,
             Some("r") => Intent::Rename,
             Some("y") if context.file_operators_allowed => Intent::Copy,
             Some("p") => Intent::Paste,
@@ -666,6 +672,9 @@ mod tests {
         assert_eq!(input.handle(control("c"), selected()), Intent::Copy);
         assert_eq!(input.handle(control("V"), selected()), Intent::Paste);
         assert_eq!(input.handle(control("o"), selected()), Intent::Back);
+        assert_eq!(input.handle(control("i"), selected()), Intent::Forward);
+        assert_eq!(input.handle(control("r"), selected()), Intent::Redo);
+        assert_eq!(input.handle(text("u"), selected()), Intent::Undo);
         assert_eq!(
             input.handle(control("d"), selected()),
             Intent::Move(Motion::HalfPageDown, 1)

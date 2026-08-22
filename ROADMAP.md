@@ -86,7 +86,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Show incomplete sequences such as `3`, `d`, `g`, and `"_` in the bottom bar.
 - [x] Do not time out an incomplete sequence. `Esc` cancels it, and an invalid key resets it with
   a short message.
-- [ ] Use `u` for Undo, `Ctrl+R` for Redo, `Ctrl+O` for Back, and `Ctrl+I` for Forward.
+- [x] Use `u` for Undo, `Ctrl+R` for Redo, `Ctrl+O` for Back, and `Ctrl+I` for Forward.
 - [x] Give the focused sidebar its own Vim behavior: `j` and `k` move through visible nodes, `h`
   collapses or moves to the parent, `l` expands or opens, and `gg` and `G` jump to the ends.
 - [x] Disable file operators on technical sidebar roots such as Computer and Recent.
@@ -104,16 +104,16 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Persistent Undo and Redo
 
-- [ ] Store the last 100 operations or the last 30 days of history, whichever limit is reached
+- [x] Store the last 100 operations or the last 30 days of history, whichever limit is reached
   first.
 - [ ] Cover Rename, Move, Trash, New Folder, and Copy.
 - [ ] Never claim that permanent delete can be undone.
 - [ ] Remove a copied result during Undo only if it is still the unchanged result of that Copy.
-- [ ] Remove a newly created directory during Undo only if it is still empty.
-- [ ] Refuse Undo when later filesystem changes make the inverse operation unsafe.
-- [ ] Keep Redo available until the next new mutation.
-- [ ] Execute safe Undo immediately and report the result in the bottom bar.
-- [ ] Persist the operation report needed for recovery after restarting PolarExp.
+- [x] Remove a newly created directory during Undo only if it is still empty.
+- [x] Refuse Undo when later filesystem changes make the inverse operation unsafe.
+- [x] Keep Redo available until the next new mutation.
+- [x] Execute safe Undo immediately and report the result in the bottom bar.
+- [x] Persist the operation report needed for recovery after restarting PolarExp.
 
 ### Copy fidelity
 

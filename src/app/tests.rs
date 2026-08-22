@@ -227,6 +227,7 @@ fn successful_inline_rename_returns_to_the_browser() {
 
     let _ = app.finish_file_operation(FileOperationCompletion::Name {
         renamed: true,
+        source: None,
         result: Ok(PathBuf::from("/start/renamed.txt")),
     });
 

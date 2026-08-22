@@ -25,7 +25,7 @@ use std::{
 };
 
 use crate::{
-    fs, theme,
+    fs, journal, theme,
     transfer::{
         Action as TransferAction, Adapter, ClipboardAdapter, ClipboardImport,
         Event as TransferEvent, NativeUpdate, Outcome as TransferOutcome,
@@ -164,6 +164,10 @@ enum Message {
     PromptConfirm,
     PromptCancel,
     FileOperationFinished(file_operation::Completion),
+    JournalFinished {
+        journal: Box<journal::Journal>,
+        result: Result<journal::Effect, String>,
+    },
     Copy,
     Paste,
     ClipboardRead(Result<ClipboardImport, String>),
@@ -205,6 +209,7 @@ struct App {
     command: CommandSession,
     command_adapter: ProcessAdapter,
     file_operations: FileOperationSession,
+    journal: journal::Journal,
     trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -240,6 +245,10 @@ impl App {
         let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let explorer = ExplorerState::new(mounted_roots());
         let accent = theme::load(theme::interface_settings().as_ref());
+        let (journal, journal_error) = match journal::Journal::open_default() {
+            Ok(journal) => (journal, None),
+            Err(error) => (journal::Journal::empty_default(), Some(error)),
+        };
         let mut app = Self {
             explorer,
             navigation: NavigationSession::new(current.clone()),
@@ -250,6 +259,7 @@ impl App {
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
             file_operations: FileOperationSession::default(),
+            journal,
             trash_adapter: GioTrashAdapter,
             grid: GridInteraction::default(),
             browser_input: BrowserInput::default(),
@@ -262,7 +272,7 @@ impl App {
                 .easing(Easing::EaseOut),
             animation_now: now,
             spinner_started: now,
-            status: String::new(),
+            status: journal_error.unwrap_or_default(),
             status_notice: None,
             busy: false,
             navigation_loading: false,
@@ -563,6 +573,7 @@ impl App {
             Message::PromptConfirm => self.confirm_prompt(),
             Message::PromptCancel => self.cancel_prompt(),
             Message::FileOperationFinished(completion) => self.finish_file_operation(completion),
+            Message::JournalFinished { journal, result } => self.finish_journal(*journal, result),
             Message::Copy => self.copy_selection(),
             Message::Paste => self.paste(),
             Message::ClipboardRead(result) => match result {
@@ -742,7 +753,10 @@ impl App {
             InputIntent::Copy => self.update(Message::Copy),
             InputIntent::Cut => self.cut_selection(),
             InputIntent::Paste => self.update(Message::Paste),
+            InputIntent::Undo => self.run_journal(false),
+            InputIntent::Redo => self.run_journal(true),
             InputIntent::Back => self.go_back(),
+            InputIntent::Forward => self.go_forward(),
             InputIntent::BeginSearch => self.begin_search(),
             InputIntent::BeginCommand(prefix) => self.begin_command(prefix),
             InputIntent::RepeatSearch(reverse) => self.repeat_search(reverse),
@@ -1411,11 +1425,39 @@ impl App {
 
     fn finish_file_operation(&mut self, completion: file_operation::Completion) -> Task<Message> {
         self.busy = false;
+        let journal_action = match &completion {
+            file_operation::Completion::Name {
+                renamed: true,
+                source: Some(source),
+                result: Ok(destination),
+            } => journal::Action::rename(source.clone(), destination.clone()).map(Some),
+            file_operation::Completion::Name {
+                renamed: false,
+                result: Ok(path),
+                ..
+            } => journal::Action::new_folder(path.clone()).map(Some),
+            _ => Ok(None),
+        };
         let consequences = self.file_operations.complete(completion);
         if consequences.renamed {
             self.browser_input.leave_mode();
         }
         self.sync_bottom_bar();
+        match journal_action {
+            Ok(Some(action)) => {
+                if let Err(error) = self.journal.record(action) {
+                    self.status_notice = Some(format!(
+                        "Operation completed but Undo was not saved: {error}"
+                    ));
+                }
+            }
+            Err(error) => {
+                self.status_notice = Some(format!(
+                    "Operation completed but Undo is unavailable: {error}"
+                ));
+            }
+            Ok(None) => {}
+        }
         if consequences.refresh {
             Task::batch([
                 self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
@@ -1423,6 +1465,49 @@ impl App {
             ])
         } else {
             Task::none()
+        }
+    }
+
+    fn run_journal(&mut self, redo: bool) -> Task<Message> {
+        if !self.mutations_allowed() {
+            return Task::none();
+        }
+        self.busy = true;
+        let mut journal = self.journal.clone();
+        Task::perform(
+            self.operations.run(OperationKind::Mutation, move |_| {
+                let result = if redo { journal.redo() } else { journal.undo() };
+                Ok((journal, result))
+            }),
+            |completion| match completion {
+                Completion::Finished(Ok((journal, result))) => Message::JournalFinished {
+                    journal: Box::new(journal),
+                    result,
+                },
+                Completion::Finished(Err(error)) => Message::OperationError(error),
+                Completion::Cancelled => Message::Noop,
+            },
+        )
+    }
+
+    fn finish_journal(
+        &mut self,
+        journal: journal::Journal,
+        result: Result<journal::Effect, String>,
+    ) -> Task<Message> {
+        self.busy = false;
+        self.journal = journal;
+        match result {
+            Ok(effect) => {
+                self.status = effect.status;
+                let tree = self.invalidate_tree(effect.changed_folders);
+                let refresh = self.refresh(effect.select);
+                Task::batch([tree, refresh])
+            }
+            Err(error) => {
+                self.status = error;
+                Task::none()
+            }
         }
     }
 
