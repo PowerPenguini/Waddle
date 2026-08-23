@@ -107,6 +107,10 @@ impl GridInteraction {
         self.window_size = size;
     }
 
+    pub(super) fn window_width(&self) -> f32 {
+        self.window_size.width
+    }
+
     pub(super) fn set_list_mode(&mut self, list_mode: bool) {
         self.list_mode = list_mode;
     }

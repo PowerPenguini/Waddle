@@ -4,7 +4,7 @@ use iced::{event, keyboard, mouse};
 
 use super::{
     App, BrowserFocus, BrowserStatusPresentation, InputMode, Message, VirtualLocation,
-    breadcrumb_segments, nearest_existing_ancestor,
+    nearest_existing_ancestor,
 };
 use crate::app::file_operation::{
     Completion as FileOperationCompletion, View as FileOperationView,
@@ -45,6 +45,7 @@ fn entry(name: &str) -> FileEntry {
         path: PathBuf::from("/start").join(name),
         name: name.into(),
         directory: false,
+        metadata: Default::default(),
     }
 }
 
@@ -70,6 +71,7 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
             path: source.clone(),
             name: "notes.txt".into(),
             directory: false,
+            metadata: Default::default(),
         }])
         .unwrap();
     let request = workflow.paste(destination.clone()).unwrap();
@@ -85,6 +87,7 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
         path: temp.path().join("trash/files/notes.txt"),
         name: "notes.txt".into(),
         directory: false,
+        metadata: Default::default(),
     };
     app.virtual_location = Some(VirtualLocation::Trash);
     app.navigation
@@ -133,6 +136,7 @@ fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
         path: path.clone(),
         name: "notes.txt".into(),
         directory: false,
+        metadata: Default::default(),
     };
     let (mut app, _) = App::new();
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
@@ -159,22 +163,6 @@ fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
     assert_eq!(
         app.status_notice.as_deref(),
         Some("Cut restored after clipboard ownership changed")
-    );
-}
-
-#[test]
-fn breadcrumbs_preserve_each_navigable_ancestor() {
-    assert_eq!(
-        breadcrumb_segments(std::path::Path::new("/home/mateusz/Projects")),
-        [
-            ("/".to_owned(), PathBuf::from("/")),
-            ("home".to_owned(), PathBuf::from("/home")),
-            ("mateusz".to_owned(), PathBuf::from("/home/mateusz")),
-            (
-                "Projects".to_owned(),
-                PathBuf::from("/home/mateusz/Projects"),
-            ),
-        ]
     );
 }
 
@@ -234,6 +222,77 @@ fn space_activates_the_focused_toolbar_control() {
 }
 
 #[test]
+fn folders_first_is_a_setting_not_a_toolbar_control() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.view_preferences =
+        super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation_loading = false;
+    assert!(
+        app.view_preferences
+            .for_directory(app.navigation.current())
+            .folders_first
+    );
+
+    app.view_preferences
+        .apply_command(app.navigation.current(), false, "folders-first=false")
+        .unwrap();
+    app.browser_focus = BrowserFocus::Toolbar;
+    app.toolbar_cursor = usize::MAX;
+    let _ = app.move_focused(Motion::Last, 1, false);
+
+    assert_eq!(app.toolbar_cursor, 4);
+    assert_eq!(app.status, "Toolbar control 5 of 5");
+    assert!(
+        !app.view_preferences
+            .for_directory(app.navigation.current())
+            .folders_first
+    );
+}
+
+#[test]
+fn list_headers_select_and_reverse_each_sort_property() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.view_preferences =
+        super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation_loading = false;
+
+    let _ = app.update(Message::SortBy(crate::fs::SortKey::Size));
+    let options = app.view_preferences.for_directory(app.navigation.current());
+    assert_eq!(options.sort, crate::fs::SortKey::Size);
+    assert!(!options.descending);
+
+    let _ = app.update(Message::SortBy(crate::fs::SortKey::Size));
+    assert!(
+        app.view_preferences
+            .for_directory(app.navigation.current())
+            .descending
+    );
+
+    let _ = app.update(Message::SortBy(crate::fs::SortKey::Modified));
+    let options = app.view_preferences.for_directory(app.navigation.current());
+    assert_eq!(options.sort, crate::fs::SortKey::Modified);
+    assert!(!options.descending);
+}
+
+#[test]
+fn list_columns_preserve_name_space_as_the_window_narrows() {
+    let (mut app, _) = App::new();
+
+    app.grid.resize(iced::Size::new(660.0, 600.0));
+    assert_eq!(app.list_column_visibility(), (false, false));
+
+    app.grid.resize(iced::Size::new(760.0, 600.0));
+    assert_eq!(app.list_column_visibility(), (true, false));
+
+    app.grid.resize(iced::Size::new(920.0, 600.0));
+    assert_eq!(app.list_column_visibility(), (true, true));
+}
+
+#[test]
 fn single_click_activation_keeps_modified_clicks_for_selection() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");
@@ -246,10 +305,11 @@ fn single_click_activation_keeps_modified_clicks_for_selection() {
         path: child.clone(),
         name: "child".into(),
         directory: true,
+        metadata: Default::default(),
     }]);
-    if !app.view_preferences.single_click_activation() {
-        app.view_preferences.toggle_single_click_activation();
-    }
+    app.view_preferences
+        .apply_command(app.navigation.current(), false, "click=single")
+        .unwrap();
 
     app.modifiers = keyboard::Modifiers::CTRL;
     let _ = app.activate_entry(0, false);
@@ -391,6 +451,21 @@ fn popular_file_formats_use_distinct_icons() {
 }
 
 #[test]
+fn pdf_icon_keeps_a_contrasting_white_mark() {
+    let icon = std::str::from_utf8(super::entry_icon_asset(super::EntryIconKind::Pdf)).unwrap();
+
+    assert!(icon.contains("#fff"));
+}
+
+#[test]
+fn tile_label_breaks_at_separators_without_splitting_the_extension() {
+    assert_eq!(
+        super::tile_label("Mateusz_Jaskiewicz_CV_ATS.pdf"),
+        "Mateusz_\u{200b}Jaskiewicz_\u{200b}CV_\u{200b}ATS\u{00a0}.pdf"
+    );
+}
+
+#[test]
 fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation() {
     let (mut app, _) = App::new();
     let trashed = PathBuf::from("/tmp/Trash/files/report.txt.2");
@@ -399,6 +474,7 @@ fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation
         path: trashed.clone(),
         name: "report.txt".into(),
         directory: false,
+        metadata: Default::default(),
     };
     app.virtual_location = Some(VirtualLocation::Trash);
     app.trash_entries = vec![crate::app::trash::Entry {
@@ -605,11 +681,13 @@ fn live_refresh_preserves_scroll_selection_rename_and_pending_cut_by_path() {
         path: current.join("first"),
         name: "first".into(),
         directory: false,
+        metadata: Default::default(),
     };
     let cut = FileEntry {
         path: current.join("cut"),
         name: "cut".into(),
         directory: false,
+        metadata: Default::default(),
     };
     app.navigation
         .replace_displayed_entries(vec![first.clone(), cut.clone()]);
@@ -854,6 +932,7 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
             path: source.clone(),
             name: "item".into(),
             directory: false,
+            metadata: Default::default(),
         }])
         .unwrap();
 
@@ -898,6 +977,7 @@ fn virtual_locations_install_watches_from_the_newly_displayed_entries() {
         path: recent_file,
         name: "recent.txt".into(),
         directory: false,
+        metadata: Default::default(),
     }]))));
     assert!(app.virtual_watch_paths().contains(&recent_parent));
 
@@ -910,6 +990,7 @@ fn virtual_locations_install_watches_from_the_newly_displayed_entries() {
             path: trashed.clone(),
             name: "trashed.txt".into(),
             directory: false,
+            metadata: Default::default(),
         },
         receipt: crate::journal::TrashReceipt {
             original: temp.path().join("original.txt"),
@@ -1178,6 +1259,20 @@ fn sidebar_tree_hover_and_selection_remain_translucent() {
     assert!(matches!(
         selected.background,
         Some(iced::Background::Color(color)) if color.a == 0.22
+    ));
+}
+
+#[test]
+fn focused_browser_surfaces_keep_an_opaque_window_background() {
+    let (app, _) = App::new();
+    let theme = app.iced_theme();
+    let browser = super::browser_background_style(&theme);
+    let grid = super::grid_background_style(&theme, false, true);
+
+    assert_eq!(grid.background, browser.background);
+    assert!(matches!(
+        super::status_background_style(&theme, true).background,
+        Some(iced::Background::Color(color)) if color.a == 1.0
     ));
 }
 

@@ -89,11 +89,6 @@ impl Preferences {
         self.stored.single_click_activation
     }
 
-    pub(super) fn toggle_single_click_activation(&mut self) {
-        self.stored.single_click_activation = !self.stored.single_click_activation;
-        let _ = self.save();
-    }
-
     pub(super) fn high_contrast(&self) -> PreferenceOverride {
         self.stored.high_contrast
     }
@@ -373,7 +368,9 @@ mod tests {
         };
         assert!(!preferences.single_click_activation());
 
-        preferences.toggle_single_click_activation();
+        preferences
+            .apply_command(Path::new("/work"), false, "click=single")
+            .unwrap();
         let reopened = Preferences {
             path,
             stored: serde_json::from_slice(&fs::read(temp.path().join("view.json")).unwrap())

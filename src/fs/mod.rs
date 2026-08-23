@@ -45,7 +45,7 @@ impl Default for BrowseOptions {
             sort: SortKey::Name,
             descending: false,
             folders_first: true,
-            show_hidden: false,
+            show_hidden: true,
         }
     }
 }
@@ -55,6 +55,20 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub name: OsString,
     pub(crate) directory: bool,
+    pub(crate) metadata: EntryMetadata,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EntryMetadata {
+    pub(crate) size: Option<u64>,
+    pub(crate) modified: Option<i64>,
+}
+
+pub(crate) fn entry_metadata(metadata: &fs::Metadata) -> EntryMetadata {
+    EntryMetadata {
+        size: Some(metadata.len()),
+        modified: Some(std::os::unix::fs::MetadataExt::mtime(metadata)),
+    }
 }
 
 #[derive(Debug)]
@@ -768,6 +782,9 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
                 path,
                 name,
                 directory,
+                metadata: metadata
+                    .as_ref()
+                    .map_or_else(EntryMetadata::default, entry_metadata),
             },
         ));
     }
@@ -898,6 +915,7 @@ pub fn search_directory_with_hidden(
                 path,
                 name: child.file_name(),
                 directory,
+                metadata: EntryMetadata::default(),
             });
         }
     }
@@ -1054,7 +1072,7 @@ fn format_permissions(mode: u32, file_type: gio::FileType) -> String {
     value
 }
 
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
     let mut unit = 0;

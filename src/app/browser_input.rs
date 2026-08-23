@@ -13,7 +13,6 @@ Browser
   u / Ctrl+R    Undo / redo
   Ctrl+O/I      Go back / forward
   Ctrl+L        Edit the current location
-  Ctrl+H        Toggle hidden entries
   v             Toggle visual selection
   r             Rename the selected item
   x             Cut the current selection
@@ -102,7 +101,6 @@ pub(super) enum Intent {
     Undo,
     Redo,
     Refresh,
-    ToggleHidden,
     BeginLocation,
     MoveFocus { reverse: bool },
     CompleteCommand,
@@ -335,7 +333,6 @@ impl BrowserInput {
             return match text.map(str::to_ascii_lowercase).as_deref() {
                 Some("c") => Intent::Copy,
                 Some("a") => Intent::SelectAll,
-                Some("h") => Intent::ToggleHidden,
                 Some("l") => Intent::BeginLocation,
                 Some("v") => Intent::Paste,
                 Some("o") => Intent::Back,
@@ -746,7 +743,6 @@ mod tests {
         assert_eq!(input.handle(control("o"), selected()), Intent::Back);
         assert_eq!(input.handle(control("i"), selected()), Intent::Forward);
         assert_eq!(input.handle(control("r"), selected()), Intent::Redo);
-        assert_eq!(input.handle(control("h"), selected()), Intent::ToggleHidden);
         assert_eq!(
             input.handle(control("l"), selected()),
             Intent::BeginLocation

@@ -135,6 +135,7 @@ fn physical_entries(root: &Path) -> Result<Vec<Entry>, String> {
                         path: trashed.clone(),
                         name: display_name,
                         directory,
+                        metadata: crate::fs::entry_metadata(&file_metadata),
                     },
                     receipt: journal::TrashReceipt {
                         original,
@@ -198,6 +199,10 @@ fn desktop_entries() -> Result<Vec<Entry>, String> {
                     path: trashed.clone(),
                     name: display_name,
                     directory: info.file_type() == gio::FileType::Directory,
+                    metadata: fs::symlink_metadata(&trashed).map_or_else(
+                        |_| crate::fs::EntryMetadata::default(),
+                        |metadata| crate::fs::entry_metadata(&metadata),
+                    ),
                 },
                 receipt: journal::TrashReceipt {
                     original,
@@ -378,6 +383,7 @@ mod tests {
                 path: trashed.clone(),
                 name: OsString::from("item"),
                 directory: false,
+                metadata: Default::default(),
             },
             receipt: journal::TrashReceipt {
                 original: original.clone(),

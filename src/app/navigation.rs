@@ -208,6 +208,7 @@ mod tests {
             path: PathBuf::from(path),
             name: OsString::from(path.rsplit('/').next().unwrap()),
             directory: false,
+            metadata: Default::default(),
         }
     }
 

@@ -357,6 +357,7 @@ mod tests {
                 path: PathBuf::from("/source/item"),
                 name: OsString::from("item"),
                 directory: false,
+                metadata: Default::default(),
             }])
             .unwrap();
         workflow.paste(PathBuf::from(destination)).unwrap()

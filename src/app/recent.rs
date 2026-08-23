@@ -78,6 +78,7 @@ impl Recent {
                     path,
                     name,
                     directory: metadata.is_dir(),
+                    metadata: crate::fs::entry_metadata(&metadata),
                 })
             })
             .collect::<Vec<_>>();

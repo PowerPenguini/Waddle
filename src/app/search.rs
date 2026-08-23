@@ -249,6 +249,7 @@ mod tests {
                     path: PathBuf::from("/start").join(name),
                     name: OsString::from(name),
                     directory: false,
+                    metadata: Default::default(),
                 })
                 .collect(),
         );
@@ -289,6 +290,7 @@ mod tests {
                         path: PathBuf::from("/start/nested/needle"),
                         name: OsString::from("needle"),
                         directory: false,
+                        metadata: Default::default(),
                     }],
                     truncated: false,
                 }),
@@ -312,6 +314,7 @@ mod tests {
             path: PathBuf::from("/start/nested/needle"),
             name: OsString::from("needle"),
             directory: false,
+            metadata: Default::default(),
         };
         search
             .complete(

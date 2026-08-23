@@ -9,7 +9,7 @@ fn validates_names() {
 }
 
 #[test]
-fn reads_hidden_filtered_and_directories_first() {
+fn reads_hidden_by_default_and_keeps_directories_first() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("Alpha"), "x").unwrap();
     fs::write(temp.path().join("beta"), "x").unwrap();
@@ -20,7 +20,22 @@ fn reads_hidden_filtered_and_directories_first() {
         .into_iter()
         .map(|e| display_name(&e.name))
         .collect();
-    assert_eq!(names, ["z-folder", "Alpha", "beta"]);
+    assert_eq!(names, ["z-folder", ".hidden", "Alpha", "beta"]);
+}
+
+#[test]
+fn directory_entries_retain_size_and_modified_metadata_for_list_details() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("report.txt"), "four").unwrap();
+
+    let entry = read_directory(temp.path())
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.name == "report.txt")
+        .unwrap();
+
+    assert_eq!(entry.metadata.size, Some(4));
+    assert!(entry.metadata.modified.is_some());
 }
 
 #[test]
@@ -37,8 +52,8 @@ fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
         },
     )
     .unwrap();
-    assert_eq!(display_name(&natural[0].name), "file-2.txt");
-    assert_eq!(display_name(&natural[1].name), "file-10.txt");
+    assert_eq!(display_name(&natural[1].name), "file-2.txt");
+    assert_eq!(display_name(&natural[2].name), "file-10.txt");
 
     let by_size = read_directory_with(
         temp.path(),

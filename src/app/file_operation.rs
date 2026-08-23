@@ -575,6 +575,7 @@ mod tests {
             path: PathBuf::from("/work").join(name),
             name: name.into(),
             directory: false,
+            metadata: Default::default(),
         }
     }
 

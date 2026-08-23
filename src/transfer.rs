@@ -759,6 +759,7 @@ mod tests {
             name: path.file_name().unwrap().to_os_string(),
             path,
             directory,
+            metadata: Default::default(),
         }
     }
 
@@ -870,6 +871,7 @@ mod tests {
             path: PathBuf::from("/start/item"),
             name: OsString::from("item"),
             directory: false,
+            metadata: Default::default(),
         }];
 
         let (count, _) = workflow
