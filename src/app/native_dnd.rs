@@ -807,11 +807,7 @@ impl Worker {
         };
         incoming.destination = destination;
         if incoming.destination.is_some() {
-            let accepted = if incoming.private {
-                DndAction::Copy | DndAction::Move
-            } else {
-                DndAction::Copy
-            };
+            let accepted = DndAction::Copy | DndAction::Move;
             incoming
                 .offer
                 .accept_mime_type(incoming.offer.serial, Some(incoming.mime.clone()));
@@ -980,7 +976,7 @@ pub(super) fn parse_uri_list(payload: &[u8]) -> Result<Vec<PathBuf>, String> {
 }
 
 fn preferred_action(private: bool, source_actions: DndAction) -> Action {
-    if private && (source_actions.is_empty() || source_actions.contains(DndAction::Move)) {
+    if source_actions.contains(DndAction::Move) || (private && source_actions.is_empty()) {
         Action::Move
     } else {
         Action::Copy
@@ -1630,13 +1626,15 @@ mod tests {
     }
 
     #[test]
-    fn private_offers_prefer_move_but_copy_only_is_respected() {
+    fn offered_move_is_respected_and_unknown_foreign_actions_stay_copy() {
         assert_eq!(
             preferred_action(true, DndAction::Copy | DndAction::Move),
             Action::Move
         );
         assert_eq!(preferred_action(true, DndAction::Copy), Action::Copy);
-        assert_eq!(preferred_action(false, DndAction::Move), Action::Copy);
+        assert_eq!(preferred_action(true, DndAction::empty()), Action::Move);
+        assert_eq!(preferred_action(false, DndAction::Move), Action::Move);
+        assert_eq!(preferred_action(false, DndAction::empty()), Action::Copy);
     }
 
     #[test]

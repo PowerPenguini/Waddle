@@ -111,6 +111,7 @@ pub(crate) fn decode_offer(entries: &[(&str, &[u8])]) -> Result<ClipboardImport,
 
     for &(mime, data) in entries {
         match mime {
+            GNOME_MIME if data.is_empty() => {}
             POLAREXP_MIME | GNOME_MIME | URI_LIST_MIME => match decode(mime, data) {
                 Ok(import) => {
                     if mime != URI_LIST_MIME {
@@ -123,7 +124,8 @@ pub(crate) fn decode_offer(entries: &[(&str, &[u8])]) -> Result<ClipboardImport,
                 }
                 Err(error) => return Err(error),
             },
-            KDE_CUT_MIME => match data {
+            KDE_CUT_MIME => match data.strip_suffix(b"\0").unwrap_or(data).trim_ascii_end() {
+                b"" => {}
                 b"1" => markers.push(Action::Move),
                 b"0" => markers.push(Action::Copy),
                 _ => malformed_marker = true,
@@ -170,7 +172,7 @@ fn decode_uri_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<Vec<
     let mut paths = Vec::new();
     let mut entry_count = 0;
     for line in lines {
-        let uri = line.trim_end_matches('\r').trim();
+        let uri = line.trim_end_matches('\r').trim().trim_end_matches('\0');
         if uri.is_empty() || uri.starts_with('#') {
             continue;
         }
@@ -331,6 +333,26 @@ mod tests {
             (KDE_CUT_MIME, b"maybe".as_slice()),
         ];
         assert_eq!(decode_offer(&malformed).unwrap().action, Action::Copy);
+    }
+
+    #[test]
+    fn pcmanfm_wayland_copy_and_cut_markers_are_combined_safely() {
+        let copy_uri = b"file:///tmp/copy-probe.txt\0\n";
+        let copy_gnome = b"copy\nfile:///tmp/copy-probe.txt\0";
+        let copy = [
+            (URI_LIST_MIME, copy_uri.as_slice()),
+            (GNOME_MIME, copy_gnome.as_slice()),
+            (KDE_CUT_MIME, b"".as_slice()),
+        ];
+        assert_eq!(decode_offer(&copy).unwrap().action, Action::Copy);
+
+        let cut_uri = b"file:///tmp/cut-probe.txt\0\n";
+        let cut = [
+            (URI_LIST_MIME, cut_uri.as_slice()),
+            (GNOME_MIME, b"".as_slice()),
+            (KDE_CUT_MIME, b"1\0".as_slice()),
+        ];
+        assert_eq!(decode_offer(&cut).unwrap().action, Action::Move);
     }
 
     #[test]
