@@ -88,6 +88,10 @@ impl State {
             transparent: true,
             blur: true,
             exit_on_close_request: false,
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "io.github.powerpenguini.PolarExp".to_owned(),
+                ..window::settings::PlatformSpecific::default()
+            },
             ..window::Settings::default()
         }
     }
@@ -221,6 +225,17 @@ mod tests {
             std::env::current_dir().unwrap()
         );
         assert_eq!(reopened.window_settings().size, Size::new(900.0, 700.0));
+    }
+
+    #[test]
+    fn window_application_id_matches_the_desktop_file() {
+        assert_eq!(
+            State::open_default()
+                .window_settings()
+                .platform_specific
+                .application_id,
+            "io.github.powerpenguini.PolarExp"
+        );
     }
 
     #[test]
