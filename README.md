@@ -36,6 +36,23 @@ scripts/package-archive.sh
 scripts/smoke-package.sh dist/polarexp-*-linux.tar.gz
 ```
 
+For a system installation under `/usr`, build as the regular user and install as root:
+
+```sh
+make build
+sudo make install
+```
+
+The installer writes `/usr/bin/polarexp` together with the desktop entry, AppStream metadata, and
+icon under `/usr/share`. It refreshes the desktop and icon caches, but does not change MIME defaults
+or user configuration. `make install` does not compile as root and fails if the release binary is
+missing. Packagers can stage the same file set with `make install DESTDIR=/path/to/package-root`.
+Remove only the installed application files with:
+
+```sh
+sudo make uninstall
+```
+
 The Flatpak manifest is `packaging/io.github.powerpenguini.PolarExp.yml`. It uses frozen Cargo
 sources generated from `Cargo.lock`, the Freedesktop 25.08 runtime, and the matching stable Rust
 SDK extension. On a machine with Flatpak Builder and Flathub configured, build and launch it with:
