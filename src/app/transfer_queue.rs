@@ -16,15 +16,61 @@ use crate::{
     transfer::Request,
 };
 
+use super::trash;
+
 const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Clone, Debug)]
 pub(super) struct Work {
-    pub(super) id: u64,
-    pub(super) request: Request,
-    pub(super) batch: TransferBatch,
-    pub(super) cancellation: Arc<AtomicBool>,
-    pub(super) progress: Arc<ProgressTracker>,
+    id: u64,
+    operation: Operation,
+    batch: TransferBatch,
+    cancellation: Arc<AtomicBool>,
+    progress: Arc<ProgressTracker>,
+}
+
+impl Work {
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(super) fn restoring(&self) -> bool {
+        matches!(self.operation, Operation::Restore(_))
+    }
+
+    pub(super) fn entry_count(&self) -> usize {
+        match &self.operation {
+            Operation::Transfer(request) => request.paths.len(),
+            Operation::Restore(entries) => entries.len(),
+        }
+    }
+
+    pub(super) fn run(self) -> crate::fs::TransferBatchOutcome {
+        self.batch.run_with(
+            || self.cancellation.load(Ordering::Acquire),
+            |update| self.progress.update(update),
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum Operation {
+    Transfer(Request),
+    Restore(Vec<trash::Entry>),
+}
+
+impl Operation {
+    fn transfer(&self) -> Option<&Request> {
+        match self {
+            Self::Transfer(request) => Some(request),
+            Self::Restore(_) => None,
+        }
+    }
+}
+
+pub(super) struct Finished {
+    pub(super) operation: Operation,
+    pub(super) next: Option<Work>,
 }
 
 #[derive(Debug, Default)]
@@ -82,7 +128,7 @@ pub(super) struct HistoryEntry {
 #[derive(Clone, Debug)]
 struct Active {
     id: u64,
-    request: Request,
+    operation: Operation,
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
     started: Instant,
@@ -92,7 +138,7 @@ pub(super) struct Queue {
     path: PathBuf,
     next_id: u64,
     active: Option<Active>,
-    pending: VecDeque<(Request, TransferBatch)>,
+    pending: VecDeque<(Operation, TransferBatch)>,
     history: Vec<HistoryEntry>,
     last_retry: Option<Request>,
     expanded: bool,
@@ -103,7 +149,7 @@ impl Queue {
         Self::open(history_path())
     }
 
-    fn open(path: PathBuf) -> Self {
+    pub(super) fn open(path: PathBuf) -> Self {
         let history = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Vec<HistoryEntry>>(&bytes).ok())
@@ -121,12 +167,28 @@ impl Queue {
         queue
     }
 
-    pub(super) fn enqueue(&mut self, request: Request, batch: TransferBatch) -> Option<Work> {
+    pub(super) fn enqueue_transfer(
+        &mut self,
+        request: Request,
+        batch: TransferBatch,
+    ) -> Option<Work> {
+        self.enqueue(Operation::Transfer(request), batch)
+    }
+
+    pub(super) fn enqueue_restore(
+        &mut self,
+        entries: Vec<trash::Entry>,
+        batch: TransferBatch,
+    ) -> Option<Work> {
+        self.enqueue(Operation::Restore(entries), batch)
+    }
+
+    fn enqueue(&mut self, operation: Operation, batch: TransferBatch) -> Option<Work> {
         if self.active.is_some() {
-            self.pending.push_back((request, batch));
+            self.pending.push_back((operation, batch));
             None
         } else {
-            Some(self.activate(request, batch))
+            Some(self.activate(operation, batch))
         }
     }
 
@@ -134,33 +196,40 @@ impl Queue {
         let active = self.active.as_ref()?;
         Some(Work {
             id: active.id,
-            request: active.request.clone(),
+            operation: active.operation.clone(),
             batch,
             cancellation: Arc::clone(&active.cancellation),
             progress: Arc::clone(&active.progress),
         })
     }
 
-    pub(super) fn finish(&mut self, id: u64, report: &TransferReport) -> Option<Work> {
+    pub(super) fn finish(&mut self, id: u64, report: &TransferReport) -> Option<Finished> {
         let active = self.active.take_if(|active| active.id == id)?;
-        let snapshot = snapshot(&active, self.pending.len());
-        let retry_paths = report
-            .failures
-            .iter()
-            .map(|failure| failure.source.clone())
-            .chain(report.retained.iter().cloned())
-            .collect::<Vec<_>>();
-        self.last_retry = (!retry_paths.is_empty()).then(|| {
-            let mut request = active.request.clone();
-            request.paths = retry_paths;
-            request
-        });
-        self.history.push(history_entry(&active, report, &snapshot));
-        self.prune();
-        let _ = self.save();
-        self.pending
+        if let Operation::Transfer(request) = &active.operation {
+            let snapshot = snapshot(&active, self.pending_transfer_count());
+            let retry_paths = report
+                .failures
+                .iter()
+                .map(|failure| failure.source.clone())
+                .chain(report.retained.iter().cloned())
+                .collect::<Vec<_>>();
+            self.last_retry = (!retry_paths.is_empty()).then(|| {
+                let mut request = request.clone();
+                request.paths = retry_paths;
+                request
+            });
+            self.history.push(history_entry(request, report, &snapshot));
+            self.prune();
+            let _ = self.save();
+        }
+        let next = self
+            .pending
             .pop_front()
-            .map(|(request, batch)| self.activate(request, batch))
+            .map(|(operation, batch)| self.activate(operation, batch));
+        Some(Finished {
+            operation: active.operation,
+            next,
+        })
     }
 
     pub(super) fn retry(&mut self) -> Result<Option<Work>, String> {
@@ -174,30 +243,48 @@ impl Queue {
         )
         .map_err(|error| error.to_string())?;
         self.last_retry = None;
-        Ok(self.enqueue(request, batch))
+        Ok(self.enqueue_transfer(request, batch))
     }
 
     pub(super) fn cancel(&self) -> bool {
-        self.active.as_ref().is_some_and(|active| {
-            active.cancellation.store(true, Ordering::Release);
-            true
-        })
+        self.active
+            .as_ref()
+            .filter(|active| active.operation.transfer().is_some())
+            .is_some_and(|active| {
+                active.cancellation.store(true, Ordering::Release);
+                true
+            })
     }
 
     pub(super) fn active_id(&self) -> Option<u64> {
         self.active.as_ref().map(|active| active.id)
     }
 
+    pub(super) fn active_operation(&self, id: u64) -> Option<&Operation> {
+        self.active
+            .as_ref()
+            .filter(|active| active.id == id)
+            .map(|active| &active.operation)
+    }
+
+    pub(super) fn transfer_active(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.operation.transfer().is_some())
+    }
+
     pub(super) fn snapshot(&self) -> Option<Snapshot> {
         self.active
             .as_ref()
-            .map(|active| snapshot(active, self.pending.len()))
+            .filter(|active| active.operation.transfer().is_some())
+            .map(|active| snapshot(active, self.pending_transfer_count()))
     }
 
     pub(super) fn active_action(&self) -> Option<&'static str> {
         self.active
             .as_ref()
-            .map(|active| match active.request.action {
+            .and_then(|active| active.operation.transfer())
+            .map(|request| match request.action {
                 crate::transfer::Action::Copy => "Copying",
                 crate::transfer::Action::Move => "Moving",
             })
@@ -228,25 +315,32 @@ impl Queue {
             .join("\n\n")
     }
 
-    fn activate(&mut self, request: Request, batch: TransferBatch) -> Work {
+    fn activate(&mut self, operation: Operation, batch: TransferBatch) -> Work {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let cancellation = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(ProgressTracker::default());
         self.active = Some(Active {
             id,
-            request: request.clone(),
+            operation: operation.clone(),
             cancellation: Arc::clone(&cancellation),
             progress: Arc::clone(&progress),
             started: Instant::now(),
         });
         Work {
             id,
-            request,
+            operation,
             batch,
             cancellation,
             progress,
         }
+    }
+
+    fn pending_transfer_count(&self) -> usize {
+        self.pending
+            .iter()
+            .filter(|(operation, _)| operation.transfer().is_some())
+            .count()
     }
 
     fn prune(&mut self) {
@@ -298,8 +392,8 @@ fn snapshot(active: &Active, queued: usize) -> Snapshot {
     }
 }
 
-fn history_entry(active: &Active, report: &TransferReport, snapshot: &Snapshot) -> HistoryEntry {
-    let action = active.request.action.label().to_owned();
+fn history_entry(request: &Request, report: &TransferReport, snapshot: &Snapshot) -> HistoryEntry {
+    let action = request.action.label().to_owned();
     let detail = format!(
         "{action} {} item(s); {} failed; {} retained; {} bytes in {} ms{}",
         report.completed.len(),
@@ -345,14 +439,14 @@ mod tests {
 
     use crate::{
         fs::{FileEntry, TransferFailure},
-        transfer::TransferWorkflow,
+        transfer::TransferState,
     };
 
     use super::*;
 
     fn request(destination: &str) -> Request {
-        let mut workflow = TransferWorkflow::default();
-        workflow
+        let mut state = TransferState::default();
+        state
             .copy(&[FileEntry {
                 path: PathBuf::from("/source/item"),
                 name: OsString::from("item"),
@@ -360,7 +454,7 @@ mod tests {
                 metadata: Default::default(),
             }])
             .unwrap();
-        workflow.paste(PathBuf::from(destination)).unwrap()
+        state.paste(PathBuf::from(destination)).unwrap()
     }
 
     fn report() -> TransferReport {
@@ -382,14 +476,14 @@ mod tests {
         let first = request("/target");
         let second = request("/another");
         let work = queue
-            .enqueue(
+            .enqueue_transfer(
                 first.clone(),
                 TransferBatch::new(first.paths.clone(), first.destination.clone(), first.action),
             )
             .unwrap();
         assert!(
             queue
-                .enqueue(
+                .enqueue_transfer(
                     second.clone(),
                     TransferBatch::new(
                         second.paths.clone(),
@@ -406,8 +500,12 @@ mod tests {
             total_bytes: 4096,
         });
         thread::sleep(Duration::from_millis(2));
-        let next = queue.finish(work.id, &report()).unwrap();
-        assert_eq!(next.request.destination, PathBuf::from("/another"));
+        let next = queue.finish(work.id, &report()).unwrap().next.unwrap();
+        assert!(matches!(
+            next.operation,
+            Operation::Transfer(Request { destination, .. })
+                if destination == std::path::Path::new("/another")
+        ));
         assert_eq!(queue.history().len(), 1);
         assert!(queue.report_text().contains("4096 bytes"));
 
@@ -427,7 +525,7 @@ mod tests {
         let mut request = request(destination.to_str().unwrap());
         request.paths = vec![source];
         let work = queue
-            .enqueue(
+            .enqueue_transfer(
                 request.clone(),
                 TransferBatch::new(
                     request.paths.clone(),
@@ -458,7 +556,7 @@ mod tests {
             receipts: Vec::new(),
             cancelled: false,
         };
-        assert!(queue.finish(work.id, &failed).is_none());
+        assert!(queue.finish(work.id, &failed).unwrap().next.is_none());
         assert!(queue.has_retry());
         fs::remove_dir(&destination).unwrap();
         assert!(queue.retry().is_err());

@@ -5,23 +5,45 @@ use super::shell::{self, ShellError, ShellReport};
 
 const COMMAND_HELP: &str = "\
 Commands
-  :help, :h     Show this help
-  :terminal, :t Open a terminal in the current directory
-  :refresh      Refresh the current view
-  :diagnostics  Show local command failure history
-  :set ...      Inspect or change global settings
-  :setlocal ... Inspect or change this folder's settings
-  :favorite ... Add, remove, or list Favorites
-  :recent ...   Open, clear, enable, or disable Recent
-  :volume ...   Mount, unmount, or eject a volume
-  :properties   Inspect the selected entry
-  :chmod MODE   Change selected entry permissions
-  :open-with ID Open the selected entry with an application
-  :default-app ID  Set the selected entry's default application
-  :cd PATH      Change PolarExp's current directory
-  :q            Quit PolarExp
-  :COMMAND      Run Bash and keep its final directory
-  !COMMAND      Run Bash without changing PolarExp's directory";
+  :help, :h  Show this reference
+  :terminal, :t  Open a terminal here
+  :refresh  Refresh the current view
+  :diagnostics, :diag  Show local command failures
+  :set [all|OPTION=VALUE ...]  Change session settings
+  :setlocal [all|OPTION=VALUE ...]
+    Change folder settings for this session
+  :favorite [list]  List Favorites
+  :favorite add [LABEL]  Add the current folder
+  :favorite remove INDEX  Remove a Favorite
+  :recent [open|clear|enable|disable]  Manage Recent
+  :volume mount|unmount|eject NAME  Manage a volume
+  :properties, :props  Inspect the selected entry
+  :chmod MODE  Change selected entry permissions
+  :open-with APP_ID  Open with an application
+  :default-app APP_ID  Set the default application
+  :cd PATH  Change PolarExp's current directory
+  :q  Quit PolarExp
+  :COMMAND  Run Bash and keep its final directory
+  !COMMAND  Run Bash without changing PolarExp's directory
+
+Command prompt
+  Tab         Complete a command name
+  Enter       Submit the command
+  Esc         Cancel input or close command output
+
+Settings
+  Persistent settings: $XDG_CONFIG_HOME/polarexp/polarexprc
+  view=grid|list
+  sort=name|type|size|modified
+  direction=ascending|descending
+  folders-first=true|false
+  hidden=true|false
+  click=single|double
+  high-contrast=auto|true|false
+  reduced-motion=auto|true|false
+  reduced-transparency=auto|true|false
+  tree=true|false
+  startup=last|cwd (polarexprc only)";
 
 pub(super) trait Adapter {
     fn execute(&self, current: &Path, prefix: char, command: &str) -> Result<ShellReport, Failure>;
@@ -334,7 +356,7 @@ impl CommandSession {
 
     pub(super) fn show_settings(&mut self, detail: String) {
         self.output = Some(Output {
-            summary: ":set  •  persistent settings".to_owned(),
+            summary: ":set  •  session settings".to_owned(),
             detail,
         });
     }
@@ -355,7 +377,7 @@ impl CommandSession {
             "set high-contrast=",
             "set reduced-motion=",
             "set reduced-transparency=",
-            "set startup=",
+            "set tree=",
             "set view=grid",
             "set view=list",
             "set sort=name",
@@ -379,8 +401,8 @@ impl CommandSession {
             "set reduced-transparency=auto",
             "set reduced-transparency=true",
             "set reduced-transparency=false",
-            "set startup=last",
-            "set startup=cwd",
+            "set tree=true",
+            "set tree=false",
             "setlocal all",
             "setlocal view=",
             "setlocal sort=",
@@ -389,6 +411,8 @@ impl CommandSession {
             "setlocal hidden=",
             "setlocal view&",
             "setlocal sort&",
+            "setlocal direction&",
+            "setlocal folders-first&",
             "setlocal hidden&",
             "setlocal view=grid",
             "setlocal view=list",
@@ -474,6 +498,14 @@ mod tests {
         let output = session.output().unwrap();
         assert!(output.summary.starts_with(":help"));
         assert!(output.detail.contains(":terminal, :t"));
+        assert!(output.detail.contains(":favorite add [LABEL]"));
+        assert!(output.detail.contains("Tab / Shift+Tab"));
+        assert!(output.detail.contains("\"_dd / \"_d{motion}"));
+        assert!(output.detail.contains("Name/Type/Size/Modified header"));
+        assert!(
+            output.detail.lines().all(|line| line.chars().count() <= 64),
+            "help lines must fit the narrow output panel"
+        );
         assert_eq!(session.prefix(), None);
         assert!(session.text().is_empty());
     }

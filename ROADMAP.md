@@ -223,10 +223,12 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Use `:set` for advanced settings and `:setlocal` for per-directory overrides.
 - [x] Make `:set` show current values and `:set all` show every option with a short description.
 - [x] Add completion and validation for option names and values.
-- [x] Persist settings by default.
+- [x] Load persistent settings from a manually maintained XDG `polarexprc`; keep `:set`,
+  `:setlocal`, and view controls session-only.
 - [x] Let `:setlocal option&` remove a directory override.
 - [x] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
-  reduced motion, and startup behavior.
+  reduced motion, startup behavior, and sidebar-tree visibility.
+- [x] Toggle the sidebar tree with `:set tree=true|false` or the Vim-style `Ctrl+W e` sequence.
 
 ### Keyboard access and display preferences
 

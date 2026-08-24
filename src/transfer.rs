@@ -162,7 +162,7 @@ pub(crate) struct Consequences {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TransferWorkflow {
+pub(crate) struct TransferState {
     drag: Option<Drag>,
     native_active: bool,
     hover: Option<Hover>,
@@ -170,7 +170,7 @@ pub(crate) struct TransferWorkflow {
     next_clipboard_generation: u64,
 }
 
-impl TransferWorkflow {
+impl TransferState {
     pub(crate) fn press(&mut self, index: usize, start: Point, entry_count: usize) {
         if !self.native_active && index < entry_count {
             self.drag = Some(Drag {
@@ -779,7 +779,7 @@ mod tests {
     fn selected_drag_builds_one_validated_transfer_request() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
         let selected = [0, 1].into_iter().collect();
-        let request = TransferWorkflow::request(
+        let request = TransferState::request(
             &entries,
             &selected,
             0,
@@ -793,7 +793,7 @@ mod tests {
             [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
         );
         assert!(
-            TransferWorkflow::request(
+            TransferState::request(
                 &entries,
                 &selected,
                 0,
@@ -808,19 +808,19 @@ mod tests {
     fn active_drag_keeps_its_sources_across_hover_navigation() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
         let selected = BTreeSet::from([0, 1]);
-        let mut workflow = TransferWorkflow::default();
-        workflow.press(0, Point::ORIGIN, entries.len());
-        assert_eq!(workflow.move_pointer(Point::new(7.0, 0.0)), Some(0));
-        workflow.capture_drag_entries(&entries, &selected);
+        let mut state = TransferState::default();
+        state.press(0, Point::ORIGIN, entries.len());
+        assert_eq!(state.move_pointer(Point::new(7.0, 0.0)), Some(0));
+        state.capture_drag_entries(&entries, &selected);
 
         let unrelated_new_directory = [entry("/target/other", false)];
         assert!(
-            workflow
+            state
                 .active_drag_entries()
                 .iter()
                 .all(|entry| { entry.path != unrelated_new_directory[0].path })
         );
-        let request = workflow
+        let request = state
             .request_active(PathBuf::from("/target"), Action::Move)
             .unwrap();
         assert_eq!(
@@ -832,9 +832,9 @@ mod tests {
     #[test]
     fn memory_adapter_observes_hover_and_invalid_drop_completion() {
         let adapter = MemoryAdapter::default();
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
         let target = PathBuf::from("/target");
-        let update = workflow.handle_native(
+        let update = state.handle_native(
             &adapter,
             Event::Hover {
                 id: 7,
@@ -849,7 +849,7 @@ mod tests {
             [(7, Some(PathBuf::from("/target")))]
         );
 
-        let update = workflow.handle_native(
+        let update = state.handle_native(
             &adapter,
             Event::Drop {
                 id: 9,
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn memory_adapter_is_the_second_adapter_at_the_outgoing_seam() {
         let adapter = MemoryAdapter::default();
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
         let entries = vec![FileEntry {
             path: PathBuf::from("/start/item"),
             name: OsString::from("item"),
@@ -874,7 +874,7 @@ mod tests {
             metadata: Default::default(),
         }];
 
-        let (count, _) = workflow
+        let (count, _) = state
             .start_outgoing(&adapter, &entries, &BTreeSet::new(), 0, false, preview)
             .unwrap();
         assert_eq!(count, 1);
@@ -882,13 +882,13 @@ mod tests {
             adapter.starts.lock().unwrap().as_slice(),
             [vec![PathBuf::from("/start/item")]]
         );
-        assert!(workflow.is_native_active());
+        assert!(state.is_native_active());
     }
 
     #[test]
     fn transfer_completion_finishes_the_inbound_adapter_and_returns_refresh_work() {
         let adapter = MemoryAdapter::default();
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
         let request = Request {
             paths: vec![PathBuf::from("/start/item")],
             destination: PathBuf::from("/target"),
@@ -907,7 +907,7 @@ mod tests {
         };
 
         let consequences =
-            workflow.finish_transfer(Some(&adapter), &request, &report, Path::new("/start"));
+            state.finish_transfer(Some(&adapter), &request, &report, Path::new("/start"));
 
         assert_eq!(adapter.finished.lock().unwrap().as_slice(), [12]);
         assert_eq!(consequences.status.as_deref(), Some("Moved 1 item(s)"));
@@ -922,10 +922,10 @@ mod tests {
     #[test]
     fn clipboard_preserves_single_entry_copy_and_selects_the_pasted_result() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
 
-        assert_eq!(workflow.copy(&entries[1..]).as_deref(), Some("Copied two"));
-        let request = workflow.paste(PathBuf::from("/target")).unwrap();
+        assert_eq!(state.copy(&entries[1..]).as_deref(), Some("Copied two"));
+        let request = state.paste(PathBuf::from("/target")).unwrap();
         assert_eq!(request.paths, [PathBuf::from("/start/two")]);
         assert_eq!(request.action, Action::Copy);
 
@@ -937,11 +937,11 @@ mod tests {
             receipts: Vec::new(),
             cancelled: false,
         };
-        let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
+        let consequences = state.finish_transfer(None, &request, &report, Path::new("/target"));
 
         assert_eq!(consequences.status, None);
         assert_eq!(consequences.select, [PathBuf::from("/target/two")]);
-        assert!(workflow.paste(PathBuf::from("/another-target")).is_some());
+        assert!(state.paste(PathBuf::from("/another-target")).is_some());
     }
 
     #[test]
@@ -952,10 +952,10 @@ mod tests {
             entry("/start/three", false),
         ];
         let selected = vec![entries[0].clone(), entries[2].clone()];
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
 
-        assert_eq!(workflow.copy(&selected).as_deref(), Some("Copied 2 items"));
-        let request = workflow.paste(PathBuf::from("/target")).unwrap();
+        assert_eq!(state.copy(&selected).as_deref(), Some("Copied 2 items"));
+        let request = state.paste(PathBuf::from("/target")).unwrap();
 
         assert_eq!(
             request.paths,
@@ -966,15 +966,15 @@ mod tests {
 
     #[test]
     fn clipboard_generation_changes_when_copy_replaces_the_payload() {
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
 
-        workflow.copy(&[entry("/start/one", false)]).unwrap();
-        let first = workflow
+        state.copy(&[entry("/start/one", false)]).unwrap();
+        let first = state
             .paste(PathBuf::from("/target"))
             .unwrap()
             .clipboard_generation;
-        workflow.copy(&[entry("/start/two", false)]).unwrap();
-        let second = workflow
+        state.copy(&[entry("/start/two", false)]).unwrap();
+        let second = state
             .paste(PathBuf::from("/target"))
             .unwrap()
             .clipboard_generation;
@@ -984,24 +984,24 @@ mod tests {
 
     #[test]
     fn imported_clipboard_reuses_only_an_identical_current_generation() {
-        let mut workflow = TransferWorkflow::default();
-        workflow.copy(&[entry("/start/one", false)]).unwrap();
-        let current = workflow.clipboard_payload().unwrap();
+        let mut state = TransferState::default();
+        state.copy(&[entry("/start/one", false)]).unwrap();
+        let current = state.clipboard_payload().unwrap();
 
-        assert!(workflow.import_clipboard(ClipboardImport {
+        assert!(state.import_clipboard(ClipboardImport {
             paths: current.paths.clone(),
             action: current.action,
             generation: Some(current.generation),
         }));
-        assert_eq!(workflow.clipboard_payload(), Some(current.clone()));
+        assert_eq!(state.clipboard_payload(), Some(current.clone()));
 
-        assert!(workflow.import_clipboard(ClipboardImport {
+        assert!(state.import_clipboard(ClipboardImport {
             paths: vec![PathBuf::from("/external/two")],
             action: Action::Copy,
             generation: Some(current.generation),
         }));
         assert_ne!(
-            workflow.clipboard_payload().unwrap().generation,
+            state.clipboard_payload().unwrap().generation,
             current.generation
         );
     }
@@ -1009,9 +1009,9 @@ mod tests {
     #[test]
     fn clipboard_completion_selects_every_pasted_result() {
         let entries = vec![entry("/start/one", false), entry("/start/two", false)];
-        let mut workflow = TransferWorkflow::default();
-        workflow.copy(&entries).unwrap();
-        let request = workflow.paste(PathBuf::from("/target")).unwrap();
+        let mut state = TransferState::default();
+        state.copy(&entries).unwrap();
+        let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
@@ -1021,41 +1021,41 @@ mod tests {
             cancelled: false,
         };
 
-        let consequences = workflow.finish_transfer(None, &request, &report, Path::new("/target"));
+        let consequences = state.finish_transfer(None, &request, &report, Path::new("/target"));
 
         assert_eq!(consequences.select, report.completed);
-        assert!(workflow.paste(PathBuf::from("/another-target")).is_some());
+        assert!(state.paste(PathBuf::from("/another-target")).is_some());
     }
 
     #[test]
     fn cut_stays_pending_until_cancel_or_the_matching_ownership_is_lost() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
-        let mut workflow = TransferWorkflow::default();
+        let mut state = TransferState::default();
 
         assert_eq!(
-            workflow.cut(&entries).as_deref(),
+            state.cut(&entries).as_deref(),
             Some("Cut: 2 items, p paste, Esc cancel")
         );
-        let generation = workflow.clipboard_payload().unwrap().generation;
+        let generation = state.clipboard_payload().unwrap().generation;
         assert_eq!(
-            workflow.pending_cut_paths(),
+            state.pending_cut_paths(),
             [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
         );
-        assert!(!workflow.lose_clipboard(generation + 1));
-        assert!(workflow.lose_clipboard(generation));
-        assert!(workflow.pending_cut_paths().is_empty());
+        assert!(!state.lose_clipboard(generation + 1));
+        assert!(state.lose_clipboard(generation));
+        assert!(state.pending_cut_paths().is_empty());
 
-        workflow.cut(&entries).unwrap();
-        assert!(workflow.cancel_cut().is_some());
-        assert!(workflow.pending_cut_paths().is_empty());
+        state.cut(&entries).unwrap();
+        assert!(state.cancel_cut().is_some());
+        assert!(state.pending_cut_paths().is_empty());
     }
 
     #[test]
     fn partial_cut_move_keeps_only_failed_sources_pending() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
-        let mut workflow = TransferWorkflow::default();
-        workflow.cut(&entries).unwrap();
-        let request = workflow.paste(PathBuf::from("/target")).unwrap();
+        let mut state = TransferState::default();
+        state.cut(&entries).unwrap();
+        let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
             completed: vec![PathBuf::from("/target/one")],
             failures: vec![crate::fs::TransferFailure {
@@ -1068,10 +1068,10 @@ mod tests {
             cancelled: false,
         };
 
-        workflow.finish_transfer(None, &request, &report, Path::new("/target"));
+        state.finish_transfer(None, &request, &report, Path::new("/target"));
 
-        assert_eq!(workflow.pending_cut_paths(), [PathBuf::from("/start/two")]);
-        assert!(workflow.paste(PathBuf::from("/retry")).is_some());
+        assert_eq!(state.pending_cut_paths(), [PathBuf::from("/start/two")]);
+        assert!(state.paste(PathBuf::from("/retry")).is_some());
     }
 
     #[test]
@@ -1085,35 +1085,35 @@ mod tests {
             entry(first.to_str().unwrap(), false),
             entry(second.to_str().unwrap(), false),
         ];
-        let mut workflow = TransferWorkflow::default();
-        workflow.cut(&entries).unwrap();
-        let generation = workflow.clipboard_payload().unwrap().generation;
+        let mut state = TransferState::default();
+        state.cut(&entries).unwrap();
+        let generation = state.clipboard_payload().unwrap().generation;
 
         std::fs::remove_file(&first).unwrap();
-        assert_eq!(workflow.reconcile_pending_cut(&[]), None);
-        assert_eq!(workflow.pending_cut_paths().len(), 2);
+        assert_eq!(state.reconcile_pending_cut(&[]), None);
+        assert_eq!(state.pending_cut_paths().len(), 2);
         assert_eq!(
-            workflow.reconcile_pending_cut(std::slice::from_ref(&first)),
+            state.reconcile_pending_cut(std::slice::from_ref(&first)),
             Some((generation, 1))
         );
-        assert_eq!(workflow.pending_cut_paths(), std::slice::from_ref(&second));
-        assert_eq!(workflow.reconcile_pending_cut(&[]), None);
+        assert_eq!(state.pending_cut_paths(), std::slice::from_ref(&second));
+        assert_eq!(state.reconcile_pending_cut(&[]), None);
 
         std::fs::remove_file(&second).unwrap();
         assert_eq!(
-            workflow.reconcile_pending_cut(std::slice::from_ref(&second)),
+            state.reconcile_pending_cut(std::slice::from_ref(&second)),
             Some((generation, 1))
         );
-        assert!(workflow.pending_cut_paths().is_empty());
-        assert!(workflow.clipboard_payload().is_none());
+        assert!(state.pending_cut_paths().is_empty());
+        assert!(state.clipboard_payload().is_none());
     }
 
     #[test]
     fn cut_paste_into_the_source_directory_is_a_no_op() {
-        let mut workflow = TransferWorkflow::default();
-        workflow.cut(&[entry("/start/one", false)]).unwrap();
+        let mut state = TransferState::default();
+        state.cut(&[entry("/start/one", false)]).unwrap();
 
-        assert!(workflow.paste(PathBuf::from("/start")).is_none());
-        assert_eq!(workflow.pending_cut_paths(), [PathBuf::from("/start/one")]);
+        assert!(state.paste(PathBuf::from("/start")).is_none());
+        assert_eq!(state.pending_cut_paths(), [PathBuf::from("/start/one")]);
     }
 }

@@ -6,7 +6,6 @@ use super::{grid::GridInteraction, navigation::NavigationSession};
 
 #[derive(Clone, Debug)]
 struct Recursive {
-    directory_entries: Vec<FileEntry>,
     loading: bool,
     truncated: bool,
 }
@@ -52,8 +51,8 @@ impl SearchSession {
         };
         if active.recursive.is_none() && value.starts_with('/') {
             value.remove(0);
+            navigation.begin_recursive_display();
             active.recursive = Some(Recursive {
-                directory_entries: navigation.entries().to_vec(),
                 loading: false,
                 truncated: false,
             });
@@ -64,7 +63,7 @@ impl SearchSession {
             recursive.loading = !self.query.is_empty();
             recursive.truncated = false;
             if self.query.is_empty() {
-                navigation.replace_displayed_entries(Vec::new());
+                navigation.install_recursive_entries(Vec::new());
                 grid.select_only(None, 0);
                 return Update::CancelPending;
             }
@@ -103,7 +102,7 @@ impl SearchSession {
         match result {
             Ok(results) => {
                 recursive.truncated = results.truncated;
-                navigation.replace_displayed_entries(results.entries);
+                navigation.install_recursive_entries(results.entries);
                 grid.select_only(
                     (!navigation.entries().is_empty()).then_some(0),
                     navigation.entries().len(),
@@ -124,8 +123,8 @@ impl SearchSession {
         let selected = grid
             .selected_entry()
             .and_then(|index| navigation.entries().get(index).cloned());
-        if let Some(recursive) = active.recursive {
-            navigation.replace_displayed_entries(recursive.directory_entries);
+        if active.recursive.is_some() {
+            navigation.restore_recursive_display();
             grid.select_only(None, navigation.entries().len());
             selected
         } else {
@@ -142,8 +141,8 @@ impl SearchSession {
             self.query.clear();
             return;
         };
-        if let Some(recursive) = active.recursive {
-            navigation.replace_displayed_entries(recursive.directory_entries);
+        if active.recursive.is_some() {
+            navigation.restore_recursive_display();
         }
         grid.select_only(active.origin, navigation.entries().len());
         self.query.clear();
@@ -242,7 +241,7 @@ mod tests {
 
     fn navigation() -> (NavigationSession, GridInteraction) {
         let mut navigation = NavigationSession::new(PathBuf::from("/start"));
-        navigation.replace_displayed_entries(
+        navigation.install_folder_entries(
             ["one", "two", "three"]
                 .into_iter()
                 .map(|name| FileEntry {

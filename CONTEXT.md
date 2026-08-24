@@ -9,8 +9,12 @@ An active lookup over explorer entries that retains enough context to submit a m
 _Avoid_: Search mode, filter state
 
 **Transfer**:
-A Copy or Move request for one or more filesystem entries to a destination. Clipboard paste, internal drag, and native drag are ways to initiate the same Transfer.
+A Copy or Move request for one or more filesystem entries to their destination paths. Clipboard paste, internal drag, native drag, and restoring Trash entries are ways to initiate the same Transfer.
 _Avoid_: Drag operation, file move
+
+**Transfer session**:
+The queued and active Transfers together with clipboard ownership, progress, conflict choices, completion feedback, and retained history.
+_Avoid_: Transfer workflow, transfer queue state
 
 **Command session**:
 An active `!` or `:` prompt together with the command result PolarExp presents or applies.
@@ -31,3 +35,7 @@ _Avoid_: Prompt state, delete dialog
 **Navigation session**:
 The current folder, displayed entries, browsing history, and any pending folder transition whose result PolarExp may accept.
 _Avoid_: Navigation state, pending navigation
+
+**Location monitoring**:
+Observation of filesystem locations whose changes can affect displayed entries, pending Cut entries, or expanded navigation, including fallback when notifications are unavailable.
+_Avoid_: Directory watch, file watcher

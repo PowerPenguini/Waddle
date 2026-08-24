@@ -1,31 +1,60 @@
 use super::grid::{DeleteMotion, Motion};
 
 pub(super) const HELP: &str = "\
-Browser
-  [count]h/j/k/l Move across the file grid
-  0 / $         Move to the start / end of the grid row
-  gg / G        Jump to the first / last entry
-  [count]G      Jump to an entry by display position
-  H / M / L     Jump within the visible viewport
-  Ctrl+D/U      Move down / up by half a page
-  Enter         Open the selected item
-  Backspace     Go to the parent directory
-  u / Ctrl+R    Undo / redo
-  Ctrl+O/I      Go back / forward
-  Ctrl+L        Edit the current location
-  v             Toggle visual selection
-  r             Rename the selected item
-  x             Cut the current selection
-  dd            Cut the active item
-  d{motion}     Cut through 0, $, h, j, k, or l
-  \"_d / \"_x    Move entries to Trash without changing the clipboard
-  Delete        Move the selection to Trash
-  y / n         Confirm / cancel a deletion prompt
-  /query        Search the current directory
-  //query       Search recursively
-  n / N         Repeat search forward / backward
-  y / p         Copy / paste
-  Esc           Cancel the active mode or close output";
+Keyboard navigation
+  Arrow keys  Move the active entry or focused control
+  Shift+Arrow  Extend the conventional selection
+  Home / End  Jump to the first / last entry
+  Tab / Shift+Tab  Move focus forward / backward
+  Enter  Open an entry or activate the focused control
+  Space  Toggle selection or activate the focused control
+  Backspace  Go to the parent directory
+  F5  Refresh the current view
+  Ctrl+L  Edit the current location
+  Ctrl+O / Ctrl+I  Go back / forward
+  Ctrl+W e  Toggle the sidebar tree
+
+Vim navigation
+  [count]h/j/k/l  Move across entries
+  0 / $  Move to the start / end of the grid row
+  gg / G  Jump to the first / last entry
+  [count]gg / [count]G  Jump to a display position
+  H / M / L  Jump to the viewport top / middle / bottom
+  [count]Ctrl+D/U  Move down / up by half a page
+
+Selection and file operations
+  v  Toggle visual selection
+  Ctrl+A  Select all entries
+  y / Ctrl+C  Copy the selection
+  p / Ctrl+V  Paste
+  x  Cut the selection
+  dd  Cut the active entry
+  d{motion}  Cut through 0, $, h, j, k, l, or d
+  \"_x / \"_dd / \"_d{motion}  Trash without changing clipboard
+  Delete  Move the selection to Trash
+  u / Ctrl+R  Undo / redo
+  r  Rename the active entry
+
+Search
+  /query  Search the current directory
+  //query  Search recursively
+  n / N  Repeat search forward / backward
+  Enter  Open the current match
+  Esc  Cancel search and restore the previous view
+
+Prompts and transfers
+  y / Enter  Confirm a deletion prompt
+  n / Esc  Cancel a deletion prompt
+  r / s / k  Replace / skip / keep both for one conflict
+  R / S / K  Apply the choice to remaining entries
+  Esc  Cancel an active mode, sequence, transfer, or output
+
+Pointer and list view
+  Right click  Open file and folder actions
+  Drag empty space  Select intersecting Grid entries
+  Drag entries  Move them; hold Ctrl while dropping to copy
+  Name/Type/Size/Modified header
+    Sort by that property; click again to reverse";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Mode {
@@ -101,6 +130,7 @@ pub(super) enum Intent {
     Undo,
     Redo,
     Refresh,
+    ToggleTree,
     BeginLocation,
     MoveFocus { reverse: bool },
     CompleteCommand,
@@ -129,6 +159,7 @@ pub(super) struct BrowserInput {
     mode: Mode,
     count: Option<usize>,
     g_pending: bool,
+    window_pending: bool,
     delete_pending: Option<(usize, Option<usize>, bool)>,
     black_hole_stage: u8,
 }
@@ -174,6 +205,8 @@ impl BrowserInput {
             } else {
                 "\"_".to_owned()
             })
+        } else if self.window_pending {
+            Some("Ctrl+W".to_owned())
         } else if self.g_pending {
             Some(format!(
                 "{}g",
@@ -194,6 +227,8 @@ impl BrowserInput {
             "awaiting _"
         } else if self.black_hole_stage == 2 {
             "awaiting d or x"
+        } else if self.window_pending {
+            "awaiting e"
         } else if self.g_pending {
             "awaiting g"
         } else {
@@ -205,6 +240,7 @@ impl BrowserInput {
     fn clear_sequence(&mut self) {
         self.count = None;
         self.g_pending = false;
+        self.window_pending = false;
         self.delete_pending = None;
         self.black_hole_stage = 0;
     }
@@ -325,9 +361,18 @@ impl BrowserInput {
         }
 
         let text = press.text.as_deref();
+        if self.window_pending {
+            return if !press.control && !press.alt && !press.logo && text == Some("e") {
+                self.clear_sequence();
+                Intent::ToggleTree
+            } else {
+                self.invalid_sequence(text.unwrap_or("key"))
+            };
+        }
         if press.control && !press.alt && !press.logo {
             let count = self.count.take().unwrap_or(1);
             self.g_pending = false;
+            self.window_pending = false;
             self.delete_pending = None;
             self.black_hole_stage = 0;
             return match text.map(str::to_ascii_lowercase).as_deref() {
@@ -340,6 +385,10 @@ impl BrowserInput {
                 Some("r") => Intent::Redo,
                 Some("d") => Intent::Move(Motion::HalfPageDown, count),
                 Some("u") => Intent::Move(Motion::HalfPageUp, count),
+                Some("w") => {
+                    self.window_pending = true;
+                    Intent::Pending(self.pending_status())
+                }
                 _ => Intent::None,
             };
         }
@@ -751,6 +800,48 @@ mod tests {
         assert_eq!(
             input.handle(control("d"), selected()),
             Intent::Move(Motion::HalfPageDown, 1)
+        );
+    }
+
+    #[test]
+    fn control_w_e_toggles_tree_and_uses_normal_sequence_rules() {
+        let mut input = BrowserInput::default();
+        let control_w = Press {
+            text: Some("w".to_owned()),
+            control: true,
+            ..Press::default()
+        };
+
+        assert_eq!(
+            input.handle(control_w.clone(), selected()),
+            Intent::Pending("Ctrl+W  •  awaiting e".to_owned())
+        );
+        assert_eq!(input.handle(text("e"), selected()), Intent::ToggleTree);
+        assert_eq!(input.pending_sequence(), None);
+
+        assert!(matches!(
+            input.handle(control_w.clone(), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(text("x"), selected()),
+            Intent::InvalidSequence("Invalid Browser sequence: Ctrl+Wx".to_owned())
+        );
+        assert_eq!(input.pending_sequence(), None);
+
+        assert!(matches!(
+            input.handle(control_w, selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                selected(),
+            ),
+            Intent::Pending("Browser sequence cancelled".to_owned())
         );
     }
 

@@ -12,7 +12,12 @@ pub(super) enum NodeKind {
     Drive,
     Folder,
     Home,
-    Place,
+    Desktop,
+    Documents,
+    Downloads,
+    Music,
+    Pictures,
+    Videos,
     Favorite,
     Recent,
     Trash,
@@ -166,7 +171,12 @@ impl ExplorerState {
             !matches!(
                 node.kind,
                 NodeKind::Home
-                    | NodeKind::Place
+                    | NodeKind::Desktop
+                    | NodeKind::Documents
+                    | NodeKind::Downloads
+                    | NodeKind::Music
+                    | NodeKind::Pictures
+                    | NodeKind::Videos
                     | NodeKind::Favorite
                     | NodeKind::Recent
                     | NodeKind::Trash

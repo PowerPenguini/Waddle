@@ -9,6 +9,7 @@ pub(super) const TILE_WIDTH: f32 = 104.0;
 pub(super) const TILE_ROW_HEIGHT: f32 = 116.0;
 pub(super) const CONTENT_GUTTER: f32 = 14.0;
 pub(super) const LIST_VIEW_TOP_INSET: f32 = 6.0;
+pub(super) const LIST_HEADER_HEIGHT: f32 = 26.0;
 pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
 const TILE_PITCH: f32 = 112.0;
@@ -66,6 +67,7 @@ struct Marquee {
 #[derive(Clone, Debug)]
 pub(super) struct GridInteraction {
     window_size: Size,
+    sidebar_width: f32,
     scroll_y: f32,
     sidebar_scroll_y: f32,
     cursor: Point,
@@ -89,6 +91,7 @@ impl GridInteraction {
     pub(super) fn new(window_size: Size) -> Self {
         Self {
             window_size,
+            sidebar_width: SIDEBAR_WIDTH,
             scroll_y: 0.0,
             sidebar_scroll_y: 0.0,
             cursor: Point::ORIGIN,
@@ -109,6 +112,14 @@ impl GridInteraction {
 
     pub(super) fn window_width(&self) -> f32 {
         self.window_size.width
+    }
+
+    pub(super) fn set_sidebar_visible(&mut self, visible: bool) {
+        self.sidebar_width = if visible { SIDEBAR_WIDTH } else { 0.0 };
+    }
+
+    pub(super) fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
     }
 
     pub(super) fn set_list_mode(&mut self, list_mode: bool) {
@@ -135,7 +146,7 @@ impl GridInteraction {
             return false;
         };
         marquee.current = Point::new(
-            point.x + SIDEBAR_WIDTH,
+            point.x + self.sidebar_width,
             point.y + TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
         );
         self.update_marquee_selection(entry_count);
@@ -469,7 +480,7 @@ impl GridInteraction {
 
     pub(super) fn marquee_bounds(&self, status_height: f32) -> Option<Rectangle> {
         let marquee = self.marquee.as_ref()?;
-        let origin = Point::new(SIDEBAR_WIDTH, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
+        let origin = Point::new(self.sidebar_width, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
         let size = Size::new(
             (self.window_size.width - origin.x).max(0.0),
             (self.window_size.height - origin.y - status_height).max(0.0),
@@ -488,12 +499,12 @@ impl GridInteraction {
         if self.list_mode {
             return 1;
         }
-        let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
+        let width = (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(1.0);
         (width / TILE_PITCH).floor().max(1.0) as usize
     }
 
     pub(super) fn column_width(&self) -> f32 {
-        let width = (self.window_size.width - SIDEBAR_WIDTH - 2.0 * CONTENT_GUTTER).max(1.0);
+        let width = (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(1.0);
         width / self.columns() as f32
     }
 
@@ -551,7 +562,7 @@ impl GridInteraction {
         if point.y < 0.0 || point.y >= self.window_size.height {
             return None;
         }
-        if point.x < SIDEBAR_WIDTH {
+        if point.x < self.sidebar_width {
             let index =
                 ((point.y - TREE_TOP + self.sidebar_scroll_y) / TREE_ROW_HEIGHT).floor() as isize;
             let index = usize::try_from(index).ok()?;
@@ -564,7 +575,7 @@ impl GridInteraction {
             return None;
         }
         if let Some(index) = self.index_at(point, entry_count)
-            && self.point_over_tile(point, index)
+            && self.point_over_entry(point, index)
         {
             return Some(DropZone::Entry(index));
         }
@@ -599,7 +610,7 @@ impl GridInteraction {
                 0.0
             }
         };
-        if self.cursor.x < SIDEBAR_WIDTH {
+        if self.cursor.x < self.sidebar_width {
             (0.0, direction(self.cursor.y, 30.0, self.window_size.height))
         } else {
             (direction(self.cursor.y, top, bottom), 0.0)
@@ -626,10 +637,9 @@ impl GridInteraction {
         entry_count: usize,
         status_height: f32,
     ) -> bool {
-        let content_top = content_top();
-        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER
+        if point.x < self.sidebar_width + CONTENT_GUTTER
             || point.x >= self.window_size.width - CONTENT_GUTTER
-            || point.y < content_top
+            || point.y < self.entries_top()
             || point.y >= self.window_size.height - status_height - CONTENT_GUTTER
         {
             return false;
@@ -637,23 +647,25 @@ impl GridInteraction {
         let Some(index) = self.index_at(point, entry_count) else {
             return true;
         };
-        !self.point_over_tile(point, index)
+        !self.point_over_entry(point, index)
     }
 
     fn cell_at(&self, point: Point) -> Option<(i32, i32)> {
-        if point.x < SIDEBAR_WIDTH + CONTENT_GUTTER || point.y < content_top() {
+        if point.x < self.sidebar_width + CONTENT_GUTTER || point.y < self.entries_top() {
             return None;
         }
         let column =
-            ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / self.column_width()).floor() as i32;
-        let row = ((point.y - content_top() + self.scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
+            ((point.x - self.sidebar_width - CONTENT_GUTTER) / self.column_width()).floor() as i32;
+        let row =
+            ((point.y - self.entries_top() + self.scroll_y) / self.row_height()).floor() as i32;
         (row >= 0 && column >= 0 && column < self.columns() as i32).then_some((row, column))
     }
 
     fn selection_cell_at(&self, point: Point) -> (i32, i32) {
         let column =
-            ((point.x - SIDEBAR_WIDTH - CONTENT_GUTTER) / self.column_width()).floor() as i32;
-        let row = ((point.y - content_top() + self.scroll_y) / TILE_ROW_HEIGHT).floor() as i32;
+            ((point.x - self.sidebar_width - CONTENT_GUTTER) / self.column_width()).floor() as i32;
+        let row =
+            ((point.y - self.entries_top() + self.scroll_y) / self.row_height()).floor() as i32;
         (row, column)
     }
 
@@ -663,17 +675,40 @@ impl GridInteraction {
         (index < entry_count).then_some(index)
     }
 
-    fn point_over_tile(&self, point: Point, index: usize) -> bool {
+    fn point_over_entry(&self, point: Point, index: usize) -> bool {
+        if self.list_mode {
+            let row_top = self.entries_top() - self.scroll_y + index as f32 * LIST_ROW_HEIGHT;
+            return point.x >= self.sidebar_width + CONTENT_GUTTER
+                && point.x < self.window_size.width - CONTENT_GUTTER
+                && point.y >= row_top
+                && point.y < row_top + LIST_ROW_HEIGHT;
+        }
         let columns = self.columns();
         let row = index / columns;
         let column = index % columns;
-        let column_left = SIDEBAR_WIDTH + CONTENT_GUTTER + column as f32 * self.column_width();
+        let column_left = self.sidebar_width + CONTENT_GUTTER + column as f32 * self.column_width();
         let tile_left = column_left + (self.column_width() - TILE_WIDTH) / 2.0;
         let row_top = content_top() - self.scroll_y + row as f32 * TILE_ROW_HEIGHT;
         point.x >= tile_left
             && point.x < tile_left + TILE_WIDTH
             && point.y >= row_top
             && point.y < row_top + TILE_HEIGHT
+    }
+
+    fn entries_top(&self) -> f32 {
+        if self.list_mode {
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
+        } else {
+            content_top()
+        }
+    }
+
+    fn row_height(&self) -> f32 {
+        if self.list_mode {
+            LIST_ROW_HEIGHT
+        } else {
+            TILE_ROW_HEIGHT
+        }
     }
 
     fn update_marquee_selection(&mut self, entry_count: usize) {
@@ -795,6 +830,28 @@ mod tests {
         assert!(visible.start > 0);
         assert!(visible.len() < 30);
         assert!(visible.end < 10_000);
+    }
+
+    #[test]
+    fn hidden_sidebar_reclaims_grid_and_pointer_geometry() {
+        let mut grid = grid();
+        assert_eq!(grid.columns(), 3);
+        assert_eq!(
+            grid.drop_zone(Point::new(10.0, 100.0), 8, 4, 25.0, true),
+            Some(DropZone::Sidebar(1))
+        );
+
+        grid.set_sidebar_visible(false);
+        assert_eq!(grid.sidebar_width(), 0.0);
+        assert_eq!(grid.columns(), 4);
+        assert_ne!(
+            grid.drop_zone(Point::new(10.0, 100.0), 8, 4, 25.0, true),
+            Some(DropZone::Sidebar(1))
+        );
+
+        let start = Point::new(CONTENT_GUTTER + 2.0, content_top() + 2.0);
+        assert!(grid.start_marquee(start, 8, 25.0, true));
+        assert_eq!(grid.marquee_bounds(25.0).unwrap().x, CONTENT_GUTTER + 2.0);
     }
 
     #[test]
@@ -998,6 +1055,39 @@ mod tests {
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
             [1, 2, 4, 5, 7]
+        );
+    }
+
+    #[test]
+    fn marquee_in_list_mode_uses_list_rows_and_starts_only_on_empty_space() {
+        let mut grid = grid();
+        grid.set_list_mode(true);
+        let list_top =
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT;
+        let entry_count = 5;
+        let header_point = Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 40.0, list_top - 2.0);
+        let row_point = Point::new(
+            grid.window_size.width - CONTENT_GUTTER - 2.0,
+            list_top + 2.0 * LIST_ROW_HEIGHT + 2.0,
+        );
+
+        assert!(!grid.start_marquee(header_point, entry_count, 25.0, true));
+        assert!(!grid.start_marquee(row_point, entry_count, 25.0, true));
+
+        let start = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0,
+            list_top + entry_count as f32 * LIST_ROW_HEIGHT + 8.0,
+        );
+        let end = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 40.0,
+            list_top + LIST_ROW_HEIGHT + 2.0,
+        );
+        assert!(grid.start_marquee(start, entry_count, 25.0, true));
+        grid.move_cursor(end, entry_count);
+
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [1, 2, 3, 4]
         );
     }
 

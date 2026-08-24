@@ -58,20 +58,36 @@ impl Places {
                 favorite_index: None,
             });
         }
-        for (directory, label) in [
-            (gio::glib::UserDirectory::Desktop, "Desktop"),
-            (gio::glib::UserDirectory::Documents, "Documents"),
-            (gio::glib::UserDirectory::Downloads, "Downloads"),
-            (gio::glib::UserDirectory::Music, "Music"),
-            (gio::glib::UserDirectory::Pictures, "Pictures"),
-            (gio::glib::UserDirectory::Videos, "Videos"),
+        for (directory, label, kind) in [
+            (
+                gio::glib::UserDirectory::Desktop,
+                "Desktop",
+                NodeKind::Desktop,
+            ),
+            (
+                gio::glib::UserDirectory::Documents,
+                "Documents",
+                NodeKind::Documents,
+            ),
+            (
+                gio::glib::UserDirectory::Downloads,
+                "Downloads",
+                NodeKind::Downloads,
+            ),
+            (gio::glib::UserDirectory::Music, "Music", NodeKind::Music),
+            (
+                gio::glib::UserDirectory::Pictures,
+                "Pictures",
+                NodeKind::Pictures,
+            ),
+            (gio::glib::UserDirectory::Videos, "Videos", NodeKind::Videos),
         ] {
             if let Some(path) = gio::glib::user_special_dir(directory).filter(|path| path.is_dir())
             {
                 entries.push(Entry {
                     path,
                     label: label.to_owned(),
-                    kind: NodeKind::Place,
+                    kind,
                     favorite_index: None,
                 });
             }
