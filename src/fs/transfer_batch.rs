@@ -22,6 +22,7 @@ impl FileIdentity {
 struct TransferRoot {
     source: PathBuf,
     destination: PathBuf,
+    replaced_existing: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +111,7 @@ impl TransferBatch {
             roots.push(TransferRoot {
                 source: source.clone(),
                 destination: destination.clone(),
+                replaced_existing: false,
             });
             pending.push_back(PendingTransfer::Entry {
                 source,
@@ -308,14 +310,28 @@ impl TransferBatch {
                 transfer_exact(&blocked.source, &destination, self.action)
                     .map_err(|error| (blocked.source, error))
             }
-            ConflictChoice::Replace if blocked.directories => self.merge_directories(blocked),
-            ConflictChoice::Replace => replace_exact(
-                &blocked.source,
-                &blocked.destination,
-                self.action,
-                blocked.destination_identity,
-            )
-            .map_err(|error| (blocked.source, error)),
+            ConflictChoice::Replace if blocked.directories => {
+                let root = blocked.root;
+                let result = self.merge_directories(blocked);
+                if result.is_ok() {
+                    self.roots[root].replaced_existing = true;
+                }
+                result
+            }
+            ConflictChoice::Replace => {
+                let root = blocked.root;
+                let result = replace_exact(
+                    &blocked.source,
+                    &blocked.destination,
+                    self.action,
+                    blocked.destination_identity,
+                )
+                .map_err(|error| (blocked.source, error));
+                if result.is_ok() {
+                    self.roots[root].replaced_existing = true;
+                }
+                result
+            }
         }
     }
 
@@ -425,6 +441,7 @@ impl TransferBatch {
                 .map(|(_, root)| TransferReceipt {
                     source: root.source.clone(),
                     destination: root.destination.clone(),
+                    replaced_existing: root.replaced_existing,
                 })
                 .collect(),
             cancelled: self.cancelled,

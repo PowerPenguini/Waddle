@@ -89,6 +89,12 @@ pub(crate) struct TransferItem {
     destination: PathBuf,
     source_fingerprint: TreeFingerprint,
     result_fingerprint: TreeFingerprint,
+    #[serde(default = "legacy_transfer_requires_refusal")]
+    replaced_existing: bool,
+}
+
+fn legacy_transfer_requires_refusal() -> bool {
+    true
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +155,7 @@ impl Action {
                     destination: receipt.destination.clone(),
                     source_fingerprint,
                     result_fingerprint,
+                    replaced_existing: receipt.replaced_existing,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

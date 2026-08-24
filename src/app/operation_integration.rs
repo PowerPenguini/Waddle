@@ -485,6 +485,7 @@ impl App {
                 &[fs::TransferReceipt {
                     source: template.clone(),
                     destination: path.clone(),
+                    replaced_existing: false,
                 }],
             ),
             file_operation::Completion::Name {

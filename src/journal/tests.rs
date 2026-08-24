@@ -129,6 +129,7 @@ fn copy_and_move_undo_redo_are_restart_safe() {
     let copy_receipts = [crate::fs::TransferReceipt {
         source: source.clone(),
         destination: copied.clone(),
+        replaced_existing: false,
     }];
     let mut journal = Journal::open(journal_path.clone()).unwrap();
     journal
@@ -152,6 +153,7 @@ fn copy_and_move_undo_redo_are_restart_safe() {
     let move_receipts = [crate::fs::TransferReceipt {
         source: source.clone(),
         destination: moved.clone(),
+        replaced_existing: false,
     }];
     journal
         .record(
@@ -169,6 +171,127 @@ fn copy_and_move_undo_redo_are_restart_safe() {
 }
 
 #[test]
+fn undo_copy_replace_refuses_without_removing_the_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source/item.txt");
+    let destination_directory = temp.path().join("destination");
+    let destination = destination_directory.join("item.txt");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::create_dir(&destination_directory).unwrap();
+    fs::write(&source, "incoming").unwrap();
+    fs::write(&destination, "preexisting").unwrap();
+
+    let crate::fs::TransferBatchOutcome::Conflict { batch, .. } = crate::fs::TransferBatch::new(
+        vec![source.clone()],
+        destination_directory,
+        crate::transfer::Action::Copy,
+    )
+    .run() else {
+        panic!("expected conflict");
+    };
+    let crate::fs::TransferBatchOutcome::Complete(report) = (*batch)
+        .resolve(crate::fs::ConflictChoice::Replace, false)
+        .run()
+    else {
+        panic!("expected completion");
+    };
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "incoming");
+
+    let mut journal = Journal::open(temp.path().join("operations.json")).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &report.receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    let error = journal.undo().unwrap_err();
+
+    assert!(error.contains("replaced an existing destination"));
+    assert_eq!(fs::read_to_string(destination).unwrap(), "incoming");
+    assert_eq!(fs::read_to_string(source).unwrap(), "incoming");
+}
+
+#[test]
+fn undo_directory_merge_refuses_without_removing_preexisting_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source/folder");
+    let destination_directory = temp.path().join("destination");
+    let destination = destination_directory.join("folder");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(source.join("incoming.txt"), "incoming").unwrap();
+    fs::write(destination.join("preexisting.txt"), "preexisting").unwrap();
+
+    let crate::fs::TransferBatchOutcome::Conflict { batch, .. } = crate::fs::TransferBatch::new(
+        vec![source],
+        destination_directory,
+        crate::transfer::Action::Copy,
+    )
+    .run() else {
+        panic!("expected conflict");
+    };
+    let crate::fs::TransferBatchOutcome::Complete(report) = (*batch)
+        .resolve(crate::fs::ConflictChoice::Replace, false)
+        .run()
+    else {
+        panic!("expected completion");
+    };
+    let mut journal = Journal::open(temp.path().join("operations.json")).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &report.receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+
+    let error = journal.undo().unwrap_err();
+
+    assert!(error.contains("replaced an existing destination"));
+    assert_eq!(
+        fs::read_to_string(destination.join("preexisting.txt")).unwrap(),
+        "preexisting"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("incoming.txt")).unwrap(),
+        "incoming"
+    );
+}
+
+#[test]
+fn legacy_transfer_entries_refuse_undo_conservatively() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source.txt");
+    let destination = temp.path().join("destination.txt");
+    fs::write(&source, "content").unwrap();
+    fs::write(&destination, "content").unwrap();
+    let action = Action::transfer(
+        TransferKind::Copy,
+        &[crate::fs::TransferReceipt {
+            source,
+            destination: destination.clone(),
+            replaced_existing: false,
+        }],
+    )
+    .unwrap()
+    .unwrap();
+    let mut encoded = serde_json::to_value(action).unwrap();
+    encoded["Transfer"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("replaced_existing");
+    let legacy = serde_json::from_value(encoded).unwrap();
+    let mut journal = Journal::open(temp.path().join("operations.json")).unwrap();
+    journal.record(legacy).unwrap();
+
+    let error = journal.undo().unwrap_err();
+
+    assert!(error.contains("replaced an existing destination"));
+    assert_eq!(fs::read_to_string(destination).unwrap(), "content");
+}
+
+#[test]
 fn copy_undo_refuses_a_changed_result_tree() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
@@ -179,6 +302,7 @@ fn copy_undo_refuses_a_changed_result_tree() {
     let receipts = [crate::fs::TransferReceipt {
         source,
         destination: copied.clone(),
+        replaced_existing: false,
     }];
     let mut journal = Journal::open(temp.path().join("operations.json")).unwrap();
     journal

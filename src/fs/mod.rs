@@ -136,6 +136,7 @@ pub struct TransferWarning {
 pub struct TransferReceipt {
     pub source: PathBuf,
     pub destination: PathBuf,
+    pub replaced_existing: bool,
 }
 
 #[derive(Clone, Debug, Default)]

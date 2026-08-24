@@ -182,6 +182,12 @@ fn apply_transfer(
     items: &mut [TransferItem],
     direction: Direction,
 ) -> Result<Effect, String> {
+    if items.iter().any(|item| item.replaced_existing) {
+        return Err(
+            "Refused Undo: this transfer replaced an existing destination that cannot be restored"
+                .to_owned(),
+        );
+    }
     match direction {
         Direction::Undo => {
             for item in items.iter() {
