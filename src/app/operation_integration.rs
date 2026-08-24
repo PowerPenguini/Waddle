@@ -222,18 +222,11 @@ impl App {
         widget::operation::focus(Id::new(NEW_FOLDER_ID))
     }
 
-    pub(super) fn show_new_file(
-        &mut self,
-        template: Option<PathBuf>,
-        suggested_name: String,
-        label: String,
-    ) -> Task<Message> {
+    pub(super) fn show_new_file(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        self.open_file_operation(move |session| {
-            session.begin_new_file(template, suggested_name, label);
-        });
+        self.open_file_operation(|session| session.begin_new_file());
         widget::operation::focus(Id::new(NEW_FOLDER_ID))
     }
 
@@ -475,21 +468,7 @@ impl App {
                 result: Ok(path),
             } => journal::Action::new_folder(path.clone()).map(Some),
             file_operation::Completion::Name {
-                kind:
-                    file_operation::NameKind::NewFile {
-                        template: Some(template),
-                    },
-                result: Ok(path),
-            } => journal::Action::transfer(
-                journal::TransferKind::Copy,
-                &[fs::TransferReceipt {
-                    source: template.clone(),
-                    destination: path.clone(),
-                    replaced_existing: false,
-                }],
-            ),
-            file_operation::Completion::Name {
-                kind: file_operation::NameKind::NewFile { template: None },
+                kind: file_operation::NameKind::NewFile,
                 result: Ok(path),
             } => journal::Action::new_file(path.clone()).map(Some),
             file_operation::Completion::Trash(completion) => {

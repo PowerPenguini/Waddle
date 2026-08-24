@@ -21,7 +21,6 @@ mod shell;
 mod startup;
 mod state;
 mod status;
-mod templates;
 mod thumbnail;
 mod transfer_integration;
 mod transfer_queue;
@@ -231,7 +230,7 @@ enum Message {
     EntryDoubleClicked(usize),
     EntryContext(usize),
     ContextNewFolder,
-    ContextNewFile(Option<PathBuf>, String, String),
+    ContextNewFile,
     ContextProperties,
     ContextOpenWith,
     ContextRename,
@@ -312,7 +311,6 @@ struct App {
     places: places::Places,
     recent: recent::Recent,
     trash: trash::Trash,
-    templates: Vec<templates::Template>,
     operations: Operations,
     search: SearchSession,
     transfers: TransferSession,
@@ -463,7 +461,6 @@ impl App {
             places,
             recent,
             trash,
-            templates: templates::discover(),
             operations: Operations::default(),
             search: SearchSession::default(),
             transfers: TransferSession::open_default(),

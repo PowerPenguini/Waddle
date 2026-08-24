@@ -248,9 +248,9 @@ impl App {
                 self.context_menu = None;
                 self.show_new_folder()
             }
-            Message::ContextNewFile(template, suggested_name, label) => {
+            Message::ContextNewFile => {
                 self.context_menu = None;
-                self.show_new_file(template, suggested_name, label)
+                self.show_new_file()
             }
             Message::ContextProperties | Message::ContextOpenWith => {
                 self.context_menu = None;
@@ -889,21 +889,8 @@ impl App {
         }
         let mut actions = vec![
             ("New Folder".to_owned(), Message::ContextNewFolder),
-            (
-                "New Empty File".to_owned(),
-                Message::ContextNewFile(None, String::new(), "new file".to_owned()),
-            ),
+            ("New Empty File".to_owned(), Message::ContextNewFile),
         ];
-        actions.extend(self.templates.iter().map(|template| {
-            (
-                format!("New from {}", template.label),
-                Message::ContextNewFile(
-                    Some(template.path.clone()),
-                    template.suggested_name.clone(),
-                    format!("template {}", template.label),
-                ),
-            )
-        }));
         actions.extend([
             ("Properties".to_owned(), Message::ContextProperties),
             ("Open With…".to_owned(), Message::ContextOpenWith),

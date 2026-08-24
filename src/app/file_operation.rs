@@ -18,7 +18,7 @@ impl TrashAdapter for GioTrashAdapter {
 #[derive(Clone, Debug)]
 enum NameOperation {
     NewFolder,
-    NewFile { template: Option<PathBuf> },
+    NewFile,
     Rename(FileEntry),
 }
 
@@ -37,8 +37,6 @@ enum State {
     NewFile {
         value: String,
         error: String,
-        template: Option<PathBuf>,
-        template_label: String,
     },
     Trash {
         entries: Vec<FileEntry>,
@@ -62,29 +60,12 @@ enum State {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum View<'a> {
     Idle,
-    Rename {
-        value: &'a str,
-        error: &'a str,
-    },
-    NewFolder {
-        value: &'a str,
-        error: &'a str,
-    },
-    NewFile {
-        value: &'a str,
-        error: &'a str,
-        template_label: &'a str,
-    },
-    Trash {
-        message: &'a str,
-    },
-    PermanentDelete {
-        message: &'a str,
-        detail: &'a str,
-    },
-    Error {
-        message: &'a str,
-    },
+    Rename { value: &'a str, error: &'a str },
+    NewFolder { value: &'a str, error: &'a str },
+    NewFile { value: &'a str, error: &'a str },
+    Trash { message: &'a str },
+    PermanentDelete { message: &'a str, detail: &'a str },
+    Error { message: &'a str },
 }
 
 #[derive(Clone, Debug)]
@@ -114,16 +95,12 @@ impl Work {
                     NameOperation::Rename(entry) => NameKind::Rename {
                         source: entry.path.clone(),
                     },
-                    NameOperation::NewFile { template } => NameKind::NewFile {
-                        template: template.clone(),
-                    },
+                    NameOperation::NewFile => NameKind::NewFile,
                     NameOperation::NewFolder => NameKind::NewFolder,
                 };
                 let result = match operation {
                     NameOperation::NewFolder => fs::create_folder(&current, &value),
-                    NameOperation::NewFile { template } => {
-                        fs::create_file(&current, &value, template.as_deref())
-                    }
+                    NameOperation::NewFile => fs::create_file(&current, &value),
                     NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
                 }
                 .map_err(|error| error.to_string());
@@ -168,7 +145,7 @@ fn run_trash_entries<A: TrashAdapter>(entries: Vec<FileEntry>, trash: &A) -> Tra
 pub(super) enum NameKind {
     Rename { source: PathBuf },
     NewFolder,
-    NewFile { template: Option<PathBuf> },
+    NewFile,
 }
 
 #[derive(Clone, Debug)]
@@ -216,16 +193,7 @@ impl FileOperationSession {
             State::Idle => View::Idle,
             State::Rename { value, error, .. } => View::Rename { value, error },
             State::NewFolder { value, error } => View::NewFolder { value, error },
-            State::NewFile {
-                value,
-                error,
-                template_label,
-                ..
-            } => View::NewFile {
-                value,
-                error,
-                template_label,
-            },
+            State::NewFile { value, error } => View::NewFile { value, error },
             State::Trash { message, .. } => View::Trash { message },
             State::PermanentDelete {
                 message, detail, ..
@@ -296,18 +264,11 @@ impl FileOperationSession {
         };
     }
 
-    pub(super) fn begin_new_file(
-        &mut self,
-        template: Option<PathBuf>,
-        suggested_name: String,
-        template_label: String,
-    ) {
+    pub(super) fn begin_new_file(&mut self) {
         self.busy = false;
         self.state = State::NewFile {
-            value: suggested_name,
+            value: String::new(),
             error: String::new(),
-            template,
-            template_label,
         };
     }
 
@@ -388,18 +349,7 @@ impl FileOperationSession {
                 error,
             } => (NameOperation::Rename(entry.clone()), value.clone(), error),
             State::NewFolder { value, error } => (NameOperation::NewFolder, value.clone(), error),
-            State::NewFile {
-                value,
-                error,
-                template,
-                ..
-            } => (
-                NameOperation::NewFile {
-                    template: template.clone(),
-                },
-                value.clone(),
-                error,
-            ),
+            State::NewFile { value, error } => (NameOperation::NewFile, value.clone(), error),
             _ => return None,
         };
         if let Err(validation) = fs::validate_name(&value) {
@@ -608,16 +558,10 @@ mod tests {
     }
 
     #[test]
-    fn new_file_template_uses_the_same_name_prompt_and_reports_conflicts_inline() {
+    fn new_file_uses_the_name_prompt_and_reports_conflicts_inline() {
         let temp = tempfile::tempdir().unwrap();
-        let template = temp.path().join("Template.md");
-        std::fs::write(&template, "template body").unwrap();
         let mut session = FileOperationSession::default();
-        session.begin_new_file(
-            Some(template.clone()),
-            "Template.md".to_owned(),
-            "template Template.md".to_owned(),
-        );
+        session.begin_new_file();
         session.change_name("created.md".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
@@ -626,17 +570,19 @@ mod tests {
         assert!(matches!(
             &completion,
             Completion::Name {
-                kind: NameKind::NewFile {
-                    template: Some(source)
-                },
+                kind: NameKind::NewFile,
                 result: Ok(path),
-            } if source == &template && path == &temp.path().join("created.md")
+            } if path == &temp.path().join("created.md")
         ));
         assert!(session.complete(completion).refresh);
-        assert_eq!(std::fs::read_to_string(template).unwrap(), "template body");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("created.md")).unwrap(),
+            ""
+        );
 
         let mut session = FileOperationSession::default();
-        session.begin_new_file(None, "created.md".to_owned(), "new file".to_owned());
+        session.begin_new_file();
+        session.change_name("created.md".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
             .unwrap()

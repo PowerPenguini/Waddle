@@ -324,11 +324,9 @@ impl App {
             FileOperationView::NewFolder { value, error } => {
                 self.name_prompt_bar("new folder", value, error)
             }
-            FileOperationView::NewFile {
-                value,
-                error,
-                template_label,
-            } => self.name_prompt_bar(template_label, value, error),
+            FileOperationView::NewFile { value, error } => {
+                self.name_prompt_bar("new file", value, error)
+            }
             FileOperationView::Trash { message } => compact_status_line(
                 row![
                     text("trash")

@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+
 impl FileEntry {
     pub fn is_directory(&self) -> bool {
         self.directory
@@ -73,7 +76,7 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
         } else {
             file_type.is_dir()
         };
-        let metadata = entry.metadata().ok();
+        let metadata = read_entry_metadata(&entry);
         let sort_name = name.to_string_lossy().into_owned();
         let extension = path
             .extension()
@@ -82,18 +85,14 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
         entries.push((
             directory,
             sort_name,
-            metadata.as_ref().map_or(0, fs::Metadata::len),
-            metadata
-                .as_ref()
-                .map_or(0, std::os::unix::fs::MetadataExt::mtime),
+            metadata.size.unwrap_or_default(),
+            metadata.modified.unwrap_or_default(),
             extension,
             FileEntry {
                 path,
                 name,
                 directory,
-                metadata: metadata
-                    .as_ref()
-                    .map_or_else(EntryMetadata::default, entry_metadata),
+                metadata,
             },
         ));
     }
@@ -123,6 +122,52 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
         .into_iter()
         .map(|(_, _, _, _, _, entry)| entry)
         .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
+    let path = entry.path();
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return EntryMetadata::default();
+    };
+    let mut metadata = MaybeUninit::<libc::statx>::zeroed();
+    let flags = libc::AT_NO_AUTOMOUNT | libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_DONT_SYNC;
+    // SAFETY: path is NUL-terminated and metadata points to writable storage for one statx value.
+    let result = unsafe {
+        libc::statx(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            flags,
+            libc::STATX_BASIC_STATS,
+            metadata.as_mut_ptr(),
+        )
+    };
+    if result != 0 {
+        return EntryMetadata::default();
+    }
+    // SAFETY: statx returned success and initialized the output value.
+    let metadata = unsafe { metadata.assume_init() };
+    statx_entry_metadata(&metadata)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn statx_entry_metadata(metadata: &libc::statx) -> EntryMetadata {
+    if metadata.stx_attributes & libc::STATX_ATTR_AUTOMOUNT as u64 != 0 {
+        return EntryMetadata::default();
+    }
+    EntryMetadata {
+        size: (metadata.stx_mask & libc::STATX_SIZE != 0).then_some(metadata.stx_size),
+        modified: (metadata.stx_mask & libc::STATX_MTIME != 0).then_some(metadata.stx_mtime.tv_sec),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
+    entry
+        .metadata()
+        .ok()
+        .as_ref()
+        .map_or_else(EntryMetadata::default, entry_metadata)
 }
 
 pub fn open_directory_with(

@@ -38,6 +38,25 @@ fn directory_entries_retain_size_and_modified_metadata_for_list_details() {
     assert!(entry.metadata.modified.is_some());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn dormant_automount_metadata_stays_lazy() {
+    let mut statx = unsafe { std::mem::zeroed::<libc::statx>() };
+    statx.stx_mask = libc::STATX_SIZE | libc::STATX_MTIME;
+    statx.stx_size = 4096;
+    statx.stx_mtime.tv_sec = 123;
+    statx.stx_attributes = libc::STATX_ATTR_AUTOMOUNT as u64;
+
+    let dormant = super::browse::statx_entry_metadata(&statx);
+    assert_eq!(dormant.size, None);
+    assert_eq!(dormant.modified, None);
+
+    statx.stx_attributes = 0;
+    let ordinary = super::browse::statx_entry_metadata(&statx);
+    assert_eq!(ordinary.size, Some(4096));
+    assert_eq!(ordinary.modified, Some(123));
+}
+
 #[test]
 fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
     let temp = tempfile::tempdir().unwrap();
@@ -217,18 +236,13 @@ fn creates_renames_and_deletes() {
 }
 
 #[test]
-fn new_empty_and_template_files_never_overwrite_and_keep_the_template() {
+fn new_empty_files_never_overwrite() {
     let temp = tempfile::tempdir().unwrap();
-    let template = temp.path().join("template.md");
-    fs::write(&template, "# Template").unwrap();
+    let created = create_file(temp.path(), "empty.txt").unwrap();
 
-    let empty = create_file(temp.path(), "empty.txt", None).unwrap();
-    let created = create_file(temp.path(), "notes.md", Some(&template)).unwrap();
-    assert_eq!(fs::read_to_string(empty).unwrap(), "");
-    assert_eq!(fs::read_to_string(&created).unwrap(), "# Template");
-    assert_eq!(fs::read_to_string(&template).unwrap(), "# Template");
-    assert!(create_file(temp.path(), "notes.md", Some(&template)).is_err());
-    assert_eq!(fs::read_to_string(created).unwrap(), "# Template");
+    assert_eq!(fs::read_to_string(&created).unwrap(), "");
+    assert!(create_file(temp.path(), "empty.txt").is_err());
+    assert_eq!(fs::read_to_string(created).unwrap(), "");
 }
 
 #[test]

@@ -527,6 +527,15 @@ impl App {
                     rows[..current]
                         .iter()
                         .rposition(|candidate| candidate.depth < row.depth)
+                        .or_else(|| {
+                            (row.depth == 0 && row.kind != state::NodeKind::Computer)
+                                .then(|| {
+                                    rows[..current].iter().rposition(|candidate| {
+                                        candidate.kind == state::NodeKind::Computer
+                                    })
+                                })
+                                .flatten()
+                        })
                         .unwrap_or(current)
                 }
             }

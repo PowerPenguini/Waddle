@@ -165,6 +165,51 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
 }
 
 #[test]
+fn focused_sidebar_can_move_above_home_to_computer() {
+    let (mut app, _) = App::new();
+    let home = PathBuf::from("/home/tester");
+    let home_id = app.explorer.allocate_node_id();
+    app.explorer.roots.insert(
+        1,
+        crate::app::state::FolderNode::location(
+            home_id,
+            home,
+            "Home".to_owned(),
+            NodeKind::Home,
+            None,
+        ),
+    );
+    app.browser_focus = BrowserFocus::Sidebar;
+    app.sidebar_cursor = Some(home_id);
+
+    press(&mut app, "h");
+
+    assert_eq!(app.sidebar_cursor, Some(app.explorer.roots[0].id));
+}
+
+#[test]
+fn context_menu_does_not_offer_template_files() {
+    let (app, _) = App::new();
+    let labels = app
+        .context_actions()
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        labels,
+        [
+            "New Folder",
+            "New Empty File",
+            "Properties",
+            "Open With…",
+            "Rename",
+            "Move to Trash",
+        ]
+    );
+}
+
+#[test]
 fn iced_browser_modes_follow_the_command_prefixes() {
     let (mut app, _) = App::new();
 
