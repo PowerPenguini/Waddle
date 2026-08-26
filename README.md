@@ -139,7 +139,7 @@ remaining hands-on checks live in the [release checklist](docs/release-checklist
 
 ## Get involved
 
-Once an open-source license is selected, contributions will be especially useful for:
+Contributions are especially useful for:
 
 - testing clipboard and drag and drop behavior on different Wayland and X11 desktops;
 - finding file-operation edge cases before they cost somebody data;
@@ -166,6 +166,4 @@ scripts/release-gate.sh
 
 ## License
 
-Waddle does not currently include an open-source license. Until a `LICENSE` file is added, normal
-copyright restrictions apply even though the source is visible. A license must be selected before
-the project accepts outside contributions or presents itself as open source.
+Waddle is licensed under the [MIT License](LICENSE).

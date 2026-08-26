@@ -2,6 +2,7 @@
 name = "waddle"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 gio = { version = "0.22.8", features = ["v2_76"] }
