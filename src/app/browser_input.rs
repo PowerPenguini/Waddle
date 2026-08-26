@@ -45,6 +45,7 @@ Search
 Prompts and transfers
   y / Enter  Confirm a deletion prompt
   n / Esc  Cancel a deletion prompt
+  Backspace  Cancel an empty bottom input
   r / s / k  Replace / skip / keep both for one conflict
   R / S / K  Apply the choice to remaining entries
   Esc  Cancel an active mode, sequence, transfer, or output
@@ -64,6 +65,7 @@ pub(super) enum Mode {
     Search,
     Command,
     Rename,
+    OpenWith,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -101,13 +103,14 @@ pub(super) struct Context {
     pub(super) prompt_active: bool,
     pub(super) prompt_accepts_enter: bool,
     pub(super) prompt_uses_yes_no: bool,
-    pub(super) busy: bool,
+    pub(super) foreground_operation_active: bool,
     pub(super) command_output: bool,
     pub(super) visual_active: bool,
     pub(super) selection_count: usize,
     pub(super) has_selection: bool,
     pub(super) pending_cut: bool,
     pub(super) file_operators_allowed: bool,
+    pub(super) active_bottom_input_empty: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,8 +123,10 @@ pub(super) enum Intent {
     CancelSearch,
     CancelCommand,
     CancelRename,
+    CancelOpenWith,
     CancelLocation,
     CloseCommandOutput,
+    CopyCommandOutput,
     CancelVisual,
     CancelCut,
     Copy,
@@ -283,9 +288,11 @@ impl BrowserInput {
         }
         if context.prompt_active {
             let answer = press.text.as_deref().map(str::to_ascii_lowercase);
-            return if context.busy {
+            return if context.foreground_operation_active {
                 Intent::None
-            } else if press.named == NamedKey::Escape {
+            } else if press.named == NamedKey::Escape
+                || press.named == NamedKey::Backspace && context.active_bottom_input_empty
+            {
                 Intent::PromptCancel
             } else if context.prompt_uses_yes_no && answer.as_deref() == Some("y") {
                 Intent::PromptConfirm
@@ -302,7 +309,9 @@ impl BrowserInput {
             if self.mode == Mode::Command && press.named == NamedKey::Tab {
                 return Intent::CompleteCommand;
             }
-            if press.named != NamedKey::Escape {
+            let cancel = press.named == NamedKey::Escape
+                || press.named == NamedKey::Backspace && context.active_bottom_input_empty;
+            if !cancel {
                 return Intent::None;
             }
             return match self.mode {
@@ -314,17 +323,34 @@ impl BrowserInput {
                     self.leave_mode();
                     Intent::CancelCommand
                 }
-                Mode::Rename if !context.busy => {
+                Mode::Rename if !context.foreground_operation_active => {
                     self.leave_mode();
                     Intent::CancelRename
                 }
                 Mode::Rename => Intent::None,
+                Mode::OpenWith => {
+                    self.leave_mode();
+                    Intent::CancelOpenWith
+                }
                 Mode::Location => {
                     self.leave_mode();
                     Intent::CancelLocation
                 }
                 Mode::Browser => Intent::None,
             };
+        }
+
+        if context.command_output
+            && !press.control
+            && !press.alt
+            && !press.logo
+            && press
+                .text
+                .as_deref()
+                .is_some_and(|text| text.eq_ignore_ascii_case("y"))
+        {
+            self.clear_sequence();
+            return Intent::CopyCommandOutput;
         }
 
         if press.named == NamedKey::Escape {
@@ -356,7 +382,7 @@ impl BrowserInput {
             };
         }
 
-        if context.busy {
+        if context.foreground_operation_active {
             return Intent::None;
         }
 
@@ -660,6 +686,19 @@ mod tests {
         );
         assert_eq!(input.mode(), Mode::Browser);
 
+        input.enter(Mode::OpenWith);
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                Context::default()
+            ),
+            Intent::CancelOpenWith
+        );
+        assert_eq!(input.mode(), Mode::Browser);
+
         input.enter(Mode::Rename);
         assert_eq!(
             input.handle(
@@ -668,7 +707,7 @@ mod tests {
                     ..Press::default()
                 },
                 Context {
-                    busy: true,
+                    foreground_operation_active: true,
                     ..Context::default()
                 }
             ),
@@ -684,6 +723,54 @@ mod tests {
                 },
                 Context {
                     prompt_active: true,
+                    ..Context::default()
+                }
+            ),
+            Intent::PromptCancel
+        );
+    }
+
+    #[test]
+    fn backspace_closes_only_an_empty_bottom_input() {
+        let mut input = BrowserInput::default();
+        input.enter(Mode::Command);
+
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Backspace,
+                    ..Press::default()
+                },
+                Context::default()
+            ),
+            Intent::None
+        );
+        assert_eq!(input.mode(), Mode::Command);
+
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Backspace,
+                    ..Press::default()
+                },
+                Context {
+                    active_bottom_input_empty: true,
+                    ..Context::default()
+                }
+            ),
+            Intent::CancelCommand
+        );
+        assert_eq!(input.mode(), Mode::Browser);
+
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Backspace,
+                    ..Press::default()
+                },
+                Context {
+                    prompt_active: true,
+                    active_bottom_input_empty: true,
                     ..Context::default()
                 }
             ),
@@ -800,6 +887,27 @@ mod tests {
         assert_eq!(
             input.handle(control("d"), selected()),
             Intent::Move(Motion::HalfPageDown, 1)
+        );
+    }
+
+    #[test]
+    fn command_output_uses_y_to_copy_and_escape_to_close() {
+        let mut input = BrowserInput::default();
+        let context = Context {
+            command_output: true,
+            ..selected()
+        };
+
+        assert_eq!(input.handle(text("y"), context), Intent::CopyCommandOutput);
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                context,
+            ),
+            Intent::CloseCommandOutput
         );
     }
 

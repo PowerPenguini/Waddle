@@ -19,5 +19,5 @@ The sidebar now starts with Home and each existing XDG user directory; it never 
 locations. `:favorite add [LABEL]`, `:favorite remove INDEX`, and `:favorite list` manage a
 persistent ordered list, while dragging one Favorite row onto another saves the new order. The
 `:volume mount|unmount|eject NAME` commands run GIO's normal asynchronous desktop operation with
-a session-scoped mount authorization object. PolarExp does not elevate file mutations or invoke a
+a session-scoped mount authorization object. Waddle does not elevate file mutations or invoke a
 root helper.

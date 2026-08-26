@@ -14,7 +14,6 @@ use std::{
     time::Duration,
 };
 
-use gio::prelude::FileExt;
 use iced::{
     Point, Subscription,
     futures::{StreamExt, channel::mpsc},
@@ -60,16 +59,13 @@ use wayland_client::{
 };
 
 use crate::{
-    clipboard::{self, EncodedOffer},
     transfer::{
         Action, Adapter, AdapterCompletion, ClipboardAdapter, ClipboardCompletion, ClipboardImport,
         ClipboardPayload, Event, Outcome, Preview,
     },
+    transfer_formats::{self, EncodedOffer},
 };
 
-const URI_LIST_MIME: &str = "text/uri-list";
-const POLAREXP_MIME: &str = "application/x-polarexp-file-list";
-const MAX_URI_LIST_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const ICON_SIZE: i32 = 64;
 static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -130,13 +126,13 @@ impl Source {
         let (events_sender, events_receiver) = mpsc::unbounded();
         let (ready_sender, ready_receiver) = std_mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name("polarexp-wayland-dnd".to_owned())
+            .name("waddle-wayland-dnd".to_owned())
             .spawn(move || {
                 if let Err(error) =
                     run_worker(display, surface, receiver, events_sender, &ready_sender)
                     && ready_sender.send(Err(error.clone())).is_err()
                 {
-                    eprintln!("PolarExp: Wayland drag-and-drop worker stopped: {error}");
+                    eprintln!("Waddle: Wayland drag-and-drop worker stopped: {error}");
                 }
             })
             .map_err(|error| format!("could not start the drag-and-drop worker: {error}"))?;
@@ -215,7 +211,7 @@ impl Source {
 
     fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
         let generation = payload.generation;
-        let offer = clipboard::encode(&payload)?;
+        let offer = transfer_formats::encode(&payload)?;
         let (reply, receiver) = std_mpsc::sync_channel(1);
         self.0
             .commands
@@ -551,7 +547,7 @@ impl Worker {
         };
         if held.surface != self.origin {
             return Err((
-                "the pointer grab did not originate in PolarExp".to_owned(),
+                "the pointer grab did not originate in Waddle".to_owned(),
                 reply,
             ));
         }
@@ -562,8 +558,8 @@ impl Worker {
         else {
             return Err(("the pointer seat has no data device".to_owned(), reply));
         };
-        let payload = match paths_to_uri_list(&paths) {
-            Ok(payload) => payload.into_bytes(),
+        let payload = match transfer_formats::encode_uri_list(&paths) {
+            Ok(payload) => payload,
             Err(error) => return Err((error, reply)),
         };
         let (icon_surface, icon_buffer, icon_pool) = match self.create_icon(preview) {
@@ -572,7 +568,10 @@ impl Worker {
         };
         let source = self.data_device_manager.create_drag_and_drop_source(
             &self.queue_handle,
-            [URI_LIST_MIME, POLAREXP_MIME],
+            [
+                transfer_formats::URI_LIST_MIME,
+                transfer_formats::WADDLE_MIME,
+            ],
             if copy_only {
                 DndAction::Copy
             } else {
@@ -668,10 +667,10 @@ impl Worker {
         };
         let mut mimes = offer.with_mime_types(|offered| {
             [
-                clipboard::POLAREXP_MIME,
-                clipboard::GNOME_MIME,
-                clipboard::URI_LIST_MIME,
-                clipboard::KDE_CUT_MIME,
+                transfer_formats::WADDLE_MIME,
+                transfer_formats::GNOME_MIME,
+                transfer_formats::URI_LIST_MIME,
+                transfer_formats::KDE_CUT_MIME,
             ]
             .into_iter()
             .filter(|candidate| offered.iter().any(|mime| mime == candidate))
@@ -681,7 +680,9 @@ impl Worker {
         if !mimes.iter().any(|mime| {
             matches!(
                 mime.as_str(),
-                clipboard::POLAREXP_MIME | clipboard::GNOME_MIME | clipboard::URI_LIST_MIME
+                transfer_formats::WADDLE_MIME
+                    | transfer_formats::GNOME_MIME
+                    | transfer_formats::URI_LIST_MIME
             )
         }) {
             let _ = reply.send(Err(
@@ -728,7 +729,7 @@ impl Worker {
                     else {
                         return PostAction::Remove;
                     };
-                    if read.data.len().saturating_add(count) > clipboard::MAX_BYTES {
+                    if read.data.len().saturating_add(count) > transfer_formats::MAX_BYTES {
                         state.cancel_clipboard_read("the clipboard payload is larger than 4 MiB");
                         PostAction::Remove
                     } else {
@@ -761,7 +762,7 @@ impl Worker {
         if read.offer_generation != offer_generation
             || self.clipboard_offer_generation != offer_generation
         {
-            self.cancel_clipboard_read("the clipboard changed while PolarExp was reading it");
+            self.cancel_clipboard_read("the clipboard changed while Waddle was reading it");
             return;
         }
         read.entries
@@ -772,7 +773,7 @@ impl Worker {
                 .seats
                 .iter()
                 .find_map(|objects| objects.data_device.data().selection_offer())
-                .ok_or_else(|| "the clipboard changed while PolarExp was reading it".to_owned())
+                .ok_or_else(|| "the clipboard changed while Waddle was reading it".to_owned())
                 .and_then(|offer| {
                     offer.receive(mime).map_err(|error| {
                         format!("could not receive the Wayland clipboard: {error}")
@@ -792,7 +793,7 @@ impl Worker {
             .iter()
             .map(|(mime, data)| (mime.as_str(), data.as_slice()))
             .collect::<Vec<_>>();
-        let _ = read.reply.send(clipboard::decode_offer(&entries));
+        let _ = read.reply.send(transfer_formats::decode_offer(&entries));
     }
 
     fn cancel_clipboard_read(&mut self, message: impl Into<String>) {
@@ -849,7 +850,7 @@ impl Worker {
         let Some(incoming) = self.incoming.as_ref().filter(|incoming| incoming.id == id) else {
             return;
         };
-        match parse_uri_list(&incoming.data) {
+        match transfer_formats::decode_uri_list(&incoming.data) {
             Ok(paths) => {
                 let _ = self.events.unbounded_send(Event::Drop {
                     id,
@@ -931,48 +932,6 @@ fn rgb(color: [u8; 4]) -> String {
 
 fn alpha(color: [u8; 4]) -> f32 {
     f32::from(color[3]) / 255.0
-}
-
-pub(super) fn paths_to_uri_list(paths: &[PathBuf]) -> Result<String, String> {
-    let mut payload = String::new();
-    for path in paths {
-        if !path.is_absolute() {
-            return Err(format!("cannot drag a relative path: {}", path.display()));
-        }
-        payload.push_str(gio::File::for_path(path).uri().as_str());
-        payload.push_str("\r\n");
-    }
-    Ok(payload)
-}
-
-pub(super) fn parse_uri_list(payload: &[u8]) -> Result<Vec<PathBuf>, String> {
-    if payload.len() > MAX_URI_LIST_BYTES {
-        return Err("the dropped URI list is larger than 4 MiB".to_owned());
-    }
-    let text = std::str::from_utf8(payload)
-        .map_err(|error| format!("the dropped URI list is not UTF-8: {error}"))?;
-    let mut paths = Vec::new();
-    for line in text.lines() {
-        let uri = line.trim_end_matches('\r').trim();
-        if uri.is_empty() || uri.starts_with('#') {
-            continue;
-        }
-        let file = gio::File::for_uri(uri);
-        if file.uri_scheme().as_deref() != Some("file") {
-            return Err(format!("unsupported dropped URI: {uri}"));
-        }
-        let path = file
-            .path()
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| format!("unsupported dropped URI: {uri}"))?;
-        if !paths.contains(&path) {
-            paths.push(path);
-        }
-    }
-    if paths.is_empty() {
-        return Err("the drop did not contain any local file paths".to_owned());
-    }
-    Ok(paths)
 }
 
 fn preferred_action(private: bool, source_actions: DndAction) -> Action {
@@ -1273,8 +1232,12 @@ impl DataDeviceHandler for Worker {
             let mime = offer.with_mime_types(|mimes| {
                 mimes
                     .iter()
-                    .find(|mime| mime.as_str() == POLAREXP_MIME)
-                    .or_else(|| mimes.iter().find(|mime| mime.as_str() == URI_LIST_MIME))
+                    .find(|mime| mime.as_str() == transfer_formats::WADDLE_MIME)
+                    .or_else(|| {
+                        mimes
+                            .iter()
+                            .find(|mime| mime.as_str() == transfer_formats::URI_LIST_MIME)
+                    })
                     .cloned()
             });
             let Some(mime) = mime else {
@@ -1282,7 +1245,7 @@ impl DataDeviceHandler for Worker {
                 offer.set_actions(DndAction::empty(), DndAction::empty());
                 return;
             };
-            let private = mime == POLAREXP_MIME;
+            let private = mime == transfer_formats::WADDLE_MIME;
             let action = preferred_action(private, offer.source_actions);
             let id = self.next_offer_id;
             self.next_offer_id += 1;
@@ -1332,7 +1295,7 @@ impl DataDeviceHandler for Worker {
     }
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
         self.clipboard_offer_generation = self.clipboard_offer_generation.wrapping_add(1);
-        self.cancel_clipboard_read("the clipboard changed while PolarExp was reading it");
+        self.cancel_clipboard_read("the clipboard changed while Waddle was reading it");
     }
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
         let Some(incoming) = self.incoming.as_mut() else {
@@ -1367,7 +1330,7 @@ impl DataDeviceHandler for Worker {
                     else {
                         return PostAction::Remove;
                     };
-                    if incoming.data.len().saturating_add(count) > MAX_URI_LIST_BYTES {
+                    if incoming.data.len().saturating_add(count) > transfer_formats::MAX_BYTES {
                         state.fail_incoming("the dropped URI list is larger than 4 MiB");
                         PostAction::Remove
                     } else {
@@ -1565,65 +1528,8 @@ delegate_registry!(Worker);
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Action, ICON_SIZE, MAX_URI_LIST_BYTES, Preview, parse_uri_list, paths_to_uri_list,
-        preferred_action, preview_svg, render_icon,
-    };
+    use super::{Action, ICON_SIZE, Preview, preferred_action, preview_svg, render_icon};
     use smithay_client_toolkit::reexports::client::protocol::wl_data_device_manager::DndAction;
-    use std::{os::unix::fs::symlink, path::PathBuf};
-
-    #[test]
-    fn uri_list_uses_crlf_and_escapes_paths() {
-        let payload = paths_to_uri_list(&[
-            PathBuf::from("/tmp/a file.txt"),
-            PathBuf::from("/tmp/second.txt"),
-        ])
-        .expect("URI list");
-        assert_eq!(
-            payload,
-            "file:///tmp/a%20file.txt\r\nfile:///tmp/second.txt\r\n"
-        );
-    }
-
-    #[test]
-    fn uri_list_preserves_symlink_names() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let target = directory.path().join("target");
-        std::fs::write(&target, "data").expect("target");
-        let link = directory.path().join("visible-link");
-        symlink(&target, &link).expect("symlink");
-
-        let payload = paths_to_uri_list(std::slice::from_ref(&link)).expect("URI list");
-        assert!(payload.ends_with("/visible-link\r\n"));
-        assert!(!payload.ends_with("/target\r\n"));
-    }
-
-    #[test]
-    fn uri_list_rejects_relative_paths() {
-        assert!(paths_to_uri_list(&[PathBuf::from("relative")]).is_err());
-    }
-
-    #[test]
-    fn parses_uri_lists_with_comments_crlf_and_escaped_names() {
-        let paths = parse_uri_list(
-            b"# generated by source\r\nfile:///tmp/a%20file.txt\r\n\nfile:///tmp/b.txt\n",
-        )
-        .expect("parsed URI list");
-        assert_eq!(
-            paths,
-            [
-                PathBuf::from("/tmp/a file.txt"),
-                PathBuf::from("/tmp/b.txt")
-            ]
-        );
-    }
-
-    #[test]
-    fn parser_rejects_non_file_empty_and_oversize_payloads() {
-        assert!(parse_uri_list(b"https://example.com/file").is_err());
-        assert!(parse_uri_list(b"# only a comment\n").is_err());
-        assert!(parse_uri_list(&vec![b'x'; MAX_URI_LIST_BYTES + 1]).is_err());
-    }
 
     #[test]
     fn offered_move_is_respected_and_unknown_foreign_actions_stay_copy() {

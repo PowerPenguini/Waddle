@@ -1,4 +1,4 @@
-# PolarExp 1.0 feature map
+# Waddle 1.0 feature map
 
 The implementation is split into six product slices plus the final integration gate:
 

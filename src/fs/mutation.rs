@@ -81,126 +81,6 @@ fn renameat2(source: &Path, destination: &Path, flags: libc::c_uint) -> io::Resu
     }
 }
 
-#[cfg(test)]
-pub fn move_destination(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
-    let source_metadata =
-        fs::symlink_metadata(source).map_err(|error| FsError::new("inspect", source, error))?;
-    let destination_metadata = fs::metadata(destination_directory)
-        .map_err(|error| FsError::new("inspect", destination_directory, error))?;
-    if !destination_metadata.is_dir() {
-        return Err(FsError::new(
-            "move into",
-            destination_directory,
-            io::Error::new(
-                io::ErrorKind::NotADirectory,
-                "the destination is not a folder",
-            ),
-        ));
-    }
-
-    let Some(name) = source.file_name() else {
-        return Err(FsError::new(
-            "move",
-            source,
-            io::Error::new(io::ErrorKind::InvalidInput, "the source has no file name"),
-        ));
-    };
-    let destination = destination_directory.join(name);
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Err(FsError::new(
-            "move",
-            source,
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "the destination already exists",
-            ),
-        ));
-    }
-
-    if source_metadata.file_type().is_dir() {
-        let canonical_source = source
-            .canonicalize()
-            .map_err(|error| FsError::new("inspect", source, error))?;
-        let canonical_directory = destination_directory
-            .canonicalize()
-            .map_err(|error| FsError::new("inspect", destination_directory, error))?;
-        if canonical_directory == canonical_source
-            || canonical_directory.starts_with(&canonical_source)
-        {
-            return Err(FsError::new(
-                "move",
-                source,
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a folder cannot be moved into itself",
-                ),
-            ));
-        }
-    }
-
-    Ok(destination)
-}
-
-#[cfg(test)]
-pub fn move_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
-    let destination = move_destination(source, destination_directory)?;
-    move_exact(source, &destination).map_err(|error| FsError::new("move", source, error))?;
-    Ok(destination)
-}
-
-#[cfg(test)]
-pub fn copy_entry(source: &Path, destination_directory: &Path) -> Result<PathBuf, FsError> {
-    let source_metadata =
-        fs::symlink_metadata(source).map_err(|error| FsError::new("inspect", source, error))?;
-    let destination_metadata = fs::metadata(destination_directory)
-        .map_err(|error| FsError::new("inspect", destination_directory, error))?;
-    if !destination_metadata.is_dir() {
-        return Err(FsError::new(
-            "copy into",
-            destination_directory,
-            io::Error::new(
-                io::ErrorKind::NotADirectory,
-                "the destination is not a folder",
-            ),
-        ));
-    }
-
-    if source_metadata.is_dir() {
-        let canonical_source = source
-            .canonicalize()
-            .map_err(|error| FsError::new("inspect", source, error))?;
-        let canonical_destination = destination_directory
-            .canonicalize()
-            .map_err(|error| FsError::new("inspect", destination_directory, error))?;
-        if canonical_destination == canonical_source
-            || canonical_destination.starts_with(&canonical_source)
-        {
-            return Err(FsError::new(
-                "copy",
-                source,
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a folder cannot be copied into itself",
-                ),
-            ));
-        }
-    }
-
-    let Some(name) = source.file_name() else {
-        return Err(FsError::new(
-            "copy",
-            source,
-            io::Error::new(io::ErrorKind::InvalidInput, "the source has no file name"),
-        ));
-    };
-    let destination = available_copy_destination(destination_directory, name);
-    if let Err(error) = copy_item(source, &destination) {
-        remove_incomplete_copy(&destination);
-        return Err(FsError::new("copy", source, error));
-    }
-    Ok(destination)
-}
-
 pub(super) fn transfer_exact(
     source: &Path,
     destination: &Path,
@@ -355,7 +235,7 @@ fn staging_path(destination: &Path) -> io::Result<PathBuf> {
         .file_name()
         .unwrap_or_else(|| OsStr::new("item"));
     for nonce in 0_u64..10_000 {
-        let mut candidate = OsString::from(".polarexp-replace-");
+        let mut candidate = OsString::from(".waddle-replace-");
         candidate.push(std::process::id().to_string());
         candidate.push("-");
         candidate.push(nonce.to_string());
@@ -406,29 +286,6 @@ pub(crate) fn journal_move(source: &Path, destination: &Path) -> Result<(), Stri
 
 pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
     remove_item(path).map_err(|error| format!("could not remove {}: {error}", path.display()))
-}
-
-#[cfg(test)]
-pub fn transfer_entries(
-    sources: &[PathBuf],
-    destination_directory: &Path,
-    action: Action,
-) -> TransferReport {
-    let mut report = TransferReport::default();
-    for source in sources {
-        let result = match action {
-            Action::Copy => copy_entry(source, destination_directory),
-            Action::Move => move_entry(source, destination_directory),
-        };
-        match result {
-            Ok(path) => report.completed.push(path),
-            Err(error) => report.failures.push(TransferFailure {
-                source: source.clone(),
-                error: error.to_string(),
-            }),
-        }
-    }
-    report
 }
 
 pub(super) fn available_copy_destination(directory: &Path, name: &OsStr) -> PathBuf {

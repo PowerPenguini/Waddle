@@ -104,16 +104,18 @@ impl Work {
                     NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
                 }
                 .map_err(|error| error.to_string());
-                Completion::Name { kind, result }
+                Completion(CompletionKind::Name { kind, result })
             }
-            WorkKind::Trash(entries) => Completion::Trash(run_trash_entries(entries, trash)),
-            WorkKind::PermanentDelete(entries) => {
-                Completion::PermanentDelete(run_entries(entries, |entry| {
+            WorkKind::Trash(entries) => {
+                Completion(CompletionKind::Trash(run_trash_entries(entries, trash)))
+            }
+            WorkKind::PermanentDelete(entries) => Completion(CompletionKind::PermanentDelete(
+                run_entries(entries, |entry| {
                     fs::delete_permanently(&entry.path).map_err(|error| error.to_string())
-                }))
-            }
+                }),
+            )),
             WorkKind::TrashDelete(entries) => {
-                Completion::TrashDelete(super::trash::delete(entries))
+                Completion(CompletionKind::TrashDelete(super::trash::delete(entries)))
             }
         }
     }
@@ -142,14 +144,14 @@ fn run_trash_entries<A: TrashAdapter>(entries: Vec<FileEntry>, trash: &A) -> Tra
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum NameKind {
+enum NameKind {
     Rename { source: PathBuf },
     NewFolder,
     NewFile,
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum Completion {
+enum CompletionKind {
     Name {
         kind: NameKind,
         result: Result<PathBuf, String>,
@@ -159,14 +161,19 @@ pub(super) enum Completion {
     TrashDelete(super::trash::DeleteReport),
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct Completion(CompletionKind);
+
 #[derive(Clone, Debug, Default)]
-pub(super) struct TrashCompletion {
-    pub(super) failures: Vec<(FileEntry, String)>,
-    pub(super) receipts: Vec<journal::TrashReceipt>,
+struct TrashCompletion {
+    failures: Vec<(FileEntry, String)>,
+    receipts: Vec<journal::TrashReceipt>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct Consequences {
+pub(super) struct CompletionEffects {
+    pub(super) status: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) journal_action: Result<Option<journal::Action>, String>,
     pub(super) refresh: bool,
     pub(super) select: Option<PathBuf>,
     pub(super) renamed: bool,
@@ -404,14 +411,16 @@ impl FileOperationSession {
         self.state = State::Error { message };
     }
 
-    pub(super) fn complete(&mut self, completion: Completion) -> Consequences {
+    pub(super) fn complete(&mut self, completion: Completion) -> CompletionEffects {
         self.busy = false;
-        match completion {
-            Completion::Name { kind, result } => match result {
+        let journal_action = journal_action(&completion.0);
+        let (status, detail) = completion_feedback(&completion.0);
+        let consequences = match completion.0 {
+            CompletionKind::Name { kind, result } => match result {
                 Ok(path) => {
                     let renamed = matches!(kind, NameKind::Rename { .. });
                     self.state = State::Idle;
-                    Consequences {
+                    StateConsequences {
                         refresh: true,
                         select: Some(path),
                         renamed,
@@ -424,49 +433,106 @@ impl FileOperationSession {
                         | State::NewFile { error: target, .. } => *target = error,
                         _ => self.state = State::Error { message: error },
                     }
-                    Consequences::default()
+                    StateConsequences::default()
                 }
             },
-            Completion::Trash(TrashCompletion { failures, .. }) => {
+            CompletionKind::Trash(TrashCompletion { failures, .. }) => {
                 if failures.is_empty() {
                     self.state = State::Idle;
-                    return Consequences {
+                    StateConsequences {
                         refresh: true,
-                        ..Consequences::default()
+                        ..StateConsequences::default()
+                    }
+                } else {
+                    let detail = failure_detail(&failures);
+                    let entries: Vec<_> = failures.into_iter().map(|(entry, _)| entry).collect();
+                    self.state = State::PermanentDelete {
+                        message: permanent_delete_confirmation(entries.len()),
+                        detail: format!("{detail}\n\nThis cannot be undone."),
+                        entries,
                     };
+                    StateConsequences::default()
                 }
-                let detail = failure_detail(&failures);
-                let entries: Vec<_> = failures.into_iter().map(|(entry, _)| entry).collect();
-                self.state = State::PermanentDelete {
-                    message: permanent_delete_confirmation(entries.len()),
-                    detail: format!("{detail}\n\nThis cannot be undone."),
-                    entries,
-                };
-                Consequences::default()
             }
-            Completion::PermanentDelete(failures) => {
+            CompletionKind::PermanentDelete(failures) => {
                 if failures.is_empty() {
                     self.state = State::Idle;
-                    Consequences {
+                    StateConsequences {
                         refresh: true,
-                        ..Consequences::default()
+                        ..StateConsequences::default()
                     }
                 } else {
                     self.state = State::Error {
                         message: failure_detail(&failures),
                     };
-                    Consequences::default()
+                    StateConsequences::default()
                 }
             }
-            Completion::TrashDelete(_) => {
+            CompletionKind::TrashDelete(_) => {
                 self.state = State::Idle;
-                Consequences {
+                StateConsequences {
                     refresh: true,
-                    ..Consequences::default()
+                    ..StateConsequences::default()
                 }
             }
+        };
+        CompletionEffects {
+            status,
+            detail,
+            journal_action,
+            refresh: consequences.refresh,
+            select: consequences.select,
+            renamed: consequences.renamed,
         }
     }
+}
+
+#[derive(Default)]
+struct StateConsequences {
+    refresh: bool,
+    select: Option<PathBuf>,
+    renamed: bool,
+}
+
+fn journal_action(completion: &CompletionKind) -> Result<Option<journal::Action>, String> {
+    match completion {
+        CompletionKind::Name {
+            kind: NameKind::Rename { source },
+            result: Ok(destination),
+        } => journal::Action::rename(source.clone(), destination.clone()).map(Some),
+        CompletionKind::Name {
+            kind: NameKind::NewFolder,
+            result: Ok(path),
+        } => journal::Action::new_folder(path.clone()).map(Some),
+        CompletionKind::Name {
+            kind: NameKind::NewFile,
+            result: Ok(path),
+        } => journal::Action::new_file(path.clone()).map(Some),
+        CompletionKind::Trash(completion) => journal::Action::trash(&completion.receipts),
+        CompletionKind::Name { .. }
+        | CompletionKind::PermanentDelete(_)
+        | CompletionKind::TrashDelete(_) => Ok(None),
+    }
+}
+
+fn completion_feedback(completion: &CompletionKind) -> (Option<String>, Option<String>) {
+    let CompletionKind::TrashDelete(report) = completion else {
+        return (None, None);
+    };
+    let status = format!(
+        "Permanently deleted {}  •  {} failed",
+        report.deleted,
+        report.failures.len()
+    );
+    let detail = (!report.failures.is_empty()).then(|| {
+        report
+            .failures
+            .iter()
+            .map(|(entry, error)| format!("{}: {error}", fs::display_name(&entry.name)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    (Some(status), detail)
 }
 
 fn deletion_confirmation(entries: &[FileEntry]) -> String {
@@ -544,13 +610,15 @@ mod tests {
 
         session.change_name("new.txt".to_owned());
         assert!(session.submit_name(PathBuf::from("/work")).is_some());
-        let consequences = session.complete(Completion::Name {
+        let effects = session.complete(Completion(CompletionKind::Name {
             kind: NameKind::Rename {
                 source: PathBuf::from("/work/old.txt"),
             },
             result: Err("collision".to_owned()),
-        });
-        assert_eq!(consequences, Consequences::default());
+        }));
+        assert!(!effects.refresh);
+        assert!(effects.select.is_none());
+        assert!(!effects.renamed);
         assert!(matches!(
             session.view(),
             View::Rename { value, error } if value == "new.txt" && error == "collision"
@@ -568,13 +636,15 @@ mod tests {
             .unwrap()
             .run(&MemoryTrashAdapter::default());
         assert!(matches!(
-            &completion,
-            Completion::Name {
+            &completion.0,
+            CompletionKind::Name {
                 kind: NameKind::NewFile,
                 result: Ok(path),
             } if path == &temp.path().join("created.md")
         ));
-        assert!(session.complete(completion).refresh);
+        let effects = session.complete(completion);
+        assert!(effects.refresh);
+        assert!(matches!(effects.journal_action, Ok(Some(_))));
         assert_eq!(
             std::fs::read_to_string(temp.path().join("created.md")).unwrap(),
             ""
@@ -587,7 +657,9 @@ mod tests {
             .submit_name(temp.path().to_path_buf())
             .unwrap()
             .run(&MemoryTrashAdapter::default());
-        assert_eq!(session.complete(completion), Consequences::default());
+        let effects = session.complete(completion);
+        assert!(!effects.refresh);
+        assert!(matches!(effects.journal_action, Ok(None)));
         assert!(matches!(
             session.view(),
             View::NewFile { error, .. } if error.contains("exists")
@@ -611,7 +683,9 @@ mod tests {
             adapter.calls.lock().unwrap().as_slice(),
             [one.path, two.path]
         );
-        assert_eq!(session.complete(completion), Consequences::default());
+        let effects = session.complete(completion);
+        assert!(!effects.refresh);
+        assert!(!matches!(effects.journal_action, Ok(None)));
         assert!(matches!(
             session.view(),
             View::PermanentDelete { message, detail }
@@ -628,12 +702,12 @@ mod tests {
         assert!(session.begin_trash(vec![entry("one.txt")]));
         let _ = session.confirm(PathBuf::from("/work"));
 
-        assert_eq!(
-            session.complete(Completion::Trash(TrashCompletion::default())),
-            Consequences {
-                refresh: true,
-                ..Consequences::default()
-            }
+        assert!(
+            session
+                .complete(Completion(
+                    CompletionKind::Trash(TrashCompletion::default())
+                ))
+                .refresh
         );
         assert!(matches!(session.view(), View::Idle));
     }
@@ -649,11 +723,11 @@ mod tests {
             .submit_name(temp.path().to_path_buf())
             .unwrap()
             .run(&adapter);
-        let consequences = session.complete(completion);
+        let effects = session.complete(completion);
 
         assert!(temp.path().join("created").is_dir());
-        assert!(consequences.refresh);
-        assert_eq!(consequences.select, Some(temp.path().join("created")));
+        assert!(effects.refresh);
+        assert_eq!(effects.select, Some(temp.path().join("created")));
 
         session.begin_new_folder();
         session.change_name("discarded".to_owned());
@@ -667,29 +741,53 @@ mod tests {
         let mut session = FileOperationSession::default();
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion::Trash(TrashCompletion {
+        let _ = session.complete(Completion(CompletionKind::Trash(TrashCompletion {
             failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
             receipts: Vec::new(),
-        }));
+        })));
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));
 
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion::Trash(TrashCompletion {
+        let _ = session.complete(Completion(CompletionKind::Trash(TrashCompletion {
             failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
             receipts: Vec::new(),
-        }));
+        })));
         assert!(session.confirm(PathBuf::from("/work")).is_some());
-        let consequences = session.complete(Completion::PermanentDelete(vec![(
+        let effects = session.complete(Completion(CompletionKind::PermanentDelete(vec![(
             failed,
             "Permission denied".to_owned(),
-        )]));
+        )])));
 
-        assert_eq!(consequences, Consequences::default());
+        assert!(!effects.refresh);
         assert!(matches!(
             session.view(),
             View::Error { message } if message.contains("Permission denied")
         ));
+    }
+
+    #[test]
+    fn trash_delete_feedback_is_interpreted_inside_the_session() {
+        let failed = entry("failed.txt");
+        let mut session = FileOperationSession::default();
+        let effects = session.complete(Completion(CompletionKind::TrashDelete(
+            crate::app::trash::DeleteReport {
+                deleted: 2,
+                failures: vec![(failed, "Permission denied".to_owned())],
+            },
+        )));
+
+        assert_eq!(
+            effects.status.as_deref(),
+            Some("Permanently deleted 2  •  1 failed")
+        );
+        assert!(
+            effects
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("Permission denied"))
+        );
+        assert!(effects.refresh);
     }
 }

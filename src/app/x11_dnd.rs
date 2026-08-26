@@ -28,14 +28,15 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use crate::transfer::{Action, Adapter, AdapterCompletion, Outcome, Preview};
+use crate::{
+    transfer::{Action, Adapter, AdapterCompletion, Outcome, Preview},
+    transfer_formats,
+};
 
 use super::native_dnd;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
-const URI_LIST: &str = "text/uri-list";
-const PRIVATE_TYPE: &str = "application/x-polarexp-file-list";
 static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -98,7 +99,7 @@ impl Source {
         let (commands, receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name("polarexp-x11-dnd".to_owned())
+            .name("waddle-x11-dnd".to_owned())
             .spawn(move || {
                 let result = Worker::connect(origin).and_then(|mut worker| {
                     let _ = ready_sender.send(Ok(()));
@@ -242,7 +243,7 @@ struct Atoms {
     targets: Atom,
     uri_list: Atom,
     private_type: Atom,
-    polarexp_action: Atom,
+    waddle_action: Atom,
 }
 
 struct ActiveDrag {
@@ -395,12 +396,8 @@ impl Worker {
             let _ = reply.send(Err("another X11 drag is already active".to_owned()));
             return;
         }
-        let payload = match native_dnd::paths_to_uri_list(&paths) {
-            Ok(payload) if !paths.is_empty() => payload.into_bytes(),
-            Ok(_) => {
-                let _ = reply.send(Err("there is nothing to drag".to_owned()));
-                return;
-            }
+        let payload = match transfer_formats::encode_uri_list(&paths) {
+            Ok(payload) => payload,
             Err(error) => {
                 let _ = reply.send(Err(error));
                 return;
@@ -434,11 +431,11 @@ impl Worker {
                 .change_property32(
                     PropMode::REPLACE,
                     self.root,
-                    self.atoms.polarexp_action,
+                    self.atoms.waddle_action,
                     AtomEnum::CARDINAL,
                     &[self.source, self.action_atom(desired_action)],
                 )
-                .map_err(|error| format!("could not publish the PolarExp X11 action: {error}"))?;
+                .map_err(|error| format!("could not publish the Waddle X11 action: {error}"))?;
             self.connection
                 .map_window(self.icon)
                 .map_err(|error| format!("could not show the X11 drag preview: {error}"))?;
@@ -772,7 +769,7 @@ impl Worker {
         let Ok(property) = self.connection.get_property(
             false,
             self.root,
-            self.atoms.polarexp_action,
+            self.atoms.waddle_action,
             AtomEnum::CARDINAL,
             0,
             2,
@@ -809,7 +806,7 @@ impl Worker {
         );
         let _ = self
             .connection
-            .delete_property(self.root, self.atoms.polarexp_action);
+            .delete_property(self.root, self.atoms.waddle_action);
         let _ = self.connection.flush();
         if let Some(mut active) = self.active.take()
             && let Some(reply) = active.reply.take()
@@ -843,9 +840,9 @@ impl Atoms {
             action_copy: atom(connection, "XdndActionCopy")?,
             action_move: atom(connection, "XdndActionMove")?,
             targets: atom(connection, "TARGETS")?,
-            uri_list: atom(connection, URI_LIST)?,
-            private_type: atom(connection, PRIVATE_TYPE)?,
-            polarexp_action: atom(connection, "_POLAREXP_XDND_ACTION")?,
+            uri_list: atom(connection, transfer_formats::URI_LIST_MIME)?,
+            private_type: atom(connection, transfer_formats::WADDLE_MIME)?,
+            waddle_action: atom(connection, "_WADDLE_XDND_ACTION")?,
         })
     }
 }
@@ -867,7 +864,7 @@ mod tests {
 
     #[test]
     fn real_x11_source_negotiates_move_and_serves_a_multi_entry_uri_list() {
-        if std::env::var_os("POLAREXP_X11_TEST").is_none() {
+        if std::env::var_os("WADDLE_X11_TEST").is_none() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1059,7 +1056,7 @@ mod tests {
         let payload = payload_receiver
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
-        let paths = native_dnd::parse_uri_list(&payload).unwrap();
+        let paths = transfer_formats::decode_uri_list(&payload).unwrap();
         assert_eq!(paths, [first, second]);
         target_thread.join().unwrap();
         release_thread.join().unwrap();

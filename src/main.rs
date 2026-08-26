@@ -1,9 +1,10 @@
 mod app;
-mod clipboard;
 mod fs;
 mod journal;
 mod theme;
 mod transfer;
+#[path = "clipboard.rs"]
+mod transfer_formats;
 
 fn main() -> iced::Result {
     prefer_transparent_wayland_backend();

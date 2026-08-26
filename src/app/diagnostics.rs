@@ -38,7 +38,7 @@ impl History {
     pub(super) fn open_default() -> Self {
         Self {
             path: std::env::temp_dir().join(format!(
-                "polarexp-diagnostics-test-{}-{}.json",
+                "waddle-diagnostics-test-{}-{}.json",
                 std::process::id(),
                 now()
             )),
@@ -105,11 +105,11 @@ fn now() -> u64 {
 #[cfg(not(test))]
 fn state_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(path).join("polarexp/diagnostics.json");
+        return PathBuf::from(path).join("waddle/diagnostics.json");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from(".polarexp-diagnostics.json"),
-        |home| PathBuf::from(home).join(".local/state/polarexp/diagnostics.json"),
+        || PathBuf::from(".waddle-diagnostics.json"),
+        |home| PathBuf::from(home).join(".local/state/waddle/diagnostics.json"),
     )
 }
 

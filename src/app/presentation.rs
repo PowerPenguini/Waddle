@@ -1,5 +1,405 @@
 use super::*;
 
+const COPY_FEEDBACK_HOLD: Duration = Duration::from_millis(320);
+const COPY_FEEDBACK_FADE: Duration = Duration::from_millis(680);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum BrowserFocus {
+    Toolbar,
+    Location,
+    Sidebar,
+    #[default]
+    Entries,
+    BottomBar,
+}
+
+impl BrowserFocus {
+    const ORDER: [Self; 5] = [
+        Self::Toolbar,
+        Self::Location,
+        Self::Sidebar,
+        Self::Entries,
+        Self::BottomBar,
+    ];
+
+    fn moved(self, reverse: bool) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        let next = if reverse {
+            index.checked_sub(1).unwrap_or(Self::ORDER.len() - 1)
+        } else {
+            (index + 1) % Self::ORDER.len()
+        };
+        Self::ORDER[next]
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Toolbar => "toolbar",
+            Self::Location => "location",
+            Self::Sidebar => "sidebar",
+            Self::Entries => "files",
+            Self::BottomBar => "bottom bar",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BrowserStatusPresentation {
+    Conflict,
+    Transfer,
+    General,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct BrowserStatusModel<'a> {
+    pub(super) presentation: BrowserStatusPresentation,
+    pub(super) text: &'a str,
+    pub(super) retry: bool,
+    pub(super) history: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TransientPresentationKind {
+    Conflict,
+    OpenWith,
+    CommandOutput,
+    FileOperation,
+    TransferHistory,
+    #[default]
+    Standard,
+}
+
+impl TransientPresentationKind {
+    fn overrides_browser_status(self) -> bool {
+        self != Self::Standard
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct TransientPresentation {
+    kind: TransientPresentationKind,
+    expanded_height: Option<f32>,
+}
+
+impl TransientPresentation {
+    pub(super) fn standard() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn conflict() -> Self {
+        Self {
+            kind: TransientPresentationKind::Conflict,
+            expanded_height: None,
+        }
+    }
+
+    pub(super) fn open_with(height: f32) -> Self {
+        Self {
+            kind: TransientPresentationKind::OpenWith,
+            expanded_height: Some(height),
+        }
+    }
+
+    pub(super) fn command_output(detail: &str) -> Self {
+        Self {
+            kind: TransientPresentationKind::CommandOutput,
+            expanded_height: Some(expanded_bar_height(detail)),
+        }
+    }
+
+    pub(super) fn file_operation(detail: Option<&str>) -> Self {
+        Self {
+            kind: TransientPresentationKind::FileOperation,
+            expanded_height: detail.map(expanded_bar_height),
+        }
+    }
+
+    pub(super) fn transfer_history() -> Self {
+        Self {
+            kind: TransientPresentationKind::TransferHistory,
+            expanded_height: Some(190.0),
+        }
+    }
+
+    pub(super) fn kind(self) -> TransientPresentationKind {
+        self.kind
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CopyFeedback {
+    started_at: Option<Instant>,
+}
+
+impl CopyFeedback {
+    fn trigger(&mut self, now: Instant) {
+        self.started_at = Some(now);
+    }
+
+    fn intensity(self, now: Instant, reduced_motion: bool) -> f32 {
+        let Some(started_at) = self.started_at else {
+            return 0.0;
+        };
+        let elapsed = now.saturating_duration_since(started_at);
+        if elapsed <= COPY_FEEDBACK_HOLD {
+            return 1.0;
+        }
+        if reduced_motion {
+            return 0.0;
+        }
+        1.0 - duration_ratio(
+            elapsed.saturating_sub(COPY_FEEDBACK_HOLD),
+            COPY_FEEDBACK_FADE,
+        )
+    }
+
+    fn active(self, now: Instant) -> bool {
+        self.started_at.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) < COPY_FEEDBACK_HOLD + COPY_FEEDBACK_FADE
+        })
+    }
+
+    fn finish_if_elapsed(&mut self, now: Instant) {
+        if !self.active(now) {
+            self.started_at = None;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Presentation {
+    focus: BrowserFocus,
+    toolbar_cursor: usize,
+    bottom_cursor: usize,
+    expanded_bar_height: f32,
+    output_expansion: Animation<bool>,
+    transient: TransientPresentationKind,
+    transient_expanded: bool,
+    copy_feedback: CopyFeedback,
+    now: Instant,
+    spinner_started: Instant,
+    status: String,
+    notice: Option<String>,
+}
+
+impl Presentation {
+    pub(super) fn new(now: Instant, notice: Option<String>) -> Self {
+        Self {
+            focus: BrowserFocus::Entries,
+            toolbar_cursor: 0,
+            bottom_cursor: 0,
+            expanded_bar_height: STATUS_HEIGHT,
+            output_expansion: Animation::new(false)
+                .duration(Duration::from_millis(140))
+                .easing(Easing::EaseOut),
+            transient: TransientPresentationKind::Standard,
+            transient_expanded: false,
+            copy_feedback: CopyFeedback::default(),
+            now,
+            spinner_started: now,
+            status: String::new(),
+            notice,
+        }
+    }
+
+    pub(super) fn focus(&self) -> BrowserFocus {
+        self.focus
+    }
+
+    pub(super) fn focus_is(&self, focus: BrowserFocus) -> bool {
+        self.focus == focus
+    }
+
+    pub(super) fn set_focus(&mut self, focus: BrowserFocus) {
+        self.focus = focus;
+    }
+
+    pub(super) fn move_focus(&mut self, reverse: bool, tree_visible: bool) {
+        self.focus = self.focus.moved(reverse);
+        if !tree_visible && self.focus == BrowserFocus::Sidebar {
+            self.focus = self.focus.moved(reverse);
+        }
+    }
+
+    pub(super) fn focus_label(&self) -> &'static str {
+        self.focus.label()
+    }
+
+    pub(super) fn toolbar_cursor(&self) -> usize {
+        self.toolbar_cursor
+    }
+
+    pub(super) fn move_toolbar_cursor(&mut self, motion: Motion, count: usize) -> String {
+        move_composite_cursor(&mut self.toolbar_cursor, 5, motion, count);
+        format!("Toolbar control {} of 5", self.toolbar_cursor + 1)
+    }
+
+    pub(super) fn bottom_cursor(&self) -> usize {
+        self.bottom_cursor
+    }
+
+    pub(super) fn reset_bottom_cursor(&mut self) {
+        self.bottom_cursor = 0;
+    }
+
+    pub(super) fn move_bottom_cursor(
+        &mut self,
+        action_count: usize,
+        motion: Motion,
+        count: usize,
+    ) -> String {
+        let available = action_count.max(1);
+        move_composite_cursor(&mut self.bottom_cursor, available, motion, count);
+        if action_count == 0 {
+            "Bottom bar has no actions".to_owned()
+        } else {
+            format!(
+                "Bottom bar action {} of {available}",
+                self.bottom_cursor + 1
+            )
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn status(&self) -> &str {
+        &self.status
+    }
+
+    pub(super) fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+    }
+
+    pub(super) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    pub(super) fn set_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(notice.into());
+    }
+
+    pub(super) fn clear_notice(&mut self) {
+        self.notice = None;
+    }
+
+    pub(super) fn sync_transient(&mut self, next: TransientPresentation) -> bool {
+        let closed =
+            self.transient.overrides_browser_status() && !next.kind.overrides_browser_status();
+        self.transient = next.kind;
+        self.transient_expanded = next.expanded_height.is_some();
+        if let Some(height) = next.expanded_height {
+            self.expanded_bar_height = height;
+        }
+        self.now = Instant::now();
+        self.output_expansion
+            .go_mut(next.expanded_height.is_some(), self.now);
+        closed
+    }
+
+    pub(super) fn status_height(&self, reduced_motion: bool) -> f32 {
+        if reduced_motion {
+            return if self.transient_expanded {
+                self.expanded_bar_height
+            } else {
+                STATUS_HEIGHT
+            };
+        }
+        self.output_expansion
+            .interpolate(STATUS_HEIGHT, self.expanded_bar_height, self.now)
+    }
+
+    pub(super) fn animation_active(
+        &self,
+        reduced_motion: bool,
+        spinner_active: bool,
+        drag_active: bool,
+        scrollbar_visible: bool,
+    ) -> bool {
+        if reduced_motion {
+            return drag_active || scrollbar_visible || self.copy_feedback.active(self.now);
+        }
+        self.output_expansion.is_animating(self.now)
+            || spinner_active
+            || drag_active
+            || scrollbar_visible
+            || self.copy_feedback.active(self.now)
+    }
+
+    pub(super) fn tick(&mut self, now: Instant) {
+        self.now = now;
+        self.copy_feedback.finish_if_elapsed(now);
+    }
+
+    pub(super) fn now(&self) -> Instant {
+        self.now
+    }
+
+    pub(super) fn set_now(&mut self, now: Instant) {
+        self.now = now;
+    }
+
+    pub(super) fn spinner_angle(&self, reduced_motion: bool) -> f32 {
+        if reduced_motion {
+            0.0
+        } else {
+            self.now.duration_since(self.spinner_started).as_secs_f32() * std::f32::consts::TAU
+                / 0.9
+        }
+    }
+
+    pub(super) fn flash_copy_feedback(&mut self) {
+        let now = Instant::now();
+        self.now = now;
+        self.copy_feedback.trigger(now);
+    }
+
+    pub(super) fn copy_feedback_intensity(&self, reduced_motion: bool) -> f32 {
+        self.copy_feedback.intensity(self.now, reduced_motion)
+    }
+
+    pub(super) fn browser_status<'a>(
+        &'a self,
+        conflict: Option<&'a str>,
+        transfer_active: bool,
+        retry: bool,
+    ) -> BrowserStatusModel<'a> {
+        if let Some(prompt) = conflict {
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::Conflict,
+                text: prompt,
+                retry: false,
+                history: false,
+            }
+        } else if transfer_active {
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::Transfer,
+                text: "",
+                retry: false,
+                history: true,
+            }
+        } else {
+            BrowserStatusModel {
+                presentation: BrowserStatusPresentation::General,
+                text: self.notice.as_deref().unwrap_or(&self.status),
+                retry,
+                history: retry,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn expansion(&self) -> (bool, f32) {
+        (self.output_expansion.value(), self.expanded_bar_height)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_toolbar_cursor(&mut self, cursor: usize) {
+        self.toolbar_cursor = cursor;
+    }
+}
+
 pub(super) fn compact_status_line<'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
@@ -20,7 +420,7 @@ pub(super) fn tile_label(name: &str) -> String {
     if extension.is_empty() {
         stem
     } else {
-        format!("{stem}\u{00a0}.{extension}")
+        format!("{stem}\u{2060}.{extension}")
     }
 }
 
@@ -129,22 +529,22 @@ pub(super) fn entry_icon_asset(kind: EntryIconKind) -> &'static [u8] {
     }
 }
 
-pub(super) fn tree_icon_asset(kind: state::NodeKind) -> &'static [u8] {
+pub(super) fn tree_icon_asset(kind: tree::NodeKind) -> &'static [u8] {
     match kind {
-        state::NodeKind::Computer => include_bytes!("../ui/icons/computer.svg"),
-        state::NodeKind::Drive => include_bytes!("../ui/icons/drive.svg"),
-        state::NodeKind::Folder | state::NodeKind::Favorite => {
+        tree::NodeKind::Computer => include_bytes!("../ui/icons/computer.svg"),
+        tree::NodeKind::Drive => include_bytes!("../ui/icons/drive.svg"),
+        tree::NodeKind::Folder | tree::NodeKind::Favorite => {
             include_bytes!("../ui/icons/folder.svg")
         }
-        state::NodeKind::Home => include_bytes!("../ui/icons/place-home.svg"),
-        state::NodeKind::Desktop => include_bytes!("../ui/icons/place-desktop.svg"),
-        state::NodeKind::Documents => include_bytes!("../ui/icons/place-documents.svg"),
-        state::NodeKind::Downloads => include_bytes!("../ui/icons/place-downloads.svg"),
-        state::NodeKind::Music => include_bytes!("../ui/icons/place-music.svg"),
-        state::NodeKind::Pictures => include_bytes!("../ui/icons/place-pictures.svg"),
-        state::NodeKind::Videos => include_bytes!("../ui/icons/place-videos.svg"),
-        state::NodeKind::Recent => include_bytes!("../ui/icons/place-recent.svg"),
-        state::NodeKind::Trash => include_bytes!("../ui/icons/place-trash.svg"),
+        tree::NodeKind::Home => include_bytes!("../ui/icons/place-home.svg"),
+        tree::NodeKind::Desktop => include_bytes!("../ui/icons/place-desktop.svg"),
+        tree::NodeKind::Documents => include_bytes!("../ui/icons/place-documents.svg"),
+        tree::NodeKind::Downloads => include_bytes!("../ui/icons/place-downloads.svg"),
+        tree::NodeKind::Music => include_bytes!("../ui/icons/place-music.svg"),
+        tree::NodeKind::Pictures => include_bytes!("../ui/icons/place-pictures.svg"),
+        tree::NodeKind::Videos => include_bytes!("../ui/icons/place-videos.svg"),
+        tree::NodeKind::Recent => include_bytes!("../ui/icons/place-recent.svg"),
+        tree::NodeKind::Trash => include_bytes!("../ui/icons/place-trash.svg"),
     }
 }
 
@@ -178,18 +578,6 @@ pub(super) fn move_composite_cursor(cursor: &mut usize, len: usize, motion: Moti
         Motion::DisplayIndex(index) => index.min(last),
         Motion::ViewportMiddle => last / 2,
     };
-}
-
-pub(super) fn nearest_existing_ancestor(path: &Path) -> PathBuf {
-    let mut candidate = path.to_path_buf();
-    loop {
-        if candidate.is_dir() {
-            return candidate;
-        }
-        if !candidate.pop() {
-            return PathBuf::from("/");
-        }
-    }
 }
 
 pub(super) fn rgba(color: Color, alpha: f32) -> [u8; 4] {
@@ -312,14 +700,19 @@ pub(super) fn grid_background_style(
     style
 }
 
-pub(super) fn status_background_style(theme: &Theme, focused: bool) -> container::Style {
+pub(super) fn status_background_style(
+    theme: &Theme,
+    focused: bool,
+    copy_feedback: f32,
+) -> container::Style {
     let background = lighter(theme.palette().background, 16);
     let mut style = container::Style::default().background(background);
-    if focused {
+    let accent_mix = (if focused { 0.10_f32 } else { 0.0 }).max(copy_feedback * 0.22);
+    if accent_mix > 0.0 {
         style.background = Some(Background::Color(blend_colors(
             background,
             theme.palette().primary,
-            0.10,
+            accent_mix,
         )));
     }
     style
@@ -429,7 +822,9 @@ pub(super) fn list_row_style(
     let mut style = tile_style(theme, selected, hovered, focused, false);
     let outer_radius = style.border.radius.top_left;
     style.border.radius = 0.0.into();
-    if selected {
+    if hovered && !selected {
+        style.border.radius = outer_radius.into();
+    } else if selected {
         if !selected_above {
             style.border.radius.top_left = outer_radius;
             style.border.radius.top_right = outer_radius;
@@ -641,5 +1036,66 @@ pub(super) fn menu_style(theme: &Theme) -> container::Style {
             blur_radius: 18.0,
         },
         ..container::Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_feedback_holds_then_fades_to_the_normal_background() {
+        let now = Instant::now();
+        let mut feedback = CopyFeedback::default();
+
+        assert_eq!(feedback.intensity(now, false), 0.0);
+        feedback.trigger(now);
+        assert_eq!(feedback.intensity(now, false), 1.0);
+        assert_eq!(
+            feedback.intensity(now + COPY_FEEDBACK_HOLD + COPY_FEEDBACK_FADE / 2, false),
+            0.5
+        );
+        let finished = now + COPY_FEEDBACK_HOLD + COPY_FEEDBACK_FADE;
+        assert_eq!(feedback.intensity(finished, false), 0.0);
+        feedback.finish_if_elapsed(finished);
+        assert!(!feedback.active(finished));
+    }
+
+    #[test]
+    fn reduced_motion_keeps_the_hold_but_skips_the_fade() {
+        let now = Instant::now();
+        let mut feedback = CopyFeedback::default();
+        feedback.trigger(now);
+
+        assert_eq!(feedback.intensity(now + COPY_FEEDBACK_HOLD, true), 1.0);
+        assert_eq!(
+            feedback.intensity(now + COPY_FEEDBACK_HOLD + Duration::from_millis(1), true),
+            0.0
+        );
+    }
+
+    #[test]
+    fn transient_lifecycle_restores_status_only_after_the_last_overlay_closes() {
+        let now = Instant::now();
+        let mut presentation = Presentation::new(now, None);
+
+        assert!(!presentation.sync_transient(TransientPresentation::open_with(120.0)));
+        assert!(
+            !presentation.sync_transient(TransientPresentation::command_output("command detail"))
+        );
+        assert!(presentation.sync_transient(TransientPresentation::standard()));
+        assert!(!presentation.sync_transient(TransientPresentation::standard()));
+    }
+
+    #[test]
+    fn transient_lifecycle_owns_reduced_motion_height() {
+        let now = Instant::now();
+        let mut presentation = Presentation::new(now, None);
+
+        presentation.sync_transient(TransientPresentation::open_with(120.0));
+        assert_eq!(presentation.status_height(true), 120.0);
+
+        presentation.sync_transient(TransientPresentation::conflict());
+        assert_eq!(presentation.status_height(true), STATUS_HEIGHT);
     }
 }

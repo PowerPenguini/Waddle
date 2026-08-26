@@ -56,7 +56,7 @@ impl Source {
         let (commands, command_receiver) = std_mpsc::channel();
         let (events, event_receiver) = mpsc::unbounded();
         let worker = thread::Builder::new()
-            .name("polarexp-directory-watch".to_owned())
+            .name("waddle-directory-watch".to_owned())
             .spawn(move || worker(command_receiver, events))
             .map_err(|error| format!("could not start directory monitor: {error}"))?;
         drop(worker);

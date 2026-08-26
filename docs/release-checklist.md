@@ -1,4 +1,4 @@
-# PolarExp 1.0 release checklist
+# Waddle 1.0 release checklist
 
 Run `scripts/release-gate.sh` first. Record the commit SHA, distribution versions, desktop session,
 and application versions beside every manual result. A failure keeps the release blocked.
@@ -10,14 +10,14 @@ space and one two-file selection.
 
 | Flow | Nautilus | Dolphin |
 | --- | --- | --- |
-| Copy into PolarExp | Pending | Pending |
-| Copy out of PolarExp | Pending | Pending |
-| Cut into PolarExp | Pending | Pending |
-| Cut out of PolarExp | Pending | Pending |
-| Drag into PolarExp as Copy | Pending | Pending |
-| Drag out of PolarExp as Copy | Pending | Pending |
-| Drag into PolarExp as Move | Pending | Pending |
-| Drag out of PolarExp as Move | Pending | Pending |
+| Copy into Waddle | Pending | Pending |
+| Copy out of Waddle | Pending | Pending |
+| Cut into Waddle | Pending | Pending |
+| Cut out of Waddle | Pending | Pending |
+| Drag into Waddle as Copy | Pending | Pending |
+| Drag out of Waddle as Copy | Pending | Pending |
+| Drag into Waddle as Move | Pending | Pending |
+| Drag out of Waddle as Move | Pending | Pending |
 
 Confirm the preview, target highlight, cancellation, error feedback, ownership loss, source
 shutdown, and partial-Cut remainder in the same sessions.
@@ -52,7 +52,7 @@ does not replace the native X11, Nautilus/Dolphin, or Flatpak rows above.
 
 ## Packages
 
-- [ ] Build the Flatpak with `flatpak-builder`, then run `scripts/smoke-flatpak.sh PolarExp.flatpak`.
+- [ ] Build the Flatpak with `flatpak-builder`, then run `scripts/smoke-flatpak.sh Waddle.flatpak`.
 - [ ] Install and launch the Flatpak on Wayland and X11; repeat clipboard and drag-and-drop smoke
   rows from the matrix.
 - [ ] Download the CI-produced regular archive on a clean supported Linux system and run

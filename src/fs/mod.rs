@@ -35,16 +35,13 @@ use tree_copy::{copy_item_with_warnings, remove_incomplete_copy};
 
 #[cfg(test)]
 use mutation::{move_exact, rename_noreplace};
-#[cfg(test)]
-use tree_copy::{copy_item, record_metadata_result, set_times};
 #[cfg(all(test, target_os = "linux"))]
 use tree_copy::{get_xattr, set_xattr};
+#[cfg(test)]
+use tree_copy::{record_metadata_result, set_times};
 
 #[cfg(test)]
 pub use browse::{read_child_folders, read_directory, search_directory};
-#[allow(unused_imports)]
-#[cfg(test)]
-pub use mutation::{copy_entry, move_destination, move_entry, transfer_entries};
 
 #[cfg(test)]
 mod tests;

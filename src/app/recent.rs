@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fs::FileEntry;
 
-use super::{places, state::NodeKind};
+use super::{places, tree::NodeKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Effect {
@@ -114,12 +114,12 @@ impl Recent {
             "disable" => {
                 self.preferences.enabled = false;
                 self.save_preferences()?;
-                Ok((Effect::Disabled, "Recent disabled in PolarExp".to_owned()))
+                Ok((Effect::Disabled, "Recent disabled in Waddle".to_owned()))
             }
             "enable" => {
                 self.preferences.enabled = true;
                 self.save_preferences()?;
-                Ok((Effect::Enabled, "Recent enabled in PolarExp".to_owned()))
+                Ok((Effect::Enabled, "Recent enabled in Waddle".to_owned()))
             }
             command => Err(format!(
                 "unknown Recent command: {command}; expected open, clear, enable, or disable"
@@ -170,11 +170,11 @@ fn history_path() -> PathBuf {
 
 fn preferences_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("polarexp/recent.json");
+        return PathBuf::from(path).join("waddle/recent.json");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from(".polarexp-recent.json"),
-        |home| PathBuf::from(home).join(".config/polarexp/recent.json"),
+        || PathBuf::from(".waddle-recent.json"),
+        |home| PathBuf::from(home).join(".config/waddle/recent.json"),
     )
 }
 
@@ -194,9 +194,9 @@ mod tests {
         let existing_uri = gio::File::for_path(&existing).uri();
         let missing_uri = gio::File::for_path(&missing).uri();
         bookmarks.set_title(Some(&existing_uri), "kept");
-        bookmarks.add_application(&existing_uri, Some("PolarExp test"), Some("polarexp %u"));
+        bookmarks.add_application(&existing_uri, Some("Waddle test"), Some("waddle %u"));
         bookmarks.set_title(Some(&missing_uri), "missing");
-        bookmarks.add_application(&missing_uri, Some("PolarExp test"), Some("polarexp %u"));
+        bookmarks.add_application(&missing_uri, Some("Waddle test"), Some("waddle %u"));
         bookmarks.to_file(&history).unwrap();
 
         let mut recent = Recent::open_at(history, preferences.clone());
@@ -221,11 +221,7 @@ mod tests {
         let preferences = temp.path().join("recent.json");
         let mut bookmarks = gio::glib::BookmarkFile::new();
         bookmarks.set_title(Some("file:///tmp/item"), "item");
-        bookmarks.add_application(
-            "file:///tmp/item",
-            Some("PolarExp test"),
-            Some("polarexp %u"),
-        );
+        bookmarks.add_application("file:///tmp/item", Some("Waddle test"), Some("waddle %u"));
         bookmarks.to_file(&history).unwrap();
         let mut recent = Recent::open_at(history.clone(), preferences);
 

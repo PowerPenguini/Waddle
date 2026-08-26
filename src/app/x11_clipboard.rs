@@ -30,11 +30,11 @@ use x11rb::{
 };
 
 use crate::{
-    clipboard::{self, EncodedOffer},
     transfer::{
         ClipboardAdapter, ClipboardCompletion, ClipboardImport, ClipboardPayload,
         Event as TransferEvent,
     },
+    transfer_formats::{self, EncodedOffer},
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -79,7 +79,7 @@ impl Source {
         let (events_sender, events_receiver) = mpsc::unbounded();
         let (ready_sender, ready_receiver) = std_mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name("polarexp-x11-clipboard".to_owned())
+            .name("waddle-x11-clipboard".to_owned())
             .spawn(move || {
                 let result = Worker::connect(events_sender).and_then(|mut worker| {
                     let _ = ready_sender.send(Ok(()));
@@ -142,7 +142,7 @@ impl Source {
 impl ClipboardAdapter for Source {
     fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
         let generation = payload.generation;
-        let offer = clipboard::encode(&payload)?;
+        let offer = transfer_formats::encode(&payload)?;
         self.request(|reply| Command::Write {
             offer,
             generation,
@@ -603,10 +603,10 @@ impl Worker {
                     .map(Iterator::collect::<Vec<_>>)
                     .unwrap_or_default();
                 let mut targets = [
-                    clipboard::POLAREXP_MIME,
-                    clipboard::GNOME_MIME,
-                    clipboard::URI_LIST_MIME,
-                    clipboard::KDE_CUT_MIME,
+                    transfer_formats::WADDLE_MIME,
+                    transfer_formats::GNOME_MIME,
+                    transfer_formats::URI_LIST_MIME,
+                    transfer_formats::KDE_CUT_MIME,
                 ]
                 .into_iter()
                 .filter_map(|mime| {
@@ -621,7 +621,9 @@ impl Worker {
                 if !targets.iter().any(|(_, mime)| {
                     matches!(
                         *mime,
-                        clipboard::POLAREXP_MIME | clipboard::GNOME_MIME | clipboard::URI_LIST_MIME
+                        transfer_formats::WADDLE_MIME
+                            | transfer_formats::GNOME_MIME
+                            | transfer_formats::URI_LIST_MIME
                     )
                 }) {
                     self.finish_read(Err(
@@ -702,7 +704,7 @@ impl Worker {
             let mime = *mime;
             let data = std::mem::take(data);
             self.finish_format(mime, data);
-        } else if data.len().saturating_add(reply.value.len()) > clipboard::MAX_BYTES {
+        } else if data.len().saturating_add(reply.value.len()) > transfer_formats::MAX_BYTES {
             self.finish_read(Err(
                 "the X11 clipboard payload is larger than 4 MiB".to_owned()
             ));
@@ -722,7 +724,7 @@ impl Worker {
         });
         if !same_owner {
             self.finish_read(Err(
-                "the X11 clipboard changed while PolarExp was reading it".to_owned(),
+                "the X11 clipboard changed while Waddle was reading it".to_owned()
             ));
             return;
         }
@@ -747,7 +749,7 @@ impl Worker {
                     .iter()
                     .map(|(mime, data)| (*mime, data.as_slice()))
                     .collect::<Vec<_>>();
-                clipboard::decode_offer(&entries)
+                transfer_formats::decode_offer(&entries)
             },
         );
         self.finish_read(result);
@@ -780,15 +782,15 @@ impl Atoms {
                 .map_err(|error| format!("could not intern X11 atom {name}: {error}"))
         };
         let clipboard = intern("CLIPBOARD")?;
-        let property = intern("POLAREXP_CLIPBOARD")?;
+        let property = intern("WADDLE_CLIPBOARD")?;
         let targets = intern("TARGETS")?;
         let incr = intern("INCR")?;
         let mut atom_by_mime = HashMap::new();
         for mime in [
-            clipboard::POLAREXP_MIME,
-            clipboard::GNOME_MIME,
-            clipboard::URI_LIST_MIME,
-            clipboard::KDE_CUT_MIME,
+            transfer_formats::WADDLE_MIME,
+            transfer_formats::GNOME_MIME,
+            transfer_formats::URI_LIST_MIME,
+            transfer_formats::KDE_CUT_MIME,
         ] {
             let atom = intern(mime)?;
             atom_by_mime.insert(mime, atom);
@@ -832,13 +834,13 @@ mod tests {
 
     #[test]
     fn two_x11_adapters_exchange_a_large_multi_entry_offer() {
-        if std::env::var_os("POLAREXP_X11_TEST").is_none() {
+        if std::env::var_os("WADDLE_X11_TEST").is_none() {
             return;
         }
         let writer = Source::attach().expect("writer");
         let reader = Source::attach().expect("reader");
         let paths = (0..5_000)
-            .map(|index| std::path::PathBuf::from(format!("/tmp/polarexp-{index:04}")))
+            .map(|index| std::path::PathBuf::from(format!("/tmp/waddle-{index:04}")))
             .collect::<Vec<_>>();
 
         ClipboardAdapter::write_clipboard(

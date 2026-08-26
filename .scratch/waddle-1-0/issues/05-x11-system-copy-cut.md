@@ -4,7 +4,7 @@ Type: feature
 
 **What to build:** Implement the shared multi-entry clipboard contract on X11, including selection ownership and Cut markers.
 
-**Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp.
+**Blocked by:** 01: Multi-entry clipboard Transfer inside Waddle.
 
 **Status:** resolved
 
@@ -15,7 +15,7 @@ Type: feature
 
 ## Answer
 
-PolarExp now selects a native clipboard adapter from the raw window handle. The X11 adapter
+Waddle now selects a native clipboard adapter from the raw window handle. The X11 adapter
 publishes the private generation payload plus GNOME, KDE, and URI-list formats, observes
 selection ownership with XFixes, and implements both sides of the INCR protocol for payloads
 larger than a normal X request.

@@ -1,6 +1,12 @@
 use std::collections::BTreeSet;
 
-use iced::{Point, Rectangle, Size};
+use iced::{Point, Rectangle, Size, time::Instant};
+
+pub(super) use super::drag_hover::{Effect as DragHoverEffect, Target as DragHoverTarget};
+use super::{
+    SCROLLBAR_FADE_IN, SCROLLBAR_FADE_OUT, SCROLLBAR_HOLD, SCROLLBAR_TRACK_WIDTH, drag_hover,
+    duration_ratio,
+};
 
 pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 46.0;
@@ -22,6 +28,86 @@ pub(super) enum DropZone {
     Sidebar(usize),
     Entry(usize),
     Current,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Scrollbar {
+    Sidebar,
+    Entries,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ScrollbarVisibility {
+    shown_at: Option<Instant>,
+    fade_out_at: Option<Instant>,
+}
+
+impl ScrollbarVisibility {
+    fn show(&mut self, now: Instant) {
+        self.shown_at.get_or_insert(now);
+        self.fade_out_at = Some(now + SCROLLBAR_HOLD);
+    }
+
+    fn hide_if_elapsed(&mut self, now: Instant) {
+        if self
+            .fade_out_at
+            .is_some_and(|fade_out_at| now >= fade_out_at + SCROLLBAR_FADE_OUT)
+        {
+            self.shown_at = None;
+            self.fade_out_at = None;
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        self.fade_out_at.is_some()
+    }
+
+    fn opacity(&self, now: Instant, reduced_motion: bool) -> f32 {
+        let (Some(shown_at), Some(fade_out_at)) = (self.shown_at, self.fade_out_at) else {
+            return 0.0;
+        };
+        if reduced_motion {
+            return 1.0;
+        }
+        if now < fade_out_at {
+            return duration_ratio(now.saturating_duration_since(shown_at), SCROLLBAR_FADE_IN);
+        }
+
+        1.0 - duration_ratio(
+            now.saturating_duration_since(fade_out_at),
+            SCROLLBAR_FADE_OUT,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextTarget {
+    Background,
+    Entry(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ContextMenu {
+    pub(super) target: ContextTarget,
+    pub(super) point: Point,
+    pub(super) focused: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextNavigation {
+    Previous { wrap: bool },
+    Next { wrap: bool },
+    First,
+    Last,
+    Activate,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextOutcome {
+    None,
+    Activate(usize),
+    Closed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,6 +165,10 @@ pub(super) struct GridInteraction {
     selection_anchor: Option<usize>,
     details: Option<String>,
     list_mode: bool,
+    context_menu: Option<ContextMenu>,
+    sidebar_scrollbar: ScrollbarVisibility,
+    entry_scrollbar: ScrollbarVisibility,
+    drag_hover: drag_hover::State,
 }
 
 impl Default for GridInteraction {
@@ -88,7 +178,7 @@ impl Default for GridInteraction {
 }
 
 impl GridInteraction {
-    pub(super) fn new(window_size: Size) -> Self {
+    fn new(window_size: Size) -> Self {
         Self {
             window_size,
             sidebar_width: SIDEBAR_WIDTH,
@@ -103,7 +193,62 @@ impl GridInteraction {
             selection_anchor: None,
             details: None,
             list_mode: false,
+            context_menu: None,
+            sidebar_scrollbar: ScrollbarVisibility::default(),
+            entry_scrollbar: ScrollbarVisibility::default(),
+            drag_hover: drag_hover::State::default(),
         }
+    }
+
+    pub(super) fn scroll(&mut self, scrollbar: Scrollbar, offset: f32, now: Instant) {
+        match scrollbar {
+            Scrollbar::Sidebar => {
+                self.sidebar_scrollbar.show(now);
+                self.sidebar_scroll_y = offset.max(0.0);
+            }
+            Scrollbar::Entries => {
+                self.entry_scrollbar.show(now);
+                self.scroll_y = offset.max(0.0);
+            }
+        }
+    }
+
+    fn settle_scrollbars(&mut self, now: Instant) {
+        self.sidebar_scrollbar.hide_if_elapsed(now);
+        self.entry_scrollbar.hide_if_elapsed(now);
+    }
+
+    pub(super) fn scrollbar_visible(&self) -> bool {
+        self.sidebar_scrollbar.is_visible() || self.entry_scrollbar.is_visible()
+    }
+
+    pub(super) fn scrollbar_opacity(
+        &self,
+        scrollbar: Scrollbar,
+        now: Instant,
+        reduced_motion: bool,
+    ) -> f32 {
+        match scrollbar {
+            Scrollbar::Sidebar => self.sidebar_scrollbar.opacity(now, reduced_motion),
+            Scrollbar::Entries => self.entry_scrollbar.opacity(now, reduced_motion),
+        }
+    }
+
+    pub(super) fn set_drag_hover(&mut self, target: Option<DragHoverTarget>, now: Instant) {
+        self.drag_hover.set(target, now);
+    }
+
+    pub(super) fn cancel_drag_hover(&mut self) {
+        self.drag_hover.cancel();
+    }
+
+    pub(super) fn tick(&mut self, now: Instant) -> Option<DragHoverEffect> {
+        self.settle_scrollbars(now);
+        self.drag_hover.tick(now)
+    }
+
+    pub(super) fn drag_hover_progress(&self, path: &std::path::Path, now: Instant) -> Option<f32> {
+        self.drag_hover.progress(path, now)
     }
 
     pub(super) fn resize(&mut self, size: Size) {
@@ -126,8 +271,107 @@ impl GridInteraction {
         self.list_mode = list_mode;
     }
 
+    pub(super) fn install_navigation(
+        &mut self,
+        selected: &[usize],
+        entry_count: usize,
+        list_mode: bool,
+        reset_scroll: bool,
+    ) {
+        self.list_mode = list_mode;
+        self.select_indices(selected, entry_count);
+        self.details = None;
+        if reset_scroll {
+            self.reset_scroll();
+        }
+    }
+
     pub(super) fn cursor(&self) -> Point {
         self.cursor
+    }
+
+    pub(super) fn context_menu(&self) -> Option<ContextMenu> {
+        self.context_menu
+    }
+
+    pub(super) fn open_entry_context(&mut self, index: usize, entry_count: usize) -> bool {
+        if index >= entry_count {
+            return false;
+        }
+        self.select_only(Some(index), entry_count);
+        self.context_menu = Some(ContextMenu {
+            target: ContextTarget::Entry(index),
+            point: self.cursor,
+            focused: 0,
+        });
+        true
+    }
+
+    pub(super) fn open_background_context(
+        &mut self,
+        entry_count: usize,
+        status_height: f32,
+    ) -> bool {
+        if !self.selection_start_allowed(self.cursor, entry_count, status_height) {
+            return false;
+        }
+        self.select_only(None, entry_count);
+        self.context_menu = Some(ContextMenu {
+            target: ContextTarget::Background,
+            point: self.cursor,
+            focused: 0,
+        });
+        true
+    }
+
+    pub(super) fn close_context(&mut self) {
+        self.context_menu = None;
+    }
+
+    pub(super) fn take_context_entry(&mut self) -> Option<usize> {
+        match self.context_menu.take()?.target {
+            ContextTarget::Entry(index) => Some(index),
+            ContextTarget::Background => None,
+        }
+    }
+
+    pub(super) fn navigate_context(
+        &mut self,
+        navigation: ContextNavigation,
+        item_count: usize,
+    ) -> ContextOutcome {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return ContextOutcome::None;
+        };
+        if navigation == ContextNavigation::Close {
+            self.context_menu = None;
+            return ContextOutcome::Closed;
+        }
+        if item_count == 0 {
+            return ContextOutcome::None;
+        }
+        let last = item_count - 1;
+        match navigation {
+            ContextNavigation::Previous { wrap: true } => {
+                menu.focused = menu.focused.checked_sub(1).unwrap_or(last);
+            }
+            ContextNavigation::Previous { wrap: false } => {
+                menu.focused = menu.focused.saturating_sub(1);
+            }
+            ContextNavigation::Next { wrap: true } => {
+                menu.focused = (menu.focused + 1) % item_count;
+            }
+            ContextNavigation::Next { wrap: false } => {
+                menu.focused = (menu.focused + 1).min(last);
+            }
+            ContextNavigation::First => menu.focused = 0,
+            ContextNavigation::Last => menu.focused = last,
+            ContextNavigation::Activate => {
+                return ContextOutcome::Activate(menu.focused.min(last));
+            }
+            ContextNavigation::Close => unreachable!(),
+        }
+        ContextOutcome::None
     }
 
     pub(super) fn move_cursor(&mut self, position: Point, entry_count: usize) -> bool {
@@ -153,15 +397,12 @@ impl GridInteraction {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn set_scroll(&mut self, y: f32) {
         self.scroll_y = y;
     }
 
-    pub(super) fn set_sidebar_scroll(&mut self, y: f32) {
-        self.sidebar_scroll_y = y;
-    }
-
-    pub(super) fn reset_scroll(&mut self) {
+    fn reset_scroll(&mut self) {
         self.scroll_y = 0.0;
     }
 
@@ -224,7 +465,7 @@ impl GridInteraction {
         self.selection_anchor = self.selected;
     }
 
-    pub(super) fn select_indices(&mut self, indices: &[usize], entry_count: usize) {
+    fn select_indices(&mut self, indices: &[usize], entry_count: usize) {
         self.selection = indices
             .iter()
             .copied()
@@ -495,7 +736,7 @@ impl GridInteraction {
         ))
     }
 
-    pub(super) fn columns(&self) -> usize {
+    fn columns(&self) -> usize {
         if self.list_mode {
             return 1;
         }
@@ -503,7 +744,7 @@ impl GridInteraction {
         (width / TILE_PITCH).floor().max(1.0) as usize
     }
 
-    pub(super) fn column_width(&self) -> f32 {
+    fn column_width(&self) -> f32 {
         let width = (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(1.0);
         width / self.columns() as f32
     }
@@ -637,8 +878,12 @@ impl GridInteraction {
         entry_count: usize,
         status_height: f32,
     ) -> bool {
-        if point.x < self.sidebar_width + CONTENT_GUTTER
-            || point.x >= self.window_size.width - CONTENT_GUTTER
+        let scrollbar_right = self.window_size.width - CONTENT_GUTTER;
+        let scrollbar_left = scrollbar_right - SCROLLBAR_TRACK_WIDTH;
+        let over_entry_scrollbar = point.x >= scrollbar_left && point.x < scrollbar_right;
+        if point.x < self.sidebar_width
+            || point.x >= self.window_size.width
+            || over_entry_scrollbar
             || point.y < self.entries_top()
             || point.y >= self.window_size.height - status_height - CONTENT_GUTTER
         {
@@ -795,6 +1040,31 @@ mod tests {
 
     fn grid() -> GridInteraction {
         GridInteraction::new(Size::new(584.0, 560.0))
+    }
+
+    #[test]
+    fn scrollbars_keep_their_timing_inside_grid_interaction() {
+        let now = Instant::now();
+        let mut grid = grid();
+
+        assert!(!grid.scrollbar_visible());
+        assert_eq!(grid.scrollbar_opacity(Scrollbar::Entries, now, false), 0.0);
+        grid.scroll(Scrollbar::Entries, 0.0, now);
+        assert!(grid.scrollbar_visible());
+        assert_eq!(
+            grid.scrollbar_opacity(Scrollbar::Entries, now + SCROLLBAR_FADE_IN / 2, false),
+            0.5
+        );
+        assert_eq!(
+            grid.scrollbar_opacity(
+                Scrollbar::Entries,
+                now + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT / 2,
+                false
+            ),
+            0.5
+        );
+        let _ = grid.tick(now + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT);
+        assert!(!grid.scrollbar_visible());
     }
 
     #[test]
@@ -1092,6 +1362,30 @@ mod tests {
     }
 
     #[test]
+    fn marquee_can_start_at_either_horizontal_edge_of_the_browser() {
+        let mut grid = grid();
+        grid.set_list_mode(true);
+        let row_y = grid.entries_top() + LIST_ROW_HEIGHT / 2.0;
+        let right_edge = grid.window_size.width - 1.0;
+        let starts = [SIDEBAR_WIDTH + 1.0, right_edge].map(|x| {
+            let started = grid.start_marquee(Point::new(x, row_y), 5, 25.0, true);
+            grid.finish_marquee();
+            started
+        });
+
+        assert_eq!(starts, [true, true]);
+        assert!(!grid.start_marquee(
+            Point::new(
+                grid.window_size.width - CONTENT_GUTTER - SCROLLBAR_TRACK_WIDTH / 2.0,
+                row_y,
+            ),
+            5,
+            25.0,
+            true,
+        ));
+    }
+
+    #[test]
     fn grid_local_pointer_coordinates_update_the_window_marquee() {
         let mut grid = GridInteraction::default();
         let start = Point::new(300.0, 177.0);
@@ -1168,5 +1462,43 @@ mod tests {
 
         grid.move_cursor(Point::new(400.0, 250.0), 0);
         assert_eq!(grid.drag_autoscroll(25.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn context_menu_owns_target_selection_and_keyboard_cursor() {
+        let mut grid = GridInteraction::default();
+        grid.move_cursor(Point::new(790.0, 500.0), 2);
+
+        assert!(grid.open_background_context(2, 25.0));
+        assert_eq!(grid.selected_entry(), None);
+        assert_eq!(
+            grid.context_menu().map(|menu| menu.target),
+            Some(ContextTarget::Background)
+        );
+        assert_eq!(
+            grid.navigate_context(ContextNavigation::Previous { wrap: true }, 3),
+            ContextOutcome::None
+        );
+        assert_eq!(grid.context_menu().unwrap().focused, 2);
+        assert_eq!(
+            grid.navigate_context(ContextNavigation::Activate, 3),
+            ContextOutcome::Activate(2)
+        );
+        assert_eq!(
+            grid.navigate_context(ContextNavigation::Close, 3),
+            ContextOutcome::Closed
+        );
+        assert!(grid.context_menu().is_none());
+    }
+
+    #[test]
+    fn entry_context_rejects_missing_entries_and_selects_valid_target() {
+        let mut grid = GridInteraction::default();
+
+        assert!(!grid.open_entry_context(2, 2));
+        assert!(grid.open_entry_context(1, 2));
+        assert_eq!(grid.selected_entry(), Some(1));
+        assert_eq!(grid.take_context_entry(), Some(1));
+        assert!(grid.context_menu().is_none());
     }
 }

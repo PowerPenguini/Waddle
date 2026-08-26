@@ -16,13 +16,13 @@ Type: feature
 
 ## Answer
 
-PolarExp now owns `XdndSelection`, advertises multi-entry `text/uri-list`, discovers Xdnd-aware
+Waddle now owns `XdndSelection`, advertises multi-entry `text/uri-list`, discovers Xdnd-aware
 targets under the pointer, negotiates Copy or Move, serves selection requests, and waits for
 `XdndFinished`. It uses the same 64 px SVG preview renderer and shared Transfer workflow as the
 Wayland adapter. Incoming Winit file events are merged into one drop and external sources safely
-default to Copy when their action is unavailable; PolarExp-to-PolarExp Move is carried by a private
+default to Copy when their action is unavailable; Waddle-to-Waddle Move is carried by a private
 X11 action marker after selection ownership is verified.
 
-`POLAREXP_X11_TEST=1 cargo test x11 -- --test-threads=1` exercises two real X11 windows and verifies
+`WADDLE_X11_TEST=1 cargo test x11 -- --test-threads=1` exercises two real X11 windows and verifies
 Move negotiation plus a two-entry URI payload containing a path with a space. The remaining
 Nautilus and Dolphin matrix requires a human desktop session.

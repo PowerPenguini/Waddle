@@ -2,25 +2,32 @@ use super::*;
 
 #[test]
 fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
-    assert_eq!(BrowserFocus::Toolbar.moved(false), BrowserFocus::Location);
-    assert_eq!(BrowserFocus::Location.moved(false), BrowserFocus::Sidebar);
-    assert_eq!(BrowserFocus::Sidebar.moved(false), BrowserFocus::Entries);
-    assert_eq!(BrowserFocus::Entries.moved(false), BrowserFocus::BottomBar);
-    assert_eq!(BrowserFocus::BottomBar.moved(false), BrowserFocus::Toolbar);
-    assert_eq!(BrowserFocus::Toolbar.moved(true), BrowserFocus::BottomBar);
-
     let (mut app, _) = App::new();
-    app.browser_focus = BrowserFocus::Sidebar;
-    app.context_menu = Some((0, iced::Point::ORIGIN));
+    app.presentation.set_focus(BrowserFocus::Toolbar);
+    for expected in [
+        BrowserFocus::Location,
+        BrowserFocus::Sidebar,
+        BrowserFocus::Entries,
+        BrowserFocus::BottomBar,
+        BrowserFocus::Toolbar,
+    ] {
+        app.presentation.move_focus(false, true);
+        assert_eq!(app.presentation.focus(), expected);
+    }
+    app.presentation.move_focus(true, true);
+    assert_eq!(app.presentation.focus(), BrowserFocus::BottomBar);
+
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+    assert!(app.grid.open_entry_context(0, 1));
     let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
     let _ = app.handle_key(tab.clone(), tab, keyboard::Modifiers::empty(), None);
-    assert_eq!(app.context_menu_cursor, 1);
-    assert_eq!(app.browser_focus, BrowserFocus::Sidebar);
+    assert_eq!(app.grid.context_menu().unwrap().focused, 1);
+    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
 
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
-    assert!(app.context_menu.is_none());
-    assert_eq!(app.browser_focus, BrowserFocus::Sidebar);
+    assert!(app.grid.context_menu().is_none());
+    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
 }
 
 #[test]
@@ -31,7 +38,8 @@ fn captured_context_menu_click_does_not_start_marquee_or_clear_selection() {
     app.navigation
         .replace_displayed_entries(vec![entry("selected")]);
     app.grid.select_only(Some(0), 1);
-    app.context_menu = Some((0, iced::Point::new(320.0, 120.0)));
+    app.grid.move_cursor(iced::Point::new(320.0, 120.0), 1);
+    assert!(app.grid.open_entry_context(0, 1));
 
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::CursorMoved {
@@ -50,25 +58,56 @@ fn captured_context_menu_click_does_not_start_marquee_or_clear_selection() {
 }
 
 #[test]
+fn right_clicking_empty_grid_space_opens_a_creation_context_menu() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.grid.resize(iced::Size::new(820.0, 560.0));
+    app.navigation
+        .replace_displayed_entries(vec![entry("selected")]);
+    app.grid.select_only(Some(0), 1);
+    let empty_space = iced::Point::new(700.0, 300.0);
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: empty_space,
+        }),
+        event::Status::Ignored,
+    );
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+        event::Status::Ignored,
+    );
+
+    assert!(app.grid.context_menu().is_some());
+    assert_eq!(app.grid.selected_entry(), None);
+    let labels = app
+        .context_actions(ContextTarget::Background)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["New Folder", "New Empty File"]);
+}
+
+#[test]
 fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
     let temp = tempfile::tempdir().unwrap();
     let (mut app, _) = App::new();
     app.view_preferences =
-        super::view_preferences::Preferences::empty_at(temp.path().join("polarexprc"));
-    app.browser_focus = BrowserFocus::Sidebar;
+        super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+    app.presentation.set_focus(BrowserFocus::Sidebar);
 
     app.view_preferences
         .apply_command(app.navigation.current(), false, "tree=false")
         .unwrap();
     app.sync_tree_visibility();
-    assert_eq!(app.browser_focus, BrowserFocus::Entries);
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
     assert_eq!(app.grid.sidebar_width(), 0.0);
 
-    app.browser_focus = BrowserFocus::Location;
+    app.presentation.set_focus(BrowserFocus::Location);
     app.move_browser_focus(false);
-    assert_eq!(app.browser_focus, BrowserFocus::Entries);
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
     app.move_browser_focus(true);
-    assert_eq!(app.browser_focus, BrowserFocus::Location);
+    assert_eq!(app.presentation.focus(), BrowserFocus::Location);
 
     let control_w = keyboard::Key::Character("w".into());
     let _ = app.handle_key(
@@ -80,7 +119,7 @@ fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
     press(&mut app, "e");
     assert!(app.view_preferences.tree_visible());
     assert_eq!(app.grid.sidebar_width(), SIDEBAR_WIDTH);
-    assert_eq!(app.status, "Tree shown");
+    assert_eq!(app.presentation.status(), "Tree shown");
 }
 
 #[test]
@@ -91,8 +130,8 @@ fn space_activates_the_focused_toolbar_control() {
         super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
     app.navigation.settle_for_test();
-    app.browser_focus = BrowserFocus::Toolbar;
-    app.toolbar_cursor = 4;
+    app.presentation.set_focus(BrowserFocus::Toolbar);
+    app.presentation.set_toolbar_cursor(4);
     let before = app
         .view_preferences
         .for_directory(app.navigation.current())
@@ -112,7 +151,7 @@ fn space_activates_the_focused_toolbar_control() {
             .view,
         before
     );
-    assert_eq!(app.browser_focus, BrowserFocus::Toolbar);
+    assert_eq!(app.presentation.focus(), BrowserFocus::Toolbar);
 }
 
 #[test]
@@ -127,71 +166,80 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
     app.grid.select_only(Some(0), 20);
 
     press(&mut app, "3");
-    assert_eq!(app.status, "3  •  awaiting motion or operator");
+    assert_eq!(
+        app.presentation.status(),
+        "3  •  awaiting motion or operator"
+    );
     press(&mut app, "j");
     assert_eq!(app.grid.selected_entry(), Some(15));
     press(&mut app, "g");
-    assert_eq!(app.status, "g  •  awaiting g");
+    assert_eq!(app.presentation.status(), "g  •  awaiting g");
     press(&mut app, "g");
     assert_eq!(app.grid.selected_entry(), Some(0));
 
-    let child_id = app.explorer.allocate_node_id();
-    app.explorer.roots[0].loading = false;
-    app.explorer.roots[0].loaded = true;
-    app.explorer.roots[0]
-        .children
-        .push(crate::app::state::FolderNode::folder(
-            child_id,
-            PathBuf::from("/tmp"),
-        ));
-    app.browser_focus = BrowserFocus::Sidebar;
-    app.sidebar_cursor = Some(app.explorer.roots[0].id);
+    let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
+    assert!(app.sidebar_tree.install_children(
+        root_id,
+        Path::new("/"),
+        vec![PathBuf::from("/tmp")],
+    ));
+    let child_id = app.sidebar_tree.rows(app.navigation.current())[1].id;
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.sidebar_tree.focus(root_id);
 
     press(&mut app, "j");
-    assert_eq!(app.sidebar_cursor, Some(child_id));
+    assert_eq!(app.sidebar_tree.focused_id(), Some(child_id));
     press(&mut app, "g");
     press(&mut app, "g");
-    assert_eq!(app.sidebar_cursor, Some(app.explorer.roots[0].id));
-    let last_sidebar_id = crate::app::tree::flatten_rows(&app.explorer, app.navigation.current())
+    assert_eq!(app.sidebar_tree.focused_id(), Some(root_id));
+    let last_sidebar_id = app
+        .sidebar_tree
+        .rows(app.navigation.current())
         .last()
         .unwrap()
         .id;
     press(&mut app, "G");
-    assert_eq!(app.sidebar_cursor, Some(last_sidebar_id));
+    assert_eq!(app.sidebar_tree.focused_id(), Some(last_sidebar_id));
 
     press(&mut app, "3");
     press(&mut app, "q");
-    assert_eq!(app.status, "Invalid Browser sequence: 3q");
+    assert_eq!(app.presentation.status(), "Invalid Browser sequence: 3q");
 }
 
 #[test]
 fn focused_sidebar_can_move_above_home_to_computer() {
     let (mut app, _) = App::new();
     let home = PathBuf::from("/home/tester");
-    let home_id = app.explorer.allocate_node_id();
-    app.explorer.roots.insert(
-        1,
-        crate::app::state::FolderNode::location(
-            home_id,
-            home,
-            "Home".to_owned(),
-            NodeKind::Home,
-            None,
-        ),
-    );
-    app.browser_focus = BrowserFocus::Sidebar;
-    app.sidebar_cursor = Some(home_id);
+    app.sidebar_tree.install_places(vec![places::Entry {
+        path: home,
+        label: "Home".to_owned(),
+        kind: NodeKind::Home,
+        favorite_index: None,
+    }]);
+    let rows = app.sidebar_tree.rows(app.navigation.current());
+    let home_id = rows
+        .iter()
+        .find(|row| row.kind == NodeKind::Home)
+        .unwrap()
+        .id;
+    let computer_id = rows
+        .iter()
+        .find(|row| row.kind == NodeKind::Computer)
+        .unwrap()
+        .id;
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.sidebar_tree.focus(home_id);
 
     press(&mut app, "h");
 
-    assert_eq!(app.sidebar_cursor, Some(app.explorer.roots[0].id));
+    assert_eq!(app.sidebar_tree.focused_id(), Some(computer_id));
 }
 
 #[test]
 fn context_menu_does_not_offer_template_files() {
     let (app, _) = App::new();
     let labels = app
-        .context_actions()
+        .context_actions(ContextTarget::Entry(0))
         .into_iter()
         .map(|(label, _)| label)
         .collect::<Vec<_>>();
@@ -207,6 +255,66 @@ fn context_menu_does_not_offer_template_files() {
             "Move to Trash",
         ]
     );
+}
+
+#[test]
+fn open_with_context_shows_compatible_options_and_a_manual_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("document.txt");
+    std_fs::write(&path, "hello").unwrap();
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(vec![FileEntry {
+        path,
+        name: "document.txt".into(),
+        directory: false,
+        metadata: Default::default(),
+    }]);
+    assert!(app.grid.open_entry_context(0, 1));
+
+    let _ = app.update(Message::ContextOpenWith);
+
+    assert_eq!(app.browser_input.mode(), InputMode::OpenWith);
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            target_name: "document.txt",
+            custom: "",
+            ..
+        }
+    ));
+    assert!(app.command.output().is_none());
+    assert!(app.grid.context_menu().is_none());
+
+    let _ = app.update(Message::OpenWithChanged(
+        "org.example.Custom.desktop".to_owned(),
+    ));
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            custom: "org.example.Custom.desktop",
+            ..
+        }
+    ));
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+    assert_eq!(app.browser_input.mode(), InputMode::Browser);
+    assert!(!app.open_with.is_open());
+}
+
+#[test]
+fn copying_command_output_does_not_leave_the_bottom_bar_focused() {
+    let (mut app, _) = App::new();
+    let _ = app.begin_command(':');
+    app.command.change("help".to_owned());
+    let _ = app.submit_command();
+    app.presentation.set_focus(BrowserFocus::Entries);
+
+    let _ = app.update(Message::CopyCommandReport);
+
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.presentation.copy_feedback_intensity(false), 1.0);
 }
 
 #[test]
@@ -270,6 +378,26 @@ fn command_submit_enter_does_not_activate_the_selected_entry() {
 }
 
 #[test]
+fn captured_mouse_click_refocuses_an_active_bottom_input() {
+    let (mut app, _) = App::new();
+    let _ = app.begin_command(':');
+
+    let task = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        event::Status::Captured,
+    );
+
+    assert_eq!(task.units(), 1);
+
+    let (mut browser, _) = App::new();
+    let task = browser.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        event::Status::Captured,
+    );
+    assert_eq!(task.units(), 0);
+}
+
+#[test]
 fn iced_vim_keys_toggle_visual_mode_and_arm_cut_operator() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
@@ -292,7 +420,10 @@ fn iced_vim_keys_toggle_visual_mode_and_arm_cut_operator() {
         [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
     );
     assert!(app.navigation.entries().is_empty());
-    assert_eq!(app.status, "Cut: 2 items, p paste, Esc cancel");
+    assert_eq!(
+        app.presentation.status(),
+        "Cut: 2 items, p paste, Esc cancel"
+    );
 }
 
 #[test]
@@ -301,13 +432,14 @@ fn focused_sidebar_does_not_apply_file_operators_to_the_grid() {
     app.navigation.settle_for_test();
     app.navigation.replace_displayed_entries(vec![entry("one")]);
     app.grid.select_only(Some(0), 1);
-    app.browser_focus = BrowserFocus::Sidebar;
-    app.sidebar_cursor = Some(app.explorer.roots[0].id);
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+    let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
+    app.sidebar_tree.focus(root_id);
 
     press(&mut app, "d");
 
     assert!(app.transfers.pending_cut_paths().is_empty());
-    assert!(app.status.contains("sidebar"));
+    assert!(app.presentation.status().contains("sidebar"));
 }
 
 #[test]
@@ -380,7 +512,7 @@ fn focused_browser_surfaces_keep_an_opaque_window_background() {
 
     assert_eq!(grid.background, browser.background);
     assert!(matches!(
-        super::status_background_style(&theme, true).background,
+        super::status_background_style(&theme, true, 0.0).background,
         Some(iced::Background::Color(color)) if color.a == 1.0
     ));
 }

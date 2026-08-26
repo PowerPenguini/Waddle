@@ -4,7 +4,7 @@ Type: feature
 
 **What to build:** Make the Browser key grammar expose single-key Yank, motion-based Cut, Paste, and Trash through the black-hole register.
 
-**Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp; 02: Counted Browser key grammar and Vim motions.
+**Blocked by:** 01: Multi-entry clipboard Transfer inside Waddle; 02: Counted Browser key grammar and Vim motions.
 
 **Status:** resolved
 

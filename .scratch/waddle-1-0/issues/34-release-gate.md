@@ -1,4 +1,4 @@
-# 34: PolarExp 1.0 integration and release gate
+# 34: Waddle 1.0 integration and release gate
 
 Type: verification
 

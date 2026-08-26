@@ -2,12 +2,16 @@ use std::path::PathBuf;
 
 use crate::fs::{FileEntry, SearchResults};
 
-use super::{grid::GridInteraction, navigation::NavigationSession};
+use super::{
+    grid::GridInteraction,
+    navigation::{NavigationSession, SearchDisplay},
+};
 
 #[derive(Clone, Debug)]
 struct Recursive {
     loading: bool,
     truncated: bool,
+    restore: SearchDisplay,
 }
 
 #[derive(Clone, Debug)]
@@ -51,10 +55,10 @@ impl SearchSession {
         };
         if active.recursive.is_none() && value.starts_with('/') {
             value.remove(0);
-            navigation.begin_recursive_display();
             active.recursive = Some(Recursive {
                 loading: false,
                 truncated: false,
+                restore: navigation.capture_search_display(),
             });
         }
         self.query = value;
@@ -63,7 +67,7 @@ impl SearchSession {
             recursive.loading = !self.query.is_empty();
             recursive.truncated = false;
             if self.query.is_empty() {
-                navigation.install_recursive_entries(Vec::new());
+                navigation.install_search_entries(Vec::new());
                 grid.select_only(None, 0);
                 return Update::CancelPending;
             }
@@ -102,7 +106,7 @@ impl SearchSession {
         match result {
             Ok(results) => {
                 recursive.truncated = results.truncated;
-                navigation.install_recursive_entries(results.entries);
+                navigation.install_search_entries(results.entries);
                 grid.select_only(
                     (!navigation.entries().is_empty()).then_some(0),
                     navigation.entries().len(),
@@ -123,8 +127,8 @@ impl SearchSession {
         let selected = grid
             .selected_entry()
             .and_then(|index| navigation.entries().get(index).cloned());
-        if active.recursive.is_some() {
-            navigation.restore_recursive_display();
+        if let Some(recursive) = active.recursive {
+            navigation.restore_search_display(recursive.restore);
             grid.select_only(None, navigation.entries().len());
             selected
         } else {
@@ -141,8 +145,8 @@ impl SearchSession {
             self.query.clear();
             return;
         };
-        if active.recursive.is_some() {
-            navigation.restore_recursive_display();
+        if let Some(recursive) = active.recursive {
+            navigation.restore_search_display(recursive.restore);
         }
         grid.select_only(active.origin, navigation.entries().len());
         self.query.clear();

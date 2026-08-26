@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -41,6 +41,18 @@ pub(super) enum Completion<T> {
 
 pub(super) type Job<T> = Pin<Box<dyn Future<Output = Completion<T>> + Send>>;
 
+#[derive(Debug)]
+pub(super) struct ForegroundActivity {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ForegroundActivity {
+    fn drop(&mut self) {
+        let previous = self.active.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "foreground operation count underflowed");
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Operations {
     navigation: Arc<Semaphore>,
@@ -49,6 +61,7 @@ pub(super) struct Operations {
     navigation_generation: Arc<AtomicU64>,
     details_generation: Arc<AtomicU64>,
     search_generation: Arc<AtomicU64>,
+    foreground_active: Arc<AtomicUsize>,
 }
 
 impl Default for Operations {
@@ -60,6 +73,7 @@ impl Default for Operations {
             navigation_generation: Arc::new(AtomicU64::new(0)),
             details_generation: Arc::new(AtomicU64::new(0)),
             search_generation: Arc::new(AtomicU64::new(0)),
+            foreground_active: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -76,7 +90,16 @@ impl Operations {
         T: Send + 'static,
         F: FnOnce(Cancellation) -> Result<T, String> + Send + 'static,
     {
-        self.schedule(kind, None, work)
+        self.schedule(kind, None, None, work)
+    }
+
+    pub(super) fn run_foreground<T, F>(&self, kind: Kind, work: F) -> Job<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Cancellation) -> Result<T, String> + Send + 'static,
+    {
+        let activity = self.begin_foreground();
+        self.schedule(kind, None, Some(activity), work)
     }
 
     pub(super) fn run_after<T, F>(&self, kind: Kind, delay: Duration, work: F) -> Job<T>
@@ -84,10 +107,27 @@ impl Operations {
         T: Send + 'static,
         F: FnOnce(Cancellation) -> Result<T, String> + Send + 'static,
     {
-        self.schedule(kind, Some(delay), work)
+        self.schedule(kind, Some(delay), None, work)
     }
 
-    fn schedule<T, F>(&self, kind: Kind, delay: Option<Duration>, work: F) -> Job<T>
+    pub(super) fn begin_foreground(&self) -> ForegroundActivity {
+        self.foreground_active.fetch_add(1, Ordering::AcqRel);
+        ForegroundActivity {
+            active: Arc::clone(&self.foreground_active),
+        }
+    }
+
+    pub(super) fn foreground_active(&self) -> bool {
+        self.foreground_active.load(Ordering::Acquire) > 0
+    }
+
+    fn schedule<T, F>(
+        &self,
+        kind: Kind,
+        delay: Option<Duration>,
+        foreground: Option<ForegroundActivity>,
+        work: F,
+    ) -> Job<T>
     where
         T: Send + 'static,
         F: FnOnce(Cancellation) -> Result<T, String> + Send + 'static,
@@ -95,6 +135,7 @@ impl Operations {
         let lane = self.lane(kind);
         let cancellation = self.begin(kind);
         Box::pin(async move {
+            let _foreground = foreground;
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
                 if cancellation.is_cancelled() {
@@ -219,6 +260,55 @@ mod tests {
             assert_eq!(first.await.unwrap(), Completion::Finished(Ok(())));
             assert_eq!(second.await.unwrap(), Completion::Finished(Ok(())));
             assert_eq!(maximum.load(Ordering::Acquire), 1);
+        });
+    }
+
+    #[test]
+    fn foreground_activity_survives_overlapping_work() {
+        let operations = Operations::default();
+        let first = operations.run_foreground(Kind::Background, |_| Ok(()));
+        let second = operations.run_foreground(Kind::Mutation, |_| Ok(()));
+
+        assert!(operations.foreground_active());
+        drop(first);
+        assert!(operations.foreground_active());
+        drop(second);
+        assert!(!operations.foreground_active());
+    }
+
+    #[test]
+    fn replaced_foreground_work_cannot_mark_newer_work_inactive() {
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let (first_started_sender, first_started_receiver) = mpsc::sync_channel(1);
+            let first_operations = operations.clone();
+            let first = tokio::spawn(first_operations.run_foreground(
+                Kind::Details,
+                move |cancellation| {
+                    first_started_sender.send(()).unwrap();
+                    while !cancellation.is_cancelled() {
+                        thread::yield_now();
+                    }
+                    Ok(())
+                },
+            ));
+            tokio::task::yield_now().await;
+            first_started_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+
+            let (second_release_sender, second_release_receiver) = mpsc::sync_channel(1);
+            let second_operations = operations.clone();
+            let second = tokio::spawn(second_operations.run_foreground(Kind::Details, move |_| {
+                second_release_receiver.recv().unwrap();
+                Ok(())
+            }));
+
+            assert_eq!(first.await.unwrap(), Completion::Cancelled);
+            assert!(operations.foreground_active());
+            second_release_sender.send(()).unwrap();
+            assert_eq!(second.await.unwrap(), Completion::Finished(Ok(())));
+            assert!(!operations.foreground_active());
         });
     }
 }

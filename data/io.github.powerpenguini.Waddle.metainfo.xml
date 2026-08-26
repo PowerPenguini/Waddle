@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.powerpenguini.PolarExp</id>
+  <id>io.github.powerpenguini.Waddle</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>LicenseRef-proprietary</project_license>
-  <name>PolarExp</name>
+  <name>Waddle</name>
   <summary>A focused local file explorer with Vim-style controls</summary>
   <description>
     <p>
-      PolarExp is a Linux file explorer for local work. It combines conventional mouse and
+      Waddle is a Linux file explorer for local work. It combines conventional mouse and
       keyboard selection with a compact Vim-style browser grammar.
     </p>
     <p>
@@ -15,20 +15,20 @@
       persistent undo, search, Trash, Recent, mounted volumes, and file metadata actions.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.powerpenguini.PolarExp.desktop</launchable>
+  <launchable type="desktop-id">io.github.powerpenguini.Waddle.desktop</launchable>
   <url type="homepage">https://github.com/powerpenguini</url>
   <provides>
-    <binary>polarexp</binary>
+    <binary>waddle</binary>
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="0.1.0" date="2026-08-22">
       <description>
-        <p>Initial preview packaging for the complete PolarExp 1.0 workflow.</p>
+        <p>Initial preview packaging for the complete Waddle 1.0 workflow.</p>
       </description>
     </release>
   </releases>
   <developer id="io.github.powerpenguini">
-    <name>PolarExp contributors</name>
+    <name>Waddle contributors</name>
   </developer>
 </component>

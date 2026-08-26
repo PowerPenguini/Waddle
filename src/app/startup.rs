@@ -52,7 +52,7 @@ impl State {
     pub(super) fn open_default() -> Self {
         Self {
             path: std::env::temp_dir()
-                .join(format!("polarexp-startup-test-{}.json", std::process::id())),
+                .join(format!("waddle-startup-test-{}.json", std::process::id())),
             stored: Stored::default(),
             requested: None,
             error: None,
@@ -89,7 +89,7 @@ impl State {
             blur: true,
             exit_on_close_request: false,
             platform_specific: window::settings::PlatformSpecific {
-                application_id: "io.github.powerpenguini.PolarExp".to_owned(),
+                application_id: "io.github.powerpenguini.Waddle".to_owned(),
                 ..window::settings::PlatformSpecific::default()
             },
             ..window::Settings::default()
@@ -171,11 +171,11 @@ fn requested_location() -> (Option<PathBuf>, Option<String>) {
 #[cfg(not(test))]
 fn state_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(path).join("polarexp/startup.json");
+        return PathBuf::from(path).join("waddle/startup.json");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from(".polarexp-startup.json"),
-        |home| PathBuf::from(home).join(".local/state/polarexp/startup.json"),
+        || PathBuf::from(".waddle-startup.json"),
+        |home| PathBuf::from(home).join(".local/state/waddle/startup.json"),
     )
 }
 
@@ -234,7 +234,7 @@ mod tests {
                 .window_settings()
                 .platform_specific
                 .application_id,
-            "io.github.powerpenguini.PolarExp"
+            "io.github.powerpenguini.Waddle"
         );
     }
 

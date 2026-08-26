@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=PolarExp
+Name=Waddle
 Comment=Browse and manage local files with desktop and Vim-style controls
-Exec=polarexp %U
-Icon=io.github.powerpenguini.PolarExp
+Exec=waddle %U
+Icon=io.github.powerpenguini.Waddle
 Terminal=false
 StartupNotify=true
 Categories=System;FileTools;FileManager;

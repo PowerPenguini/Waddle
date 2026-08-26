@@ -9,7 +9,7 @@ use gio::prelude::{FileEnumeratorExt, FileExt};
 
 use crate::{fs::FileEntry, journal};
 
-use super::{places, state::NodeKind};
+use super::{places, tree::NodeKind};
 
 #[derive(Clone, Debug)]
 pub(super) struct Entry {

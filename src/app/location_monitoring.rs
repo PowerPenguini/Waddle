@@ -2,7 +2,15 @@ use std::{collections::HashMap, path::PathBuf};
 
 use iced::Subscription;
 
-use super::directory_watch;
+use super::{
+    directory_watch,
+    navigation::{DisplayedLocation, NavigationSession},
+    recent::Recent,
+    search::SearchSession,
+    transfer_session::TransferSession,
+    trash::Trash,
+    tree::SidebarTree,
+};
 
 pub(super) trait Adapter {
     fn watch_many(&self, paths: Vec<PathBuf>) -> bool;
@@ -14,21 +22,21 @@ impl Adapter for directory_watch::Source {
     }
 }
 
-pub(super) struct Locations {
-    pub(super) current: PathBuf,
-    pub(super) current_is_displayed: bool,
-    pub(super) pending_cut_paths: Vec<PathBuf>,
-    pub(super) expanded: Vec<PathBuf>,
-    pub(super) displayed_sources: Vec<PathBuf>,
+struct Locations {
+    current: PathBuf,
+    current_is_displayed: bool,
+    pending_cut_paths: Vec<PathBuf>,
+    expanded: Vec<PathBuf>,
+    displayed_sources: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct Change {
-    pub(super) removed: Vec<PathBuf>,
-    pub(super) cut_parent_changed: bool,
     pub(super) refresh_current: bool,
     pub(super) invalidate_tree: Option<PathBuf>,
     pub(super) refresh_displayed: bool,
+    pub(super) resync: bool,
+    pub(super) notice: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -72,7 +80,25 @@ impl<A: Adapter> LocationMonitoring<A> {
         }
     }
 
-    pub(super) fn sync(&mut self, locations: Locations) {
+    pub(super) fn sync(
+        &mut self,
+        navigation: &NavigationSession,
+        transfers: &TransferSession,
+        sidebar_tree: &SidebarTree,
+        recent: &Recent,
+        trash: &Trash,
+    ) {
+        let displayed_sources = displayed_watch_paths(navigation, sidebar_tree, recent, trash);
+        self.sync_locations(Locations {
+            current: navigation.current().to_path_buf(),
+            current_is_displayed: navigation.folder_displayed(),
+            pending_cut_paths: transfers.pending_cut_paths().to_vec(),
+            expanded: sidebar_tree.expanded_paths(),
+            displayed_sources,
+        });
+    }
+
+    fn sync_locations(&mut self, locations: Locations) {
         let mut roles = HashMap::<PathBuf, Roles>::new();
         roles.entry(locations.current).or_default().current = locations.current_is_displayed;
         for path in locations
@@ -95,22 +121,30 @@ impl<A: Adapter> LocationMonitoring<A> {
         self.roles = roles;
     }
 
-    pub(super) fn handle(&mut self, event: directory_watch::Event) -> Change {
+    pub(super) fn handle(
+        &mut self,
+        event: directory_watch::Event,
+        transfers: &mut TransferSession,
+    ) -> Change {
         if event.watch_failed {
             self.fallback = true;
             return Change::default();
         }
         let roles = self.roles.get(&event.path).copied().unwrap_or_default();
+        let notice = roles
+            .cut_parent
+            .then(|| transfers.reconcile_pending_cut(&event.removed))
+            .flatten();
         Change {
-            removed: event.removed,
-            cut_parent_changed: roles.cut_parent,
             refresh_current: roles.current,
             invalidate_tree: roles.expanded.then_some(event.path),
             refresh_displayed: roles.displayed_source,
+            resync: notice.is_some(),
+            notice,
         }
     }
 
-    pub(super) fn poll(&self, recursive_search: bool) -> Poll {
+    pub(super) fn poll(&self, search: &SearchSession) -> Poll {
         if !self.fallback {
             return Poll::default();
         }
@@ -121,7 +155,7 @@ impl<A: Adapter> LocationMonitoring<A> {
             .collect::<Vec<_>>();
         invalidate_tree.sort();
         Poll {
-            refresh_location: !recursive_search,
+            refresh_location: !search.is_recursive(),
             invalidate_tree,
         }
     }
@@ -129,6 +163,47 @@ impl<A: Adapter> LocationMonitoring<A> {
     #[cfg(test)]
     fn watched_paths(&self) -> std::collections::HashSet<PathBuf> {
         self.roles.keys().cloned().collect()
+    }
+}
+
+impl super::App {
+    pub(super) fn sync_location_monitoring(&mut self) {
+        let Some(monitoring) = self.location_monitoring.as_mut() else {
+            return;
+        };
+        monitoring.sync(
+            &self.navigation,
+            &self.transfers,
+            &self.sidebar_tree,
+            &self.recent,
+            &self.trash,
+        );
+    }
+
+    #[cfg(test)]
+    pub(super) fn displayed_watch_paths(&self) -> Vec<PathBuf> {
+        displayed_watch_paths(
+            &self.navigation,
+            &self.sidebar_tree,
+            &self.recent,
+            &self.trash,
+        )
+    }
+}
+
+fn displayed_watch_paths(
+    navigation: &NavigationSession,
+    sidebar_tree: &SidebarTree,
+    recent: &Recent,
+    trash: &Trash,
+) -> Vec<PathBuf> {
+    match navigation.displayed_location() {
+        DisplayedLocation::Recent => recent.watch_paths(navigation.entries()),
+        DisplayedLocation::Trash => {
+            let mounts = sidebar_tree.mount_paths();
+            trash.watch_paths(navigation.trash_entries(), &mounts)
+        }
+        DisplayedLocation::Folder => Vec::new(),
     }
 }
 
@@ -161,12 +236,23 @@ mod tests {
         for path in [&current, &cut_parent, &expanded, &displayed_source] {
             std::fs::create_dir(path).unwrap();
         }
+        let cut_path = cut_parent.join("moved.txt");
+        std::fs::write(&cut_path, "x").unwrap();
+        let mut transfers = TransferSession::open(temp.path().join("transfers.json"));
+        transfers
+            .cut(&[crate::fs::FileEntry {
+                path: cut_path.clone(),
+                name: "moved.txt".into(),
+                directory: false,
+                metadata: Default::default(),
+            }])
+            .unwrap();
         let adapter = MemoryAdapter::default();
         let mut monitoring = LocationMonitoring::new(adapter.clone());
-        monitoring.sync(Locations {
+        monitoring.sync_locations(Locations {
             current: current.clone(),
             current_is_displayed: true,
-            pending_cut_paths: vec![cut_parent.join("moved.txt")],
+            pending_cut_paths: vec![cut_path.clone()],
             expanded: vec![expanded.clone(), current.clone()],
             displayed_sources: vec![displayed_source.clone()],
         });
@@ -174,34 +260,41 @@ mod tests {
         assert_eq!(monitoring.watched_paths().len(), 4);
         assert_eq!(adapter.watched.lock().unwrap().len(), 4);
         assert_eq!(
-            monitoring.handle(directory_watch::Event {
-                path: current.clone(),
-                removed: vec![current.join("gone.txt")],
-                watch_failed: false,
-            }),
+            monitoring.handle(
+                directory_watch::Event {
+                    path: current.clone(),
+                    removed: vec![current.join("gone.txt")],
+                    watch_failed: false,
+                },
+                &mut transfers,
+            ),
             Change {
-                removed: vec![current.join("gone.txt")],
                 refresh_current: true,
                 invalidate_tree: Some(current),
                 ..Change::default()
             }
         );
-        assert!(
-            monitoring
-                .handle(directory_watch::Event {
-                    path: cut_parent,
-                    removed: Vec::new(),
-                    watch_failed: false,
-                })
-                .cut_parent_changed
+        std::fs::remove_file(&cut_path).unwrap();
+        let cut_change = monitoring.handle(
+            directory_watch::Event {
+                path: cut_parent,
+                removed: vec![cut_path],
+                watch_failed: false,
+            },
+            &mut transfers,
         );
+        assert!(cut_change.resync);
+        assert!(cut_change.notice.unwrap().contains("Cut completed"));
         assert!(
             monitoring
-                .handle(directory_watch::Event {
-                    path: displayed_source,
-                    removed: Vec::new(),
-                    watch_failed: false,
-                })
+                .handle(
+                    directory_watch::Event {
+                        path: displayed_source,
+                        removed: Vec::new(),
+                        watch_failed: false,
+                    },
+                    &mut transfers,
+                )
                 .refresh_displayed
         );
     }
@@ -214,29 +307,38 @@ mod tests {
         std::fs::create_dir(&current).unwrap();
         std::fs::create_dir(&expanded).unwrap();
         let mut monitoring = LocationMonitoring::new(MemoryAdapter::default());
-        monitoring.sync(Locations {
-            current,
+        monitoring.sync_locations(Locations {
+            current: current.clone(),
             current_is_displayed: true,
             pending_cut_paths: Vec::new(),
             expanded: vec![expanded.clone()],
             displayed_sources: Vec::new(),
         });
-        assert_eq!(monitoring.poll(false), Poll::default());
+        let mut transfers = TransferSession::open(temp.path().join("transfers.json"));
+        let mut search = SearchSession::default();
+        assert_eq!(monitoring.poll(&search), Poll::default());
 
-        monitoring.handle(directory_watch::Event {
-            path: PathBuf::new(),
-            removed: Vec::new(),
-            watch_failed: true,
-        });
+        monitoring.handle(
+            directory_watch::Event {
+                path: PathBuf::new(),
+                removed: Vec::new(),
+                watch_failed: true,
+            },
+            &mut transfers,
+        );
         assert_eq!(
-            monitoring.poll(false),
+            monitoring.poll(&search),
             Poll {
                 refresh_location: true,
                 invalidate_tree: vec![expanded.clone()],
             }
         );
+        let mut navigation = NavigationSession::new(current);
+        let mut grid = crate::app::grid::GridInteraction::default();
+        search.begin(&grid);
+        let _ = search.update(&mut navigation, &mut grid, "/needle".to_owned());
         assert_eq!(
-            monitoring.poll(true),
+            monitoring.poll(&search),
             Poll {
                 refresh_location: false,
                 invalidate_tree: vec![expanded],

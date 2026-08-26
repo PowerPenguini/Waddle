@@ -1,10 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-pub(super) fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
-    copy_item_with_warnings(source, destination).map(drop)
-}
-
 pub(super) fn copy_item_with_warnings(
     source: &Path,
     destination: &Path,

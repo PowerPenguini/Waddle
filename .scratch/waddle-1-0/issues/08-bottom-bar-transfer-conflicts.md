@@ -4,7 +4,7 @@ Type: feature
 
 **What to build:** Resolve file and directory conflicts through the bottom bar without a modal dialog.
 
-**Blocked by:** 01: Multi-entry clipboard Transfer inside PolarExp.
+**Blocked by:** 01: Multi-entry clipboard Transfer inside Waddle.
 
 **Status:** resolved
 

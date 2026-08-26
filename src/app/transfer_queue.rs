@@ -12,7 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    fs::{TransferBatch, TransferProgress, TransferReport},
+    fs::{ConflictChoice, TransferBatch, TransferProgress, TransferReport},
     transfer::Request,
 };
 
@@ -23,7 +23,6 @@ const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 #[derive(Clone, Debug)]
 pub(super) struct Work {
     id: u64,
-    operation: Operation,
     batch: TransferBatch,
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
@@ -32,17 +31,6 @@ pub(super) struct Work {
 impl Work {
     pub(super) fn id(&self) -> u64 {
         self.id
-    }
-
-    pub(super) fn restoring(&self) -> bool {
-        matches!(self.operation, Operation::Restore(_))
-    }
-
-    pub(super) fn entry_count(&self) -> usize {
-        match &self.operation {
-            Operation::Transfer(request) => request.paths.len(),
-            Operation::Restore(entries) => entries.len(),
-        }
     }
 
     pub(super) fn run(self) -> crate::fs::TransferBatchOutcome {
@@ -129,6 +117,7 @@ pub(super) struct HistoryEntry {
 struct Active {
     id: u64,
     operation: Operation,
+    paused: Option<TransferBatch>,
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
     started: Instant,
@@ -192,19 +181,39 @@ impl Queue {
         }
     }
 
-    pub(super) fn resume(&self, batch: TransferBatch) -> Option<Work> {
-        let active = self.active.as_ref()?;
-        Some(Work {
-            id: active.id,
-            operation: active.operation.clone(),
-            batch,
-            cancellation: Arc::clone(&active.cancellation),
-            progress: Arc::clone(&active.progress),
-        })
+    pub(super) fn pause_for_conflict(
+        &mut self,
+        id: u64,
+        batch: TransferBatch,
+    ) -> Option<Operation> {
+        let active = self
+            .active
+            .as_mut()
+            .filter(|active| active.id == id && active.paused.is_none())?;
+        active.paused = Some(batch);
+        Some(active.operation.clone())
+    }
+
+    pub(super) fn resolve_conflict(
+        &mut self,
+        choice: ConflictChoice,
+        remaining: bool,
+    ) -> Option<Work> {
+        let active = self.active.as_mut()?;
+        let batch = active.paused.take()?.resolve(choice, remaining);
+        Some(work(active, batch))
+    }
+
+    pub(super) fn cancel_conflict(&mut self) -> Option<(u64, TransferReport)> {
+        let active = self.active.as_mut()?;
+        let batch = active.paused.take()?;
+        Some((active.id, batch.cancel()))
     }
 
     pub(super) fn finish(&mut self, id: u64, report: &TransferReport) -> Option<Finished> {
-        let active = self.active.take_if(|active| active.id == id)?;
+        let active = self
+            .active
+            .take_if(|active| active.id == id && active.paused.is_none())?;
         if let Operation::Transfer(request) = &active.operation {
             let snapshot = snapshot(&active, self.pending_transfer_count());
             let retry_paths = report
@@ -249,28 +258,24 @@ impl Queue {
     pub(super) fn cancel(&self) -> bool {
         self.active
             .as_ref()
-            .filter(|active| active.operation.transfer().is_some())
+            .filter(|active| active.paused.is_none() && active.operation.transfer().is_some())
             .is_some_and(|active| {
                 active.cancellation.store(true, Ordering::Release);
                 true
             })
     }
 
-    pub(super) fn active_id(&self) -> Option<u64> {
-        self.active.as_ref().map(|active| active.id)
-    }
-
-    pub(super) fn active_operation(&self, id: u64) -> Option<&Operation> {
-        self.active
-            .as_ref()
-            .filter(|active| active.id == id)
-            .map(|active| &active.operation)
-    }
-
     pub(super) fn transfer_active(&self) -> bool {
         self.active
             .as_ref()
             .is_some_and(|active| active.operation.transfer().is_some())
+    }
+
+    #[cfg(test)]
+    pub(super) fn restore_active(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| matches!(active.operation, Operation::Restore(_)))
     }
 
     pub(super) fn snapshot(&self) -> Option<Snapshot> {
@@ -323,13 +328,13 @@ impl Queue {
         self.active = Some(Active {
             id,
             operation: operation.clone(),
+            paused: None,
             cancellation: Arc::clone(&cancellation),
             progress: Arc::clone(&progress),
             started: Instant::now(),
         });
         Work {
             id,
-            operation,
             batch,
             cancellation,
             progress,
@@ -360,6 +365,15 @@ impl Queue {
         )
         .map_err(|error| error.to_string())?;
         fs::rename(temporary, &self.path).map_err(|error| error.to_string())
+    }
+}
+
+fn work(active: &Active, batch: TransferBatch) -> Work {
+    Work {
+        id: active.id,
+        batch,
+        cancellation: Arc::clone(&active.cancellation),
+        progress: Arc::clone(&active.progress),
     }
 }
 
@@ -418,11 +432,11 @@ fn history_entry(request: &Request, report: &TransferReport, snapshot: &Snapshot
 
 fn history_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(path).join("polarexp/transfers.json");
+        return PathBuf::from(path).join("waddle/transfers.json");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from(".polarexp-transfers.json"),
-        |home| PathBuf::from(home).join(".local/state/polarexp/transfers.json"),
+        || PathBuf::from(".waddle-transfers.json"),
+        |home| PathBuf::from(home).join(".local/state/waddle/transfers.json"),
     )
 }
 
@@ -438,7 +452,7 @@ mod tests {
     use std::{ffi::OsString, path::PathBuf, thread};
 
     use crate::{
-        fs::{FileEntry, TransferFailure},
+        fs::{FileEntry, TransferBatchOutcome, TransferFailure},
         transfer::TransferState,
     };
 
@@ -501,8 +515,9 @@ mod tests {
         });
         thread::sleep(Duration::from_millis(2));
         let next = queue.finish(work.id, &report()).unwrap().next.unwrap();
+        assert_eq!(queue.active.as_ref().unwrap().id, next.id());
         assert!(matches!(
-            next.operation,
+            &queue.active.as_ref().unwrap().operation,
             Operation::Transfer(Request { destination, .. })
                 if destination == std::path::Path::new("/another")
         ));
@@ -563,5 +578,56 @@ mod tests {
         assert!(queue.has_retry());
         fs::create_dir(&destination).unwrap();
         assert!(queue.retry().unwrap().is_some());
+    }
+
+    #[test]
+    fn queue_keeps_a_paused_batch_until_the_conflict_is_resolved() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_directory = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source_directory).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let source = source_directory.join("item");
+        fs::write(&source, "source").unwrap();
+        fs::write(destination.join("item"), "existing").unwrap();
+
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source.clone()];
+        let mut queue = Queue::open(temp.path().join("transfers.json"));
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(
+                    request.paths.clone(),
+                    request.destination.clone(),
+                    request.action,
+                ),
+            )
+            .unwrap();
+        let id = work.id();
+        let TransferBatchOutcome::Conflict { batch, .. } = work.run() else {
+            panic!("existing destination must pause the Transfer");
+        };
+        let paused = *batch;
+
+        assert!(
+            queue
+                .pause_for_conflict(id.wrapping_add(1), paused.clone())
+                .is_none()
+        );
+        assert!(matches!(
+            queue.pause_for_conflict(id, paused.clone()),
+            Some(Operation::Transfer(_))
+        ));
+        assert!(queue.pause_for_conflict(id, paused).is_none());
+        assert!(queue.finish(id, &report()).is_none());
+
+        let resumed = queue.resolve_conflict(ConflictChoice::Skip, false).unwrap();
+        assert_eq!(resumed.id(), id);
+        let TransferBatchOutcome::Complete(report) = resumed.run() else {
+            panic!("Skip must complete the paused Transfer");
+        };
+        assert_eq!(report.retained, [source]);
+        assert!(queue.finish(id, &report).is_some());
     }
 }

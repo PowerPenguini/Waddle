@@ -7,7 +7,8 @@ impl App {
             .expect("folder navigation request")
             .to_path_buf();
         let options = self.view_preferences.for_directory(&requested);
-        self.status = format!("Opening {}…", requested.display());
+        self.presentation
+            .set_status(format!("Opening {}…", requested.display()));
         Task::perform(
             self.operations.run(OperationKind::Navigation, {
                 let path = requested.clone();
@@ -27,18 +28,25 @@ impl App {
         )
     }
 
-    pub(super) fn navigate(
+    pub(super) fn transition_navigation(
         &mut self,
-        requested: PathBuf,
-        remember: bool,
-        select: Option<PathBuf>,
+        transition: NavigationTransition,
     ) -> Task<Message> {
         if self.prompt_blocks_action() {
             return Task::none();
         }
+        if !transition.preserves_pointer_interaction() {
+            self.prepare_navigation_transition();
+        }
         self.cancel_search_state();
-        let navigation = self.navigation.forward(requested, remember, select);
-        self.request_navigation(navigation)
+        self.navigation
+            .transition(transition)
+            .map_or_else(Task::none, |request| self.request_navigation(request))
+    }
+
+    pub(super) fn prepare_navigation_transition(&mut self) {
+        self.transfers.cancel_drag();
+        self.grid.cancel_drag_hover();
     }
 
     pub(super) fn finish_navigation(
@@ -46,55 +54,22 @@ impl App {
         request: NavigationRequest,
         completion: NavigationCompletion,
     ) -> Task<Message> {
-        match self.navigation.complete(&request, completion) {
-            NavigationOutcome::Committed {
-                selected,
-                refresh,
-                location,
-            } => {
-                self.grid.set_list_mode(
-                    self.view_preferences
-                        .for_directory(self.navigation.current())
-                        .view
-                        == fs::ViewMode::List,
-                );
-                let selected = if location == DisplayedLocation::Folder {
-                    let selected_paths = selected
-                        .iter()
-                        .filter_map(|index| self.navigation.entries().get(*index))
-                        .map(|entry| entry.path.clone())
-                        .collect::<Vec<_>>();
-                    self.navigation
-                        .hide_paths(self.transfers.pending_cut_paths());
-                    self.navigation
-                        .entries()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, entry)| {
-                            selected_paths.contains(&entry.path).then_some(index)
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                self.grid
-                    .select_indices(&selected, self.navigation.entries().len());
-                self.grid.clear_details();
-                self.location_input = self.navigation.location_label();
-                if !refresh {
-                    self.grid.reset_scroll();
-                }
+        let hidden_paths = self.transfers.pending_cut_paths().to_vec();
+        match self
+            .navigation
+            .complete_with_hidden_paths(&request, completion, &hidden_paths)
+        {
+            NavigationOutcome::Committed(commit) => {
+                let list_mode = self
+                    .view_preferences
+                    .for_directory(self.navigation.current())
+                    .view
+                    == fs::ViewMode::List;
+                commit.apply_grid(&mut self.grid, self.navigation.entries().len(), list_mode);
+                self.location_input = commit.location_input().to_owned();
                 self.sync_location_monitoring();
-                self.status = match location {
-                    DisplayedLocation::Folder => String::new(),
-                    DisplayedLocation::Recent => {
-                        format!("{} items  •  Recent", self.navigation.entries().len())
-                    }
-                    DisplayedLocation::Trash => {
-                        format!("{} items  •  Trash", self.navigation.entries().len())
-                    }
-                };
-                match location {
+                self.presentation.set_status(commit.status().to_owned());
+                match commit.location() {
                     DisplayedLocation::Folder => Task::batch([
                         self.load_root_if_needed(),
                         self.schedule_details(),
@@ -104,58 +79,16 @@ impl App {
                     DisplayedLocation::Trash => Task::none(),
                 }
             }
-            NavigationOutcome::Failed { error: _, refresh }
-                if refresh && !self.navigation.current().is_dir() =>
-            {
-                let missing = self.navigation.current().to_path_buf();
-                let ancestor = nearest_existing_ancestor(&missing);
-                self.status_notice = Some(format!(
-                    "{} disappeared; opened {}",
-                    missing.display(),
-                    ancestor.display()
-                ));
-                let navigation = self.navigation.forward(ancestor, false, None);
-                self.request_navigation(navigation)
+            NavigationOutcome::Redirect { request, notice } => {
+                self.presentation.set_notice(notice);
+                self.request_navigation(request)
             }
-            NavigationOutcome::Failed { error, .. } => {
-                self.status = error;
+            NavigationOutcome::Failed(error) => {
+                self.presentation.set_status(error);
                 Task::none()
             }
             NavigationOutcome::Ignored => Task::none(),
         }
-    }
-
-    pub(super) fn go_parent(&mut self) -> Task<Message> {
-        if self.prompt_blocks_action() {
-            return Task::none();
-        }
-        self.cancel_search_state();
-        let Some(navigation) = self.navigation.parent() else {
-            return Task::none();
-        };
-        self.request_navigation(navigation)
-    }
-
-    pub(super) fn go_back(&mut self) -> Task<Message> {
-        if self.prompt_blocks_action() {
-            return Task::none();
-        }
-        self.cancel_search_state();
-        let Some(navigation) = self.navigation.back() else {
-            return Task::none();
-        };
-        self.request_navigation(navigation)
-    }
-
-    pub(super) fn go_forward(&mut self) -> Task<Message> {
-        if self.prompt_blocks_action() {
-            return Task::none();
-        }
-        self.cancel_search_state();
-        let Some(navigation) = self.navigation.history_forward() else {
-            return Task::none();
-        };
-        self.request_navigation(navigation)
     }
 
     pub(super) fn refresh(&mut self, select: Option<PathBuf>) -> Task<Message> {
@@ -197,12 +130,16 @@ impl App {
     }
 
     pub(super) fn open_recent(&mut self) -> Task<Message> {
-        if self.prompt_blocks_action() || self.busy || self.navigation.loading() {
+        if self.prompt_blocks_action()
+            || self.foreground_operation_active()
+            || self.navigation.loading()
+        {
             return Task::none();
         }
         self.cancel_search_state();
         let request = self.navigation.recent();
-        self.status = "Reading shared Recent history…".to_owned();
+        self.presentation
+            .set_status("Reading shared Recent history…".to_owned());
         let recent = self.recent.clone();
         Task::perform(
             self.operations
@@ -221,12 +158,15 @@ impl App {
     }
 
     pub(super) fn open_trash(&mut self) -> Task<Message> {
-        if self.prompt_blocks_action() || self.busy || self.navigation.loading() {
+        if self.prompt_blocks_action()
+            || self.foreground_operation_active()
+            || self.navigation.loading()
+        {
             return Task::none();
         }
         self.cancel_search_state();
         let request = self.navigation.trash();
-        self.status = "Reading Trash…".to_owned();
+        self.presentation.set_status("Reading Trash…".to_owned());
         let trash = self.trash.clone();
         Task::perform(
             self.operations
@@ -245,10 +185,9 @@ impl App {
     }
 
     pub(super) fn install_locations(&mut self) {
-        let mut entries = self.places.entries();
-        entries.extend(self.recent.sidebar_entry());
+        let mut entries = self.recent.sidebar_entry().into_iter().collect::<Vec<_>>();
         entries.push(self.trash.sidebar_entry());
-        self.explorer.install_places(entries);
+        self.sidebar_tree.install_locations(entries);
     }
 
     pub(super) fn change_view_options(
@@ -325,7 +264,11 @@ impl App {
             }
         }
         if entry.is_directory() {
-            self.navigate(entry.path, true, None)
+            self.transition_navigation(NavigationTransition::Open {
+                requested: entry.path,
+                remember: true,
+                select: None,
+            })
         } else {
             self.open_entry(entry)
         }
@@ -342,18 +285,28 @@ impl App {
             return Task::none();
         };
         if entry.is_directory() {
-            self.navigate(entry.path, true, None)
+            self.transition_navigation(NavigationTransition::Open {
+                requested: entry.path,
+                remember: true,
+                select: None,
+            })
         } else {
             self.open_entry(entry)
         }
     }
 
     pub(super) fn finish_entry_press(&mut self, index: usize) -> Task<Message> {
-        self.drag_hover.cancel();
-        match self.transfers.release(index) {
-            TransferRelease::None => Task::none(),
-            TransferRelease::Click(index) => self.activate_entry(index, false),
-            TransferRelease::Drop(grabbed_index) => self.finish_drag(grabbed_index),
+        self.grid.cancel_drag_hover();
+        let action = if self.modifiers.control() {
+            TransferAction::Copy
+        } else {
+            TransferAction::Move
+        };
+        let destination = self.drop_destination_at(self.grid.cursor(), false);
+        match self.transfers.release(index, destination, action) {
+            TransferDragRelease::None => Task::none(),
+            TransferDragRelease::Click(index) => self.activate_entry(index, false),
+            TransferDragRelease::Transfer(request) => self.start_transfer(request),
         }
     }
 
@@ -422,17 +375,11 @@ impl App {
     }
 
     pub(super) fn load_root_if_needed(&mut self) -> Task<Message> {
-        let root = {
-            let Some(root) = self.explorer.roots.first_mut() else {
-                return Task::none();
-            };
-            if root.loaded || root.loading && !root.children.is_empty() {
-                return Task::none();
-            }
-            root.loading = true;
-            (root.id, root.path.clone())
-        };
-        self.load_tree_node(root.0, root.1)
+        self.sidebar_tree
+            .begin_root_load()
+            .map_or_else(Task::none, |request| {
+                self.load_tree_node(request.id, request.path)
+            })
     }
 
     pub(super) fn load_tree_node(&self, id: u64, path: PathBuf) -> Task<Message> {
@@ -458,108 +405,52 @@ impl App {
         if self.prompt_blocks_action() {
             return Task::none();
         }
-        if find_node(&self.explorer.roots, id)
-            .is_some_and(|node| node.kind == state::NodeKind::Recent)
-        {
-            return self.open_recent();
-        }
-        if find_node(&self.explorer.roots, id)
-            .is_some_and(|node| node.kind == state::NodeKind::Trash)
-        {
-            return self.open_trash();
-        }
         let current = self.navigation.current().to_path_buf();
-        let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
+        let Some(activation) = self.sidebar_tree.activate(id) else {
             return Task::none();
         };
-        node.expanded = !node.expanded;
-        let load = node.expanded && !node.loaded && !node.loading;
-        if load {
-            node.loading = true;
-        }
-        let path = node.path.clone();
-        let already_current = path == current;
-        self.sync_location_monitoring();
-        let load_task = if load {
-            self.load_tree_node(id, path.clone())
-        } else {
-            Task::none()
-        };
-        if already_current {
-            load_task
-        } else {
-            Task::batch([load_task, self.navigate(path, true, None)])
+        match activation {
+            TreeActivation::Recent => self.open_recent(),
+            TreeActivation::Trash => self.open_trash(),
+            TreeActivation::Folder { path, load } => {
+                let already_current = path == current;
+                self.sync_location_monitoring();
+                let load_task = load.map_or_else(Task::none, |request| {
+                    self.load_tree_node(request.id, request.path)
+                });
+                if already_current {
+                    load_task
+                } else {
+                    Task::batch([
+                        load_task,
+                        self.transition_navigation(NavigationTransition::Open {
+                            requested: path,
+                            remember: true,
+                            select: None,
+                        }),
+                    ])
+                }
+            }
         }
     }
 
     pub(super) fn move_sidebar(&mut self, motion: Motion, count: usize) -> Task<Message> {
-        let rows = flatten_rows(&self.explorer, self.navigation.current());
-        let Some(current) = self
-            .sidebar_cursor
-            .and_then(|id| rows.iter().position(|row| row.id == id))
-            .or_else(|| rows.iter().position(|row| row.selected))
-            .or((!rows.is_empty()).then_some(0))
-        else {
-            return Task::none();
-        };
-        let last = rows.len() - 1;
-        let count = count.max(1);
-        let target = match motion {
-            Motion::Down => current.saturating_add(count).min(last),
-            Motion::Up => current.saturating_sub(count),
-            Motion::First => 0,
-            Motion::Last => last,
-            Motion::DisplayIndex(index) => index.min(last),
-            Motion::ViewportTop | Motion::HalfPageUp => current.saturating_sub(count),
-            Motion::ViewportMiddle => current,
-            Motion::ViewportBottom | Motion::HalfPageDown => {
-                current.saturating_add(count).min(last)
+        match self
+            .sidebar_tree
+            .move_cursor(motion, count, self.navigation.current())
+        {
+            TreeMoveOutcome::None => Task::none(),
+            TreeMoveOutcome::Focused(label) => {
+                self.presentation.set_status(format!("Sidebar  •  {label}"));
+                Task::none()
             }
-            Motion::Left => {
-                let row = &rows[current];
-                if find_node_mut(&mut self.explorer.roots, row.id).is_some_and(|node| node.expanded)
-                {
-                    if let Some(node) = find_node_mut(&mut self.explorer.roots, row.id) {
-                        node.expanded = false;
-                    }
-                    current
-                } else {
-                    rows[..current]
-                        .iter()
-                        .rposition(|candidate| candidate.depth < row.depth)
-                        .or_else(|| {
-                            (row.depth == 0 && row.kind != state::NodeKind::Computer)
-                                .then(|| {
-                                    rows[..current].iter().rposition(|candidate| {
-                                        candidate.kind == state::NodeKind::Computer
-                                    })
-                                })
-                                .flatten()
-                        })
-                        .unwrap_or(current)
-                }
-            }
-            Motion::Right => {
-                let id = rows[current].id;
-                let collapsed =
-                    find_node_mut(&mut self.explorer.roots, id).is_some_and(|node| !node.expanded);
-                if collapsed {
-                    return self.activate_tree_row(id);
-                }
-                current.saturating_add(1).min(last)
-            }
-            Motion::RowStart => 0,
-            Motion::RowEnd => last,
-        };
-        self.sidebar_cursor = Some(rows[target].id);
-        self.status = format!("Sidebar  •  {}", rows[target].label);
-        Task::none()
+            TreeMoveOutcome::Activate(id) => self.activate_tree_row(id),
+        }
     }
 
     pub(super) fn begin_search(&mut self) -> Task<Message> {
         self.browser_input.enter(InputMode::Search);
-        self.command.close_output();
-        self.sync_bottom_bar();
+        self.close_command_output();
         self.operations.cancel(OperationKind::Search);
         self.search.begin(&self.grid);
         widget::operation::focus(Id::new(SEARCH_ID))
@@ -609,7 +500,11 @@ impl App {
         self.operations.cancel(OperationKind::Search);
         if let Some(entry) = self.search.submit(&mut self.navigation, &mut self.grid) {
             return if entry.is_directory() {
-                self.navigate(entry.path, true, None)
+                self.transition_navigation(NavigationTransition::Open {
+                    requested: entry.path,
+                    remember: true,
+                    select: None,
+                })
             } else {
                 self.open_entry(entry)
             };

@@ -20,5 +20,5 @@ A dedicated inotify worker watches the canonical current directory and emits one
 120 ms burst debounce. Refresh captures selection by path and distinguishes reconciliation from
 navigation, so it retains scroll and does not close bottom-bar sessions or pending Cut. Recursive
 search is rerun against the live tree, including a low-frequency fallback poll for nested changes.
-If the watched directory disappears, PolarExp opens the closest existing ancestor and reports it.
+If the watched directory disappears, Waddle opens the closest existing ancestor and reports it.
 F5, the toolbar icon, and `:refresh` all use this same path.

@@ -2,7 +2,7 @@
 
 Type: feature
 
-**What to build:** Install and launch PolarExp as a normal Linux desktop application through Flatpak and a regular binary archive.
+**What to build:** Install and launch Waddle as a normal Linux desktop application through Flatpak and a regular binary archive.
 
 **Blocked by:** 31: CLI locations and persisted startup state.
 
@@ -22,5 +22,5 @@ desktop entry uses `%U`. The checked-in Flatpak manifest uses offline Cargo sour
 into the package workflow. This host does not have `flatpak` or `flatpak-builder`, so the bundle
 cannot be built locally. Flathub's manifest linter also correctly reports that the intentionally
 broad `--filesystem=host` permission needs an exception, and that the future
-`github.com/powerpenguini/polarexp` repository must exist before publication. Those are the only
+`github.com/powerpenguini/waddle` repository must exist before publication. Those are the only
 remaining human/external packaging steps.

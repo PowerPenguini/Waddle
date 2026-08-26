@@ -1,6 +1,6 @@
 # Domain docs
 
-PolarExp uses a single domain context.
+Waddle uses a single domain context.
 
 ## Before exploring
 

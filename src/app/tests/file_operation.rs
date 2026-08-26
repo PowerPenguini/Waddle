@@ -1,5 +1,13 @@
 use super::*;
 
+struct FailingTrashAdapter;
+
+impl crate::app::file_operation::TrashAdapter for FailingTrashAdapter {
+    fn trash(&self, _path: &Path) -> Result<crate::journal::TrashReceipt, String> {
+        Err("Trash is unavailable".to_owned())
+    }
+}
+
 #[test]
 fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation() {
     let (mut app, _) = App::new();
@@ -23,7 +31,11 @@ fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation
     app.grid.select_only(Some(0), 1);
 
     app.refresh_status();
-    assert!(app.status.contains(&original.display().to_string()));
+    assert!(
+        app.presentation
+            .status()
+            .contains(&original.display().to_string())
+    );
     let _ = app.update(Message::ContextDeletePermanent);
     assert!(matches!(
         app.file_operations.view(),
@@ -70,7 +82,7 @@ fn inline_rename_validates_and_escape_cancels() {
         FileOperationView::Rename { error, .. }
             if error == "The name cannot contain a slash or NUL character."
     ));
-    assert!(!app.busy);
+    assert!(!app.foreground_operation_active());
 
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
@@ -83,27 +95,35 @@ fn inline_rename_validates_and_escape_cancels() {
 
 #[test]
 fn successful_inline_rename_returns_to_the_browser() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("one.txt");
+    std::fs::write(&source, "one").unwrap();
     let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
     app.navigation.settle_for_test();
-    app.navigation
-        .replace_displayed_entries(vec![entry("one.txt")]);
+    app.navigation.replace_displayed_entries(vec![FileEntry {
+        path: source,
+        name: "one.txt".into(),
+        directory: false,
+        metadata: Default::default(),
+    }]);
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
     press(&mut app, "r");
-    app.busy = true;
-
-    let _ = app.finish_file_operation(FileOperationCompletion::Name {
-        kind: crate::app::file_operation::NameKind::Rename {
-            source: PathBuf::from("/start/one.txt"),
-        },
-        result: Ok(PathBuf::from("/start/renamed.txt")),
-    });
+    app.file_operations.change_name("renamed.txt".to_owned());
+    let completion = app
+        .file_operations
+        .submit_name(app.navigation.current().to_path_buf())
+        .unwrap()
+        .run(&GioTrashAdapter);
+    let _ = app.finish_file_operation(completion);
 
     assert_eq!(app.browser_input.mode(), InputMode::Browser);
     assert!(matches!(
         app.file_operations.view(),
         FileOperationView::Idle
     ));
+    assert!(temp.path().join("renamed.txt").is_file());
 }
 
 #[test]
@@ -145,8 +165,8 @@ fn errors_expand_in_the_bottom_bar_and_escape_closes_them() {
         app.file_operations.view(),
         FileOperationView::Error { .. }
     ));
-    assert!(app.output_expansion.value());
-    assert!(app.expanded_bar_height > super::STATUS_HEIGHT);
+    assert!(app.presentation.expansion().0);
+    assert!(app.presentation.expansion().1 > super::STATUS_HEIGHT);
 
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
@@ -154,7 +174,7 @@ fn errors_expand_in_the_bottom_bar_and_escape_closes_them() {
         app.file_operations.view(),
         FileOperationView::Idle
     ));
-    assert!(!app.output_expansion.value());
+    assert!(!app.presentation.expansion().0);
 }
 
 #[test]
@@ -165,14 +185,12 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
     let _ = app.show_trash_prompt();
-    app.busy = true;
-
-    let _ = app.finish_file_operation(FileOperationCompletion::Trash(
-        crate::app::file_operation::TrashCompletion {
-            failures: vec![(entry("one.txt"), "Trash is unavailable".to_owned())],
-            receipts: Vec::new(),
-        },
-    ));
+    let completion = app
+        .file_operations
+        .confirm(app.navigation.current().to_path_buf())
+        .unwrap()
+        .run(&FailingTrashAdapter);
+    let _ = app.finish_file_operation(completion);
 
     assert!(matches!(
         app.file_operations.view(),
@@ -181,11 +199,12 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
             && detail.contains("Trash is unavailable")
             && detail.contains("cannot be undone")
     ));
-    assert!(app.output_expansion.value());
+    assert!(app.presentation.expansion().0);
 
     let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
-    let _ = app.handle_key(enter.clone(), enter, keyboard::Modifiers::empty(), None);
-    assert!(app.busy);
+    let task = app.handle_key(enter.clone(), enter, keyboard::Modifiers::empty(), None);
+    assert!(app.foreground_operation_active());
+    drop(task);
 }
 
 #[test]
@@ -247,25 +266,92 @@ fn deletion_prompt_accepts_y_and_n_from_the_keyboard() {
     ));
 
     let _ = app.show_trash_prompt();
-    press(&mut app, "Y");
-    assert!(app.busy);
+    let key = keyboard::Key::Character("Y".into());
+    let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("Y"));
+    assert!(app.foreground_operation_active());
     assert!(app.file_operations.is_busy());
+    drop(task);
 }
 
 #[test]
 fn command_output_expands_and_collapses_through_the_animation_state() {
     let (mut app, _) = App::new();
 
-    app.command.begin(':');
+    let _ = app.begin_command(':');
     app.command.change("help".to_owned());
-    let _ = app.command.submit(PathBuf::from("/work"));
-    app.sync_bottom_bar();
+    let _ = app.submit_command();
     assert!(app.command.output().is_some());
-    assert!(app.output_expansion.value());
-    assert!(app.expanded_bar_height > super::STATUS_HEIGHT);
+    assert!(app.presentation.expansion().0);
+    assert!(app.presentation.expansion().1 > super::STATUS_HEIGHT);
 
-    app.command.close_output();
-    app.sync_bottom_bar();
+    app.close_command_output();
     assert!(app.command.output().is_none());
-    assert!(!app.output_expansion.value());
+    assert!(!app.presentation.expansion().0);
+}
+
+#[test]
+fn closing_properties_restores_the_previous_browser_status() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("document.txt")]);
+    app.grid.select_only(Some(0), 1);
+    app.refresh_status();
+    let previous_status = app.presentation.status().to_owned();
+
+    let _ = app.show_properties();
+    assert_eq!(app.presentation.status(), "Reading Properties…");
+    let _ = app.update(Message::PropertiesFinished(Ok(properties::Info {
+        name: "document.txt".to_owned(),
+        detail: "Type: Plain text".to_owned(),
+    })));
+    let _ = app.apply_input_intent(InputIntent::CloseCommandOutput);
+
+    assert!(app.command.output().is_none());
+    assert_eq!(app.presentation.status(), previous_status);
+}
+
+#[test]
+fn command_metadata_actions_accept_paths_without_a_grid_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("notes from today.txt");
+    std::fs::write(&path, "hello").unwrap();
+
+    let (mut properties_app, _) = App::new();
+    properties_app.navigation.settle_for_test();
+    let _ = properties_app.begin_command(':');
+    properties_app
+        .command
+        .change(format!("properties \"{}\"", path.display()));
+    let properties_task = properties_app.submit_command();
+    assert_eq!(properties_app.presentation.status(), "Reading Properties…");
+    drop(properties_task);
+
+    let (mut chmod_app, _) = App::new();
+    chmod_app.navigation.settle_for_test();
+    let _ = chmod_app.begin_command(':');
+    chmod_app
+        .command
+        .change(format!("chmod 640 \"{}\"", path.display()));
+    let chmod_task = chmod_app.submit_command();
+    assert_eq!(chmod_app.presentation.status(), "Changing permissions…");
+    drop(chmod_task);
+
+    let (mut open_with_app, _) = App::new();
+    open_with_app.navigation.settle_for_test();
+    let _ = open_with_app.begin_command(':');
+    open_with_app
+        .command
+        .change(format!("open-with -- \"{}\"", path.display()));
+    let open_with_task = open_with_app.submit_command();
+    assert!(matches!(
+        open_with_app.open_with.view(),
+        open_with::View::Open { target_name, .. } if target_name == "notes from today.txt"
+    ));
+    drop(open_with_task);
+}
+
+#[test]
+fn command_output_actions_are_visually_separated() {
+    assert!(super::super::bottom_bar::command_output_action_spacing() >= 8.0);
 }

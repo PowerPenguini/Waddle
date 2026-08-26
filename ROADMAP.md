@@ -1,6 +1,6 @@
-# PolarExp roadmap
+# Waddle roadmap
 
-PolarExp is intended to become a daily Linux file manager for Wayland and X11. It keeps a
+Waddle is intended to become a daily Linux file manager for Wayland and X11. It keeps a
 standard desktop interface, but gives keyboard users a faster Vim-style grammar. Data safety
 takes priority over adding more views or integrations.
 
@@ -8,14 +8,14 @@ This document records the agreed product scope. It is not a release schedule.
 
 ## Current baseline
 
-PolarExp already has:
+Waddle already has:
 
 - folder navigation, history, a location field, and a lazy folder tree;
 - grid selection, Visual selection, marquee selection, and basic Vim motions;
 - rename, New Folder, Trash, and permanent-delete fallback;
 - local and recursive filename search;
 - internal file drag and drop;
-- native Wayland drag and drop between PolarExp and compatible applications;
+- native Wayland drag and drop between Waddle and compatible applications;
 - a shared internal and Wayland drag preview;
 - a private single-file Copy/Paste implementation;
 - shell commands, application commands, and terminal launch;
@@ -36,7 +36,7 @@ needs external drag and drop and a native clipboard adapter.
   may run concurrently.
 - Do not escalate file operations to root. Mount operations may use the normal GIO and Polkit
   flow supplied by the desktop.
-- Keep all history and diagnostics local. PolarExp has no telemetry.
+- Keep all history and diagnostics local. Waddle has no telemetry.
 - Keep the interface in English. Translation support is not planned.
 - Keep `!` shell execution available without a warning prompt. Documentation must state plainly
   that these commands run with the user's permissions and are not sandboxed.
@@ -46,7 +46,7 @@ needs external drag and drop and a native clipboard adapter.
 ### System clipboard
 
 - [x] Replace the private single-path clipboard with a multi-entry system CLIPBOARD model.
-- [ ] Support Copy and Cut between PolarExp, Nautilus, and Dolphin in both directions.
+- [ ] Support Copy and Cut between Waddle, Nautilus, and Dolphin in both directions.
 - [x] Implement the clipboard on both Wayland and X11.
 - [x] Publish `text/uri-list`, `x-special/gnome-copied-files`, and
   `application/x-kde-cutselection` together.
@@ -62,7 +62,7 @@ needs external drag and drop and a native clipboard adapter.
 
 - [x] Hide pending Cut entries from the grid immediately without changing the filesystem.
 - [x] Show a persistent bottom-bar status such as `Cut: 4 items, p paste, Esc cancel`.
-- [x] Restore hidden entries when Cut is cancelled or PolarExp loses clipboard ownership.
+- [x] Restore hidden entries when Cut is cancelled or Waddle loses clipboard ownership.
 - [x] Let filesystem monitoring confirm when another application actually moves the entries.
 - [x] Treat Cut followed by Paste into the same directory as a no-op.
 - [x] Let Copy into the same directory create a non-conflicting copy name.
@@ -113,7 +113,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Refuse Undo when later filesystem changes make the inverse operation unsafe.
 - [x] Keep Redo available until the next new mutation.
 - [x] Execute safe Undo immediately and report the result in the bottom bar.
-- [x] Persist the operation report needed for recovery after restarting PolarExp.
+- [x] Persist the operation report needed for recovery after restarting Waddle.
 
 ### Copy fidelity
 
@@ -223,7 +223,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Use `:set` for advanced settings and `:setlocal` for per-directory overrides.
 - [x] Make `:set` show current values and `:set all` show every option with a short description.
 - [x] Add completion and validation for option names and values.
-- [x] Load persistent settings from a manually maintained XDG `polarexprc`; keep `:set`,
+- [x] Load persistent settings from a manually maintained XDG `waddlerc`; keep `:set`,
   `:setlocal`, and view controls session-only.
 - [x] Let `:setlocal option&` remove a directory override.
 - [x] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
@@ -245,7 +245,7 @@ needs external drag and drop and a native clipboard adapter.
 
 ### Startup and desktop integration
 
-- [x] Accept `polarexp [PATH|file://URI]`.
+- [x] Accept `waddle [PATH|file://URI]`.
 - [x] Open each invocation in a new process and window for 1.0.
 - [x] Let an explicit CLI location override remembered startup state.
 - [x] Remember window size and position, the last directory, view overrides, sorting, Favorites,

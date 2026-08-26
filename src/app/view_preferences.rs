@@ -373,7 +373,7 @@ impl Preferences {
     }
 }
 
-const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (polarexprc only)";
+const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
 
 fn load_config(path: &Path, home: Option<&Path>) -> Result<Config, String> {
     let source = match fs::read_to_string(path) {
@@ -481,7 +481,7 @@ fn apply_global_option(
         ("startup", "last") if from_config => settings.startup = StartupBehavior::Last,
         ("startup", "cwd") if from_config => settings.startup = StartupBehavior::Cwd,
         ("startup", _) if !from_config => {
-            return Err("startup is config-only; edit polarexprc".to_owned());
+            return Err("startup is config-only; edit waddlerc".to_owned());
         }
         ("view" | "sort" | "direction" | "click" | "startup", _) => {
             return Err(format!("invalid value for {name}: {value}"));
@@ -616,11 +616,11 @@ fn startup_label(value: StartupBehavior) -> &'static str {
 
 fn settings_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("polarexp/polarexprc");
+        return PathBuf::from(path).join("waddle/waddlerc");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from("polarexprc"),
-        |home| PathBuf::from(home).join(".config/polarexp/polarexprc"),
+        || PathBuf::from("waddlerc"),
+        |home| PathBuf::from(home).join(".config/waddle/waddlerc"),
     )
 }
 
@@ -629,13 +629,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn polarexprc_parses_global_local_comments_quotes_and_tilde() {
+    fn waddlerc_parses_global_local_comments_quotes_and_tilde() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
-        let path = temp.path().join("polarexprc");
+        let path = temp.path().join("waddlerc");
         fs::write(
             &path,
-            "\" PolarExp config\nset view=list tree=false startup=cwd # inline\nsetlocal \"~/My Files\" sort=size hidden=false\n",
+            "\" Waddle config\nset view=list tree=false startup=cwd # inline\nsetlocal \"~/My Files\" sort=size hidden=false\n",
         )
         .unwrap();
 
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn invalid_config_is_atomic_and_reports_the_line() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("polarexprc");
+        let path = temp.path().join("waddlerc");
         fs::write(&path, "set view=list\nset sort=nope\n").unwrap();
 
         let preferences = Preferences::open_at(path.clone(), Some(temp.path()));
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn runtime_settings_layer_over_config_without_writing_it() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("polarexprc");
+        let path = temp.path().join("waddlerc");
         let source = "set view=list folders-first=true\nsetlocal /work hidden=false\n";
         fs::write(&path, source).unwrap();
         let mut preferences = Preferences::open_at(path.clone(), Some(temp.path()));
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn global_settings_report_the_global_layer_not_the_current_local_override() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("polarexprc");
+        let path = temp.path().join("waddlerc");
         fs::write(&path, "set view=grid\nsetlocal /work view=list\n").unwrap();
         let mut preferences = Preferences::open_at(path, Some(temp.path()));
 
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn directory_controls_create_session_local_overrides() {
         let temp = tempfile::tempdir().unwrap();
-        let mut preferences = Preferences::empty_at(temp.path().join("polarexprc"));
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
         preferences.update_directory(Path::new("/work"), |options| {
             options.view = ViewMode::List;
         });
@@ -729,13 +729,13 @@ mod tests {
             preferences.for_directory(Path::new("/other")).view,
             ViewMode::Grid
         );
-        assert!(!temp.path().join("polarexprc").exists());
+        assert!(!temp.path().join("waddlerc").exists());
     }
 
     #[test]
     fn setting_commands_are_atomic_and_startup_is_config_only() {
         let temp = tempfile::tempdir().unwrap();
-        let mut preferences = Preferences::empty_at(temp.path().join("polarexprc"));
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
         preferences
             .apply_command(Path::new("/work"), false, "view=list sort=size")
             .unwrap();
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn accessibility_overrides_resolve_against_system_preferences() {
         let temp = tempfile::tempdir().unwrap();
-        let mut preferences = Preferences::empty_at(temp.path().join("polarexprc"));
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
         preferences
             .apply_command(
                 Path::new("/work"),

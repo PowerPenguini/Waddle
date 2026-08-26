@@ -2,10 +2,31 @@ use super::*;
 
 impl App {
     pub(super) fn begin_command(&mut self, prefix: char) -> Task<Message> {
+        self.open_with.cancel();
         self.browser_input.enter(InputMode::Command);
         self.command.begin(prefix);
-        self.sync_bottom_bar();
+        self.sync_transient_presentation();
         widget::operation::focus(Id::new(COMMAND_ID))
+    }
+
+    pub(super) fn begin_open_with(&mut self) -> Task<Message> {
+        self.begin_open_with_target(None)
+    }
+
+    fn begin_open_with_target(&mut self, target: Option<PathBuf>) -> Task<Message> {
+        let Some(path) = target.or_else(|| self.selected_entry_path()) else {
+            self.presentation
+                .set_status("Select an entry or pass a path after --".to_owned());
+            return Task::none();
+        };
+        self.command.close_output();
+        if let Err(error) = self.open_with.begin(path) {
+            self.presentation.set_status(error);
+            return Task::none();
+        }
+        self.browser_input.enter(InputMode::OpenWith);
+        self.sync_transient_presentation();
+        widget::operation::focus(Id::new(OPEN_WITH_ID))
     }
 
     pub(super) fn submit_command(&mut self) -> Task<Message> {
@@ -13,20 +34,29 @@ impl App {
             return Task::none();
         }
         self.browser_input.leave_mode();
-        match self.command.submit(self.navigation.current().to_path_buf()) {
-            CommandSubmission::None => Task::none(),
-            CommandSubmission::Quit => self.quit(),
-            CommandSubmission::Updated => {
-                self.sync_bottom_bar();
+        let action = self.command.submit(self.navigation.current().to_path_buf());
+        self.apply_command_action(action)
+    }
+
+    fn apply_command_action(&mut self, action: command::CommandAction) -> Task<Message> {
+        match action {
+            command::CommandAction::None => Task::none(),
+            command::CommandAction::Error(error) => {
+                self.presentation.set_status(error);
                 Task::none()
             }
-            CommandSubmission::Refresh => self.live_refresh(),
-            CommandSubmission::Diagnostics => {
+            command::CommandAction::Quit => self.quit(),
+            command::CommandAction::OutputChanged => {
+                self.sync_transient_presentation();
+                Task::none()
+            }
+            command::CommandAction::Refresh => self.live_refresh(),
+            command::CommandAction::Diagnostics => {
                 self.command.show_diagnostics(self.diagnostics.report());
-                self.sync_bottom_bar();
+                self.sync_transient_presentation();
                 Task::none()
             }
-            CommandSubmission::Settings { local, arguments } => {
+            command::CommandAction::ChangeSettings { local, arguments } => {
                 match self.view_preferences.apply_command(
                     self.navigation.current(),
                     local,
@@ -34,11 +64,10 @@ impl App {
                 ) {
                     Ok(applied) => {
                         if arguments.is_empty() || arguments == "all" {
-                            self.command.show_settings(applied.status);
-                            self.sync_bottom_bar();
+                            self.show_command_detail(applied.status);
                             return Task::none();
                         }
-                        self.status = applied.status;
+                        self.presentation.set_status(applied.status);
                         if applied.tree_changed {
                             self.sync_tree_visibility();
                         }
@@ -51,30 +80,34 @@ impl App {
                         }
                     }
                     Err(error) => {
-                        self.status = error;
+                        self.presentation.set_status(error);
                         Task::none()
                     }
                 }
             }
-            CommandSubmission::Favorite(arguments) => {
-                match self.places.command(self.navigation.current(), &arguments) {
+            command::CommandAction::ManageFavorite(arguments) => {
+                let mut entries = self.recent.sidebar_entry().into_iter().collect::<Vec<_>>();
+                entries.push(self.trash.sidebar_entry());
+                match self.sidebar_tree.favorite_command(
+                    self.navigation.current(),
+                    &arguments,
+                    entries,
+                ) {
                     Ok(status) => {
-                        self.install_locations();
                         if arguments.is_empty() || arguments == "list" {
-                            self.command.show_settings(status);
-                            self.sync_bottom_bar();
+                            self.show_command_detail(status);
                         } else {
-                            self.status = status;
+                            self.presentation.set_status(status);
                         }
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.presentation.set_status(error),
                 }
                 Task::none()
             }
-            CommandSubmission::Recent(arguments) => {
+            command::CommandAction::ManageRecent(arguments) => {
                 match self.recent.command(&arguments) {
                     Ok((effect, status)) => {
-                        self.status = status;
+                        self.presentation.set_status(status);
                         self.install_locations();
                         match effect {
                             recent::Effect::Open => return self.open_recent(),
@@ -89,43 +122,60 @@ impl App {
                                     == DisplayedLocation::Recent =>
                             {
                                 let current = self.navigation.current().to_path_buf();
-                                return self.navigate(current, false, None);
+                                return self.transition_navigation(NavigationTransition::Open {
+                                    requested: current,
+                                    remember: false,
+                                    select: None,
+                                });
                             }
                             recent::Effect::Reload
                             | recent::Effect::Disabled
                             | recent::Effect::Enabled => {}
                         }
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.presentation.set_status(error),
                 }
                 Task::none()
             }
-            CommandSubmission::Volume(arguments) => {
-                self.busy = true;
-                self.status = "Waiting for desktop volume authorization…".to_owned();
+            command::CommandAction::ManageVolume(arguments) => {
+                self.presentation
+                    .set_status("Waiting for desktop volume authorization…");
                 Task::perform(
-                    self.operations.run(OperationKind::Background, move |_| {
-                        places::run_volume_command(&arguments)
-                    }),
+                    self.operations
+                        .run_foreground(OperationKind::Background, move |_| {
+                            places::run_volume_command(&arguments)
+                        }),
                     |completion| match completion {
                         Completion::Finished(result) => Message::VolumeFinished(result),
                         Completion::Cancelled => Message::Noop,
                     },
                 )
             }
-            CommandSubmission::Properties => self.show_properties(),
-            CommandSubmission::Chmod(mode) => self.run_permission_change(mode),
-            CommandSubmission::OpenWith {
+            command::CommandAction::ShowProperties { target } => {
+                self.show_properties_target(target)
+            }
+            command::CommandAction::ChangePermissions { mode, targets } => {
+                self.run_permission_change(mode, targets)
+            }
+            command::CommandAction::OpenWith {
                 application,
                 default,
-            } => self.run_open_with(application, default),
-            CommandSubmission::Execute(execution) => {
-                self.busy = true;
-                self.status = execution.status();
+                target,
+            } => {
+                if application.is_empty() && !default {
+                    self.begin_open_with_target(target)
+                } else {
+                    self.run_open_with(application, default, target)
+                }
+            }
+            command::CommandAction::Execute(execution) => {
+                self.presentation.set_status(execution.status());
                 let adapter = self.command_adapter;
                 Task::perform(
                     self.operations
-                        .run(OperationKind::Command, move |_| Ok(execution.run(&adapter))),
+                        .run_foreground(OperationKind::Command, move |_| {
+                            Ok(execution.run(&adapter))
+                        }),
                     |completion| match completion {
                         Completion::Finished(result) => Message::CommandFinished(result),
                         Completion::Cancelled => Message::Noop,
@@ -139,50 +189,73 @@ impl App {
         &mut self,
         result: Result<command::Completion, String>,
     ) -> Task<Message> {
-        self.busy = false;
         if let Some((summary, detail)) = command_failure_report(&result) {
             self.diagnostics.record(summary, detail);
         }
         let consequences = self.command.complete(result, self.navigation.current());
-        self.sync_bottom_bar();
+        self.sync_transient_presentation();
         if let Some(error) = consequences.error {
             self.show_error(error);
             return Task::none();
         }
         if let Some(status) = consequences.status {
-            self.status = status;
+            self.presentation.set_status(status);
         }
         if !consequences.refresh {
             return Task::none();
         }
         let tree_refresh = self.invalidate_tree(vec![self.navigation.current().to_path_buf()]);
         if let Some(directory) = consequences.navigate {
-            Task::batch([tree_refresh, self.navigate(directory, true, None)])
+            Task::batch([
+                tree_refresh,
+                self.transition_navigation(NavigationTransition::Open {
+                    requested: directory,
+                    remember: true,
+                    select: None,
+                }),
+            ])
         } else {
             Task::batch([tree_refresh, self.refresh(None)])
         }
     }
 
-    pub(super) fn sync_bottom_bar(&mut self) {
-        let expanded_height = self.desired_expanded_height();
-        if let Some(height) = expanded_height {
-            self.expanded_bar_height = height;
+    pub(super) fn transient_presentation(&self) -> TransientPresentation {
+        let transfers = self.transfers.overview();
+        if transfers.conflict_prompt.is_some() {
+            TransientPresentation::conflict()
+        } else if let Some(height) = self.open_with.preferred_height() {
+            TransientPresentation::open_with(height)
+        } else if let Some(output) = self.command.output() {
+            TransientPresentation::command_output(&output.detail)
+        } else if self.file_operations.prompt_active() {
+            TransientPresentation::file_operation(self.file_operations.expanded_detail())
+        } else if transfers.expanded && self.browser_input.mode() == InputMode::Browser {
+            TransientPresentation::transfer_history()
+        } else {
+            TransientPresentation::standard()
         }
-        self.animation_now = Instant::now();
-        self.output_expansion
-            .go_mut(expanded_height.is_some(), self.animation_now);
     }
 
-    pub(super) fn desired_expanded_height(&self) -> Option<f32> {
-        self.command
-            .output()
-            .map(|output| expanded_bar_height(&output.detail))
-            .or_else(|| {
-                self.file_operations
-                    .expanded_detail()
-                    .map(expanded_bar_height)
-            })
-            .or_else(|| self.transfers.expanded().then_some(190.0))
+    pub(super) fn sync_transient_presentation(&mut self) {
+        let next = self.transient_presentation();
+        if self.presentation.sync_transient(next) {
+            self.refresh_status();
+        }
+    }
+
+    pub(super) fn show_command_output(&mut self, summary: String, detail: String) {
+        self.command.show_output(summary, detail);
+        self.sync_transient_presentation();
+    }
+
+    pub(super) fn show_command_detail(&mut self, detail: String) {
+        self.command.show_settings(detail);
+        self.sync_transient_presentation();
+    }
+
+    pub(super) fn close_command_output(&mut self) {
+        self.command.close_output();
+        self.sync_transient_presentation();
     }
 
     pub(super) fn show_rename(&mut self, index: usize) -> Task<Message> {
@@ -195,7 +268,7 @@ impl App {
         self.file_operations.begin_rename(entry);
         self.browser_input.enter(InputMode::Rename);
         self.command.close_output();
-        self.sync_bottom_bar();
+        self.sync_transient_presentation();
         Task::batch([
             widget::operation::focus(Id::new(RENAME_ID)),
             widget::operation::select_all(Id::new(RENAME_ID)),
@@ -211,7 +284,9 @@ impl App {
 
     pub(super) fn cancel_rename(&mut self) {
         self.browser_input.leave_mode();
-        self.file_operations.cancel();
+        if self.file_operations.cancel() {
+            self.sync_transient_presentation();
+        }
     }
 
     pub(super) fn show_new_folder(&mut self) -> Task<Message> {
@@ -231,21 +306,21 @@ impl App {
     }
 
     pub(super) fn show_properties(&mut self) -> Task<Message> {
-        let Some(path) = self
-            .grid
-            .selected_entry()
-            .and_then(|index| self.navigation.entries().get(index))
-            .map(|entry| entry.path.clone())
-        else {
-            self.status = "Select one entry to inspect Properties".to_owned();
+        self.show_properties_target(None)
+    }
+
+    fn show_properties_target(&mut self, target: Option<PathBuf>) -> Task<Message> {
+        let Some(path) = target.or_else(|| self.selected_entry_path()) else {
+            self.presentation
+                .set_status("Select an entry or pass a path to :properties".to_owned());
             return Task::none();
         };
-        self.command.close_output();
-        self.busy = true;
-        self.status = "Reading Properties…".to_owned();
+        self.close_command_output();
+        self.presentation
+            .set_status("Reading Properties…".to_owned());
         Task::perform(
             self.operations
-                .run(OperationKind::Details, move |_| properties::read(&path)),
+                .run_foreground(OperationKind::Details, move |_| properties::read(&path)),
             |completion| match completion {
                 Completion::Finished(result) => Message::PropertiesFinished(result),
                 Completion::Cancelled => {
@@ -255,25 +330,33 @@ impl App {
         )
     }
 
-    pub(super) fn run_permission_change(&mut self, mode: String) -> Task<Message> {
+    pub(super) fn run_permission_change(
+        &mut self,
+        mode: String,
+        mut targets: Vec<PathBuf>,
+    ) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        let paths = self
-            .selected_entries()
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect::<Vec<_>>();
-        if paths.is_empty() {
-            self.status = "Select at least one entry before :chmod".to_owned();
+        if targets.is_empty() {
+            targets = self
+                .selected_entries()
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect();
+        }
+        if targets.is_empty() {
+            self.presentation
+                .set_status("Select entries or pass paths to :chmod".to_owned());
             return Task::none();
         }
-        self.busy = true;
-        self.status = "Changing permissions…".to_owned();
+        self.presentation
+            .set_status("Changing permissions…".to_owned());
         Task::perform(
-            self.operations.run(OperationKind::Mutation, move |_| {
-                properties::chmod(paths, &mode)
-            }),
+            self.operations
+                .run_foreground(OperationKind::Mutation, move |_| {
+                    properties::chmod(targets, &mode)
+                }),
             |completion| match completion {
                 Completion::Finished(result) => Message::MetadataFinished(result),
                 Completion::Cancelled => Message::Noop,
@@ -285,30 +368,69 @@ impl App {
         &mut self,
         application: String,
         make_default: bool,
+        target: Option<PathBuf>,
     ) -> Task<Message> {
-        let Some(path) = self
-            .grid
+        let Some(path) = target.or_else(|| self.selected_entry_path()) else {
+            self.presentation
+                .set_status("Select an entry or pass a path after --".to_owned());
+            return Task::none();
+        };
+        self.run_open_with_path(path, application, make_default)
+    }
+
+    fn selected_entry_path(&self) -> Option<PathBuf> {
+        self.grid
             .selected_entry()
             .and_then(|index| self.navigation.entries().get(index))
             .map(|entry| entry.path.clone())
-        else {
-            self.status = "Select one entry first".to_owned();
+    }
+
+    pub(super) fn choose_open_with(&mut self, application: String) -> Task<Message> {
+        let Some(request) = self.open_with.choose(&application) else {
             return Task::none();
         };
-        self.busy = true;
-        self.status = if make_default {
+        self.finish_open_with(request)
+    }
+
+    pub(super) fn submit_open_with(&mut self) -> Task<Message> {
+        let Some(request) = self.open_with.submit_custom() else {
+            return Task::none();
+        };
+        self.finish_open_with(request)
+    }
+
+    pub(super) fn cancel_open_with(&mut self) -> Task<Message> {
+        self.open_with.cancel();
+        self.browser_input.leave_mode();
+        self.sync_transient_presentation();
+        Task::none()
+    }
+
+    fn finish_open_with(&mut self, request: open_with::Request) -> Task<Message> {
+        self.browser_input.leave_mode();
+        self.sync_transient_presentation();
+        self.run_open_with_path(request.path, request.application, false)
+    }
+
+    fn run_open_with_path(
+        &mut self,
+        path: PathBuf,
+        application: String,
+        make_default: bool,
+    ) -> Task<Message> {
+        self.presentation.set_status(if make_default {
             "Changing the default application…".to_owned()
         } else {
             "Opening with selected application…".to_owned()
-        };
+        });
         let operation = if make_default {
             OperationKind::Mutation
         } else {
             OperationKind::Background
         };
         Task::perform(
-            self.operations.run(operation, move |_| {
-                properties::open_with(path, &application, make_default)
+            self.operations.run_foreground(operation, move |_| {
+                open_with::launch(path, &application, make_default)
             }),
             |completion| match completion {
                 Completion::Finished(result) => Message::MetadataFinished(result),
@@ -365,8 +487,8 @@ impl App {
 
     pub(super) fn restore_selected_trash(&mut self) -> Task<Message> {
         if self.navigation.displayed_location() != DisplayedLocation::Trash
-            || self.busy
-            || self.transfers.has_conflict()
+            || self.foreground_operation_active()
+            || self.transfers.overview().conflict_prompt.is_some()
         {
             return Task::none();
         }
@@ -374,15 +496,17 @@ impl App {
         if entries.is_empty() {
             return Task::none();
         }
-        self.busy = true;
-        self.status = format!("Restoring {} Trash items…", entries.len());
+        self.presentation
+            .set_status(format!("Restoring {} Trash items…", entries.len()));
         self.transfers
-            .enqueue_restore(entries)
-            .map_or_else(Task::none, |work| self.launch_transfer(work))
+            .restore(entries, &self.operations)
+            .map(transfer_integration::transfer_runtime_message)
     }
 
     pub(super) fn show_trash_delete_prompt(&mut self, empty: bool) -> Task<Message> {
-        if self.navigation.displayed_location() != DisplayedLocation::Trash || self.busy {
+        if self.navigation.displayed_location() != DisplayedLocation::Trash
+            || self.foreground_operation_active()
+        {
             return Task::none();
         }
         let entries = if empty {
@@ -403,19 +527,22 @@ impl App {
         {
             self.start_file_operation(work)
         } else {
-            self.sync_bottom_bar();
+            self.sync_transient_presentation();
             Task::none()
         }
     }
 
     pub(super) fn cancel_prompt(&mut self) -> Task<Message> {
         if self.file_operations.cancel() {
-            self.sync_bottom_bar();
+            self.sync_transient_presentation();
         }
         Task::none()
     }
 
     pub(super) fn prompt_blocks_action(&mut self) -> bool {
+        if self.open_with.is_open() {
+            let _ = self.cancel_open_with();
+        }
         if !self.file_operations.prompt_active() {
             return false;
         }
@@ -428,19 +555,20 @@ impl App {
 
     pub(super) fn open_file_operation(&mut self, open: impl FnOnce(&mut FileOperationSession)) {
         if self.browser_input.mode() == InputMode::Rename {
-            self.cancel_rename();
+            self.browser_input.leave_mode();
+            self.file_operations.cancel();
         }
         self.command.close_output();
         open(&mut self.file_operations);
-        self.sync_bottom_bar();
+        self.sync_transient_presentation();
     }
 
     pub(super) fn start_file_operation(&mut self, work: FileOperationWork) -> Task<Message> {
-        self.busy = true;
-        let adapter = self.trash_adapter;
         Task::perform(
             self.operations
-                .run(OperationKind::Mutation, move |_| Ok(work.run(&adapter))),
+                .run_foreground(OperationKind::Mutation, move |_| {
+                    Ok(work.run(&GioTrashAdapter))
+                }),
             |completion| match completion {
                 Completion::Finished(Ok(completion)) => Message::FileOperationFinished(completion),
                 Completion::Finished(Err(error)) => Message::OperationError(error),
@@ -453,74 +581,39 @@ impl App {
         &mut self,
         completion: file_operation::Completion,
     ) -> Task<Message> {
-        self.busy = false;
-        let trash_delete_report = match &completion {
-            file_operation::Completion::TrashDelete(report) => Some(report.clone()),
-            _ => None,
-        };
-        let journal_action = match &completion {
-            file_operation::Completion::Name {
-                kind: file_operation::NameKind::Rename { source },
-                result: Ok(destination),
-            } => journal::Action::rename(source.clone(), destination.clone()).map(Some),
-            file_operation::Completion::Name {
-                kind: file_operation::NameKind::NewFolder,
-                result: Ok(path),
-            } => journal::Action::new_folder(path.clone()).map(Some),
-            file_operation::Completion::Name {
-                kind: file_operation::NameKind::NewFile,
-                result: Ok(path),
-            } => journal::Action::new_file(path.clone()).map(Some),
-            file_operation::Completion::Trash(completion) => {
-                journal::Action::trash(&completion.receipts)
-            }
-            _ => Ok(None),
-        };
-        let consequences = self.file_operations.complete(completion);
-        if let Some(report) = trash_delete_report {
-            self.status = format!(
-                "Permanently deleted {}  •  {} failed",
-                report.deleted,
-                report.failures.len()
-            );
-            if !report.failures.is_empty() {
-                self.command.show_settings(
-                    report
-                        .failures
-                        .iter()
-                        .map(|(entry, error)| format!("{}: {error}", fs::display_name(&entry.name)))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-                self.sync_bottom_bar();
-            }
+        let effects = self.file_operations.complete(completion);
+        if let Some(detail) = effects.detail {
+            self.command.show_settings(detail);
         }
-        if consequences.renamed {
+        if effects.renamed {
             self.browser_input.leave_mode();
         }
-        self.sync_bottom_bar();
-        match journal_action {
+        self.sync_transient_presentation();
+        if let Some(status) = effects.status {
+            self.presentation.set_status(status);
+        }
+        match effects.journal_action {
             Ok(Some(action)) => {
                 if let Err(error) = self.journal.record(action) {
-                    self.status_notice = Some(format!(
+                    self.presentation.set_notice(format!(
                         "Operation completed but Undo was not saved: {error}"
                     ));
                 }
             }
             Err(error) => {
-                self.status_notice = Some(format!(
+                self.presentation.set_notice(format!(
                     "Operation completed but Undo is unavailable: {error}"
                 ));
             }
             Ok(None) => {}
         }
-        if consequences.refresh {
+        if effects.refresh {
             if !self.navigation.folder_displayed() {
                 self.refresh_location()
             } else {
                 Task::batch([
                     self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
-                    self.refresh(consequences.select),
+                    self.refresh(effects.select),
                 ])
             }
         } else {
@@ -532,13 +625,13 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        self.busy = true;
         let mut journal = self.journal.clone();
         Task::perform(
-            self.operations.run(OperationKind::Mutation, move |_| {
-                let result = if redo { journal.redo() } else { journal.undo() };
-                Ok((journal, result))
-            }),
+            self.operations
+                .run_foreground(OperationKind::Mutation, move |_| {
+                    let result = if redo { journal.redo() } else { journal.undo() };
+                    Ok((journal, result))
+                }),
             |completion| match completion {
                 Completion::Finished(Ok((journal, result))) => Message::JournalFinished {
                     journal: Box::new(journal),
@@ -555,17 +648,16 @@ impl App {
         journal: journal::Journal,
         result: Result<journal::Effect, String>,
     ) -> Task<Message> {
-        self.busy = false;
         self.journal = journal;
         match result {
             Ok(effect) => {
-                self.status = effect.status;
+                self.presentation.set_status(effect.status);
                 let tree = self.invalidate_tree(effect.changed_folders);
                 let refresh = self.refresh(effect.select);
                 Task::batch([tree, refresh])
             }
             Err(error) => {
-                self.status = error;
+                self.presentation.set_status(error);
                 Task::none()
             }
         }

@@ -25,11 +25,12 @@ pub(super) enum Effect {
     Enter(PathBuf),
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct State {
     active: Option<Active>,
 }
 
+#[derive(Clone, Debug)]
 struct Active {
     target: Target,
     started: Instant,

@@ -21,7 +21,7 @@ fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
     let generation = app.transfers.clipboard_payload().unwrap().generation;
     assert!(app.navigation.entries().is_empty());
 
-    let update = app.transfers.handle_native(
+    let update = app.transfers.handle_native_with_adapter(
         &NoopTransferAdapter,
         TransferEvent::ClipboardOwnershipLost { generation },
         |_, _| None,
@@ -38,16 +38,9 @@ fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
     assert_eq!(app.navigation.entries().len(), 1);
     assert_eq!(app.navigation.entries()[0].path, file.path);
     assert_eq!(
-        app.status_notice.as_deref(),
+        app.presentation.notice(),
         Some("Cut restored after clipboard ownership changed")
     );
-}
-
-#[test]
-fn missing_directory_falls_back_to_the_nearest_existing_ancestor() {
-    let temp = tempfile::tempdir().unwrap();
-    let missing = temp.path().join("gone/child");
-    assert_eq!(nearest_existing_ancestor(&missing), temp.path());
 }
 
 #[test]
@@ -91,6 +84,11 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
         event::Status::Captured,
     );
+    assert!(app.navigation.pending_path().is_none());
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
+        event::Status::Captured,
+    );
     assert_eq!(
         app.navigation.pending_path(),
         Some(PathBuf::from("/back").as_path())
@@ -105,6 +103,32 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
         app.navigation.pending_path(),
         Some(PathBuf::from("/forward").as_path())
     );
+}
+
+#[test]
+fn holding_mouse_back_navigates_to_the_parent_without_also_using_history() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current/folder"));
+    app.navigation
+        .seed_history(vec![PathBuf::from("/history")], Vec::new());
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    let started = app.mouse_back_press.unwrap().started;
+    let _ = app.update(Message::MouseBackHeld(started));
+
+    assert_eq!(
+        app.navigation.pending_path(),
+        Some(PathBuf::from("/current").as_path())
+    );
+    app.navigation.settle_for_test();
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    assert!(app.navigation.pending_path().is_none());
 }
 
 #[test]
@@ -160,15 +184,15 @@ fn displayed_locations_install_watches_from_the_newly_displayed_entries() {
 #[test]
 fn drag_notice_survives_refresh_and_clears_on_the_next_interaction() {
     let (mut app, _) = App::new();
-    app.status_notice = Some("Drop failed".to_owned());
+    app.presentation.set_notice("Drop failed".to_owned());
     app.refresh_status();
-    assert_eq!(app.status_notice.as_deref(), Some("Drop failed"));
+    assert_eq!(app.presentation.notice(), Some("Drop failed"));
 
     let _ = app.update(Message::Event(
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
         event::Status::Ignored,
     ));
-    assert!(app.status_notice.is_none());
+    assert!(app.presentation.notice().is_none());
 }
 
 #[test]
@@ -177,16 +201,22 @@ fn mount_reconciliation_preserves_existing_nodes() {
         path: PathBuf::from("/media/first"),
         label: "First".to_owned(),
     };
-    let mut state = ExplorerState::new(vec![first.clone()]);
-    let original_id = state.roots[1].id;
-    state.roots[1].expanded = true;
+    let mut tree = SidebarTree::new(vec![first.clone()]);
+    let original_id = tree
+        .rows(Path::new("/"))
+        .into_iter()
+        .find(|row| row.path == first.path)
+        .unwrap()
+        .id;
+    tree.activate(original_id);
 
     let second = MountRoot {
         path: PathBuf::from("/media/second"),
         label: "Second".to_owned(),
     };
-    assert!(state.reconcile_mounts(vec![first, second]));
-    assert_eq!(state.roots[1].id, original_id);
-    assert!(state.roots[1].expanded);
-    assert_eq!(state.roots[2].label, "Second");
+    assert!(tree.reconcile_mounts(vec![first, second]));
+    let rows = tree.rows(Path::new("/"));
+    assert_eq!(rows[1].id, original_id);
+    assert!(tree.is_expanded(original_id));
+    assert_eq!(rows[2].label, "Second");
 }

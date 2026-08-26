@@ -23,11 +23,11 @@ jobs:
       - name: Build and smoke-test archive
         run: |
           scripts/package-archive.sh
-          scripts/smoke-package.sh dist/polarexp-*-linux.tar.gz
+          scripts/smoke-package.sh dist/waddle-*-linux.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: polarexp-linux-archive
-          path: dist/polarexp-*-linux.tar.gz
+          name: waddle-linux-archive
+          path: dist/waddle-*-linux.tar.gz
           if-no-files-found: error
 
   flatpak:
@@ -39,9 +39,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: PolarExp.flatpak
-          manifest-path: packaging/io.github.powerpenguini.PolarExp.yml
+          bundle: Waddle.flatpak
+          manifest-path: packaging/io.github.powerpenguini.Waddle.yml
           cache-key: flatpak-builder-${{ github.sha }}
-          artifact-name: polarexp-linux-flatpak
+          artifact-name: waddle-linux-flatpak
       - name: Install and inspect Flatpak bundle
-        run: scripts/smoke-flatpak.sh PolarExp.flatpak
+        run: scripts/smoke-flatpak.sh Waddle.flatpak

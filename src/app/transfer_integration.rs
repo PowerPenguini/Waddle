@@ -1,19 +1,23 @@
 use super::*;
 
+pub(super) fn transfer_runtime_message(event: transfer_session::RuntimeEvent) -> Message {
+    match event {
+        transfer_session::RuntimeEvent::BatchFinished { id, outcome } => {
+            Message::TransferBatchFinished { id, outcome }
+        }
+        transfer_session::RuntimeEvent::Noop => Message::Noop,
+    }
+}
+
 impl App {
     pub(super) fn copy_selection(&mut self) -> Task<Message> {
-        let restore_cut = !self.transfers.pending_cut_paths().is_empty();
         let entries = self.selected_entries();
-        if let Some(status) = self.transfers.copy(&entries) {
-            self.status = status;
-            if let (Some(source), Some(payload)) =
-                (&self.native_clipboard, self.transfers.clipboard_payload())
-                && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
-            {
-                self.status = format!("Copied inside PolarExp; system clipboard failed: {error}");
-            }
-        }
-        if restore_cut {
+        let Some(change) = self.transfers.copy(&entries) else {
+            return Task::none();
+        };
+        self.presentation.set_status(change.status);
+        self.flash_copy_feedback();
+        if change.restore_entries {
             self.sync_location_monitoring();
             self.refresh(None)
         } else {
@@ -23,106 +27,41 @@ impl App {
 
     pub(super) fn cut_selection(&mut self) -> Task<Message> {
         let entries = self.selected_entries();
-        let Some(status) = self.transfers.cut(&entries) else {
+        let Some(change) = self.transfers.cut(&entries) else {
             return Task::none();
         };
-        self.status = status;
-        if let (Some(source), Some(payload)) =
-            (&self.native_clipboard, self.transfers.clipboard_payload())
-            && let Err(error) = ClipboardAdapter::write_clipboard(source, payload)
-        {
-            self.status = format!("Cut inside PolarExp; system clipboard failed: {error}");
-        }
-        self.navigation
-            .hide_paths(self.transfers.pending_cut_paths());
+        self.presentation.set_status(change.status);
+        self.navigation.hide_paths(&change.hide_paths);
         self.sync_location_monitoring();
         self.grid.select_only(None, self.navigation.entries().len());
         Task::none()
     }
 
     pub(super) fn cancel_cut(&mut self, status: &str) -> Task<Message> {
-        let Some(generation) = self.transfers.cancel_cut() else {
+        if !self.transfers.cancel_cut() {
             return Task::none();
-        };
-        if let Some(source) = self.native_clipboard.as_ref() {
-            ClipboardAdapter::clear_clipboard(source, generation);
         }
         self.sync_location_monitoring();
-        self.status = status.to_owned();
+        self.presentation.set_status(status.to_owned());
         self.refresh(None)
     }
 
     pub(super) fn restore_cut_after_clipboard_loss(&mut self) -> Task<Message> {
         let message = "Cut restored after clipboard ownership changed".to_owned();
-        self.status = message.clone();
-        self.status_notice = Some(message);
+        self.presentation.set_status(message.clone());
+        self.presentation.set_notice(message);
         self.refresh(None)
-    }
-
-    pub(super) fn sync_location_monitoring(&mut self) {
-        if self.location_monitoring.is_none() {
-            return;
-        }
-        let locations = location_monitoring::Locations {
-            current: self.navigation.current().to_path_buf(),
-            current_is_displayed: self.navigation.folder_displayed(),
-            pending_cut_paths: self.transfers.pending_cut_paths().to_vec(),
-            expanded: tree::expanded_paths(&self.explorer.roots),
-            displayed_sources: self.displayed_watch_paths(),
-        };
-        if let Some(monitoring) = self.location_monitoring.as_mut() {
-            monitoring.sync(locations);
-        }
-    }
-
-    pub(super) fn displayed_watch_paths(&self) -> Vec<PathBuf> {
-        match self.navigation.displayed_location() {
-            DisplayedLocation::Recent => self.recent.watch_paths(self.navigation.entries()),
-            DisplayedLocation::Trash => {
-                let mounts = self
-                    .explorer
-                    .roots
-                    .iter()
-                    .filter(|node| node.kind == state::NodeKind::Drive)
-                    .map(|node| node.path.clone())
-                    .collect::<Vec<_>>();
-                self.trash
-                    .watch_paths(self.navigation.trash_entries(), &mounts)
-            }
-            DisplayedLocation::Folder => Vec::new(),
-        }
-    }
-
-    pub(super) fn sync_native_cut_clipboard(&mut self, generation: u64) {
-        let Some(source) = self.native_clipboard.as_ref() else {
-            return;
-        };
-        if let Some(payload) = self
-            .transfers
-            .clipboard_payload()
-            .filter(|payload| payload.generation == generation)
-        {
-            if let Err(error) = ClipboardAdapter::write_clipboard(source, payload) {
-                self.status_notice = Some(format!(
-                    "Cut was updated inside PolarExp; system clipboard failed: {error}"
-                ));
-            }
-        } else {
-            ClipboardAdapter::clear_clipboard(source, generation);
-        }
     }
 
     pub(super) fn paste(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        let Some(source) = self.native_clipboard.as_ref() else {
-            return self.paste_current();
-        };
-        match ClipboardAdapter::read_clipboard(source) {
-            Ok(completion) => Task::perform(completion, Message::ClipboardRead),
-            Err(error) => {
-                self.status = error;
+        match self.transfers.clipboard_read() {
+            None => self.paste_current(),
+            Some(Ok(completion)) => Task::perform(completion, Message::ClipboardRead),
+            Some(Err(error)) => {
+                self.presentation.set_status(error);
                 Task::none()
             }
         }
@@ -138,83 +77,55 @@ impl App {
         self.start_transfer(request)
     }
 
-    pub(super) fn finish_drag(&mut self, grabbed_index: usize) -> Task<Message> {
-        let action = if self.modifiers.control() {
-            TransferAction::Copy
-        } else {
-            TransferAction::Move
-        };
-        let destination = self.drop_destination_at(self.grid.cursor(), false);
-        let request =
-            destination.and_then(|destination| self.transfers.request_active(destination, action));
-        self.transfers.cancel_drag();
-        let Some(request) = request else {
-            return Task::none();
-        };
-        let _ = grabbed_index;
-        self.start_transfer(request)
-    }
-
     pub(super) fn start_external_drag(&mut self) -> Task<Message> {
-        if self.transfers.active_drag_index().is_none() {
+        let entries = self.transfers.overview().pointer_drag.entries().to_vec();
+        if entries.is_empty() {
             return Task::none();
         }
-        let Some(source) = self.native_dnd.as_ref() else {
+        let Some(preview) = view::View::transfer_preview(self, &entries) else {
             self.transfers.cancel_drag();
-            self.drag_hover.cancel();
-            self.status = self.native_dnd_error.clone().unwrap_or_else(|| {
-                "External drag-and-drop is not ready yet; try again in a moment".to_owned()
-            });
-            return Task::none();
-        };
-        let entries = self.transfers.active_drag_entries().to_vec();
-        let Some(preview) = self.drag_preview(&entries) else {
-            self.transfers.cancel_drag();
-            self.drag_hover.cancel();
+            self.grid.cancel_drag_hover();
             return Task::none();
         };
         let copy_only = self.modifiers.control();
-        let (count, completion) =
-            match self
-                .transfers
-                .start_outgoing_active(source, copy_only, |_| Some(preview))
-            {
-                Ok(started) => started,
-                Err(error) => {
-                    self.transfers.cancel_drag();
-                    self.drag_hover.cancel();
-                    self.status = format!("Could not start external drag-and-drop: {error}");
-                    return Task::none();
-                }
-            };
-        self.drag_hover.cancel();
-        self.status = if count == 1 {
-            "Dragging 1 item outside PolarExp…".to_owned()
-        } else {
-            format!("Dragging {count} items outside PolarExp…")
+        let (count, completion) = match self
+            .transfers
+            .start_outgoing_active(copy_only, |_| Some(preview))
+        {
+            Ok(started) => started,
+            Err(error) => {
+                self.grid.cancel_drag_hover();
+                self.presentation
+                    .set_status(format!("Could not start external drag-and-drop: {error}"));
+                return Task::none();
+            }
         };
+        self.grid.cancel_drag_hover();
+        self.presentation.set_status(if count == 1 {
+            "Dragging 1 item outside Waddle…".to_owned()
+        } else {
+            format!("Dragging {count} items outside Waddle…")
+        });
         Task::perform(completion, Message::ExternalDragFinished)
     }
 
     pub(super) fn quit(&mut self) -> Task<Message> {
-        if let Some(source) = self.native_dnd.take() {
-            self.transfers.stop(&source);
-        } else {
-            self.transfers.cancel_drag();
-        }
+        self.transfers.stop();
         iced::exit()
     }
 
     pub(super) fn drop_destination_at(&self, point: Point, allow_current: bool) -> Option<PathBuf> {
-        let rows = flatten_rows(&self.explorer, self.navigation.current());
+        let row_count = self.sidebar_tree.row_count(self.navigation.current());
         match self.grid.drop_zone(
             point,
             self.navigation.entries().len(),
-            rows.len(),
+            row_count,
             self.status_height(),
             allow_current,
         )? {
-            DropZone::Sidebar(index) => rows.get(index).map(|row| row.path.clone()),
+            DropZone::Sidebar(index) => {
+                self.sidebar_tree.row_path(index, self.navigation.current())
+            }
             DropZone::Entry(index) => self
                 .navigation
                 .entries()
@@ -226,61 +137,57 @@ impl App {
     }
 
     pub(super) fn drag_in_progress(&self) -> bool {
-        self.transfers.active_drag_index().is_some()
-            || self.transfers.native_hover_destination().is_some()
+        let overview = self.transfers.overview();
+        overview.pointer_drag.is_active() || overview.native_hover.is_active()
     }
 
     pub(super) fn update_drag_hover(&mut self, point: Point) {
         if !self.drag_in_progress() {
-            self.drag_hover.cancel();
+            self.grid.cancel_drag_hover();
             return;
         }
-        let rows = flatten_rows(&self.explorer, self.navigation.current());
+        let row_count = self.sidebar_tree.row_count(self.navigation.current());
         let target = match self.grid.drop_zone(
             point,
             self.navigation.entries().len(),
-            rows.len(),
+            row_count,
             self.status_height(),
             false,
         ) {
-            Some(DropZone::Sidebar(index)) => {
-                rows.get(index).map(|row| drag_hover::Target::Sidebar {
-                    id: row.id,
-                    path: row.path.clone(),
-                })
-            }
+            Some(DropZone::Sidebar(index)) => self
+                .sidebar_tree
+                .row_target(index, self.navigation.current())
+                .map(|(id, path)| DragHoverTarget::Sidebar { id, path }),
             Some(DropZone::Entry(index)) => self
                 .navigation
                 .entries()
                 .get(index)
                 .filter(|entry| entry.is_directory())
-                .map(|entry| drag_hover::Target::Folder(entry.path.clone())),
+                .map(|entry| DragHoverTarget::Folder(entry.path.clone())),
             _ => None,
         };
         let target = target.filter(|target| {
-            if self.transfers.active_drag_index().is_none() {
+            if !self.transfers.overview().pointer_drag.is_active() {
                 return true;
             }
             let path = match target {
-                drag_hover::Target::Sidebar { path, .. } | drag_hover::Target::Folder(path) => path,
+                DragHoverTarget::Sidebar { path, .. } | DragHoverTarget::Folder(path) => path,
             };
-            self.transfers
-                .request_active(
-                    path.clone(),
-                    if self.modifiers.control() {
-                        TransferAction::Copy
-                    } else {
-                        TransferAction::Move
-                    },
-                )
-                .is_some()
+            self.transfers.can_drop(
+                path,
+                if self.modifiers.control() {
+                    TransferAction::Copy
+                } else {
+                    TransferAction::Move
+                },
+            )
         });
-        self.drag_hover.set(target, Instant::now());
+        self.grid.set_drag_hover(target, Instant::now());
     }
 
     pub(super) fn tick_drag_hover(&mut self, now: Instant) -> Task<Message> {
         if !self.drag_in_progress() {
-            self.drag_hover.cancel();
+            self.grid.cancel_drag_hover();
             return Task::none();
         }
         let (grid_delta, sidebar_delta) = self.grid.drag_autoscroll(self.status_height());
@@ -303,39 +210,29 @@ impl App {
                 },
             ));
         }
-        match self.drag_hover.tick(now) {
-            Some(drag_hover::Effect::Expand(id)) => tasks.push(self.expand_tree_row(id)),
-            Some(drag_hover::Effect::Enter(path)) => tasks.push(self.navigate(path, true, None)),
+        match self.grid.tick(now) {
+            Some(DragHoverEffect::Expand(id)) => tasks.push(self.expand_tree_row(id)),
+            Some(DragHoverEffect::Enter(path)) => tasks
+                .push(self.transition_navigation(NavigationTransition::Hover { requested: path })),
             None => {}
         }
         Task::batch(tasks)
     }
 
     pub(super) fn expand_tree_row(&mut self, id: u64) -> Task<Message> {
-        let Some(node) = find_node_mut(&mut self.explorer.roots, id) else {
-            return Task::none();
-        };
-        if node.expanded {
-            return Task::none();
-        }
-        node.expanded = true;
-        let load = !node.loaded && !node.loading;
-        if load {
-            node.loading = true;
-        }
-        let path = node.path.clone();
-        if load {
-            self.load_tree_node(id, path)
-        } else {
-            Task::none()
-        }
+        self.sidebar_tree
+            .expand(id)
+            .map_or_else(Task::none, |request| {
+                self.load_tree_node(request.id, request.path)
+            })
     }
 
     pub(super) fn drop_highlight_path(&self) -> Option<PathBuf> {
-        if let Some(destination) = self.transfers.native_hover_destination() {
-            return destination.map(Path::to_path_buf);
+        let overview = self.transfers.overview();
+        if overview.native_hover.is_active() {
+            return overview.native_hover.destination().map(Path::to_path_buf);
         }
-        self.transfers.active_drag_index()?;
+        overview.pointer_drag.index()?;
         let action = if self.modifiers.control() {
             TransferAction::Copy
         } else {
@@ -343,8 +240,8 @@ impl App {
         };
         let destination = self.drop_destination_at(self.grid.cursor(), false)?;
         self.transfers
-            .request_active(destination, action)
-            .map(|request| request.destination)
+            .can_drop(&destination, action)
+            .then_some(destination)
     }
 
     pub(super) fn handle_native_dnd_event(&mut self, event: TransferEvent) -> Task<Message> {
@@ -356,19 +253,15 @@ impl App {
             self.grid
                 .move_cursor(position, self.navigation.entries().len());
         } else {
-            self.drag_hover.cancel();
+            self.grid.cancel_drag_hover();
         }
         let resolved_destination = match &event {
             TransferEvent::Hover { position, .. } => self.drop_destination_at(*position, true),
             _ => None,
         };
-        let Some(source) = self.native_dnd.as_ref() else {
-            self.show_error("Drag-and-drop adapter is unavailable".to_owned());
-            return Task::none();
-        };
         let update = self
             .transfers
-            .handle_native(source, event, move |_, _| resolved_destination.clone());
+            .handle_native(event, move |_, _| resolved_destination.clone());
         let task = self.apply_native_update(update);
         if let Some(position) = hover_position {
             self.update_drag_hover(position);
@@ -380,17 +273,17 @@ impl App {
         match update {
             NativeUpdate::None => Task::none(),
             NativeUpdate::Status(status) => {
-                self.status_notice = None;
+                self.presentation.clear_notice();
                 if status.is_empty() {
                     self.refresh_status();
                 } else {
-                    self.status = status;
+                    self.presentation.set_status(status);
                 }
                 Task::none()
             }
             NativeUpdate::Notice(message) => {
-                self.status = message.clone();
-                self.status_notice = Some(message);
+                self.presentation.set_status(message.clone());
+                self.presentation.set_notice(message);
                 Task::none()
             }
             NativeUpdate::Start(request) => self.start_transfer(request),
@@ -403,28 +296,22 @@ impl App {
         }
     }
 
-    pub(super) fn x11_dnd_active(&self) -> bool {
-        self.native_dnd
-            .as_ref()
-            .is_some_and(native_clipboard::DndSource::is_x11)
-    }
-
     pub(super) fn finish_x11_drop(&mut self, generation: u64) -> Task<Message> {
-        if generation != self.x11_drop_generation || self.x11_drop_paths.is_empty() {
+        let Some((paths, action)) = self.transfers.take_x11_drop(generation) else {
             return Task::none();
-        }
-        let paths = std::mem::take(&mut self.x11_drop_paths);
+        };
         let destination = self
             .transfers
-            .native_hover_destination()
-            .flatten()
+            .overview()
+            .native_hover
+            .destination()
             .map(Path::to_path_buf)
             .or_else(|| self.drop_destination_at(self.grid.cursor(), true));
         let Some(destination) = destination else {
-            self.status_notice = Some("This is not a valid drop target".to_owned());
+            self.presentation
+                .set_notice("This is not a valid drop target".to_owned());
             return self.handle_native_dnd_event(TransferEvent::Leave { id: X11_INBOUND_ID });
         };
-        let action = std::mem::replace(&mut self.x11_drop_action, TransferAction::Copy);
         self.handle_native_dnd_event(TransferEvent::Drop {
             id: X11_INBOUND_ID,
             paths,
@@ -434,9 +321,8 @@ impl App {
     }
 
     pub(super) fn start_transfer(&mut self, request: TransferRequest) -> Task<Message> {
-        match self.transfers.enqueue(request) {
-            Ok(Some(work)) => self.launch_transfer(work),
-            Ok(None) => Task::none(),
+        match self.transfers.start(request, &self.operations) {
+            Ok(task) => task.map(transfer_runtime_message),
             Err(error) => {
                 self.show_error(error);
                 Task::none()
@@ -444,46 +330,15 @@ impl App {
         }
     }
 
-    pub(super) fn launch_transfer(&mut self, work: transfer_session::Work) -> Task<Message> {
-        if work.restoring() {
-            self.busy = true;
-            self.status = format!("Restoring {} Trash items…", work.entry_count());
-        }
-        let id = work.id();
-        Task::perform(
-            self.operations.run(OperationKind::Mutation, move |_| {
-                Ok::<_, String>(work.run())
-            }),
-            move |completion| match completion {
-                Completion::Finished(Ok(outcome)) => Message::TransferBatchFinished {
-                    id,
-                    outcome: Box::new(outcome),
-                },
-                Completion::Finished(Err(error)) => Message::TransferBatchFinished {
-                    id,
-                    outcome: Box::new(fs::TransferBatchOutcome::Complete(fs::TransferReport {
-                        completed: Vec::new(),
-                        failures: vec![fs::TransferFailure {
-                            source: PathBuf::new(),
-                            error,
-                        }],
-                        retained: Vec::new(),
-                        warnings: Vec::new(),
-                        receipts: Vec::new(),
-                        cancelled: false,
-                    })),
-                },
-                Completion::Cancelled => Message::Noop,
-            },
-        )
-    }
-
     pub(super) fn finish_transfer_batch(
         &mut self,
         id: u64,
         outcome: fs::TransferBatchOutcome,
     ) -> Task<Message> {
-        let update = self.transfers.complete_batch(id, outcome);
+        let current = self.navigation.current().to_path_buf();
+        let update = self
+            .transfers
+            .complete_batch(id, outcome, &current, &self.operations);
         self.apply_transfer_batch_update(update)
     }
 
@@ -491,61 +346,67 @@ impl App {
         &mut self,
         update: TransferBatchUpdate,
     ) -> Task<Message> {
+        self.sync_transient_presentation();
         match update {
-            TransferBatchUpdate::Completed(completed) => match *completed {
-                TransferCompletedBatch::Transfer(completed) => {
-                    let finished = self.finish_transfer(completed.request, completed.report);
-                    let next = completed
-                        .next
-                        .map_or_else(Task::none, |work| self.launch_transfer(work));
-                    Task::batch([finished, next])
-                }
-                TransferCompletedBatch::Restore(completed) => {
-                    self.finish_restore_completion(completed)
-                }
-            },
-            TransferBatchUpdate::Conflict => {
-                self.status = self
-                    .transfers
-                    .conflict_prompt()
-                    .unwrap_or("Transfer paused for a conflict")
-                    .to_owned();
+            TransferBatchUpdate::Completed { outcome, next } => Task::batch([
+                self.apply_transfer_completion(*outcome),
+                next.map(transfer_runtime_message),
+            ]),
+            TransferBatchUpdate::Conflict(prompt) => {
+                self.presentation.set_status(prompt);
                 Task::none()
             }
             TransferBatchUpdate::Ignored => Task::none(),
         }
     }
 
-    pub(super) fn finish_restore_completion(
+    pub(super) fn apply_transfer_completion(
         &mut self,
-        completed: transfer_session::CompletedRestore,
+        completion: transfer_session::CompletionOutcome,
     ) -> Task<Message> {
-        self.busy = false;
-        match completed.journal_action {
-            Ok(Some(action)) => {
+        if let Some(notice) = completion.notice {
+            self.presentation.set_notice(notice);
+        }
+        if completion.sync_location_monitoring {
+            self.sync_location_monitoring();
+        }
+        match completion.undo {
+            transfer_session::UndoOutcome::Record { subject, action } => {
                 if let Err(error) = self.journal.record(action) {
-                    self.status_notice =
-                        Some(format!("Restore completed but Undo was not saved: {error}"));
+                    self.presentation.set_notice(format!(
+                        "{subject} completed but Undo was not saved: {error}"
+                    ));
                 }
             }
-            Err(error) => {
-                self.status_notice = Some(format!(
-                    "Restore completed but Undo is unavailable: {error}"
+            transfer_session::UndoOutcome::Unavailable { subject, error } => {
+                self.presentation.set_notice(format!(
+                    "{} completed but Undo is unavailable: {error}",
+                    subject
                 ));
             }
-            Ok(None) => {}
+            transfer_session::UndoOutcome::None => {}
         }
-        self.status = completed.status;
-        if let Some(detail) = completed.detail {
-            self.command.show_settings(detail);
-            self.sync_bottom_bar();
+        if let Some(detail) = completion.detail {
+            self.show_command_detail(detail);
         }
-        let tree = self.invalidate_tree(completed.changed_folders);
-        let refresh = self.open_trash();
-        let next = completed
-            .next
-            .map_or_else(Task::none, |work| self.launch_transfer(work));
-        Task::batch([tree, refresh, next])
+        match completion.presentation {
+            transfer_session::CompletionPresentation::Status(status) => {
+                self.presentation.set_status(status);
+            }
+            transfer_session::CompletionPresentation::Error(error) => self.show_error(error),
+            transfer_session::CompletionPresentation::Refresh => self.refresh_status(),
+        }
+        let tree = if completion.changed_folders.is_empty() {
+            Task::none()
+        } else {
+            self.invalidate_tree(completion.changed_folders)
+        };
+        let refresh = match completion.refresh {
+            transfer_session::Refresh::None => Task::none(),
+            transfer_session::Refresh::Entries(select) => self.refresh_selected(select),
+            transfer_session::Refresh::Trash => self.open_trash(),
+        };
+        Task::batch([tree, refresh])
     }
 
     pub(super) fn resolve_transfer_conflict(
@@ -553,78 +414,27 @@ impl App {
         key: char,
         remaining: bool,
     ) -> Task<Message> {
-        self.transfers
-            .resolve_conflict(key, remaining)
-            .map_or_else(Task::none, |work| self.launch_transfer(work))
+        let task = self
+            .transfers
+            .resolve_conflict(key, remaining, &self.operations)
+            .map(transfer_runtime_message);
+        self.sync_transient_presentation();
+        task
     }
 
     pub(super) fn cancel_transfer_conflict(&mut self) -> Task<Message> {
-        match self.transfers.cancel() {
+        let current = self.navigation.current().to_path_buf();
+        let update = self.transfers.cancel(&current, &self.operations);
+        self.sync_transient_presentation();
+        match update {
             TransferCancelUpdate::Conflict(update) => self.apply_transfer_batch_update(update),
             TransferCancelUpdate::Active => {
-                self.status = "Cancelling active transfer…".to_owned();
+                self.presentation
+                    .set_status("Cancelling active transfer…".to_owned());
                 Task::none()
             }
             TransferCancelUpdate::None => Task::none(),
         }
-    }
-
-    pub(super) fn finish_transfer(
-        &mut self,
-        request: TransferRequest,
-        report: fs::TransferReport,
-    ) -> Task<Message> {
-        let adapter = self
-            .native_dnd
-            .as_ref()
-            .map(|source| source as &dyn Adapter);
-        let completion =
-            self.transfers
-                .finish_transfer(adapter, &request, &report, self.navigation.current());
-        if let Some(generation) = completion.clipboard_generation {
-            self.sync_native_cut_clipboard(generation);
-        }
-        self.sync_location_monitoring();
-        match completion.journal_action {
-            Ok(Some(action)) => {
-                if let Err(error) = self.journal.record(action) {
-                    self.status_notice = Some(format!(
-                        "Transfer completed but Undo was not saved: {error}"
-                    ));
-                }
-            }
-            Err(error) => {
-                self.status_notice = Some(format!(
-                    "Transfer completed but Undo is unavailable: {error}"
-                ));
-            }
-            Ok(None) => {}
-        }
-        self.apply_transfer_consequences(completion.consequences)
-    }
-
-    pub(super) fn apply_transfer_consequences(
-        &mut self,
-        consequences: crate::transfer::Consequences,
-    ) -> Task<Message> {
-        if let Some(error) = consequences.error {
-            self.show_error(error);
-        } else if let Some(status) = consequences.status {
-            self.status = status;
-        } else {
-            self.refresh_status();
-        }
-        let tree = if consequences.changed_folders.is_empty() {
-            Task::none()
-        } else {
-            self.invalidate_tree(consequences.changed_folders)
-        };
-        let refresh = if consequences.refresh {
-            self.refresh_selected(consequences.select)
-        } else {
-            Task::none()
-        };
-        Task::batch([tree, refresh])
     }
 
     pub(super) fn selected_entries(&self) -> Vec<FileEntry> {
@@ -632,17 +442,17 @@ impl App {
     }
 
     pub(super) fn invalidate_tree(&mut self, changed_folders: Vec<PathBuf>) -> Task<Message> {
-        let reloads = tree::invalidate_tree_folders(&mut self.explorer.roots, &changed_folders);
+        let reloads = self.sidebar_tree.invalidate(&changed_folders);
         Task::batch(
             reloads
                 .into_iter()
-                .map(|(id, path)| self.load_tree_node(id, path)),
+                .map(|request| self.load_tree_node(request.id, request.path)),
         )
     }
 
     pub(super) fn mutations_allowed(&self) -> bool {
-        !self.busy
-            && !self.transfers.has_conflict()
+        !self.foreground_operation_active()
+            && self.transfers.overview().conflict_prompt.is_none()
             && !self.navigation.loading()
             && !self.search.is_recursive()
             && self.navigation.folder_displayed()

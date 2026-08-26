@@ -1,5 +1,5 @@
 [package]
-name = "polarexp"
+name = "waddle"
 version = "0.1.0"
 edition = "2024"
 
@@ -22,7 +22,7 @@ x11rb = { version = "=0.13.2", features = ["xfixes"] }
 tempfile = "3.23.0"
 
 # Iced does most frame rendering in dependencies. Optimizing those crates keeps
-# `cargo run` responsive without making PolarExp's own edit/build cycle as
+# `cargo run` responsive without making Waddle's own edit/build cycle as
 # expensive as a full release build.
 [profile.dev]
 opt-level = 1

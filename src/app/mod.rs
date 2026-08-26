@@ -9,6 +9,7 @@ mod grid;
 mod location_monitoring;
 mod navigation;
 mod navigation_integration;
+mod open_with;
 mod operation_integration;
 mod operations;
 mod places;
@@ -19,7 +20,6 @@ mod runtime;
 mod search;
 mod shell;
 mod startup;
-mod state;
 mod status;
 mod thumbnail;
 mod transfer_integration;
@@ -49,24 +49,25 @@ use std::{
 use crate::{
     fs, journal, theme,
     transfer::{
-        Action as TransferAction, Adapter, ClipboardAdapter, ClipboardImport,
-        Event as TransferEvent, NativeUpdate, Outcome as TransferOutcome,
-        Preview as TransferPreview, Release as TransferRelease, Request as TransferRequest,
+        Action as TransferAction, ClipboardImport, Event as TransferEvent, NativeUpdate,
+        Outcome as TransferOutcome, Preview as TransferPreview, Request as TransferRequest,
     },
 };
 use browser_input::{
     BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
     NamedKey as InputNamedKey, Press as InputPress,
 };
-use command::{CommandSession, ProcessAdapter, Submission as CommandSubmission};
+use command::{CommandSession, ProcessAdapter};
 use file_operation::{
     FileOperationSession, GioTrashAdapter, View as FileOperationView, Work as FileOperationWork,
 };
 use fs::FileEntry;
 use gio::prelude::*;
 use grid::{
-    CONTENT_GUTTER, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
-    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT,
+    CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
+    DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
+    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_ROW_HEIGHT, TILE_WIDTH,
+    TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{
@@ -82,17 +83,16 @@ use iced::{
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
-    Outcome as NavigationOutcome, Request as NavigationRequest,
+    Outcome as NavigationOutcome, Request as NavigationRequest, Transition as NavigationTransition,
 };
 use operations::{Completion, Kind as OperationKind, Operations};
 use presentation::*;
 use search::{SearchSession, Update as SearchUpdate};
-use state::ExplorerState;
 use transfer_session::{
     BatchUpdate as TransferBatchUpdate, CancelUpdate as TransferCancelUpdate,
-    CompletedBatch as TransferCompletedBatch, TransferSession,
+    DragRelease as TransferDragRelease, TransferSession,
 };
-use tree::{TreeRow, find_node, find_node_mut, flatten_rows, mounted_roots};
+use tree::{Activation as TreeActivation, MoveOutcome as TreeMoveOutcome, SidebarTree, TreeRow};
 
 const STATUS_HEIGHT: f32 = 25.0;
 const SEARCH_LIMIT: usize = 1000;
@@ -117,6 +117,7 @@ const SCROLLBAR_THUMB_WIDTH: f32 = 4.0;
 const SCROLLBAR_FADE_IN: Duration = Duration::from_millis(100);
 const SCROLLBAR_HOLD: Duration = Duration::from_millis(500);
 const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(200);
+const MOUSE_BACK_HOLD_DURATION: Duration = Duration::from_millis(450);
 const _: () = assert!(SCROLLBAR_THUMB_WIDTH < SCROLLBAR_TRACK_WIDTH);
 const _: () = assert!(SCROLLBAR_TRACK_WIDTH < 10.0);
 const UI_FONT: Font = Font::with_name("Roboto");
@@ -133,6 +134,7 @@ const MONO_FONT_SEMIBOLD: Font = Font {
 const LOCATION_ID: &str = "location";
 const SEARCH_ID: &str = "search";
 const COMMAND_ID: &str = "command";
+const OPEN_WITH_ID: &str = "open-with";
 const RENAME_ID: &str = "rename";
 const NEW_FOLDER_ID: &str = "new-folder";
 const GRID_SCROLL_ID: &str = "grid-scroll";
@@ -154,37 +156,10 @@ enum EntryIconKind {
     Presentation,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum BrowserFocus {
-    Toolbar,
-    Location,
-    Sidebar,
-    #[default]
-    Entries,
-    BottomBar,
-}
-
-impl BrowserFocus {
-    const ORDER: [Self; 5] = [
-        Self::Toolbar,
-        Self::Location,
-        Self::Sidebar,
-        Self::Entries,
-        Self::BottomBar,
-    ];
-
-    fn moved(self, reverse: bool) -> Self {
-        let index = Self::ORDER
-            .iter()
-            .position(|focus| *focus == self)
-            .unwrap_or(0);
-        let next = if reverse {
-            index.checked_sub(1).unwrap_or(Self::ORDER.len() - 1)
-        } else {
-            (index + 1) % Self::ORDER.len()
-        };
-        Self::ORDER[next]
-    }
+#[derive(Clone, Copy, Debug)]
+struct MouseBackPress {
+    started: Instant,
+    held: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -233,12 +208,16 @@ enum Message {
     ContextNewFile,
     ContextProperties,
     ContextOpenWith,
+    OpenWithChanged(String),
+    OpenWithSubmitted,
+    OpenWithSelected(String),
     ContextRename,
     ContextTrash,
     ContextRestore,
     ContextDeletePermanent,
     ContextEmptyTrash,
     CloseContext,
+    MouseBackHeld(Instant),
     GridScrolled(f32),
     GridPointerMoved(Point),
     NavigationFinished {
@@ -290,9 +269,9 @@ enum Message {
 pub fn run() -> iced::Result {
     let window = startup::State::open_default().window_settings();
     application(App::new, App::update, App::view)
-        .title("PolarExp")
+        .title("Waddle")
         .settings(iced::Settings {
-            id: Some("io.github.powerpenguini.PolarExp".to_owned()),
+            id: Some("io.github.powerpenguini.Waddle".to_owned()),
             default_font: UI_FONT,
             antialiasing: true,
             ..iced::Settings::default()
@@ -305,10 +284,9 @@ pub fn run() -> iced::Result {
 }
 
 struct App {
-    explorer: ExplorerState,
+    sidebar_tree: SidebarTree,
     navigation: NavigationSession,
     startup: startup::State,
-    places: places::Places,
     recent: recent::Recent,
     trash: trash::Trash,
     operations: Operations,
@@ -316,109 +294,33 @@ struct App {
     transfers: TransferSession,
     command: CommandSession,
     command_adapter: ProcessAdapter,
+    open_with: open_with::Session,
     diagnostics: diagnostics::History,
     file_operations: FileOperationSession,
     journal: journal::Journal,
     location_monitoring: Option<location_monitoring::Native>,
     view_preferences: view_preferences::Preferences,
     thumbnails: thumbnail::Cache,
-    trash_adapter: GioTrashAdapter,
     grid: GridInteraction,
-    sidebar_scrollbar: ScrollbarVisibility,
-    entry_scrollbar: ScrollbarVisibility,
-    drag_hover: drag_hover::State,
     browser_input: BrowserInput,
-    browser_focus: BrowserFocus,
-    toolbar_cursor: usize,
-    bottom_cursor: usize,
-    sidebar_cursor: Option<u64>,
-    favorite_drag: Option<usize>,
+    presentation: Presentation,
     location_input: String,
-    expanded_bar_height: f32,
-    output_expansion: Animation<bool>,
-    animation_now: Instant,
-    spinner_started: Instant,
-    status: String,
-    status_notice: Option<String>,
-    busy: bool,
-    context_menu: Option<(usize, Point)>,
-    context_menu_cursor: usize,
-    native_dnd: Option<native_clipboard::DndSource>,
-    native_clipboard: Option<native_clipboard::Source>,
-    native_dnd_error: Option<String>,
-    x11_drop_paths: Vec<PathBuf>,
-    x11_drop_generation: u64,
-    x11_drop_action: TransferAction,
     modifiers: keyboard::Modifiers,
+    mouse_back_press: Option<MouseBackPress>,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
-}
-
-#[derive(Default)]
-struct ScrollbarVisibility {
-    shown_at: Option<Instant>,
-    fade_out_at: Option<Instant>,
-}
-
-impl ScrollbarVisibility {
-    fn show(&mut self, now: Instant) {
-        self.shown_at.get_or_insert(now);
-        self.fade_out_at = Some(now + SCROLLBAR_HOLD);
-    }
-
-    fn hide_if_elapsed(&mut self, now: Instant) {
-        if self
-            .fade_out_at
-            .is_some_and(|fade_out_at| now >= fade_out_at + SCROLLBAR_FADE_OUT)
-        {
-            self.shown_at = None;
-            self.fade_out_at = None;
-        }
-    }
-
-    fn is_visible(&self) -> bool {
-        self.fade_out_at.is_some()
-    }
-
-    fn opacity(&self, now: Instant, reduced_motion: bool) -> f32 {
-        let (Some(shown_at), Some(fade_out_at)) = (self.shown_at, self.fade_out_at) else {
-            return 0.0;
-        };
-        if reduced_motion {
-            return 1.0;
-        }
-        if now < fade_out_at {
-            return duration_ratio(now.saturating_duration_since(shown_at), SCROLLBAR_FADE_IN);
-        }
-
-        1.0 - duration_ratio(
-            now.saturating_duration_since(fade_out_at),
-            SCROLLBAR_FADE_OUT,
-        )
-    }
 }
 
 fn duration_ratio(elapsed: Duration, total: Duration) -> f32 {
     (elapsed.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BrowserStatusPresentation {
-    Conflict,
-    Transfer,
-    General,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BrowserStatusModel<'a> {
-    presentation: BrowserStatusPresentation,
-    text: &'a str,
-    retry: bool,
-    history: bool,
-}
-
 impl App {
+    fn view(&self) -> Element<'_, Message> {
+        view::View::new(self).render()
+    }
+
     fn new() -> (Self, Task<Message>) {
         let now = Instant::now();
         let startup = startup::State::open_default();
@@ -427,14 +329,11 @@ impl App {
         let tree_visible = view_preferences.tree_visible();
         let current =
             startup.initial_directory(view_preferences.remember_last_directory_on_startup());
-        let places = places::Places::open_default();
         let recent = recent::Recent::open_default();
         let trash = trash::Trash::open_default();
-        let mut explorer = ExplorerState::new(mounted_roots());
-        let mut locations = places.entries();
-        locations.extend(recent.sidebar_entry());
+        let mut locations = recent.sidebar_entry().into_iter().collect::<Vec<_>>();
         locations.push(trash.sidebar_entry());
-        explorer.install_places(locations);
+        let sidebar_tree = SidebarTree::open_default(locations);
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
@@ -455,10 +354,9 @@ impl App {
         let mut grid = GridInteraction::default();
         grid.set_sidebar_visible(tree_visible);
         let mut app = Self {
-            explorer,
+            sidebar_tree,
             navigation: NavigationSession::new(current.clone()),
             startup,
-            places,
             recent,
             trash,
             operations: Operations::default(),
@@ -466,42 +364,19 @@ impl App {
             transfers: TransferSession::open_default(),
             command: CommandSession::default(),
             command_adapter: ProcessAdapter,
+            open_with: open_with::Session::default(),
             diagnostics: diagnostics::History::open_default(),
             file_operations: FileOperationSession::default(),
             journal,
             location_monitoring,
             view_preferences,
             thumbnails: thumbnail::Cache::default(),
-            trash_adapter: GioTrashAdapter,
             grid,
-            sidebar_scrollbar: ScrollbarVisibility::default(),
-            entry_scrollbar: ScrollbarVisibility::default(),
-            drag_hover: drag_hover::State::default(),
             browser_input: BrowserInput::default(),
-            browser_focus: BrowserFocus::Entries,
-            toolbar_cursor: 0,
-            bottom_cursor: 0,
-            sidebar_cursor: None,
-            favorite_drag: None,
+            presentation: Presentation::new(now, startup_error),
             location_input: current.display().to_string(),
-            expanded_bar_height: STATUS_HEIGHT,
-            output_expansion: Animation::new(false)
-                .duration(Duration::from_millis(140))
-                .easing(Easing::EaseOut),
-            animation_now: now,
-            spinner_started: now,
-            status: String::new(),
-            status_notice: startup_error,
-            busy: false,
-            context_menu: None,
-            context_menu_cursor: 0,
-            native_dnd: None,
-            native_clipboard: None,
-            native_dnd_error: None,
-            x11_drop_paths: Vec::new(),
-            x11_drop_generation: 0,
-            x11_drop_action: TransferAction::Copy,
             modifiers: keyboard::Modifiers::default(),
+            mouse_back_press: None,
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
             accent,
@@ -516,17 +391,20 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let scrollbar_visible =
-            self.sidebar_scrollbar.is_visible() || self.entry_scrollbar.is_visible();
-        let animation = if !self.reduced_motion()
-            && (self.output_expansion.is_animating(self.animation_now)
-                || self.spinner_active()
-                || self.drag_in_progress()
-                || scrollbar_visible)
-        {
-            time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
-        } else if self.reduced_motion() && (self.drag_in_progress() || scrollbar_visible) {
-            time::every(Duration::from_millis(100)).map(Message::AnimationFrame)
+        let scrollbar_visible = self.grid.scrollbar_visible();
+        let reduced_motion = self.reduced_motion();
+        let animation = if self.presentation.animation_active(
+            reduced_motion,
+            self.spinner_active(),
+            self.drag_in_progress(),
+            scrollbar_visible,
+        ) {
+            time::every(if reduced_motion {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(16)
+            })
+            .map(Message::AnimationFrame)
         } else {
             Subscription::none()
         };
@@ -537,13 +415,13 @@ impl App {
             time::every(Duration::from_secs(2)).map(|_| Message::PollSystem),
             animation,
         ];
-        if let Some(source) = &self.native_clipboard {
-            subscriptions.push(source.subscription().map(Message::NativeDndEvent));
+        if let Some(subscription) = self.transfers.native_subscription() {
+            subscriptions.push(subscription.map(Message::NativeDndEvent));
         }
         if let Some(monitoring) = &self.location_monitoring {
             subscriptions.push(monitoring.subscription().map(Message::DirectoryChanged));
         }
-        if self.transfers.active() {
+        if self.transfers.overview().active {
             subscriptions
                 .push(time::every(Duration::from_millis(100)).map(|_| Message::PollTransfer));
         }
@@ -584,35 +462,33 @@ impl App {
                 warning: Color::from_rgb8(168, 104, 10),
             }
         };
-        Theme::custom("PolarExp", palette)
+        Theme::custom("Waddle", palette)
     }
 
     fn spinner_active(&self) -> bool {
-        self.busy
-            || self.transfers.active()
+        self.foreground_operation_active()
+            || self.transfers.overview().active
             || self.navigation.loading()
             || self.search.is_loading()
-            || flatten_rows(&self.explorer, self.navigation.current())
+            || self
+                .sidebar_tree
+                .rows(self.navigation.current())
                 .iter()
                 .any(|row| row.loading)
     }
 
     fn spinner(&self, size: f32) -> widget::Svg<'static> {
-        let angle = if self.reduced_motion() {
-            0.0
-        } else {
-            self.animation_now
-                .duration_since(self.spinner_started)
-                .as_secs_f32()
-                * std::f32::consts::TAU
-                / 0.9
-        };
+        let angle = self.presentation.spinner_angle(self.reduced_motion());
         themed_svg(
             include_bytes!("../ui/icons/spinner.svg"),
             size,
-            self.accent_color(),
+            view::View::new(self).accent_color(),
         )
         .rotation(angle)
+    }
+
+    fn foreground_operation_active(&self) -> bool {
+        self.operations.foreground_active()
     }
 
     fn application_style(&self, theme: &Theme) -> iced::theme::Style {
@@ -644,8 +520,6 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some(source) = self.native_dnd.take() {
-            self.transfers.stop(&source);
-        }
+        self.transfers.stop();
     }
 }

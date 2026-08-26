@@ -1,22 +1,57 @@
 use super::*;
 use iced::widget::{column, row};
+use std::ops::Deref;
 
-impl App {
-    pub(super) fn view(&self) -> Element<'_, Message> {
+#[derive(Clone, Copy)]
+pub(super) struct View<'a> {
+    app: &'a App,
+}
+
+impl<'a> View<'a> {
+    pub(super) fn new(app: &'a App) -> Self {
+        Self { app }
+    }
+
+    pub(super) fn app(self) -> &'a App {
+        self.app
+    }
+
+    pub(super) fn render(self) -> Element<'a, Message> {
+        self.view()
+    }
+
+    pub(super) fn transfer_preview(app: &'a App, entries: &[FileEntry]) -> Option<TransferPreview> {
+        Self::new(app).drag_preview(entries)
+    }
+
+    #[cfg(test)]
+    pub(super) fn drag_preview_layer(app: &'a App) -> Option<Element<'a, Message>> {
+        Self::new(app).drag_preview_view()
+    }
+
+    #[cfg(test)]
+    pub(super) fn list_metrics(app: &'a App) -> ((bool, bool), usize) {
+        let view = Self::new(app);
+        (
+            view.list_column_visibility(),
+            view.list_name_character_limit(),
+        )
+    }
+
+    fn view(self) -> Element<'a, Message> {
         let base = self.layout();
         let mut layers: Vec<Element<'_, Message>> = vec![base];
         if let Some(preview) = self.drag_preview_view() {
             layers.push(preview);
         }
-        if let Some((_, point)) = self.context_menu {
-            layers.push(self.context_menu_view(point));
+        if let Some(menu) = self.grid.context_menu() {
+            layers.push(self.context_menu_view(menu));
         }
         stack(layers).width(Fill).height(Fill).into()
     }
 
-    pub(super) fn drag_preview_view(&self) -> Option<Element<'_, Message>> {
-        self.transfers.active_drag_index()?;
-        let entries = self.transfers.active_drag_entries();
+    fn drag_preview_view(self) -> Option<Element<'a, Message>> {
+        let entries = self.transfers.overview().pointer_drag.entries();
         let preview = self.drag_preview(entries)?;
         let preview_bytes = native_dnd::preview_svg(preview).ok()?;
         let preview = svg(svg::Handle::from_memory(preview_bytes))
@@ -32,7 +67,7 @@ impl App {
         )
     }
 
-    pub(super) fn drag_preview(&self, entries: &[FileEntry]) -> Option<TransferPreview> {
+    fn drag_preview(self, entries: &[FileEntry]) -> Option<TransferPreview> {
         let first = entries.first()?;
         let icon_kind = entry_icon_kind(first);
         let palette = self.iced_theme().palette();
@@ -51,7 +86,7 @@ impl App {
         })
     }
 
-    pub(super) fn layout(&self) -> Element<'_, Message> {
+    fn layout(self) -> Element<'a, Message> {
         if self.view_preferences.tree_visible() {
             row![self.sidebar(), self.browser()]
                 .spacing(0)
@@ -63,14 +98,16 @@ impl App {
         }
     }
 
-    pub(super) fn sidebar(&self) -> Element<'_, Message> {
+    fn sidebar(self) -> Element<'a, Message> {
         let mut rows = Column::new().spacing(0);
-        for tree_row in flatten_rows(&self.explorer, self.navigation.current()) {
+        for tree_row in self.sidebar_tree.rows(self.navigation.current()) {
             rows = rows.push(self.tree_row(tree_row));
         }
-        let scrollbar_opacity = self
-            .sidebar_scrollbar
-            .opacity(self.animation_now, self.reduced_motion());
+        let scrollbar_opacity = self.grid.scrollbar_opacity(
+            Scrollbar::Sidebar,
+            self.presentation.now(),
+            self.reduced_motion(),
+        );
         let content = column![
             container(
                 text("Locations")
@@ -103,7 +140,7 @@ impl App {
             .into()
     }
 
-    pub(super) fn tree_row(&self, tree_row: TreeRow) -> Element<'_, Message> {
+    fn tree_row(self, tree_row: TreeRow) -> Element<'a, Message> {
         let drop_target = self.drop_highlight_path().as_deref() == Some(tree_row.path.as_path());
         let mut line = Row::new()
             .spacing(6)
@@ -118,15 +155,14 @@ impl App {
         let icon = tree_icon_asset(tree_row.kind);
         let icon_color = if matches!(
             tree_row.kind,
-            state::NodeKind::Computer | state::NodeKind::Drive
+            tree::NodeKind::Computer | tree::NodeKind::Drive
         ) {
             self.secondary_text_color()
         } else {
             self.accent_color()
         };
         let selected = tree_row.selected;
-        let focused =
-            self.browser_focus == BrowserFocus::Sidebar && self.sidebar_cursor == Some(tree_row.id);
+        let focused = self.presentation.focus_is(BrowserFocus::Sidebar) && tree_row.focused;
         let label_color = if selected || focused {
             self.selection_text_color()
         } else {
@@ -165,7 +201,7 @@ impl App {
         }
     }
 
-    pub(super) fn browser(&self) -> Element<'_, Message> {
+    fn browser(self) -> Element<'a, Message> {
         column![
             self.toolbar(),
             rule::horizontal(1),
@@ -178,7 +214,7 @@ impl App {
         .into()
     }
 
-    pub(super) fn toolbar(&self) -> Element<'_, Message> {
+    fn toolbar(self) -> Element<'a, Message> {
         let parent = toolbar_button(
             include_bytes!("../ui/icons/up.svg"),
             "Parent folder",
@@ -186,7 +222,8 @@ impl App {
             Message::Parent,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
-            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 0,
+            self.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.presentation.toolbar_cursor() == 0,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
@@ -195,7 +232,8 @@ impl App {
             Message::Back,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
-            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 1,
+            self.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.presentation.toolbar_cursor() == 1,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
@@ -204,7 +242,8 @@ impl App {
             Message::Forward,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
-            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 2,
+            self.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.presentation.toolbar_cursor() == 2,
         );
         let refresh = toolbar_button(
             include_bytes!("../ui/icons/refresh.svg"),
@@ -213,7 +252,8 @@ impl App {
             Message::Refresh,
             self.iced_theme().palette().text,
             self.iced_theme().palette().background,
-            self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 3,
+            self.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.presentation.toolbar_cursor() == 3,
         );
         let options = self
             .view_preferences
@@ -259,7 +299,7 @@ impl App {
             .width(Fill)
             .height(34)
             .style(move |theme| {
-                focus_container_style(theme, self.browser_focus == BrowserFocus::Location)
+                focus_container_style(theme, self.presentation.focus_is(BrowserFocus::Location))
             });
         container(
             row![
@@ -278,7 +318,8 @@ impl App {
                     Message::ToggleView,
                     self.iced_theme().palette().text,
                     self.iced_theme().palette().background,
-                    self.browser_focus == BrowserFocus::Toolbar && self.toolbar_cursor == 4,
+                    self.presentation.focus_is(BrowserFocus::Toolbar)
+                        && self.presentation.toolbar_cursor() == 4,
                 ),
             ]
             .spacing(4)
@@ -290,7 +331,7 @@ impl App {
         .into()
     }
 
-    pub(super) fn grid_body(&self) -> Element<'_, Message> {
+    fn grid_body(self) -> Element<'a, Message> {
         if self
             .view_preferences
             .for_directory(self.navigation.current())
@@ -315,9 +356,11 @@ impl App {
         let top = Space::new().width(Fill).height(visible.top_space);
         let bottom = Space::new().width(Fill).height(visible.bottom_space);
         let content = column![top, grid, bottom];
-        let scrollbar_opacity = self
-            .entry_scrollbar
-            .opacity(self.animation_now, self.reduced_motion());
+        let scrollbar_opacity = self.grid.scrollbar_opacity(
+            Scrollbar::Entries,
+            self.presentation.now(),
+            self.reduced_motion(),
+        );
         let scroll = scrollable(content)
             .id(Id::new(GRID_SCROLL_ID))
             .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
@@ -344,13 +387,13 @@ impl App {
                 grid_background_style(
                     theme,
                     current_drop_target,
-                    self.browser_focus == BrowserFocus::Entries,
+                    self.presentation.focus_is(BrowserFocus::Entries),
                 )
             })
             .into()
     }
 
-    pub(super) fn list_body(&self) -> Element<'_, Message> {
+    fn list_body(self) -> Element<'a, Message> {
         let visible = self
             .grid
             .list_visible_range(self.navigation.entries().len(), self.status_height());
@@ -386,9 +429,11 @@ impl App {
                 LIST_MODIFIED_WIDTH,
             ));
         }
-        let scrollbar_opacity = self
-            .entry_scrollbar
-            .opacity(self.animation_now, self.reduced_motion());
+        let scrollbar_opacity = self.grid.scrollbar_opacity(
+            Scrollbar::Entries,
+            self.presentation.now(),
+            self.reduced_motion(),
+        );
         let area: Element<'_, Message> = mouse_area(
             container(column![
                 container(header)
@@ -411,7 +456,11 @@ impl App {
             .width(Fill)
             .height(Fill)
             .style(move |theme| {
-                grid_background_style(theme, false, self.browser_focus == BrowserFocus::Entries)
+                grid_background_style(
+                    theme,
+                    false,
+                    self.presentation.focus_is(BrowserFocus::Entries),
+                )
             }),
         )
         .on_move(Message::GridPointerMoved)
@@ -419,7 +468,7 @@ impl App {
         self.with_marquee(area)
     }
 
-    pub(super) fn with_marquee<'a>(&'a self, area: Element<'a, Message>) -> Element<'a, Message> {
+    fn with_marquee(self, area: Element<'a, Message>) -> Element<'a, Message> {
         let Some(bounds) = self.grid.marquee_bounds(self.status_height()) else {
             return area;
         };
@@ -442,12 +491,12 @@ impl App {
         stack![area, overlay].into()
     }
 
-    pub(super) fn list_sort_header<'a>(
-        &self,
-        label: &'a str,
+    fn list_sort_header<'b>(
+        self,
+        label: &'b str,
         sort: fs::SortKey,
         width: impl Into<Length>,
-    ) -> Element<'a, Message> {
+    ) -> Element<'b, Message> {
         let options = self
             .view_preferences
             .for_directory(self.navigation.current());
@@ -486,12 +535,12 @@ impl App {
         .into()
     }
 
-    pub(super) fn list_column_visibility(&self) -> (bool, bool) {
+    fn list_column_visibility(self) -> (bool, bool) {
         let width = self.grid.window_width() + (SIDEBAR_WIDTH - self.grid.sidebar_width());
         (width >= LIST_SHOW_SIZE_AT, width >= LIST_SHOW_MODIFIED_AT)
     }
 
-    pub(super) fn list_name_character_limit(&self) -> usize {
+    fn list_name_character_limit(self) -> usize {
         let (show_size, show_modified) = self.list_column_visibility();
         let fixed_width = self.grid.sidebar_width()
             + CONTENT_GUTTER * 2.0
@@ -511,14 +560,14 @@ impl App {
         (available / LIST_NAME_APPROX_CHARACTER_WIDTH).floor() as usize
     }
 
-    pub(super) fn file_list_row(&self, index: usize) -> Element<'_, Message> {
+    fn file_list_row(self, index: usize) -> Element<'a, Message> {
         let entry = &self.navigation.entries()[index];
         let selected = self.grid.is_selected(index);
         let selected_above = index
             .checked_sub(1)
             .is_some_and(|neighbor| self.grid.is_selected(neighbor));
         let selected_below = self.grid.is_selected(index.saturating_add(1));
-        let focused = self.browser_focus == BrowserFocus::Entries
+        let focused = self.presentation.focus_is(BrowserFocus::Entries)
             && self.grid.selected_entry() == Some(index);
         let hovered = self.grid.hovered() == Some(index);
         let icon_kind = entry_icon_kind(entry);
@@ -624,14 +673,14 @@ impl App {
             .into()
     }
 
-    pub(super) fn file_tile(&self, index: usize) -> Element<'_, Message> {
+    fn file_tile(self, index: usize) -> Element<'a, Message> {
         let entry = &self.navigation.entries()[index];
         let label = tile_label(&clip_file_name(
             &fs::display_name(&entry.name),
             GRID_NAME_MAX_CHARACTERS,
         ));
         let selected = self.grid.is_selected(index);
-        let focused = self.browser_focus == BrowserFocus::Entries
+        let focused = self.presentation.focus_is(BrowserFocus::Entries)
             && self.grid.selected_entry() == Some(index);
         let hovered = self.grid.hovered() == Some(index);
         let drop_target = entry.is_directory()
@@ -698,8 +747,8 @@ impl App {
             .into()
     }
 
-    pub(super) fn drag_activation_bar(&self, path: &Path) -> Element<'_, Message> {
-        let Some(progress) = self.drag_hover.progress(path, Instant::now()) else {
+    fn drag_activation_bar(self, path: &Path) -> Element<'a, Message> {
+        let Some(progress) = self.grid.drag_hover_progress(path, Instant::now()) else {
             return Space::new().width(Fill).height(2).into();
         };
         let filled = ((progress * 100.0).round() as u16).clamp(1, 99);
@@ -716,5 +765,13 @@ impl App {
         .width(Fill)
         .height(2)
         .into()
+    }
+}
+
+impl Deref for View<'_> {
+    type Target = App;
+
+    fn deref(&self) -> &Self::Target {
+        self.app
     }
 }

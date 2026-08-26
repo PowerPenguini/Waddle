@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn set_tree_from_the_bottom_bar_updates_layout_without_persisting() {
     let temp = tempfile::tempdir().unwrap();
-    let config = temp.path().join("polarexprc");
+    let config = temp.path().join("waddlerc");
     let (mut app, _) = App::new();
     app.view_preferences = super::view_preferences::Preferences::empty_at(config.clone());
     app.sync_tree_visibility();
@@ -34,12 +34,12 @@ fn folders_first_is_a_setting_not_a_toolbar_control() {
     app.view_preferences
         .apply_command(app.navigation.current(), false, "folders-first=false")
         .unwrap();
-    app.browser_focus = BrowserFocus::Toolbar;
-    app.toolbar_cursor = usize::MAX;
+    app.presentation.set_focus(BrowserFocus::Toolbar);
+    app.presentation.set_toolbar_cursor(usize::MAX);
     let _ = app.move_focused(Motion::Last, 1, false);
 
-    assert_eq!(app.toolbar_cursor, 4);
-    assert_eq!(app.status, "Toolbar control 5 of 5");
+    assert_eq!(app.presentation.toolbar_cursor(), 4);
+    assert_eq!(app.presentation.status(), "Toolbar control 5 of 5");
     assert!(
         !app.view_preferences
             .for_directory(app.navigation.current())
@@ -79,22 +79,19 @@ fn list_columns_preserve_name_space_as_the_window_narrows() {
     let (mut app, _) = App::new();
 
     app.grid.resize(iced::Size::new(660.0, 600.0));
-    assert_eq!(app.list_column_visibility(), (false, false));
-    assert_eq!(app.list_name_character_limit(), 33);
+    assert_eq!(view::View::list_metrics(&app), ((false, false), 33));
 
     app.grid.resize(iced::Size::new(760.0, 600.0));
-    assert_eq!(app.list_column_visibility(), (true, false));
-    assert_eq!(app.list_name_character_limit(), 32);
+    assert_eq!(view::View::list_metrics(&app), ((true, false), 32));
 
     app.grid.resize(iced::Size::new(920.0, 600.0));
-    assert_eq!(app.list_column_visibility(), (true, true));
-    assert_eq!(app.list_name_character_limit(), 32);
+    assert_eq!(view::View::list_metrics(&app), ((true, true), 32));
 
     app.grid.set_sidebar_visible(false);
-    assert!(app.list_name_character_limit() > 32);
+    assert!(view::View::list_metrics(&app).1 > 32);
 
     app.grid.resize(iced::Size::new(660.0, 600.0));
-    assert_eq!(app.list_column_visibility(), (true, false));
+    assert_eq!(view::View::list_metrics(&app).0, (true, false));
 }
 
 #[test]
@@ -194,11 +191,11 @@ fn pdf_icon_keeps_a_contrasting_white_mark() {
 }
 
 #[test]
-fn tile_label_breaks_at_separators_without_splitting_the_extension() {
-    assert_eq!(
-        super::tile_label("Mateusz_Jaskiewicz_CV_ATS.pdf"),
-        "Mateusz_\u{200b}Jaskiewicz_\u{200b}CV_\u{200b}ATS\u{00a0}.pdf"
-    );
+fn tile_label_keeps_the_extension_attached_without_visible_space() {
+    let label = super::tile_label("rootfs-pkgs.txt");
+
+    assert_eq!(label, "rootfs-pkgs\u{2060}.txt");
+    assert!(!label.chars().any(char::is_whitespace));
 }
 
 #[test]
@@ -212,43 +209,6 @@ fn long_file_names_are_clipped_without_losing_the_extension() {
         super::clip_file_name("zażółćgęślą_report.txt", 12),
         "zażółćg….txt"
     );
-}
-
-#[test]
-fn scrollbar_fades_in_holds_and_fades_out_after_scrolling() {
-    let now = iced::time::Instant::now();
-    let mut visibility = super::ScrollbarVisibility::default();
-
-    assert!(!visibility.is_visible());
-    assert_eq!(visibility.opacity(now, false), 0.0);
-    visibility.show(now);
-    assert!(visibility.is_visible());
-    assert_eq!(visibility.opacity(now, false), 0.0);
-    assert_eq!(
-        visibility.opacity(now + super::SCROLLBAR_FADE_IN / 2, false),
-        0.5
-    );
-    assert_eq!(
-        visibility.opacity(now + super::SCROLLBAR_FADE_IN, false),
-        1.0
-    );
-    assert_eq!(visibility.opacity(now + super::SCROLLBAR_HOLD, false), 1.0);
-    assert_eq!(
-        visibility.opacity(
-            now + super::SCROLLBAR_HOLD + super::SCROLLBAR_FADE_OUT / 2,
-            false
-        ),
-        0.5
-    );
-    assert_eq!(visibility.opacity(now, true), 1.0);
-
-    visibility.hide_if_elapsed(
-        now + super::SCROLLBAR_HOLD + super::SCROLLBAR_FADE_OUT - Duration::from_millis(1),
-    );
-    assert!(visibility.is_visible());
-
-    visibility.hide_if_elapsed(now + super::SCROLLBAR_HOLD + super::SCROLLBAR_FADE_OUT);
-    assert!(!visibility.is_visible());
 }
 
 #[test]
@@ -337,14 +297,28 @@ fn list_selection_rounds_only_the_outer_edges_of_each_block() {
 }
 
 #[test]
+fn list_hover_rounds_the_whole_row() {
+    let theme = iced::Theme::Dark;
+    let hovered = super::list_row_style(&theme, false, true, false, false, false);
+    let tile = super::tile_style(&theme, false, true, false, false);
+
+    assert_eq!(hovered.border.radius, tile.border.radius);
+}
+
+#[test]
 fn spinner_animation_runs_for_tree_and_background_loading() {
     let (mut app, _) = App::new();
     assert!(app.spinner_active());
 
-    app.explorer.roots[0].loading = false;
+    let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
+    assert!(
+        app.sidebar_tree
+            .install_children(root_id, Path::new("/"), Vec::new())
+    );
     app.navigation.settle_for_test();
     assert!(!app.spinner_active());
 
-    app.busy = true;
+    let activity = app.operations.begin_foreground();
     assert!(app.spinner_active());
+    drop(activity);
 }

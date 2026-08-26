@@ -22,12 +22,16 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
         .unwrap();
     let request = state.paste(destination.clone()).unwrap();
     let (mut app, _) = App::new();
-    let work = app.transfers.enqueue(request.clone()).unwrap().unwrap();
+    let work = app
+        .transfers
+        .enqueue_work(request.clone())
+        .unwrap()
+        .unwrap();
     let id = work.id();
     let outcome = work.run();
     let _ = app.finish_transfer_batch(id, outcome);
 
-    assert!(app.transfers.has_conflict());
+    assert!(app.transfers.overview().conflict_prompt.is_some());
     let trashed = FileEntry {
         path: temp.path().join("trash/files/notes.txt"),
         name: "notes.txt".into(),
@@ -45,8 +49,8 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
         }]);
     app.grid.select_only(Some(0), 1);
     let _ = app.restore_selected_trash();
-    assert!(!app.busy);
-    assert!(app.transfers.has_conflict());
+    assert!(!app.foreground_operation_active());
+    assert!(app.transfers.overview().conflict_prompt.is_some());
 
     app.browser_input.enter(InputMode::Search);
     app.transfers.toggle_expanded();
@@ -61,8 +65,9 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
     assert!(!conflict.history);
 
     let _ = app.cancel_transfer_conflict();
-    assert!(app.transfers.has_retry());
-    app.status_notice = Some("External move or removal confirmed".to_owned());
+    assert!(app.transfers.overview().retry);
+    app.presentation
+        .set_notice("External move or removal confirmed".to_owned());
     let notice = app.browser_status_model();
     assert_eq!(notice.presentation, BrowserStatusPresentation::General);
     assert_eq!(notice.text, "External move or removal confirmed");
@@ -87,7 +92,8 @@ fn copy_message_uses_the_complete_visual_selection_in_display_order() {
     let _ = app.update(Message::Copy);
     let request = app.transfers.paste(PathBuf::from("/target")).unwrap();
 
-    assert_eq!(app.status, "Copied 3 items");
+    assert_eq!(app.presentation.status(), "Copied 3 items");
+    assert_eq!(app.presentation.copy_feedback_intensity(false), 1.0);
     assert_eq!(
         request.paths,
         [
@@ -122,7 +128,7 @@ fn system_clipboard_completion_enters_the_same_transfer_session() {
     let request = app.transfers.paste(destination).unwrap();
     assert_eq!(request.paths, paths);
     assert_eq!(request.action, TransferAction::Copy);
-    assert!(app.transfers.active());
+    assert!(app.transfers.overview().active);
 }
 
 #[test]
@@ -238,8 +244,8 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
     }));
     assert!(app.transfers.pending_cut_paths().is_empty());
     assert!(
-        app.status_notice
-            .as_deref()
+        app.presentation
+            .notice()
             .unwrap()
             .contains("External move or removal confirmed")
     );
@@ -258,8 +264,12 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
     let content_top =
         TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
     let start = iced::Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top + 110.0);
+    let column_width = app
+        .grid
+        .visible_range(app.navigation.entries().len(), app.status_height())
+        .column_width;
     let end = iced::Point::new(
-        SIDEBAR_WIDTH + CONTENT_GUTTER + app.grid.column_width() + 2.0,
+        SIDEBAR_WIDTH + CONTENT_GUTTER + column_width + 2.0,
         content_top + TILE_ROW_HEIGHT + 30.0,
     );
 
@@ -365,7 +375,7 @@ fn entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item() {
         }),
         event::Status::Ignored,
     );
-    assert!(app.transfers.active_drag_index().is_none());
+    assert!(!app.transfers.overview().pointer_drag.is_active());
 
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::CursorMoved {
@@ -373,7 +383,7 @@ fn entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item() {
         }),
         event::Status::Ignored,
     );
-    assert_eq!(app.transfers.active_drag_index(), Some(1));
+    assert_eq!(app.transfers.overview().pointer_drag.index(), Some(1));
     assert_eq!(app.grid.selected_entry(), Some(1));
     assert_eq!(
         app.grid
@@ -386,16 +396,84 @@ fn entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item() {
 }
 
 #[test]
+fn mouse_navigation_cancels_an_interrupted_entry_drag() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("document.txt")]);
+    app.grid.move_cursor(
+        iced::Point::new(100.0, 100.0),
+        app.navigation.entries().len(),
+    );
+
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(110.0, 100.0),
+        }),
+        event::Status::Ignored,
+    );
+
+    assert!(!app.transfers.overview().pointer_drag.is_active());
+}
+
+#[test]
+fn navigation_transition_owns_pointer_cleanup_except_for_drag_hover() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("document.txt")]);
+    app.grid.move_cursor(
+        iced::Point::new(100.0, 100.0),
+        app.navigation.entries().len(),
+    );
+
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.update(Message::Back);
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(110.0, 100.0),
+        }),
+        event::Status::Ignored,
+    );
+    assert!(!app.transfers.overview().pointer_drag.is_active());
+
+    app.grid.move_cursor(
+        iced::Point::new(100.0, 100.0),
+        app.navigation.entries().len(),
+    );
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(110.0, 100.0),
+        }),
+        event::Status::Ignored,
+    );
+    assert!(app.transfers.overview().pointer_drag.is_active());
+
+    let _ = app.transition_navigation(NavigationTransition::Hover {
+        requested: PathBuf::from("/hovered"),
+    });
+    assert!(app.transfers.overview().pointer_drag.is_active());
+}
+
+#[test]
 fn internal_drag_preview_only_appears_after_the_drag_threshold() {
     let (mut app, _) = App::new();
     app.navigation.replace_displayed_entries(vec![entry("one")]);
     app.transfers.press(0, iced::Point::ORIGIN, 1);
-    assert!(app.drag_preview_view().is_none());
+    assert!(view::View::drag_preview_layer(&app).is_none());
 
-    app.transfers.move_pointer(iced::Point::new(6.0, 0.0));
-    app.transfers
-        .capture_drag_entries(app.navigation.entries(), app.grid.selected_indices());
-    assert!(app.drag_preview_view().is_some());
+    app.transfers.move_pointer(
+        iced::Point::new(6.0, 0.0),
+        app.navigation.entries(),
+        app.grid.selected_indices(),
+    );
+    assert!(view::View::drag_preview_layer(&app).is_some());
 }
 
 #[test]

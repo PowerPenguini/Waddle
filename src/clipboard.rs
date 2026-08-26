@@ -7,7 +7,7 @@ use crate::transfer::{Action, ClipboardImport, ClipboardPayload};
 pub(crate) const URI_LIST_MIME: &str = "text/uri-list";
 pub(crate) const GNOME_MIME: &str = "x-special/gnome-copied-files";
 pub(crate) const KDE_CUT_MIME: &str = "application/x-kde-cutselection";
-pub(crate) const POLAREXP_MIME: &str = "application/x-polarexp-file-list";
+pub(crate) const WADDLE_MIME: &str = "application/x-waddle-file-list";
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 10_000;
 
@@ -50,14 +50,14 @@ pub(crate) fn encode(payload: &ClipboardPayload) -> Result<EncodedOffer, String>
             .collect::<String>()
     );
     let private = format!(
-        "polarexp-v1\ngeneration={}\naction={action}\n{}",
+        "waddle-v1\ngeneration={}\naction={action}\n{}",
         payload.generation,
         uris.iter()
             .map(|uri| format!("{uri}\n"))
             .collect::<String>()
     );
     let entries = vec![
-        (POLAREXP_MIME, private.into_bytes()),
+        (WADDLE_MIME, private.into_bytes()),
         (GNOME_MIME, gnome.into_bytes()),
         (URI_LIST_MIME, uri_list.into_bytes()),
         (
@@ -74,6 +74,28 @@ pub(crate) fn encode(payload: &ClipboardPayload) -> Result<EncodedOffer, String>
     Ok(EncodedOffer { entries })
 }
 
+pub(crate) fn encode_uri_list(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
+    validate_entry_count(paths.len())?;
+    let data = encode_uris(paths)?
+        .into_iter()
+        .map(|uri| format!("{uri}\r\n"))
+        .collect::<String>()
+        .into_bytes();
+    if data.len() > MAX_BYTES {
+        return Err("the file list is larger than 4 MiB".to_owned());
+    }
+    Ok(data)
+}
+
+pub(crate) fn decode_uri_list(data: &[u8]) -> Result<Vec<PathBuf>, String> {
+    if data.len() > MAX_BYTES {
+        return Err("the file list is larger than 4 MiB".to_owned());
+    }
+    let text = std::str::from_utf8(data)
+        .map_err(|error| format!("the file list is not UTF-8: {error}"))?;
+    decode_uri_lines(text.lines())
+}
+
 pub(crate) fn decode(mime: &str, data: &[u8]) -> Result<ClipboardImport, String> {
     if data.len() > MAX_BYTES {
         return Err("the clipboard payload is larger than 4 MiB".to_owned());
@@ -82,7 +104,7 @@ pub(crate) fn decode(mime: &str, data: &[u8]) -> Result<ClipboardImport, String>
         .map_err(|error| format!("the clipboard payload is not UTF-8: {error}"))?;
     match mime {
         URI_LIST_MIME => Ok(ClipboardImport {
-            paths: decode_uri_lines(text.lines())?,
+            paths: decode_uri_list(data)?,
             action: Action::Copy,
             generation: None,
         }),
@@ -99,7 +121,7 @@ pub(crate) fn decode(mime: &str, data: &[u8]) -> Result<ClipboardImport, String>
                 generation: None,
             })
         }
-        POLAREXP_MIME => decode_private(text),
+        WADDLE_MIME => decode_private(text),
         _ => Err(format!("unsupported clipboard format: {mime}")),
     }
 }
@@ -112,14 +134,14 @@ pub(crate) fn decode_offer(entries: &[(&str, &[u8])]) -> Result<ClipboardImport,
     for &(mime, data) in entries {
         match mime {
             GNOME_MIME if data.is_empty() => {}
-            POLAREXP_MIME | GNOME_MIME | URI_LIST_MIME => match decode(mime, data) {
+            WADDLE_MIME | GNOME_MIME | URI_LIST_MIME => match decode(mime, data) {
                 Ok(import) => {
                     if mime != URI_LIST_MIME {
                         markers.push(import.action);
                     }
                     imports.push(import);
                 }
-                Err(_) if mime == POLAREXP_MIME || mime == GNOME_MIME => {
+                Err(_) if mime == WADDLE_MIME || mime == GNOME_MIME => {
                     malformed_marker = true;
                 }
                 Err(error) => return Err(error),
@@ -161,7 +183,10 @@ fn encode_uris(paths: &[PathBuf]) -> Result<Vec<String>, String> {
         .iter()
         .map(|path| {
             if !path.is_absolute() {
-                return Err(format!("cannot copy a relative path: {}", path.display()));
+                return Err(format!(
+                    "cannot transfer a relative path: {}",
+                    path.display()
+                ));
             }
             Ok(gio::File::for_path(path).uri().to_string())
         })
@@ -177,39 +202,39 @@ fn decode_uri_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<Vec<
             continue;
         }
         if !uri.starts_with("file:///") {
-            return Err(format!("unsupported clipboard URI: {uri}"));
+            return Err(format!("unsupported file URI: {uri}"));
         }
         entry_count += 1;
         validate_entry_count(entry_count)?;
         let path = gio::File::for_uri(uri)
             .path()
             .filter(|path| path.is_absolute())
-            .ok_or_else(|| format!("unsupported clipboard URI: {uri}"))?;
+            .ok_or_else(|| format!("unsupported file URI: {uri}"))?;
         if !paths.contains(&path) {
             paths.push(path);
         }
     }
     if paths.is_empty() {
-        return Err("the clipboard does not contain local file paths".to_owned());
+        return Err("the file list does not contain local paths".to_owned());
     }
     Ok(paths)
 }
 
 fn decode_private(text: &str) -> Result<ClipboardImport, String> {
     let mut lines = text.lines();
-    if lines.next() != Some("polarexp-v1") {
-        return Err("the PolarExp clipboard version is unsupported".to_owned());
+    if lines.next() != Some("waddle-v1") {
+        return Err("the Waddle clipboard version is unsupported".to_owned());
     }
     let generation = lines
         .next()
         .and_then(|line| line.strip_prefix("generation="))
-        .ok_or_else(|| "the PolarExp clipboard generation is missing".to_owned())?
+        .ok_or_else(|| "the Waddle clipboard generation is missing".to_owned())?
         .parse::<u64>()
-        .map_err(|_| "the PolarExp clipboard generation is invalid".to_owned())?;
+        .map_err(|_| "the Waddle clipboard generation is invalid".to_owned())?;
     let action = match lines.next().and_then(|line| line.strip_prefix("action=")) {
         Some("copy") => Action::Copy,
         Some("cut") => Action::Move,
-        _ => return Err("the PolarExp clipboard action is invalid".to_owned()),
+        _ => return Err("the Waddle clipboard action is invalid".to_owned()),
     };
     Ok(ClipboardImport {
         paths: decode_uri_lines(lines)?,
@@ -220,10 +245,10 @@ fn decode_private(text: &str) -> Result<ClipboardImport, String> {
 
 fn validate_entry_count(count: usize) -> Result<(), String> {
     if count == 0 {
-        Err("the clipboard does not contain local file paths".to_owned())
+        Err("the file list does not contain local paths".to_owned())
     } else if count > MAX_ENTRIES {
         Err(format!(
-            "the clipboard contains more than {MAX_ENTRIES} entries"
+            "the file list contains more than {MAX_ENTRIES} entries"
         ))
     } else {
         Ok(())
@@ -243,12 +268,55 @@ mod tests {
     }
 
     #[test]
+    fn uri_list_round_trips_escaped_local_paths_and_comments() {
+        let encoded = encode_uri_list(&[
+            PathBuf::from("/tmp/a file.txt"),
+            PathBuf::from("/tmp/second.txt"),
+        ])
+        .unwrap();
+        assert_eq!(
+            encoded,
+            b"file:///tmp/a%20file.txt\r\nfile:///tmp/second.txt\r\n"
+        );
+
+        let decoded =
+            decode_uri_list(b"# source\r\nfile:///tmp/a%20file.txt\r\nfile:///tmp/a%20file.txt\n")
+                .unwrap();
+        assert_eq!(decoded, [PathBuf::from("/tmp/a file.txt")]);
+    }
+
+    #[test]
+    fn uri_list_rejects_relative_remote_empty_and_oversized_input() {
+        assert!(encode_uri_list(&[PathBuf::from("relative")]).is_err());
+        assert!(decode_uri_list(b"file://remote/tmp/one\r\n").is_err());
+        assert!(decode_uri_list(b"# only a comment\n").is_err());
+        assert!(decode_uri_list(&vec![b'x'; MAX_BYTES + 1]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uri_list_preserves_symlink_names() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::write(&target, "data").unwrap();
+        let link = directory.path().join("visible-link");
+        symlink(&target, &link).unwrap();
+
+        let encoded = encode_uri_list(std::slice::from_ref(&link)).unwrap();
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(text.ends_with("/visible-link\r\n"));
+        assert!(!text.ends_with("/target\r\n"));
+    }
+
+    #[test]
     fn one_offer_encodes_every_interoperable_clipboard_format() {
         let encoded = encode(&payload(Action::Copy)).unwrap();
 
         assert_eq!(
             encoded.mime_types().collect::<Vec<_>>(),
-            [POLAREXP_MIME, GNOME_MIME, URI_LIST_MIME, KDE_CUT_MIME]
+            [WADDLE_MIME, GNOME_MIME, URI_LIST_MIME, KDE_CUT_MIME]
         );
         assert_eq!(encoded.data(KDE_CUT_MIME), Some(b"0".as_slice()));
         assert_eq!(
@@ -287,15 +355,15 @@ mod tests {
     #[test]
     fn private_payload_round_trips_generation_and_rejects_contradictions() {
         let encoded = encode(&payload(Action::Move)).unwrap();
-        let decoded = decode(POLAREXP_MIME, encoded.data(POLAREXP_MIME).unwrap()).unwrap();
+        let decoded = decode(WADDLE_MIME, encoded.data(WADDLE_MIME).unwrap()).unwrap();
 
         assert_eq!(decoded.paths, payload(Action::Move).paths);
         assert_eq!(decoded.action, Action::Move);
         assert_eq!(decoded.generation, Some(42));
 
         let contradictory =
-            b"polarexp-v1\ngeneration=1\ngeneration=2\naction=copy\nfile:///tmp/one\n";
-        assert!(decode(POLAREXP_MIME, contradictory).is_err());
+            b"waddle-v1\ngeneration=1\ngeneration=2\naction=copy\nfile:///tmp/one\n";
+        assert!(decode(WADDLE_MIME, contradictory).is_err());
     }
 
     #[test]

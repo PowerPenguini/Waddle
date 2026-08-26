@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-const PWD_MARKER: &[u8] = b"\0POLAREXP_PWD\0";
+const PWD_MARKER: &[u8] = b"\0WADDLE_PWD\0";
 const OUTPUT_LIMIT: usize = 128 * 1024;
 const OUTPUT_TAIL: usize = 4 * 1024;
 const STREAM_TRUNCATED: &[u8] = b"\n\n... output truncated while command was running ...\n\n";
@@ -26,13 +26,13 @@ const MAX_SCREEN_CONTROL_SEQUENCE_LEN: usize = 8;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandMode {
     Bash,
-    PolarExp,
+    Waddle,
 }
 
 impl CommandMode {
     fn from_prefix(prefix: char) -> Self {
         if prefix == ':' {
-            Self::PolarExp
+            Self::Waddle
         } else {
             Self::Bash
         }
@@ -147,15 +147,15 @@ pub(super) fn execute(
     let mut child = Command::new("bash")
         .arg("-c")
         .arg(
-            r#"command_text=$POLAREXP_COMMAND_TEXT
-unset POLAREXP_COMMAND_TEXT
+            r#"command_text=$WADDLE_COMMAND_TEXT
+unset WADDLE_COMMAND_TEXT
 eval "$command_text"
 status=$?
-printf '\x00POLAREXP_PWD\x00%s\x00' "$PWD"
+printf '\x00WADDLE_PWD\x00%s\x00' "$PWD"
 exit "$status""#,
         )
-        .arg("polarexp")
-        .env("POLAREXP_COMMAND_TEXT", command)
+        .arg("waddle")
+        .env("WADDLE_COMMAND_TEXT", command)
         .current_dir(current)
         .process_group(0)
         .stdin(Stdio::null())
@@ -178,8 +178,7 @@ exit "$status""#,
     if screen_detected.load(Ordering::Acquire) {
         return Err(ShellError::RequiresTerminal);
     }
-    let final_directory =
-        take_final_directory(&mut stdout).filter(|_| mode == CommandMode::PolarExp);
+    let final_directory = take_final_directory(&mut stdout).filter(|_| mode == CommandMode::Waddle);
     let status_text = status.code().map_or_else(
         || "terminated by signal".to_owned(),
         |code| format!("exit {code}"),

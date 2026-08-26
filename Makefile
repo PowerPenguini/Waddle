@@ -5,9 +5,9 @@ INSTALL ?= install
 PREFIX ?= /usr
 DESTDIR ?=
 CARGO_TARGET_DIR ?= target
-BINARY ?= $(CARGO_TARGET_DIR)/release/polarexp
+BINARY ?= $(CARGO_TARGET_DIR)/release/waddle
 
-APP_ID := io.github.powerpenguini.PolarExp
+APP_ID := io.github.powerpenguini.Waddle
 BINDIR := $(PREFIX)/bin
 DATADIR := $(PREFIX)/share
 APPLICATIONSDIR := $(DATADIR)/applications
@@ -27,7 +27,7 @@ check:
 	test -x "$(BINARY)"
 
 install: check
-	$(INSTALL) -Dm0755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/polarexp"
+	$(INSTALL) -Dm0755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/waddle"
 	$(INSTALL) -Dm0644 "data/$(APP_ID).desktop" \
 		"$(DESTDIR)$(APPLICATIONSDIR)/$(APP_ID).desktop"
 	$(INSTALL) -Dm0644 "data/$(APP_ID).metainfo.xml" \
@@ -37,7 +37,7 @@ install: check
 	$(MAKE) refresh-desktop-caches
 
 uninstall:
-	rm -f -- "$(DESTDIR)$(BINDIR)/polarexp"
+	rm -f -- "$(DESTDIR)$(BINDIR)/waddle"
 	rm -f -- "$(DESTDIR)$(APPLICATIONSDIR)/$(APP_ID).desktop"
 	rm -f -- "$(DESTDIR)$(METAINFODIR)/$(APP_ID).metainfo.xml"
 	rm -f -- "$(DESTDIR)$(ICONDIR)/$(APP_ID).svg"

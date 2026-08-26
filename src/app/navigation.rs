@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::fs::FileEntry;
 
-use super::trash;
+use super::{grid::GridInteraction, trash};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Kind {
@@ -17,6 +17,27 @@ pub(super) enum DisplayedLocation {
     Folder,
     Recent,
     Trash,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Transition {
+    Open {
+        requested: PathBuf,
+        remember: bool,
+        select: Option<PathBuf>,
+    },
+    Hover {
+        requested: PathBuf,
+    },
+    Parent,
+    Back,
+    HistoryForward,
+}
+
+impl Transition {
+    pub(super) fn preserves_pointer_interaction(&self) -> bool {
+        matches!(self, Self::Hover { .. })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,17 +64,48 @@ impl Request {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct Commit {
+    selected: Vec<usize>,
+    reset_scroll: bool,
+    location: DisplayedLocation,
+    location_input: String,
+    status: String,
+}
+
+impl Commit {
+    pub(super) fn apply_grid(
+        &self,
+        grid: &mut GridInteraction,
+        entry_count: usize,
+        list_mode: bool,
+    ) {
+        grid.install_navigation(&self.selected, entry_count, list_mode, self.reset_scroll);
+    }
+
+    pub(super) fn location(&self) -> DisplayedLocation {
+        self.location
+    }
+
+    pub(super) fn location_input(&self) -> &str {
+        &self.location_input
+    }
+
+    pub(super) fn status(&self) -> &str {
+        &self.status
+    }
+
+    #[cfg(test)]
+    fn selected(&self) -> &[usize] {
+        &self.selected
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum Outcome {
     Ignored,
-    Failed {
-        error: String,
-        refresh: bool,
-    },
-    Committed {
-        selected: Vec<usize>,
-        refresh: bool,
-        location: DisplayedLocation,
-    },
+    Failed(String),
+    Redirect { request: Request, notice: String },
+    Committed(Commit),
 }
 
 pub(super) enum Completion {
@@ -71,6 +123,9 @@ struct Display {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct SearchDisplay(Display);
+
+#[derive(Clone, Debug)]
 pub(super) struct NavigationSession {
     current: PathBuf,
     history: Vec<PathBuf>,
@@ -78,7 +133,6 @@ pub(super) struct NavigationSession {
     display: Display,
     pending: Option<Request>,
     next_request_id: u64,
-    recursive_origin: Option<Display>,
 }
 
 impl NavigationSession {
@@ -94,7 +148,6 @@ impl NavigationSession {
             },
             pending: None,
             next_request_id: 1,
-            recursive_origin: None,
         }
     }
 
@@ -138,7 +191,21 @@ impl NavigationSession {
         !self.forward_history.is_empty()
     }
 
-    pub(super) fn parent(&mut self) -> Option<Request> {
+    pub(super) fn transition(&mut self, transition: Transition) -> Option<Request> {
+        match transition {
+            Transition::Open {
+                requested,
+                remember,
+                select,
+            } => Some(self.forward(requested, remember, select)),
+            Transition::Hover { requested } => Some(self.forward(requested, true, None)),
+            Transition::Parent => self.parent(),
+            Transition::Back => self.back(),
+            Transition::HistoryForward => self.history_forward(),
+        }
+    }
+
+    fn parent(&mut self) -> Option<Request> {
         if !self.folder_displayed() {
             return Some(self.forward(self.current.clone(), false, None));
         }
@@ -147,12 +214,7 @@ impl NavigationSession {
         Some(self.forward(parent, true, Some(current)))
     }
 
-    pub(super) fn forward(
-        &mut self,
-        requested: PathBuf,
-        remember: bool,
-        select: Option<PathBuf>,
-    ) -> Request {
+    fn forward(&mut self, requested: PathBuf, remember: bool, select: Option<PathBuf>) -> Request {
         self.begin(
             Target::Folder {
                 requested,
@@ -162,7 +224,7 @@ impl NavigationSession {
         )
     }
 
-    pub(super) fn back(&mut self) -> Option<Request> {
+    fn back(&mut self) -> Option<Request> {
         if !self.folder_displayed() {
             return Some(self.forward(self.current.clone(), false, None));
         }
@@ -176,7 +238,7 @@ impl NavigationSession {
         ))
     }
 
-    pub(super) fn history_forward(&mut self) -> Option<Request> {
+    fn history_forward(&mut self) -> Option<Request> {
         if !self.folder_displayed() {
             return Some(self.forward(self.current.clone(), false, None));
         }
@@ -220,7 +282,12 @@ impl NavigationSession {
         request
     }
 
-    pub(super) fn complete(&mut self, request: &Request, completion: Completion) -> Outcome {
+    pub(super) fn complete_with_hidden_paths(
+        &mut self,
+        request: &Request,
+        completion: Completion,
+        hidden_paths: &[PathBuf],
+    ) -> Outcome {
         if self.pending.as_ref().map(|pending| pending.id) != Some(request.id) {
             return Outcome::Ignored;
         }
@@ -230,7 +297,7 @@ impl NavigationSession {
         }
         match (&request.target, completion) {
             (Target::Folder { kind, .. }, Completion::Folder(result)) => {
-                self.complete_folder(kind, &request.select, result)
+                self.complete_folder(kind, &request.select, result, hidden_paths)
             }
             (Target::Recent, Completion::Recent(result)) => self.complete_recent(result),
             (Target::Trash, Completion::Trash(result)) => self.complete_trash(result),
@@ -238,19 +305,33 @@ impl NavigationSession {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn complete(&mut self, request: &Request, completion: Completion) -> Outcome {
+        self.complete_with_hidden_paths(request, completion, &[])
+    }
+
     fn complete_folder(
         &mut self,
         kind: &Kind,
         select: &[PathBuf],
         result: Result<(PathBuf, Vec<FileEntry>), String>,
+        hidden_paths: &[PathBuf],
     ) -> Outcome {
-        let (canonical, entries) = match result {
+        let (canonical, mut entries) = match result {
             Ok(opened) => opened,
             Err(error) => {
-                return Outcome::Failed {
-                    error,
-                    refresh: matches!(kind, Kind::Refresh),
-                };
+                if matches!(kind, Kind::Refresh) && !self.current.is_dir() {
+                    let missing = self.current.clone();
+                    let ancestor = nearest_existing_ancestor(&missing);
+                    let notice = format!(
+                        "{} disappeared; opened {}",
+                        missing.display(),
+                        ancestor.display()
+                    );
+                    let request = self.forward(ancestor, false, None);
+                    return Outcome::Redirect { request, notice };
+                }
+                return Outcome::Failed(error);
             }
         };
         let refresh = matches!(kind, Kind::Refresh);
@@ -280,6 +361,7 @@ impl NavigationSession {
             }
             Kind::Refresh => self.current = canonical,
         }
+        entries.retain(|entry| !hidden_paths.iter().any(|path| path == &entry.path));
         let selected = entries
             .iter()
             .enumerate()
@@ -290,46 +372,26 @@ impl NavigationSession {
             entries,
             trash_entries: Vec::new(),
         };
-        self.recursive_origin = None;
-        Outcome::Committed {
-            selected,
-            refresh,
-            location: DisplayedLocation::Folder,
-        }
+        self.commit(selected, refresh, DisplayedLocation::Folder)
     }
 
     fn complete_recent(&mut self, result: Result<Vec<FileEntry>, String>) -> Outcome {
         let entries = match result {
             Ok(entries) => entries,
-            Err(error) => {
-                return Outcome::Failed {
-                    error,
-                    refresh: false,
-                };
-            }
+            Err(error) => return Outcome::Failed(error),
         };
         self.display = Display {
             location: DisplayedLocation::Recent,
             entries,
             trash_entries: Vec::new(),
         };
-        self.recursive_origin = None;
-        Outcome::Committed {
-            selected: Vec::new(),
-            refresh: false,
-            location: DisplayedLocation::Recent,
-        }
+        self.commit(Vec::new(), false, DisplayedLocation::Recent)
     }
 
     fn complete_trash(&mut self, result: Result<Vec<trash::Entry>, String>) -> Outcome {
         let trash_entries = match result {
             Ok(entries) => entries,
-            Err(error) => {
-                return Outcome::Failed {
-                    error,
-                    refresh: false,
-                };
-            }
+            Err(error) => return Outcome::Failed(error),
         };
         let entries = trash_entries
             .iter()
@@ -340,28 +402,34 @@ impl NavigationSession {
             entries,
             trash_entries,
         };
-        self.recursive_origin = None;
-        Outcome::Committed {
-            selected: Vec::new(),
-            refresh: false,
-            location: DisplayedLocation::Trash,
-        }
+        self.commit(Vec::new(), false, DisplayedLocation::Trash)
     }
 
-    pub(super) fn begin_recursive_display(&mut self) {
-        if self.recursive_origin.is_none() {
-            self.recursive_origin = Some(self.display.clone());
-        }
+    fn commit(&self, selected: Vec<usize>, refresh: bool, location: DisplayedLocation) -> Outcome {
+        let status = match location {
+            DisplayedLocation::Folder => String::new(),
+            DisplayedLocation::Recent => format!("{} items  •  Recent", self.entries().len()),
+            DisplayedLocation::Trash => format!("{} items  •  Trash", self.entries().len()),
+        };
+        Outcome::Committed(Commit {
+            selected,
+            reset_scroll: !refresh,
+            location,
+            location_input: self.location_label(),
+            status,
+        })
     }
 
-    pub(super) fn install_recursive_entries(&mut self, entries: Vec<FileEntry>) {
+    pub(super) fn capture_search_display(&self) -> SearchDisplay {
+        SearchDisplay(self.display.clone())
+    }
+
+    pub(super) fn install_search_entries(&mut self, entries: Vec<FileEntry>) {
         self.display.entries = entries;
     }
 
-    pub(super) fn restore_recursive_display(&mut self) {
-        if let Some(display) = self.recursive_origin.take() {
-            self.display = display;
-        }
+    pub(super) fn restore_search_display(&mut self, display: SearchDisplay) {
+        self.display = display.0;
     }
 
     pub(super) fn hide_paths(&mut self, paths: &[PathBuf]) {
@@ -413,6 +481,18 @@ impl NavigationSession {
     }
 }
 
+fn nearest_existing_ancestor(path: &Path) -> PathBuf {
+    let mut candidate = path.to_path_buf();
+    loop {
+        if candidate.is_dir() {
+            return candidate;
+        }
+        if !candidate.pop() {
+            return PathBuf::from("/");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -443,29 +523,35 @@ mod tests {
     #[test]
     fn forward_back_and_history_forward_share_one_session() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let request = session.forward(PathBuf::from("/next"), true, None);
+        let request = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/next"),
+                remember: true,
+                select: None,
+            })
+            .unwrap();
         assert!(matches!(
             session.complete(
                 &request,
                 Completion::Folder(Ok((PathBuf::from("/next"), vec![])))
             ),
-            Outcome::Committed { .. }
+            Outcome::Committed(_)
         ));
         assert_eq!(session.current(), Path::new("/next"));
         assert!(session.can_go_back());
 
-        let request = session.back().unwrap();
+        let request = session.transition(Transition::Back).unwrap();
         assert!(matches!(
             session.complete(
                 &request,
                 Completion::Folder(Ok((PathBuf::from("/start"), vec![])))
             ),
-            Outcome::Committed { .. }
+            Outcome::Committed(_)
         ));
         assert_eq!(session.current(), Path::new("/start"));
         assert!(session.can_go_forward());
 
-        let request = session.history_forward().unwrap();
+        let request = session.transition(Transition::HistoryForward).unwrap();
         let _ = session.complete(
             &request,
             Completion::Folder(Ok((PathBuf::from("/next"), vec![]))),
@@ -476,8 +562,20 @@ mod tests {
     #[test]
     fn stale_and_failed_completions_cannot_commit() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let stale = session.forward(PathBuf::from("/stale"), true, None);
-        let latest = session.forward(PathBuf::from("/latest"), true, None);
+        let stale = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/stale"),
+                remember: true,
+                select: None,
+            })
+            .unwrap();
+        let latest = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/latest"),
+                remember: true,
+                select: None,
+            })
+            .unwrap();
 
         assert!(matches!(
             session.complete(
@@ -492,7 +590,7 @@ mod tests {
                 &latest,
                 Completion::Folder(Err("missing".to_owned()))
             ),
-            Outcome::Failed { error, .. } if error == "missing"
+            Outcome::Failed(error) if error == "missing"
         ));
         assert_eq!(session.current(), Path::new("/start"));
     }
@@ -516,7 +614,7 @@ mod tests {
                 &latest,
                 Completion::Folder(Ok((PathBuf::from("/start"), vec![entry("/start/latest")])))
             ),
-            Outcome::Committed { .. }
+            Outcome::Committed(_)
         ));
         assert_eq!(session.entries()[0].path, PathBuf::from("/start/latest"));
         assert!(!session.loading());
@@ -534,12 +632,9 @@ mod tests {
                 &recent,
                 Completion::Recent(Ok(vec![entry("/elsewhere/recent")]))
             ),
-            Outcome::Committed {
-                location: DisplayedLocation::Recent,
-                ..
-            }
+            Outcome::Committed(commit) if commit.location() == DisplayedLocation::Recent
         ));
-        let exit = session.back().unwrap();
+        let exit = session.transition(Transition::Back).unwrap();
         assert_eq!(exit.requested(), Some(Path::new("/start")));
         let _ = session.complete(
             &exit,
@@ -557,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_overlay_and_recursive_restore_keep_one_coherent_display() {
+    fn failed_overlay_keeps_one_coherent_display() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
         session.install_trash_entries(vec![trash_entry("/trash/files/item", "/original/item")]);
         let failed = session.recent();
@@ -566,14 +661,11 @@ mod tests {
                 &failed,
                 Completion::Recent(Err("history unavailable".to_owned()))
             ),
-            Outcome::Failed { .. }
+            Outcome::Failed(_)
         ));
         assert_eq!(session.displayed_location(), DisplayedLocation::Trash);
         assert_eq!(session.trash_entries().len(), 1);
 
-        session.begin_recursive_display();
-        session.install_recursive_entries(vec![entry("/start/search-result")]);
-        session.restore_recursive_display();
         assert_eq!(session.displayed_location(), DisplayedLocation::Trash);
         assert_eq!(
             session.entries()[0].path,
@@ -595,7 +687,7 @@ mod tests {
             ))),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [1]));
+        assert!(matches!(outcome, Outcome::Committed(commit) if commit.selected() == [1]));
         assert!(!session.can_go_back());
         assert_eq!(session.entries()[1].path, selected);
     }
@@ -619,13 +711,13 @@ mod tests {
             ))),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [0, 2]));
+        assert!(matches!(outcome, Outcome::Committed(commit) if commit.selected() == [0, 2]));
     }
 
     #[test]
     fn parent_selects_the_folder_that_was_left() {
         let mut session = NavigationSession::new(PathBuf::from("/start/child"));
-        let request = session.parent().unwrap();
+        let request = session.transition(Transition::Parent).unwrap();
         let outcome = session.complete(
             &request,
             Completion::Folder(Ok((
@@ -634,19 +726,98 @@ mod tests {
             ))),
         );
 
-        assert!(matches!(outcome, Outcome::Committed { selected, .. } if selected == [0]));
+        assert!(matches!(outcome, Outcome::Committed(commit) if commit.selected() == [0]));
         assert_eq!(session.current(), Path::new("/start"));
+    }
+
+    #[test]
+    fn commit_hides_cut_paths_before_restoring_grid_selection() {
+        let mut session = NavigationSession::new(PathBuf::from("/start"));
+        let request = session.refresh_selected(vec![
+            PathBuf::from("/start/one"),
+            PathBuf::from("/start/two"),
+        ]);
+        let outcome = session.complete_with_hidden_paths(
+            &request,
+            Completion::Folder(Ok((
+                PathBuf::from("/start"),
+                vec![entry("/start/one"), entry("/start/two")],
+            ))),
+            &[PathBuf::from("/start/one")],
+        );
+        let Outcome::Committed(commit) = outcome else {
+            panic!("navigation did not commit");
+        };
+        let mut grid = GridInteraction::default();
+        commit.apply_grid(&mut grid, session.entries().len(), false);
+
+        assert_eq!(
+            session
+                .entries()
+                .iter()
+                .map(|entry| entry.path.as_path())
+                .collect::<Vec<_>>(),
+            [Path::new("/start/two")]
+        );
+        assert_eq!(grid.selected_entry(), Some(0));
+    }
+
+    #[test]
+    fn failed_refresh_redirects_to_the_nearest_existing_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("gone/child");
+        let mut session = NavigationSession::new(missing.clone());
+        let request = session.refresh(None);
+
+        let outcome = session.complete(
+            &request,
+            Completion::Folder(Err("directory disappeared".to_owned())),
+        );
+        let Outcome::Redirect { request, notice } = outcome else {
+            panic!("missing refresh did not redirect");
+        };
+
+        assert_eq!(request.requested(), Some(temp.path()));
+        assert!(notice.contains(&missing.display().to_string()));
+        assert!(notice.contains(&temp.path().display().to_string()));
     }
 
     #[test]
     fn opening_the_current_folder_does_not_duplicate_history() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let request = session.forward(PathBuf::from("/start"), true, None);
+        let request = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/start"),
+                remember: true,
+                select: None,
+            })
+            .unwrap();
         let _ = session.complete(
             &request,
             Completion::Folder(Ok((PathBuf::from("/start"), Vec::new()))),
         );
 
         assert!(!session.can_go_back());
+    }
+
+    #[test]
+    fn hover_is_the_only_transition_that_preserves_pointer_interaction() {
+        assert!(
+            Transition::Hover {
+                requested: PathBuf::from("/hovered")
+            }
+            .preserves_pointer_interaction()
+        );
+        assert!(!Transition::Back.preserves_pointer_interaction());
+        assert!(!Transition::Parent.preserves_pointer_interaction());
+        assert!(!Transition::HistoryForward.preserves_pointer_interaction());
+        assert!(
+            !Transition::Open {
+                requested: PathBuf::from("/opened"),
+                remember: true,
+                select: None,
+            }
+            .preserves_pointer_interaction()
+        );
     }
 }

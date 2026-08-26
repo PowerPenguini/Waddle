@@ -6,7 +6,7 @@ use std::{
 use gio::prelude::{MountExt, MountOperationExt, VolumeExt, VolumeMonitorExt};
 use serde::{Deserialize, Serialize};
 
-use super::state::NodeKind;
+use super::tree::NodeKind;
 
 #[derive(Clone, Debug)]
 pub(super) struct Entry {
@@ -22,6 +22,7 @@ struct Favorite {
     label: String,
 }
 
+#[derive(Debug)]
 pub(super) struct Places {
     path: PathBuf,
     favorites: Vec<Favorite>,
@@ -38,7 +39,7 @@ impl Places {
     }
 
     #[cfg(test)]
-    fn empty_at(path: PathBuf) -> Self {
+    pub(super) fn empty_at(path: PathBuf) -> Self {
         Self {
             path,
             favorites: Vec::new(),
@@ -195,11 +196,11 @@ impl Places {
 
 fn config_path() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("polarexp/favorites.json");
+        return PathBuf::from(path).join("waddle/favorites.json");
     }
     std::env::var_os("HOME").map_or_else(
-        || PathBuf::from(".polarexp-favorites.json"),
-        |home| PathBuf::from(home).join(".config/polarexp/favorites.json"),
+        || PathBuf::from(".waddle-favorites.json"),
+        |home| PathBuf::from(home).join(".config/waddle/favorites.json"),
     )
 }
 

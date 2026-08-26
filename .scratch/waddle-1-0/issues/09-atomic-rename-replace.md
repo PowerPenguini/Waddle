@@ -18,6 +18,6 @@ Type: feature
 Linux Rename uses `renameat2(RENAME_NOREPLACE)`. Replace stages Copy operations and uses
 `RENAME_EXCHANGE`; Move uses the exchange directly when both paths share a filesystem. The
 displaced destination is compared with the inode, device, and file kind observed by the conflict
-prompt. If it changed, PolarExp exchanges the paths back and reopens the conflict instead of
+prompt. If it changed, Waddle exchanges the paths back and reopens the conflict instead of
 silently replacing the newcomer. All checks use `symlink_metadata`, so a link itself is moved or
 replaced rather than its target.

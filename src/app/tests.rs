@@ -1,17 +1,18 @@
-use std::{fs as std_fs, path::PathBuf, time::Duration};
+use std::{
+    fs as std_fs,
+    path::{Path, PathBuf},
+};
 
 use iced::{event, keyboard, mouse};
 
 use super::*;
-use crate::app::file_operation::{
-    Completion as FileOperationCompletion, View as FileOperationView,
-};
+use crate::app::file_operation::View as FileOperationView;
 use crate::app::grid::{
     CONTENT_GUTTER, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT, LIST_VIEW_TOP_INSET, Motion,
     SIDEBAR_WIDTH, TILE_ROW_HEIGHT, TOOLBAR_DIVIDER_HEIGHT, TOOLBAR_HEIGHT,
 };
 use crate::app::navigation::NavigationSession;
-use crate::app::state::{ExplorerState, MountRoot, NodeKind};
+use crate::app::tree::{MountRoot, NodeKind, SidebarTree};
 use crate::fs::FileEntry;
 use crate::transfer::{
     Action as TransferAction, Adapter as TransferAdapter, AdapterCompletion, ClipboardImport,

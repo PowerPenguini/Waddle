@@ -3,52 +3,65 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use iced::Point;
+use iced::{Point, Subscription, Task};
 
 use crate::{
     fs::{self, FileEntry, TransferBatchOutcome, TransferReport},
     journal,
     transfer::{
-        Action, Adapter, AdapterCompletion, ClipboardImport, ClipboardPayload, Consequences, Event,
-        NativeUpdate, Outcome, Preview, Release, Request, TransferState,
+        Action, Adapter, AdapterCompletion, ClipboardAdapter, ClipboardCompletion, ClipboardImport,
+        Consequences, Event, NativeUpdate, Outcome, Preview, Release, Request, TransferState,
     },
 };
 
-pub(super) use super::transfer_queue::{HistoryEntry, Snapshot, Work};
+pub(super) use super::transfer_queue::{HistoryEntry, Snapshot};
 use super::{
-    transfer_queue::{Finished as QueueFinished, Operation as QueueOperation, Queue},
+    native_clipboard,
+    operations::{Completion, ForegroundActivity, Kind as OperationKind, Operations},
+    transfer_queue::{Finished as QueueFinished, Operation as QueueOperation, Queue, Work},
     trash,
 };
 
 #[derive(Clone, Debug)]
 struct ActiveConflict {
-    batch: fs::TransferBatch,
     prompt: String,
 }
 
-pub(super) struct CompletedTransfer {
-    pub(super) request: Request,
-    pub(super) report: TransferReport,
-    pub(super) next: Option<Work>,
-}
-
-pub(super) struct CompletedRestore {
-    pub(super) journal_action: Result<Option<journal::Action>, String>,
-    pub(super) status: String,
-    pub(super) detail: Option<String>,
-    pub(super) changed_folders: Vec<PathBuf>,
-    pub(super) next: Option<Work>,
-}
-
-pub(super) enum CompletedBatch {
-    Transfer(CompletedTransfer),
-    Restore(CompletedRestore),
+pub(super) enum Refresh {
+    None,
+    Entries(Vec<PathBuf>),
+    Trash,
 }
 
 pub(super) enum BatchUpdate {
-    Completed(Box<CompletedBatch>),
-    Conflict,
+    Completed {
+        outcome: Box<CompletionOutcome>,
+        next: Task<RuntimeEvent>,
+    },
+    Conflict(String),
     Ignored,
+}
+
+#[derive(Debug)]
+pub(super) enum RuntimeEvent {
+    BatchFinished {
+        id: u64,
+        outcome: Box<TransferBatchOutcome>,
+    },
+    Noop,
+}
+
+pub(super) enum WindowFileEvent {
+    Hover(PathBuf),
+    Leave,
+    Drop(PathBuf),
+}
+
+pub(super) enum WindowFileUpdate {
+    Ignored,
+    Hover(Action),
+    Leave,
+    Drop(u64),
 }
 
 pub(super) enum CancelUpdate {
@@ -61,12 +74,110 @@ pub(super) struct TransferSession {
     state: TransferState,
     queue: Queue,
     conflict: Option<ActiveConflict>,
+    native: native_clipboard::Platform,
+    restore_activity: Option<ForegroundActivity>,
 }
 
-pub(super) struct TransferCompletion {
-    pub(super) consequences: Consequences,
-    pub(super) journal_action: Result<Option<journal::Action>, String>,
-    pub(super) clipboard_generation: Option<u64>,
+pub(super) enum CompletionPresentation {
+    Status(String),
+    Error(String),
+    Refresh,
+}
+
+pub(super) enum UndoOutcome {
+    Record {
+        subject: &'static str,
+        action: journal::Action,
+    },
+    Unavailable {
+        subject: &'static str,
+        error: String,
+    },
+    None,
+}
+
+pub(super) struct CompletionOutcome {
+    pub(super) presentation: CompletionPresentation,
+    pub(super) notice: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) undo: UndoOutcome,
+    pub(super) changed_folders: Vec<PathBuf>,
+    pub(super) refresh: Refresh,
+    pub(super) sync_location_monitoring: bool,
+}
+
+pub(super) struct ClipboardChange {
+    pub(super) status: String,
+    pub(super) hide_paths: Vec<PathBuf>,
+    pub(super) restore_entries: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PointerDrag<'a> {
+    Inactive,
+    Active {
+        index: usize,
+        entries: &'a [FileEntry],
+    },
+}
+
+impl<'a> PointerDrag<'a> {
+    pub(super) fn is_active(self) -> bool {
+        matches!(self, Self::Active { .. })
+    }
+
+    pub(super) fn index(self) -> Option<usize> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { index, .. } => Some(index),
+        }
+    }
+
+    pub(super) fn entries(self) -> &'a [FileEntry] {
+        match self {
+            Self::Inactive => &[],
+            Self::Active { entries, .. } => entries,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum NativeHover<'a> {
+    Inactive,
+    NoDestination,
+    Destination(&'a Path),
+}
+
+impl<'a> NativeHover<'a> {
+    pub(super) fn is_active(self) -> bool {
+        !matches!(self, Self::Inactive)
+    }
+
+    pub(super) fn destination(self) -> Option<&'a Path> {
+        match self {
+            Self::Destination(path) => Some(path),
+            Self::Inactive | Self::NoDestination => None,
+        }
+    }
+}
+
+pub(super) enum DragRelease {
+    None,
+    Click(usize),
+    Transfer(Request),
+}
+
+pub(super) struct Overview<'a> {
+    pub(super) conflict_prompt: Option<&'a str>,
+    pub(super) active: bool,
+    pub(super) retry: bool,
+    pub(super) expanded: bool,
+    pub(super) snapshot: Option<Snapshot>,
+    pub(super) active_action: Option<&'static str>,
+    pub(super) history: &'a [HistoryEntry],
+    pub(super) pointer_drag: PointerDrag<'a>,
+    pub(super) native_hover: NativeHover<'a>,
+    pub(super) native_active: bool,
 }
 
 impl TransferSession {
@@ -75,34 +186,121 @@ impl TransferSession {
             state: TransferState::default(),
             queue: Queue::open_default(),
             conflict: None,
+            native: native_clipboard::Platform::default(),
+            restore_activity: None,
         }
     }
 
     #[cfg(test)]
-    fn open(path: PathBuf) -> Self {
+    pub(super) fn open(path: PathBuf) -> Self {
         Self {
             state: TransferState::default(),
             queue: Queue::open(path),
             conflict: None,
+            native: native_clipboard::Platform::default(),
+            restore_activity: None,
         }
     }
 
-    pub(super) fn enqueue(&mut self, request: Request) -> Result<Option<Work>, String> {
+    pub(super) fn install_native(
+        &mut self,
+        result: Result<native_clipboard::Attached, String>,
+    ) -> Result<(), String> {
+        self.native.install(result)
+    }
+
+    pub(super) fn native_subscription(&self) -> Option<Subscription<Event>> {
+        self.native.subscription()
+    }
+
+    pub(super) fn clipboard_read(&self) -> Option<Result<ClipboardCompletion, String>> {
+        self.native
+            .clipboard()
+            .map(ClipboardAdapter::read_clipboard)
+    }
+
+    pub(super) fn handle_window_file(&mut self, event: WindowFileEvent) -> WindowFileUpdate {
+        match event {
+            WindowFileEvent::Hover(path) => self
+                .native
+                .hover_x11_file(path)
+                .map_or(WindowFileUpdate::Ignored, WindowFileUpdate::Hover),
+            WindowFileEvent::Leave if self.native.leave_x11_files() => WindowFileUpdate::Leave,
+            WindowFileEvent::Leave => WindowFileUpdate::Ignored,
+            WindowFileEvent::Drop(path) => self
+                .native
+                .drop_x11_file(path)
+                .map_or(WindowFileUpdate::Ignored, WindowFileUpdate::Drop),
+        }
+    }
+
+    pub(super) fn take_x11_drop(&mut self, generation: u64) -> Option<(Vec<PathBuf>, Action)> {
+        self.native.take_x11_drop(generation)
+    }
+
+    pub(super) fn start(
+        &mut self,
+        request: Request,
+        operations: &Operations,
+    ) -> Result<Task<RuntimeEvent>, String> {
         let batch = fs::TransferBatch::try_new(
             request.paths.clone(),
             request.destination.clone(),
             request.action,
         )
         .map_err(|error| error.to_string())?;
-        Ok(self.queue.enqueue_transfer(request, batch))
+        Ok(self
+            .queue
+            .enqueue_transfer(request, batch)
+            .map_or_else(Task::none, |work| launch(work, operations)))
     }
 
-    pub(super) fn enqueue_restore(&mut self, entries: Vec<trash::Entry>) -> Option<Work> {
+    pub(super) fn restore(
+        &mut self,
+        entries: Vec<trash::Entry>,
+        operations: &Operations,
+    ) -> Task<RuntimeEvent> {
         let batch = trash::restore_batch(&entries);
-        self.queue.enqueue_restore(entries, batch)
+        let activity = operations.begin_foreground();
+        let task = self
+            .queue
+            .enqueue_restore(entries, batch)
+            .map_or_else(Task::none, |work| launch(work, operations));
+        self.restore_activity = Some(activity);
+        task
     }
 
-    pub(super) fn complete_batch(&mut self, id: u64, outcome: TransferBatchOutcome) -> BatchUpdate {
+    pub(super) fn complete_batch(
+        &mut self,
+        id: u64,
+        outcome: TransferBatchOutcome,
+        current: &Path,
+        operations: &Operations,
+    ) -> BatchUpdate {
+        let native = std::mem::take(&mut self.native);
+        let update = self.complete_batch_with(
+            id,
+            outcome,
+            native.dnd().map(|source| source as &dyn Adapter),
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+            current,
+            operations,
+        );
+        self.native = native;
+        update
+    }
+
+    fn complete_batch_with(
+        &mut self,
+        id: u64,
+        outcome: TransferBatchOutcome,
+        adapter: Option<&dyn Adapter>,
+        clipboard_adapter: Option<&dyn ClipboardAdapter>,
+        current: &Path,
+        operations: &Operations,
+    ) -> BatchUpdate {
         match outcome {
             TransferBatchOutcome::Complete(report) => {
                 let Some(QueueFinished { operation, next }) = self.queue.finish(id, &report) else {
@@ -110,20 +308,20 @@ impl TransferSession {
                 };
                 let completed = match operation {
                     QueueOperation::Transfer(request) => {
-                        CompletedBatch::Transfer(CompletedTransfer {
-                            request,
-                            report,
-                            next,
-                        })
+                        self.finish_transfer(adapter, clipboard_adapter, &request, &report, current)
                     }
                     QueueOperation::Restore(entries) => {
-                        CompletedBatch::Restore(restore_completion(report, &entries, next))
+                        self.restore_activity = None;
+                        restore_completion(report, &entries)
                     }
                 };
-                BatchUpdate::Completed(Box::new(completed))
+                BatchUpdate::Completed {
+                    outcome: Box::new(completed),
+                    next: next.map_or_else(Task::none, |work| launch(work, operations)),
+                }
             }
             TransferBatchOutcome::Conflict { batch, conflict } => {
-                let Some(operation) = self.queue.active_operation(id) else {
+                let Some(operation) = self.queue.pause_for_conflict(id, *batch) else {
                     return BatchUpdate::Ignored;
                 };
                 let source = conflict
@@ -143,15 +341,24 @@ impl TransferSession {
                     "{prefix}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
                 );
                 self.conflict = Some(ActiveConflict {
-                    batch: *batch,
-                    prompt,
+                    prompt: prompt.clone(),
                 });
-                BatchUpdate::Conflict
+                BatchUpdate::Conflict(prompt)
             }
         }
     }
 
-    pub(super) fn resolve_conflict(&mut self, key: char, remaining: bool) -> Option<Work> {
+    pub(super) fn resolve_conflict(
+        &mut self,
+        key: char,
+        remaining: bool,
+        operations: &Operations,
+    ) -> Task<RuntimeEvent> {
+        self.resolve_conflict_work(key, remaining)
+            .map_or_else(Task::none, |work| launch(work, operations))
+    }
+
+    fn resolve_conflict_work(&mut self, key: char, remaining: bool) -> Option<Work> {
         let active = self.conflict.take()?;
         let choice = match key {
             'r' => fs::ConflictChoice::Replace,
@@ -162,17 +369,48 @@ impl TransferSession {
                 return None;
             }
         };
-        self.queue.resume(active.batch.resolve(choice, remaining))
+        match self.queue.resolve_conflict(choice, remaining) {
+            Some(work) => Some(work),
+            None => {
+                self.conflict = Some(active);
+                None
+            }
+        }
     }
 
-    pub(super) fn cancel(&mut self) -> CancelUpdate {
-        if let Some(active) = self.conflict.take() {
-            let Some(id) = self.queue.active_id() else {
+    pub(super) fn cancel(&mut self, current: &Path, operations: &Operations) -> CancelUpdate {
+        let native = std::mem::take(&mut self.native);
+        let update = self.cancel_with(
+            native.dnd().map(|source| source as &dyn Adapter),
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+            current,
+            operations,
+        );
+        self.native = native;
+        update
+    }
+
+    fn cancel_with(
+        &mut self,
+        adapter: Option<&dyn Adapter>,
+        clipboard_adapter: Option<&dyn ClipboardAdapter>,
+        current: &Path,
+        operations: &Operations,
+    ) -> CancelUpdate {
+        if self.conflict.take().is_some() {
+            let Some((id, report)) = self.queue.cancel_conflict() else {
                 return CancelUpdate::None;
             };
-            return CancelUpdate::Conflict(
-                self.complete_batch(id, TransferBatchOutcome::Complete(active.batch.cancel())),
-            );
+            return CancelUpdate::Conflict(self.complete_batch_with(
+                id,
+                TransferBatchOutcome::Complete(report),
+                adapter,
+                clipboard_adapter,
+                current,
+                operations,
+            ));
         }
         if self.queue.cancel() {
             CancelUpdate::Active
@@ -181,101 +419,158 @@ impl TransferSession {
         }
     }
 
-    pub(super) fn retry(&mut self) -> Result<Option<Work>, String> {
-        self.queue.retry()
+    pub(super) fn retry(&mut self, operations: &Operations) -> Result<Task<RuntimeEvent>, String> {
+        self.queue
+            .retry()
+            .map(|work| work.map_or_else(Task::none, |work| launch(work, operations)))
     }
 
-    pub(super) fn has_conflict(&self) -> bool {
-        self.conflict.is_some()
-    }
-
-    pub(super) fn conflict_prompt(&self) -> Option<&str> {
-        self.conflict
-            .as_ref()
-            .map(|conflict| conflict.prompt.as_str())
-    }
-
-    pub(super) fn active(&self) -> bool {
-        self.queue.transfer_active()
-    }
-
-    pub(super) fn has_retry(&self) -> bool {
-        self.queue.has_retry()
+    pub(super) fn overview(&self) -> Overview<'_> {
+        let pointer_drag = self
+            .state
+            .active_drag_index()
+            .map_or(PointerDrag::Inactive, |index| PointerDrag::Active {
+                index,
+                entries: self.state.active_drag_entries(),
+            });
+        let native_hover = match self.state.native_hover_destination() {
+            None => NativeHover::Inactive,
+            Some(None) => NativeHover::NoDestination,
+            Some(Some(destination)) => NativeHover::Destination(destination),
+        };
+        Overview {
+            conflict_prompt: self
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.prompt.as_str()),
+            active: self.queue.transfer_active(),
+            retry: self.queue.has_retry(),
+            expanded: self.queue.expanded(),
+            snapshot: self.queue.snapshot(),
+            active_action: self.queue.active_action(),
+            history: self.queue.history(),
+            pointer_drag,
+            native_hover,
+            native_active: self.state.is_native_active(),
+        }
     }
 
     pub(super) fn toggle_expanded(&mut self) {
         self.queue.toggle_expanded();
     }
 
-    pub(super) fn expanded(&self) -> bool {
-        self.queue.expanded()
-    }
-
     pub(super) fn report_text(&self) -> String {
         self.queue.report_text()
-    }
-
-    pub(super) fn history(&self) -> &[HistoryEntry] {
-        self.queue.history()
-    }
-
-    pub(super) fn snapshot(&self) -> Option<Snapshot> {
-        self.queue.snapshot()
-    }
-
-    pub(super) fn active_action(&self) -> Option<&'static str> {
-        self.queue.active_action()
     }
 
     pub(super) fn press(&mut self, index: usize, start: Point, entry_count: usize) {
         self.state.press(index, start, entry_count);
     }
 
-    pub(super) fn move_pointer(&mut self, position: Point) -> Option<usize> {
-        self.state.move_pointer(position)
-    }
-
-    pub(super) fn release(&mut self, index: usize) -> Release {
-        self.state.release(index)
-    }
-
-    pub(super) fn active_drag_index(&self) -> Option<usize> {
-        self.state.active_drag_index()
-    }
-
-    pub(super) fn capture_drag_entries(
+    pub(super) fn move_pointer(
         &mut self,
+        position: Point,
         entries: &[FileEntry],
         selected: &BTreeSet<usize>,
-    ) {
-        self.state.capture_drag_entries(entries, selected);
+    ) -> Option<usize> {
+        let activated = self.state.move_pointer(position);
+        if activated.is_some() {
+            self.state.capture_drag_entries(entries, selected);
+        }
+        activated
     }
 
-    pub(super) fn active_drag_entries(&self) -> &[FileEntry] {
-        self.state.active_drag_entries()
+    pub(super) fn release(
+        &mut self,
+        index: usize,
+        destination: Option<PathBuf>,
+        action: Action,
+    ) -> DragRelease {
+        match self.state.release(index) {
+            Release::None => DragRelease::None,
+            Release::Click(index) => DragRelease::Click(index),
+            Release::Drop(_) => {
+                let request = destination
+                    .and_then(|destination| self.state.request_active(destination, action));
+                self.state.cancel_drag();
+                request.map_or(DragRelease::None, DragRelease::Transfer)
+            }
+        }
     }
 
-    pub(super) fn request_active(&self, destination: PathBuf, action: Action) -> Option<Request> {
-        self.state.request_active(destination, action)
+    pub(super) fn can_drop(&self, destination: &Path, action: Action) -> bool {
+        self.state
+            .request_active(destination.to_path_buf(), action)
+            .is_some()
     }
 
     pub(super) fn cancel_drag(&mut self) {
         self.state.cancel_drag();
     }
 
-    pub(super) fn copy(&mut self, entries: &[FileEntry]) -> Option<String> {
-        self.state.copy(entries)
+    pub(super) fn copy(&mut self, entries: &[FileEntry]) -> Option<ClipboardChange> {
+        let native = std::mem::take(&mut self.native);
+        let change = self.copy_with(
+            entries,
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+        );
+        self.native = native;
+        change
     }
 
-    pub(super) fn cut(&mut self, entries: &[FileEntry]) -> Option<String> {
-        self.state.cut(entries)
+    fn copy_with(
+        &mut self,
+        entries: &[FileEntry],
+        adapter: Option<&dyn ClipboardAdapter>,
+    ) -> Option<ClipboardChange> {
+        let restore_entries = !self.state.pending_cut_paths().is_empty();
+        let status = self.state.copy(entries)?;
+        let status = self.write_clipboard(adapter).map_or(status, |error| {
+            format!("Copied inside Waddle; system clipboard failed: {error}")
+        });
+        Some(ClipboardChange {
+            status,
+            hide_paths: Vec::new(),
+            restore_entries,
+        })
+    }
+
+    pub(super) fn cut(&mut self, entries: &[FileEntry]) -> Option<ClipboardChange> {
+        let native = std::mem::take(&mut self.native);
+        let change = self.cut_with(
+            entries,
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+        );
+        self.native = native;
+        change
+    }
+
+    fn cut_with(
+        &mut self,
+        entries: &[FileEntry],
+        adapter: Option<&dyn ClipboardAdapter>,
+    ) -> Option<ClipboardChange> {
+        let status = self.state.cut(entries)?;
+        let status = self.write_clipboard(adapter).map_or(status, |error| {
+            format!("Cut inside Waddle; system clipboard failed: {error}")
+        });
+        Some(ClipboardChange {
+            status,
+            hide_paths: self.state.pending_cut_paths().to_vec(),
+            restore_entries: false,
+        })
     }
 
     pub(super) fn paste(&self, destination: PathBuf) -> Option<Request> {
         self.state.paste(destination)
     }
 
-    pub(super) fn clipboard_payload(&self) -> Option<ClipboardPayload> {
+    #[cfg(test)]
+    pub(super) fn clipboard_payload(&self) -> Option<crate::transfer::ClipboardPayload> {
         self.state.clipboard_payload()
     }
 
@@ -287,37 +582,116 @@ impl TransferSession {
         self.state.pending_cut_status()
     }
 
-    pub(super) fn reconcile_pending_cut(&mut self, removed: &[PathBuf]) -> Option<(u64, usize)> {
-        self.state.reconcile_pending_cut(removed)
+    pub(super) fn reconcile_pending_cut(&mut self, removed_paths: &[PathBuf]) -> Option<String> {
+        let native = std::mem::take(&mut self.native);
+        let notice = self.reconcile_pending_cut_with(
+            removed_paths,
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+        );
+        self.native = native;
+        notice
     }
 
-    pub(super) fn cancel_cut(&mut self) -> Option<u64> {
-        self.state.cancel_cut()
-    }
-
-    pub(super) fn import_clipboard(&mut self, import: ClipboardImport) -> bool {
-        self.state.import_clipboard(import)
-    }
-
-    pub(super) fn start_outgoing_active<A, P>(
+    fn reconcile_pending_cut_with(
         &mut self,
-        adapter: &A,
+        removed_paths: &[PathBuf],
+        adapter: Option<&dyn ClipboardAdapter>,
+    ) -> Option<String> {
+        let (generation, removed) = self.state.reconcile_pending_cut(removed_paths)?;
+        let remaining = self.state.pending_cut_paths().len();
+        let mut notice = if remaining == 0 {
+            format!("External move or removal confirmed for {removed} item(s); Cut completed")
+        } else {
+            format!(
+                "External move or removal confirmed for {removed} item(s); {remaining} still pending"
+            )
+        };
+        if let Some(error) = self.sync_cut_clipboard(adapter, generation) {
+            notice.push_str(&format!("; system clipboard failed: {error}"));
+        }
+        Some(notice)
+    }
+
+    pub(super) fn cancel_cut(&mut self) -> bool {
+        let native = std::mem::take(&mut self.native);
+        let cancelled = self.cancel_cut_with(
+            native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+        );
+        self.native = native;
+        cancelled
+    }
+
+    fn cancel_cut_with(&mut self, adapter: Option<&dyn ClipboardAdapter>) -> bool {
+        let Some(generation) = self.state.cancel_cut() else {
+            return false;
+        };
+        if let Some(adapter) = adapter {
+            adapter.clear_clipboard(generation);
+        }
+        true
+    }
+
+    pub(super) fn paste_import(
+        &mut self,
+        import: ClipboardImport,
+        destination: PathBuf,
+    ) -> Option<Request> {
+        self.state
+            .import_clipboard(import)
+            .then(|| self.state.paste(destination))
+            .flatten()
+    }
+
+    pub(super) fn start_outgoing_active<P>(
+        &mut self,
         copy_only: bool,
         preview: P,
     ) -> Result<(usize, AdapterCompletion), String>
     where
-        A: Adapter,
         P: FnOnce(&[FileEntry]) -> Option<Preview>,
     {
-        self.state
-            .start_outgoing_active(adapter, copy_only, preview)
+        let Some(adapter) = self.native.dnd() else {
+            self.state.cancel_drag();
+            return Err(self
+                .native
+                .dnd_error()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    "External drag-and-drop is not ready yet; try again in a moment".to_owned()
+                }));
+        };
+        let started = self
+            .state
+            .start_outgoing_active(adapter, copy_only, preview);
+        if started.is_err() {
+            self.state.cancel_drag();
+        }
+        started
     }
 
-    pub(super) fn finish_outgoing(&mut self, result: Result<Outcome, String>) -> Consequences {
-        self.state.finish_outgoing(result)
+    pub(super) fn finish_outgoing(&mut self, result: Result<Outcome, String>) -> CompletionOutcome {
+        completion_from_consequences(self.state.finish_outgoing(result), Ok(None), None, false)
     }
 
-    pub(super) fn handle_native<A, F>(
+    pub(super) fn handle_native<F>(&mut self, event: Event, destination_at: F) -> NativeUpdate
+    where
+        F: FnMut(Point, bool) -> Option<PathBuf>,
+    {
+        let native = std::mem::take(&mut self.native);
+        let Some(adapter) = native.dnd() else {
+            self.native = native;
+            return NativeUpdate::Error("Drag-and-drop adapter is unavailable".to_owned());
+        };
+        let update = self.handle_native_with(adapter, event, destination_at);
+        self.native = native;
+        update
+    }
+
+    fn handle_native_with<A, F>(
         &mut self,
         adapter: &A,
         event: Event,
@@ -330,13 +704,28 @@ impl TransferSession {
         self.state.handle_native(adapter, event, destination_at)
     }
 
-    pub(super) fn finish_transfer(
+    #[cfg(test)]
+    pub(super) fn handle_native_with_adapter<A, F>(
+        &mut self,
+        adapter: &A,
+        event: Event,
+        destination_at: F,
+    ) -> NativeUpdate
+    where
+        A: Adapter,
+        F: FnMut(Point, bool) -> Option<PathBuf>,
+    {
+        self.handle_native_with(adapter, event, destination_at)
+    }
+
+    fn finish_transfer(
         &mut self,
         adapter: Option<&dyn Adapter>,
+        clipboard_adapter: Option<&dyn ClipboardAdapter>,
         request: &Request,
         report: &TransferReport,
         current: &Path,
-    ) -> TransferCompletion {
+    ) -> CompletionOutcome {
         let journal_action = journal::Action::transfer(
             match request.action {
                 Action::Copy => journal::TransferKind::Copy,
@@ -350,31 +739,98 @@ impl TransferSession {
         let consequences = self
             .state
             .finish_transfer(adapter, request, report, current);
-        TransferCompletion {
-            consequences,
-            journal_action,
-            clipboard_generation,
+        let notice = clipboard_generation
+            .and_then(|generation| self.sync_cut_clipboard(clipboard_adapter, generation))
+            .map(|error| {
+                format!("Cut was updated inside Waddle; system clipboard failed: {error}")
+            });
+        completion_from_consequences(consequences, journal_action, notice, true)
+    }
+
+    pub(super) fn stop(&mut self) {
+        if let Some(adapter) = self.native.take_dnd() {
+            self.state.stop(&adapter);
+        } else {
+            self.state.cancel_drag();
         }
     }
 
-    pub(super) fn native_hover_destination(&self) -> Option<Option<&Path>> {
-        self.state.native_hover_destination()
+    #[cfg(test)]
+    pub(super) fn enqueue_work(&mut self, request: Request) -> Result<Option<Work>, String> {
+        let batch = fs::TransferBatch::try_new(
+            request.paths.clone(),
+            request.destination.clone(),
+            request.action,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(self.queue.enqueue_transfer(request, batch))
     }
 
-    pub(super) fn is_native_active(&self) -> bool {
-        self.state.is_native_active()
+    #[cfg(test)]
+    pub(super) fn enqueue_restore_work(&mut self, entries: Vec<trash::Entry>) -> Option<Work> {
+        let batch = trash::restore_batch(&entries);
+        self.queue.enqueue_restore(entries, batch)
     }
 
-    pub(super) fn stop<A: Adapter>(&mut self, adapter: &A) {
-        self.state.stop(adapter);
+    fn write_clipboard(&self, adapter: Option<&dyn ClipboardAdapter>) -> Option<String> {
+        let adapter = adapter?;
+        self.state
+            .clipboard_payload()
+            .and_then(|payload| adapter.write_clipboard(payload).err())
+    }
+
+    fn sync_cut_clipboard(
+        &self,
+        adapter: Option<&dyn ClipboardAdapter>,
+        generation: u64,
+    ) -> Option<String> {
+        let adapter = adapter?;
+        if let Some(payload) = self
+            .state
+            .clipboard_payload()
+            .filter(|payload| payload.generation == generation)
+        {
+            adapter.write_clipboard(payload).err()
+        } else {
+            adapter.clear_clipboard(generation);
+            None
+        }
     }
 }
 
-fn restore_completion(
-    report: TransferReport,
-    entries: &[trash::Entry],
-    next: Option<Work>,
-) -> CompletedRestore {
+fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
+    let id = work.id();
+    Task::perform(
+        operations.run(OperationKind::Mutation, move |_| {
+            Ok::<_, String>(work.run())
+        }),
+        move |completion| {
+            let outcome = match completion {
+                Completion::Finished(Ok(outcome)) => outcome,
+                Completion::Finished(Err(error)) => {
+                    TransferBatchOutcome::Complete(TransferReport {
+                        completed: Vec::new(),
+                        failures: vec![fs::TransferFailure {
+                            source: PathBuf::new(),
+                            error,
+                        }],
+                        retained: Vec::new(),
+                        warnings: Vec::new(),
+                        receipts: Vec::new(),
+                        cancelled: false,
+                    })
+                }
+                Completion::Cancelled => return RuntimeEvent::Noop,
+            };
+            RuntimeEvent::BatchFinished {
+                id,
+                outcome: Box::new(outcome),
+            }
+        },
+    )
+}
+
+fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> CompletionOutcome {
     let report = trash::finish_restore(report, entries);
     let journal_action = journal::Action::restore(&report.restored);
     let mut detail = report
@@ -397,18 +853,61 @@ fn restore_completion(
         .iter()
         .filter_map(|receipt| receipt.original.parent().map(Path::to_path_buf))
         .collect();
-    CompletedRestore {
-        journal_action,
-        status,
+    CompletionOutcome {
+        presentation: CompletionPresentation::Status(status),
+        notice: None,
         detail: (!detail.is_empty()).then(|| detail.join("\n")),
+        undo: undo_outcome(journal_action, "Restore"),
         changed_folders,
-        next,
+        refresh: Refresh::Trash,
+        sync_location_monitoring: false,
+    }
+}
+
+fn completion_from_consequences(
+    consequences: Consequences,
+    journal_action: Result<Option<journal::Action>, String>,
+    notice: Option<String>,
+    sync_location_monitoring: bool,
+) -> CompletionOutcome {
+    CompletionOutcome {
+        presentation: match (consequences.error, consequences.status) {
+            (Some(error), _) => CompletionPresentation::Error(error),
+            (None, Some(status)) => CompletionPresentation::Status(status),
+            (None, None) => CompletionPresentation::Refresh,
+        },
+        notice,
+        detail: None,
+        undo: undo_outcome(journal_action, "Transfer"),
+        changed_folders: consequences.changed_folders,
+        refresh: if consequences.refresh {
+            Refresh::Entries(consequences.select)
+        } else {
+            Refresh::None
+        },
+        sync_location_monitoring,
+    }
+}
+
+fn undo_outcome(
+    action: Result<Option<journal::Action>, String>,
+    subject: &'static str,
+) -> UndoOutcome {
+    match action {
+        Ok(Some(action)) => UndoOutcome::Record { subject, action },
+        Err(error) => UndoOutcome::Unavailable { subject, error },
+        Ok(None) => UndoOutcome::None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::{
+        ffi::OsString,
+        sync::{Arc, Mutex},
+    };
+
+    use crate::transfer::{ClipboardCompletion, ClipboardPayload};
 
     use super::*;
 
@@ -442,8 +941,132 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct MemoryClipboard {
+        writes: Arc<Mutex<Vec<ClipboardPayload>>>,
+        clears: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl ClipboardAdapter for MemoryClipboard {
+        fn write_clipboard(&self, payload: ClipboardPayload) -> Result<(), String> {
+            self.writes.lock().unwrap().push(payload);
+            Ok(())
+        }
+
+        fn read_clipboard(&self) -> Result<ClipboardCompletion, String> {
+            Err("unused test read".to_owned())
+        }
+
+        fn clear_clipboard(&self, generation: u64) {
+            self.clears.lock().unwrap().push(generation);
+        }
+    }
+
+    fn complete_batch(
+        session: &mut TransferSession,
+        id: u64,
+        outcome: TransferBatchOutcome,
+    ) -> BatchUpdate {
+        session.complete_batch(id, outcome, Path::new("/work"), &Operations::default())
+    }
+
+    fn cancel(session: &mut TransferSession) -> CancelUpdate {
+        session.cancel(Path::new("/work"), &Operations::default())
+    }
+
     #[test]
-    fn transfer_session_owns_queue_conflict_and_completion() {
+    fn drag_activation_captures_sources_and_release_consumes_the_drag() {
+        let temp = tempfile::tempdir().unwrap();
+        let entries = [
+            entry(PathBuf::from("/source/one")),
+            entry(PathBuf::from("/source/two")),
+        ];
+        let selected = BTreeSet::from([0, 1]);
+        let mut session = TransferSession::open(temp.path().join("transfers.json"));
+
+        session.press(0, Point::ORIGIN, entries.len());
+        assert_eq!(
+            session.move_pointer(Point::new(7.0, 0.0), &entries, &selected),
+            Some(0)
+        );
+        assert_eq!(session.overview().pointer_drag.entries().len(), 2);
+
+        let DragRelease::Transfer(request) =
+            session.release(0, Some(PathBuf::from("/destination")), Action::Move)
+        else {
+            panic!("valid release should produce a transfer request");
+        };
+        assert_eq!(request.paths.len(), 2);
+        assert!(!session.overview().pointer_drag.is_active());
+        assert!(matches!(
+            session.release(0, Some(PathBuf::from("/destination")), Action::Move),
+            DragRelease::None
+        ));
+    }
+
+    #[test]
+    fn invalid_drag_release_is_consumed_without_a_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let entries = [entry(PathBuf::from("/source/folder"))];
+        let mut session = TransferSession::open(temp.path().join("transfers.json"));
+
+        session.press(0, Point::ORIGIN, entries.len());
+        session.move_pointer(Point::new(7.0, 0.0), &entries, &BTreeSet::new());
+
+        assert!(matches!(
+            session.release(0, Some(PathBuf::from("/source/folder/child")), Action::Move,),
+            DragRelease::None
+        ));
+        assert!(!session.overview().pointer_drag.is_active());
+    }
+
+    #[test]
+    fn transfer_session_owns_cut_reconciliation_and_native_clipboard_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.txt");
+        let second = temp.path().join("second.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        let clipboard = MemoryClipboard::default();
+        let mut session = TransferSession::open(temp.path().join("transfers.json"));
+
+        let change = session
+            .cut_with(
+                &[entry(first.clone()), entry(second.clone())],
+                Some(&clipboard),
+            )
+            .unwrap();
+        assert_eq!(change.hide_paths, [first.clone(), second.clone()]);
+        assert_eq!(clipboard.writes.lock().unwrap().len(), 1);
+
+        std::fs::remove_file(&first).unwrap();
+        let notice = session
+            .reconcile_pending_cut_with(std::slice::from_ref(&first), Some(&clipboard))
+            .unwrap();
+        assert!(notice.contains("1 still pending"));
+        assert_eq!(
+            clipboard
+                .writes
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .paths
+                .as_slice(),
+            std::slice::from_ref(&second)
+        );
+
+        std::fs::remove_file(&second).unwrap();
+        let notice = session
+            .reconcile_pending_cut_with(std::slice::from_ref(&second), Some(&clipboard))
+            .unwrap();
+        assert!(notice.contains("Cut completed"));
+        assert_eq!(clipboard.clears.lock().unwrap().len(), 1);
+        assert!(session.pending_cut_paths().is_empty());
+    }
+
+    #[test]
+    fn transfer_session_resolves_the_conflict_continuation_owned_by_the_queue() {
         let temp = tempfile::tempdir().unwrap();
         let source_directory = temp.path().join("source");
         let destination = temp.path().join("destination");
@@ -456,26 +1079,32 @@ mod tests {
         let mut session = TransferSession::open(temp.path().join("transfers.json"));
         session.copy(&[entry(source)]).unwrap();
         let request = session.paste(destination).unwrap();
-        let work = session.enqueue(request.clone()).unwrap().unwrap();
+        let work = session.enqueue_work(request.clone()).unwrap().unwrap();
         let id = work.id();
         let outcome = work.run();
 
         assert!(matches!(
-            session.complete_batch(id, outcome),
-            BatchUpdate::Conflict
+            complete_batch(&mut session, id, outcome),
+            BatchUpdate::Conflict(_)
         ));
-        assert!(session.has_conflict());
-        assert!(session.conflict_prompt().unwrap().contains("r Replace"));
+        assert!(session.overview().conflict_prompt.is_some());
+        assert!(
+            session
+                .overview()
+                .conflict_prompt
+                .unwrap()
+                .contains("r Replace")
+        );
 
-        let work = session.resolve_conflict('s', false).unwrap();
+        let work = session.resolve_conflict_work('s', false).unwrap();
         let id = work.id();
         let outcome = work.run();
         assert!(matches!(
-            session.complete_batch(id, outcome),
-            BatchUpdate::Completed(_)
+            complete_batch(&mut session, id, outcome),
+            BatchUpdate::Completed { .. }
         ));
-        assert!(!session.has_conflict());
-        assert!(!session.active());
+        assert!(session.overview().conflict_prompt.is_none());
+        assert!(!session.overview().active);
     }
 
     #[test]
@@ -484,33 +1113,37 @@ mod tests {
         let restore = restore_entry(temp.path(), "notes.txt");
         std::fs::write(&restore.receipt.original, "existing").unwrap();
         let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        let work = session.enqueue_restore(vec![restore.clone()]).unwrap();
-        assert!(work.restoring());
+        let work = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
         let id = work.id();
 
         assert!(matches!(
-            session.complete_batch(id, work.run()),
-            BatchUpdate::Conflict
+            complete_batch(&mut session, id, work.run()),
+            BatchUpdate::Conflict(_)
         ));
         assert!(
             session
-                .conflict_prompt()
+                .overview()
+                .conflict_prompt
                 .unwrap()
                 .starts_with("Restore notes.txt:")
         );
-        assert!(!session.active());
-        assert!(session.history().is_empty());
+        assert!(!session.overview().active);
+        assert!(session.overview().history.is_empty());
 
-        let CancelUpdate::Conflict(BatchUpdate::Completed(completed)) = session.cancel() else {
+        let CancelUpdate::Conflict(BatchUpdate::Completed { outcome, .. }) = cancel(&mut session)
+        else {
             panic!("restore conflict should complete through Transfer session");
         };
-        let CompletedBatch::Restore(completed) = *completed else {
-            panic!("expected Restore completion");
-        };
-        assert_eq!(completed.status, "Restored 0  •  0 failed  •  1 kept");
+        let completed = *outcome;
+        assert!(matches!(
+            completed.presentation,
+            CompletionPresentation::Status(ref status)
+                if status == "Restored 0  •  0 failed  •  1 kept"
+        ));
+        assert!(matches!(completed.refresh, Refresh::Trash));
         assert!(restore.receipt.trashed.exists());
         assert!(restore.receipt.info.exists());
-        assert!(session.history().is_empty());
+        assert!(session.overview().history.is_empty());
     }
 
     #[test]
@@ -519,23 +1152,27 @@ mod tests {
         let restore = restore_entry(temp.path(), "notes.txt");
         let changed = restore.receipt.original.parent().unwrap().to_path_buf();
         let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        let work = session.enqueue_restore(vec![restore.clone()]).unwrap();
+        let work = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
         let id = work.id();
-        let BatchUpdate::Completed(completed) = session.complete_batch(id, work.run()) else {
+        let BatchUpdate::Completed { outcome, .. } = complete_batch(&mut session, id, work.run())
+        else {
             panic!("restore should complete");
         };
-        let CompletedBatch::Restore(completed) = *completed else {
-            panic!("expected Restore completion");
-        };
+        let completed = *outcome;
 
-        assert_eq!(completed.status, "Restored 1  •  0 failed  •  0 kept");
+        assert!(matches!(
+            completed.presentation,
+            CompletionPresentation::Status(ref status)
+                if status == "Restored 1  •  0 failed  •  0 kept"
+        ));
         assert_eq!(completed.changed_folders, [changed]);
-        assert!(matches!(completed.journal_action, Ok(Some(_))));
+        assert!(matches!(completed.undo, UndoOutcome::Record { .. }));
+        assert!(matches!(completed.refresh, Refresh::Trash));
         assert!(!restore.receipt.trashed.exists());
         assert!(!restore.receipt.info.exists());
         assert!(restore.receipt.original.exists());
-        assert!(session.history().is_empty());
-        assert!(!session.has_retry());
+        assert!(session.overview().history.is_empty());
+        assert!(!session.overview().retry);
     }
 
     #[test]
@@ -552,18 +1189,14 @@ mod tests {
         let mut session = TransferSession::open(temp.path().join("transfers.json"));
         session.copy(&[entry(source)]).unwrap();
         let request = session.paste(destination).unwrap();
-        let transfer = session.enqueue(request).unwrap().unwrap();
-        assert!(session.enqueue_restore(vec![restore]).is_none());
+        let transfer = session.enqueue_work(request).unwrap().unwrap();
+        assert!(session.enqueue_restore_work(vec![restore]).is_none());
 
         let id = transfer.id();
-        let BatchUpdate::Completed(completed) = session.complete_batch(id, transfer.run()) else {
+        let BatchUpdate::Completed { .. } = complete_batch(&mut session, id, transfer.run()) else {
             panic!("Copy should complete");
         };
-        let CompletedBatch::Transfer(completed) = *completed else {
-            panic!("expected Copy completion");
-        };
-        let next = completed.next.unwrap();
-        assert!(next.restoring());
-        assert_eq!(session.history().len(), 1);
+        assert!(session.queue.restore_active());
+        assert_eq!(session.overview().history.len(), 1);
     }
 }

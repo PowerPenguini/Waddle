@@ -4,8 +4,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gio::prelude::AppInfoExt;
-
 #[derive(Clone, Debug)]
 pub(super) struct Info {
     pub(super) name: String,
@@ -24,12 +22,15 @@ pub(super) fn read(path: &Path) -> Result<Info, String> {
         gio::content_type_get_description(&content_type).to_string()
     };
     let permissions = permissions(metadata.mode());
-    let default = gio::AppInfo::default_for_type(&content_type, false)
-        .map(|app| format!("{} ({})", app.name(), app_id(&app)))
+    let mut compatible_applications = super::open_with::applications_for_type(&content_type);
+    let default = compatible_applications
+        .iter()
+        .find(|application| application.default)
+        .map(|application| format!("{} ({})", application.name, application.id))
         .unwrap_or_else(|| "None".to_owned());
-    let mut applications = gio::AppInfo::all_for_type(&content_type)
-        .into_iter()
-        .map(|app| format!("{}  {}", app_id(&app), app.name()))
+    let mut applications = compatible_applications
+        .drain(..)
+        .map(|application| format!("{}  {}", application.id, application.name))
         .collect::<Vec<_>>();
     applications.sort();
     applications.dedup();
@@ -50,7 +51,7 @@ pub(super) fn read(path: &Path) -> Result<Info, String> {
     Ok(Info {
         name,
         detail: format!(
-            "Type: {kind}\nMIME type: {mime}\nLocation: {}\nSize: {}\nModified: {}\nAccessed: {}\nChanged: {}\nPermissions: {permissions} ({:04o})\nOwner: {}:{}\nDefault application: {default}\n\nOpen With applications:\n{applications}\n\nUse :chmod MODE, :open-with APP_ID, or :default-app APP_ID.",
+            "Type: {kind}\nMIME type: {mime}\nLocation: {}\nSize: {}\nModified: {}\nAccessed: {}\nChanged: {}\nPermissions: {permissions} ({:04o})\nOwner: {}:{}\nDefault application: {default}\n\nOpen With applications:\n{applications}\n\nUse :chmod MODE [PATH], :open-with APP_ID [-- PATH], or :default-app APP_ID [-- PATH].",
             location.display(),
             gio::glib::format_size(metadata.len()),
             date(metadata.mtime()),
@@ -90,50 +91,6 @@ pub(super) fn chmod(paths: Vec<PathBuf>, mode: &str) -> Result<String, String> {
             failures.join("\n")
         ))
     }
-}
-
-pub(super) fn open_with(
-    path: PathBuf,
-    requested: &str,
-    make_default: bool,
-) -> Result<String, String> {
-    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-    let content_type = content_type(&path, metadata.is_dir());
-    let requested = requested.trim();
-    if requested.is_empty() {
-        return Err("application ID is required; open Properties to list candidates".to_owned());
-    }
-    let application = gio::AppInfo::all_for_type(&content_type)
-        .into_iter()
-        .find(|application| {
-            app_id(application).eq_ignore_ascii_case(requested)
-                || application.name().eq_ignore_ascii_case(requested)
-        })
-        .ok_or_else(|| format!("application not found for this file type: {requested}"))?;
-    if make_default {
-        application
-            .set_as_default_for_type(&content_type)
-            .map_err(|error| format!("Could not set the default application: {error}"))?;
-        Ok(format!(
-            "{} is now the default for {}",
-            application.name(),
-            gio::content_type_get_mime_type(&content_type).unwrap_or(content_type)
-        ))
-    } else {
-        application
-            .launch(
-                &[gio::File::for_path(&path)],
-                None::<&gio::AppLaunchContext>,
-            )
-            .map_err(|error| format!("Could not launch {}: {error}", application.name()))?;
-        Ok(format!("Opened with {}", application.name()))
-    }
-}
-
-fn app_id(application: &gio::AppInfo) -> String {
-    application
-        .id()
-        .map_or_else(|| application.name().to_string(), |id| id.to_string())
 }
 
 fn content_type(path: &Path, directory: bool) -> gio::glib::GString {

@@ -17,14 +17,17 @@ Commands
   :favorite remove INDEX  Remove a Favorite
   :recent [open|clear|enable|disable]  Manage Recent
   :volume mount|unmount|eject NAME  Manage a volume
-  :properties, :props  Inspect the selected entry
-  :chmod MODE  Change selected entry permissions
-  :open-with APP_ID  Open with an application
-  :default-app APP_ID  Set the default application
-  :cd PATH  Change PolarExp's current directory
-  :q  Quit PolarExp
+  :properties, :props [PATH]  Inspect an entry
+  :chmod MODE [PATH ...]  Change permissions
+  :open-with [APP_ID] [-- PATH]  Choose or open an application
+  :default-app APP_ID [-- PATH]  Set the default application
+  :cd PATH  Change Waddle's current directory
+  :q  Quit Waddle
   :COMMAND  Run Bash and keep its final directory
-  !COMMAND  Run Bash without changing PolarExp's directory
+  !COMMAND  Run Bash without changing Waddle's directory
+
+  Targets default to selection; relative paths use this folder
+  Quote paths with spaces; put -- before Open With paths
 
 Command prompt
   Tab         Complete a command name
@@ -32,7 +35,7 @@ Command prompt
   Esc         Cancel input or close command output
 
 Settings
-  Persistent settings: $XDG_CONFIG_HOME/polarexp/polarexprc
+  Persistent settings: $XDG_CONFIG_HOME/waddle/waddlerc
   view=grid|list
   sort=name|type|size|modified
   direction=ascending|descending
@@ -43,7 +46,7 @@ Settings
   reduced-motion=auto|true|false
   reduced-transparency=auto|true|false
   tree=true|false
-  startup=last|cwd (polarexprc only)";
+  startup=last|cwd (waddlerc only)";
 
 pub(super) trait Adapter {
     fn execute(&self, current: &Path, prefix: char, command: &str) -> Result<ShellReport, Failure>;
@@ -124,19 +127,32 @@ pub(super) enum Completion {
 }
 
 #[derive(Debug)]
-pub(super) enum Submission {
+pub(super) enum CommandAction {
     None,
+    Error(String),
     Quit,
-    Updated,
+    OutputChanged,
     Refresh,
     Diagnostics,
-    Settings { local: bool, arguments: String },
-    Favorite(String),
-    Recent(String),
-    Volume(String),
-    Properties,
-    Chmod(String),
-    OpenWith { application: String, default: bool },
+    ChangeSettings {
+        local: bool,
+        arguments: String,
+    },
+    ManageFavorite(String),
+    ManageRecent(String),
+    ManageVolume(String),
+    ShowProperties {
+        target: Option<PathBuf>,
+    },
+    ChangePermissions {
+        mode: String,
+        targets: Vec<PathBuf>,
+    },
+    OpenWith {
+        application: String,
+        default: bool,
+        target: Option<PathBuf>,
+    },
     Execute(Execution),
 }
 
@@ -187,33 +203,33 @@ impl CommandSession {
         self.output = None;
     }
 
-    pub(super) fn submit(&mut self, current: PathBuf) -> Submission {
+    pub(super) fn submit(&mut self, current: PathBuf) -> CommandAction {
         let Some(prefix) = self.prefix.take() else {
-            return Submission::None;
+            return CommandAction::None;
         };
         let command = std::mem::take(&mut self.text);
         let trimmed = command.trim();
         if prefix == ':' && trimmed == "q" {
-            return Submission::Quit;
+            return CommandAction::Quit;
         }
         if prefix == ':' && matches!(trimmed, "help" | "h") {
             self.output = Some(Output {
-                summary: ":help  •  PolarExp commands".to_owned(),
+                summary: ":help  •  Waddle commands".to_owned(),
                 detail: format!("{COMMAND_HELP}\n\n{}", browser_input::HELP),
             });
-            return Submission::Updated;
+            return CommandAction::OutputChanged;
         }
         if prefix == ':' && matches!(trimmed, "terminal" | "t") {
-            return Submission::Execute(Execution {
+            return CommandAction::Execute(Execution {
                 current,
                 kind: ExecutionKind::Terminal,
             });
         }
         if prefix == ':' && trimmed == "refresh" {
-            return Submission::Refresh;
+            return CommandAction::Refresh;
         }
         if prefix == ':' && matches!(trimmed, "diagnostics" | "diag") {
-            return Submission::Diagnostics;
+            return CommandAction::Diagnostics;
         }
         if prefix == ':'
             && let Some((command, arguments)) = trimmed
@@ -221,13 +237,13 @@ impl CommandSession {
                 .or(Some((trimmed, "")))
             && matches!(command, "set" | "setlocal")
         {
-            return Submission::Settings {
+            return CommandAction::ChangeSettings {
                 local: command == "setlocal",
                 arguments: arguments.trim().to_owned(),
             };
         }
         if prefix == ':' && (trimmed == "favorite" || trimmed.starts_with("favorite ")) {
-            return Submission::Favorite(
+            return CommandAction::ManageFavorite(
                 trimmed
                     .strip_prefix("favorite")
                     .unwrap_or_default()
@@ -236,7 +252,7 @@ impl CommandSession {
             );
         }
         if prefix == ':' && (trimmed == "recent" || trimmed.starts_with("recent ")) {
-            return Submission::Recent(
+            return CommandAction::ManageRecent(
                 trimmed
                     .strip_prefix("recent")
                     .unwrap_or_default()
@@ -245,7 +261,7 @@ impl CommandSession {
             );
         }
         if prefix == ':' && (trimmed == "volume" || trimmed.starts_with("volume ")) {
-            return Submission::Volume(
+            return CommandAction::ManageVolume(
                 trimmed
                     .strip_prefix("volume")
                     .unwrap_or_default()
@@ -253,17 +269,21 @@ impl CommandSession {
                     .to_owned(),
             );
         }
-        if prefix == ':' && matches!(trimmed, "properties" | "props") {
-            return Submission::Properties;
+        if prefix == ':'
+            && let Some((command, arguments)) = command_and_arguments(trimmed)
+            && matches!(command, "properties" | "props")
+        {
+            return match parse_single_target(&current, arguments, ":properties [PATH]") {
+                Ok(target) => CommandAction::ShowProperties { target },
+                Err(error) => CommandAction::Error(error),
+            };
         }
         if prefix == ':' && (trimmed == "chmod" || trimmed.starts_with("chmod ")) {
-            return Submission::Chmod(
-                trimmed
-                    .strip_prefix("chmod")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            );
+            let arguments = trimmed.strip_prefix("chmod").unwrap_or_default().trim();
+            return match parse_chmod_arguments(&current, arguments) {
+                Ok((mode, targets)) => CommandAction::ChangePermissions { mode, targets },
+                Err(error) => CommandAction::Error(error),
+            };
         }
         if prefix == ':'
             && let Some((command, application)) = trimmed
@@ -271,15 +291,19 @@ impl CommandSession {
                 .or(Some((trimmed, "")))
             && matches!(command, "open-with" | "default-app")
         {
-            return Submission::OpenWith {
-                application: application.trim().to_owned(),
-                default: command == "default-app",
+            return match parse_open_with_arguments(&current, command, application.trim()) {
+                Ok((application, target)) => CommandAction::OpenWith {
+                    application,
+                    default: command == "default-app",
+                    target,
+                },
+                Err(error) => CommandAction::Error(error),
             };
         }
         if trimmed.is_empty() {
-            return Submission::None;
+            return CommandAction::None;
         }
-        Submission::Execute(Execution {
+        CommandAction::Execute(Execution {
             current,
             kind: ExecutionKind::Shell { prefix, command },
         })
@@ -331,8 +355,9 @@ impl CommandSession {
             Ok(Completion::Shell(Err(Failure::RequiresTerminal))) => {
                 self.output = Some(Output {
                     summary: "interactive terminal required".to_owned(),
-                    detail: "This command tried to take over the terminal screen, so PolarExp stopped it."
-                        .to_owned(),
+                    detail:
+                        "This command tried to take over the terminal screen, so Waddle stopped it."
+                            .to_owned(),
                 });
                 Consequences::default()
             }
@@ -454,6 +479,95 @@ impl CommandSession {
     }
 }
 
+fn command_and_arguments(command: &str) -> Option<(&str, &str)> {
+    command
+        .split_once(char::is_whitespace)
+        .or(Some((command, "")))
+        .map(|(command, arguments)| (command, arguments.trim()))
+}
+
+fn parse_single_target(
+    current: &Path,
+    arguments: &str,
+    usage: &str,
+) -> Result<Option<PathBuf>, String> {
+    let targets = parse_targets(current, arguments)?;
+    match targets.as_slice() {
+        [] => Ok(None),
+        [target] => Ok(Some(target.clone())),
+        _ => Err(format!("Usage: {usage}")),
+    }
+}
+
+fn parse_chmod_arguments(
+    current: &Path,
+    arguments: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
+    let words = shlex::split(arguments)
+        .ok_or_else(|| "Could not parse :chmod arguments: unmatched quote".to_owned())?;
+    let Some((mode, targets)) = words.split_first() else {
+        return Ok((String::new(), Vec::new()));
+    };
+    Ok((
+        mode.clone(),
+        targets
+            .iter()
+            .map(|target| resolve_target(current, target))
+            .collect(),
+    ))
+}
+
+fn parse_open_with_arguments(
+    current: &Path,
+    command: &str,
+    arguments: &str,
+) -> Result<(String, Option<PathBuf>), String> {
+    let Some(words) = shlex::split(arguments) else {
+        return Err("Could not parse Open With arguments: unmatched quote".to_owned());
+    };
+    let Some(separator) = words.iter().position(|word| word == "--") else {
+        let application = match words.as_slice() {
+            [application] => application.clone(),
+            _ => arguments.to_owned(),
+        };
+        return Ok((application, None));
+    };
+    let application = words[..separator].join(" ");
+    let targets = &words[separator + 1..];
+    let [target] = targets else {
+        let application = if command == "open-with" {
+            "[APP_ID]"
+        } else {
+            "APP_ID"
+        };
+        return Err(format!("Usage: :{command} {application} [-- PATH]"));
+    };
+    if command == "default-app" && application.is_empty() {
+        return Err("Usage: :default-app APP_ID [-- PATH]".to_owned());
+    }
+    Ok((application, Some(resolve_target(current, target))))
+}
+
+fn parse_targets(current: &Path, arguments: &str) -> Result<Vec<PathBuf>, String> {
+    shlex::split(arguments)
+        .ok_or_else(|| "Could not parse path: unmatched quote".to_owned())
+        .map(|targets| {
+            targets
+                .into_iter()
+                .map(|target| resolve_target(current, &target))
+                .collect()
+        })
+}
+
+fn resolve_target(current: &Path, target: &str) -> PathBuf {
+    let target = PathBuf::from(target);
+    if target.is_absolute() {
+        target
+    } else {
+        current.join(target)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -493,7 +607,7 @@ mod tests {
 
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::Updated
+            CommandAction::OutputChanged
         ));
         let output = session.output().unwrap();
         assert!(output.summary.starts_with(":help"));
@@ -518,7 +632,7 @@ mod tests {
 
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::Refresh
+            CommandAction::Refresh
         ));
     }
 
@@ -530,26 +644,132 @@ mod tests {
 
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::Diagnostics
+            CommandAction::Diagnostics
         ));
     }
 
     #[test]
-    fn metadata_commands_keep_application_ids_and_permission_modes_as_arguments() {
+    fn metadata_commands_keep_selection_as_the_default_target() {
         let mut session = CommandSession::default();
         session.begin(':');
         session.change("chmod 640".to_owned());
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::Chmod(mode) if mode == "640"
+            CommandAction::ChangePermissions { mode, targets }
+                if mode == "640" && targets.is_empty()
         ));
 
         session.begin(':');
         session.change("default-app org.example.Editor.desktop".to_owned());
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::OpenWith { application, default: true }
-                if application == "org.example.Editor.desktop"
+            CommandAction::OpenWith {
+                application,
+                default: true,
+                target: None,
+            } if application == "org.example.Editor.desktop"
+        ));
+    }
+
+    #[test]
+    fn metadata_commands_resolve_names_and_paths_from_the_current_folder() {
+        let mut session = CommandSession::default();
+
+        session.begin(':');
+        session.change("properties \"notes from today.txt\"".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ShowProperties { target: Some(target) }
+                if target.as_path() == Path::new("/work/notes from today.txt")
+        ));
+
+        session.begin(':');
+        session.change("chmod 640 notes.txt \"archive copy.txt\" /tmp/shared.txt".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ChangePermissions { mode, targets }
+                if mode == "640"
+                    && targets == [
+                        PathBuf::from("/work/notes.txt"),
+                        PathBuf::from("/work/archive copy.txt"),
+                        PathBuf::from("/tmp/shared.txt"),
+                    ]
+        ));
+
+        session.begin(':');
+        session
+            .change("open-with org.example.Editor.desktop -- \"notes from today.txt\"".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::OpenWith {
+                application,
+                default: false,
+                target: Some(target),
+            } if application == "org.example.Editor.desktop"
+                && target.as_path() == Path::new("/work/notes from today.txt")
+        ));
+
+        session.begin(':');
+        session.change("open-with -- notes.txt".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::OpenWith {
+                application,
+                default: false,
+                target: Some(target),
+            } if application.is_empty() && target.as_path() == Path::new("/work/notes.txt")
+        ));
+    }
+
+    #[test]
+    fn metadata_commands_reject_ambiguous_or_unclosed_paths() {
+        let mut session = CommandSession::default();
+
+        session.begin(':');
+        session.change("properties one two".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::Error(error) if error == "Usage: :properties [PATH]"
+        ));
+
+        session.begin(':');
+        session.change("default-app Editor -- one two".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::Error(error) if error == "Usage: :default-app APP_ID [-- PATH]"
+        ));
+    }
+
+    #[test]
+    fn management_commands_return_semantic_actions() {
+        let mut session = CommandSession::default();
+
+        session.begin(':');
+        session.change("favorite add Work".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ManageFavorite(arguments) if arguments == "add Work"
+        ));
+
+        session.begin(':');
+        session.change("recent clear".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ManageRecent(arguments) if arguments == "clear"
+        ));
+
+        session.begin(':');
+        session.change("volume mount Archive".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ManageVolume(arguments) if arguments == "mount Archive"
+        ));
+
+        session.begin(':');
+        session.change("properties".to_owned());
+        assert!(matches!(
+            session.submit(PathBuf::from("/work")),
+            CommandAction::ShowProperties { target: None }
         ));
     }
 
@@ -560,7 +780,7 @@ mod tests {
         session.change("setlocal view=list".to_owned());
         assert!(matches!(
             session.submit(PathBuf::from("/work")),
-            Submission::Settings {
+            CommandAction::ChangeSettings {
                 local: true,
                 arguments
             } if arguments == "view=list"
@@ -589,7 +809,7 @@ mod tests {
         let mut session = CommandSession::default();
         session.begin('!');
         session.change("true".to_owned());
-        let Submission::Execute(execution) = session.submit(PathBuf::from("/work")) else {
+        let CommandAction::Execute(execution) = session.submit(PathBuf::from("/work")) else {
             panic!("expected execution");
         };
 
@@ -612,7 +832,7 @@ mod tests {
         let mut session = CommandSession::default();
         session.begin(':');
         session.change("terminal".to_owned());
-        let Submission::Execute(execution) = session.submit(PathBuf::from("/work")) else {
+        let CommandAction::Execute(execution) = session.submit(PathBuf::from("/work")) else {
             panic!("expected terminal execution");
         };
         let consequences = session.complete(Ok(execution.run(&adapter)), Path::new("/work"));

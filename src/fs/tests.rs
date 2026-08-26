@@ -1,5 +1,12 @@
 use super::*;
 
+fn complete(batch: TransferBatch) -> TransferReport {
+    let TransferBatchOutcome::Complete(report) = batch.run() else {
+        panic!("Transfer unexpectedly paused for a conflict");
+    };
+    report
+}
+
 #[test]
 fn validates_names() {
     for bad in ["", ".", "..", "a/b", "a\0b"] {
@@ -253,7 +260,15 @@ fn moves_file_into_directory() {
     fs::write(&source, "hello").unwrap();
     fs::create_dir(&destination_directory).unwrap();
 
-    let destination = move_entry(&source, &destination_directory).unwrap();
+    let report = complete(
+        TransferBatch::try_new(
+            vec![source.clone()],
+            destination_directory.clone(),
+            Action::Move,
+        )
+        .unwrap(),
+    );
+    let destination = report.completed.into_iter().next().unwrap();
 
     assert_eq!(destination, destination_directory.join("note.txt"));
     assert!(!source.exists());
@@ -287,7 +302,7 @@ fn cross_filesystem_move_publishes_only_a_complete_destination() {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".polarexp-")
+            .starts_with(".waddle-")
     }));
 }
 
@@ -325,7 +340,7 @@ fn failed_cross_filesystem_move_removes_private_staging() {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".polarexp-")
+            .starts_with(".waddle-")
     }));
 }
 
@@ -434,7 +449,7 @@ fn transfer_preflight_preserves_symlinks_and_checks_destination_permissions() {
 }
 
 #[test]
-fn move_rejects_an_existing_destination() {
+fn move_pauses_before_an_existing_destination() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("note.txt");
     let destination_directory = temp.path().join("archive");
@@ -442,8 +457,19 @@ fn move_rejects_an_existing_destination() {
     fs::create_dir(&destination_directory).unwrap();
     fs::write(destination_directory.join("note.txt"), "existing").unwrap();
 
-    assert!(move_entry(&source, &destination_directory).is_err());
-    assert_eq!(fs::read_to_string(source).unwrap(), "source");
+    let TransferBatchOutcome::Conflict { conflict, .. } = TransferBatch::try_new(
+        vec![source.clone()],
+        destination_directory.clone(),
+        Action::Move,
+    )
+    .unwrap()
+    .run() else {
+        panic!("existing destination must pause the Transfer");
+    };
+
+    assert_eq!(conflict.source, source);
+    assert_eq!(conflict.destination, destination_directory.join("note.txt"));
+    assert_eq!(fs::read_to_string(&source).unwrap(), "source");
     assert_eq!(
         fs::read_to_string(destination_directory.join("note.txt")).unwrap(),
         "existing"
@@ -457,7 +483,9 @@ fn move_rejects_a_directory_descendant() {
     let descendant = source.join("child");
     fs::create_dir_all(&descendant).unwrap();
 
-    assert!(move_entry(&source, &descendant).is_err());
+    assert!(
+        TransferBatch::try_new(vec![source.clone()], descendant.clone(), Action::Move).is_err()
+    );
     assert!(source.exists());
     assert!(descendant.exists());
 }
@@ -470,8 +498,25 @@ fn copies_files_without_overwriting_existing_entries() {
     fs::write(&source, "hello").unwrap();
     fs::create_dir(&destination).unwrap();
 
-    let first = copy_entry(&source, &destination).unwrap();
-    let second = copy_entry(&source, &destination).unwrap();
+    let first = complete(
+        TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy).unwrap(),
+    )
+    .completed
+    .into_iter()
+    .next()
+    .unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("the second copy must pause for a conflict");
+    };
+    let second = complete(batch.resolve(ConflictChoice::KeepBoth, false))
+        .completed
+        .into_iter()
+        .next()
+        .unwrap();
 
     assert_eq!(first, destination.join("note.txt"));
     assert_eq!(second, destination.join("note.txt copy"));
@@ -489,7 +534,13 @@ fn copies_directories_recursively() {
     fs::write(source.join("nested/note.txt"), "hello").unwrap();
     fs::create_dir(&destination).unwrap();
 
-    let copied = copy_entry(&source, &destination).unwrap();
+    let copied = complete(
+        TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy).unwrap(),
+    )
+    .completed
+    .into_iter()
+    .next()
+    .unwrap();
 
     assert_eq!(copied, destination.join("folder"));
     assert_eq!(
@@ -524,9 +575,15 @@ fn copy_preserves_sparse_hardlink_symlink_timestamp_permission_and_xattr_metadat
     let hardlink = source.join("hardlink");
     fs::hard_link(&sparse, &hardlink).unwrap();
     symlink("sparse", source.join("symlink")).unwrap();
-    let xattr_supported = set_xattr(&sparse, "user.polarexp-test", b"kept").is_ok();
+    let xattr_supported = set_xattr(&sparse, "user.waddle-test", b"kept").is_ok();
 
-    let copied = copy_entry(&source, &destination).unwrap();
+    let copied = complete(
+        TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy).unwrap(),
+    )
+    .completed
+    .into_iter()
+    .next()
+    .unwrap();
     let copied_sparse = copied.join("sparse");
     let copied_hardlink = copied.join("hardlink");
     let metadata = fs::symlink_metadata(&copied_sparse).unwrap();
@@ -545,7 +602,7 @@ fn copy_preserves_sparse_hardlink_symlink_timestamp_permission_and_xattr_metadat
     );
     if xattr_supported {
         assert_eq!(
-            get_xattr(&copied_sparse, "user.polarexp-test").unwrap(),
+            get_xattr(&copied_sparse, "user.waddle-test").unwrap(),
             b"kept"
         );
     }
@@ -585,7 +642,9 @@ fn copy_rejects_a_directory_descendant() {
     let descendant = source.join("child");
     fs::create_dir_all(&descendant).unwrap();
 
-    assert!(copy_entry(&source, &descendant).is_err());
+    assert!(
+        TransferBatch::try_new(vec![source.clone()], descendant.clone(), Action::Copy).is_err()
+    );
     assert_eq!(fs::read_dir(&descendant).unwrap().count(), 0);
 }
 
@@ -600,11 +659,11 @@ fn batch_copy_keeps_successes_when_one_source_fails() {
     fs::write(&first, "first").unwrap();
     fs::write(&second, "second").unwrap();
 
-    let report = transfer_entries(
-        &[first, missing.clone(), second],
-        &destination,
-        crate::transfer::Action::Copy,
-    );
+    let report = complete(TransferBatch::new(
+        vec![first, missing.clone(), second],
+        destination.clone(),
+        Action::Copy,
+    ));
 
     assert_eq!(report.completed.len(), 2);
     assert_eq!(report.failures.len(), 1);
@@ -614,7 +673,7 @@ fn batch_copy_keeps_successes_when_one_source_fails() {
 }
 
 #[test]
-fn batch_move_rejects_conflicts_without_rolling_back_successes() {
+fn cancelling_a_paused_batch_move_keeps_earlier_successes() {
     let temp = tempfile::tempdir().unwrap();
     let destination = temp.path().join("destination");
     fs::create_dir(&destination).unwrap();
@@ -624,15 +683,24 @@ fn batch_move_rejects_conflicts_without_rolling_back_successes() {
     fs::write(&conflict, "source").unwrap();
     fs::write(destination.join("conflict.txt"), "destination").unwrap();
 
-    let report = transfer_entries(
-        &[first.clone(), conflict.clone()],
-        &destination,
-        crate::transfer::Action::Move,
-    );
+    let TransferBatchOutcome::Conflict {
+        batch,
+        conflict: paused,
+    } = TransferBatch::new(
+        vec![first.clone(), conflict.clone()],
+        destination.clone(),
+        Action::Move,
+    )
+    .run()
+    else {
+        panic!("the existing destination must pause the Transfer");
+    };
+    assert_eq!(paused.source, conflict);
+    let report = batch.cancel();
 
     assert_eq!(report.completed, vec![destination.join("first.txt")]);
-    assert_eq!(report.failures.len(), 1);
-    assert_eq!(report.failures[0].source, conflict);
+    assert!(report.failures.is_empty());
+    assert_eq!(report.retained, [conflict]);
     assert!(!first.exists());
 }
 
@@ -824,7 +892,7 @@ fn cancelled_batch_keeps_completed_results_and_removes_private_incomplete_names(
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".polarexp-")
+            .starts_with(".waddle-")
     }));
 }
 
