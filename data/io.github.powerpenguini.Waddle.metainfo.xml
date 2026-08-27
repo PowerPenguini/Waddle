@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.2" date="2026-08-27">
+      <description>
+        <ul>
+          <li>Keep the interface responsive while slow folders open and allow cancelling with Escape or Back.</li>
+          <li>Avoid activating dormant automounts from directory monitoring.</li>
+          <li>Add a stable framed spinner and an empty-folder state.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.1" date="2026-08-27">
       <description>
         <p>Initial Waddle preview release.</p>
