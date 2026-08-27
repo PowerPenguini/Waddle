@@ -22,9 +22,9 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="0.1.0" date="2026-08-22">
+    <release version="0.0.1" date="2026-08-27">
       <description>
-        <p>Initial preview packaging for the complete Waddle 1.0 workflow.</p>
+        <p>Initial Waddle preview release.</p>
       </description>
     </release>
   </releases>
