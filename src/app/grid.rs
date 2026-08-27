@@ -12,6 +12,7 @@ pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 46.0;
 pub(super) const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 pub(super) const TILE_WIDTH: f32 = 104.0;
+pub(super) const TILE_HEIGHT: f32 = 108.0;
 pub(super) const TILE_ROW_HEIGHT: f32 = 116.0;
 pub(super) const CONTENT_GUTTER: f32 = 14.0;
 pub(super) const LIST_VIEW_TOP_INSET: f32 = 6.0;
@@ -19,7 +20,6 @@ pub(super) const LIST_HEADER_HEIGHT: f32 = 26.0;
 pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
 const TILE_PITCH: f32 = 112.0;
-const TILE_HEIGHT: f32 = 108.0;
 const TREE_TOP: f32 = 44.0;
 const TREE_ROW_HEIGHT: f32 = 32.0;
 
@@ -924,23 +924,37 @@ impl GridInteraction {
     }
 
     fn point_over_entry(&self, point: Point, index: usize) -> bool {
+        let bounds = self.entry_bounds(index);
+        point.x >= bounds.x
+            && point.x < bounds.x + bounds.width
+            && point.y >= bounds.y
+            && point.y < bounds.y + bounds.height
+    }
+
+    fn entry_bounds(&self, index: usize) -> Rectangle {
         if self.list_mode {
-            let row_top = self.entries_top() - self.scroll_y + index as f32 * LIST_ROW_HEIGHT;
-            return point.x >= self.sidebar_width + CONTENT_GUTTER
-                && point.x < self.window_size.width - CONTENT_GUTTER
-                && point.y >= row_top
-                && point.y < row_top + LIST_ROW_HEIGHT;
+            return Rectangle::new(
+                Point::new(
+                    self.sidebar_width + CONTENT_GUTTER,
+                    self.entries_top() - self.scroll_y + index as f32 * LIST_ROW_HEIGHT,
+                ),
+                Size::new(
+                    (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(0.0),
+                    LIST_ROW_HEIGHT,
+                ),
+            );
         }
         let columns = self.columns();
         let row = index / columns;
         let column = index % columns;
         let column_left = self.sidebar_width + CONTENT_GUTTER + column as f32 * self.column_width();
-        let tile_left = column_left + (self.column_width() - TILE_WIDTH) / 2.0;
-        let row_top = content_top() - self.scroll_y + row as f32 * TILE_ROW_HEIGHT;
-        point.x >= tile_left
-            && point.x < tile_left + TILE_WIDTH
-            && point.y >= row_top
-            && point.y < row_top + TILE_HEIGHT
+        Rectangle::new(
+            Point::new(
+                column_left + (self.column_width() - TILE_WIDTH) / 2.0,
+                content_top() - self.scroll_y + row as f32 * TILE_ROW_HEIGHT,
+            ),
+            Size::new(TILE_WIDTH, TILE_HEIGHT),
+        )
     }
 
     fn entries_top(&self) -> f32 {
@@ -965,7 +979,24 @@ impl GridInteraction {
         };
         let (start_row, start_column) = self.selection_cell_at(marquee.start);
         let (end_row, end_column) = self.selection_cell_at(marquee.current);
-        self.select_rectangle(start_row, start_column, end_row, end_column, entry_count);
+        let selection_bounds = Rectangle::new(
+            Point::new(
+                marquee.start.x.min(marquee.current.x),
+                marquee.start.y.min(marquee.current.y),
+            ),
+            Size::new(
+                (marquee.current.x - marquee.start.x).abs(),
+                (marquee.current.y - marquee.start.y).abs(),
+            ),
+        );
+        self.select_rectangle(
+            start_row,
+            start_column,
+            end_row,
+            end_column,
+            selection_bounds,
+            entry_count,
+        );
     }
 
     fn select_rectangle(
@@ -974,6 +1005,7 @@ impl GridInteraction {
         start_column: i32,
         end_row: i32,
         end_column: i32,
+        selection_bounds: Rectangle,
         entry_count: usize,
     ) {
         self.visual_anchor = None;
@@ -1000,7 +1032,9 @@ impl GridInteraction {
         for row in first_row..=final_row {
             for column in first_column..=final_column {
                 let index = row * columns + column;
-                if index < entry_count {
+                if index < entry_count
+                    && rectangles_intersect(selection_bounds, self.entry_bounds(index))
+                {
                     self.selection.insert(index);
                 }
             }
@@ -1031,6 +1065,13 @@ impl GridInteraction {
             self.selection.insert(selected);
         }
     }
+}
+
+fn rectangles_intersect(left: Rectangle, right: Rectangle) -> bool {
+    left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y
 }
 
 fn content_top() -> f32 {
@@ -1148,6 +1189,44 @@ mod tests {
         grid.move_cursor(Point::new(gap_middle, tile_middle_y), 3);
 
         assert_eq!(grid.hovered(), None);
+    }
+
+    #[test]
+    fn marquee_moving_only_through_grid_gaps_selects_nothing() {
+        let mut grid = grid();
+        let column_width = grid.column_width();
+        let first_tile_left = SIDEBAR_WIDTH + CONTENT_GUTTER + (column_width - TILE_WIDTH) / 2.0;
+        let gap_middle = first_tile_left + (TILE_WIDTH + column_width) / 2.0;
+        let start = Point::new(gap_middle, content_top() + TILE_HEIGHT / 2.0);
+        let end = Point::new(
+            gap_middle,
+            content_top() + 2.0 * TILE_ROW_HEIGHT + TILE_HEIGHT / 2.0,
+        );
+
+        assert!(grid.start_marquee(start, 9, 25.0, true));
+        grid.move_cursor(end, 9);
+
+        assert!(grid.selected_indices().is_empty());
+        assert_eq!(grid.selected_entry(), None);
+    }
+
+    #[test]
+    fn marquee_line_crossing_grid_tiles_selects_only_those_tiles() {
+        let mut grid = grid();
+        let tile_center_x = SIDEBAR_WIDTH
+            + CONTENT_GUTTER
+            + (grid.column_width() - TILE_WIDTH) / 2.0
+            + TILE_WIDTH / 2.0;
+        let start = Point::new(tile_center_x, content_top() + 3.0 * TILE_ROW_HEIGHT + 2.0);
+        let end = Point::new(tile_center_x, content_top() + TILE_HEIGHT / 2.0);
+
+        assert!(grid.start_marquee(start, 9, 25.0, true));
+        grid.move_cursor(end, 9);
+
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [0, 3, 6]
+        );
     }
 
     #[test]
@@ -1350,7 +1429,7 @@ mod tests {
         assert_eq!(grid.selected_entry(), Some(7));
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
-            [1, 2, 4, 5, 7]
+            [4, 5, 7]
         );
     }
 

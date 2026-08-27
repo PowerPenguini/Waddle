@@ -773,7 +773,7 @@ impl<'a> View<'a> {
         .align_x(Alignment::Center);
         let tile = container(content)
             .width(TILE_WIDTH)
-            .height(108)
+            .height(TILE_HEIGHT)
             .padding(Padding {
                 top: 10.0,
                 right: 7.0,

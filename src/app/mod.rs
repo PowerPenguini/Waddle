@@ -66,8 +66,8 @@ use gio::prelude::*;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
     DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
-    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_ROW_HEIGHT, TILE_WIDTH,
-    TOOLBAR_HEIGHT,
+    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT,
+    TILE_WIDTH, TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{

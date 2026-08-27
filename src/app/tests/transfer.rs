@@ -252,7 +252,7 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
 }
 
 #[test]
-fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
+fn raw_mouse_drag_selects_only_intersected_grid_tiles_and_finishes_on_release() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
     app.grid.resize(iced::Size::new(820.0, 560.0));
@@ -296,7 +296,7 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
             .iter()
             .copied()
             .collect::<Vec<_>>(),
-        [0, 1, 5, 6]
+        [5]
     );
 
     let _ = app.handle_event(
