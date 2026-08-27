@@ -1,4 +1,12 @@
 use super::*;
+use std::{error::Error as _, io, os::unix::fs::MetadataExt};
+
+use crate::transfer::Action;
+
+use super::transfer_batch::FileIdentity;
+
+#[cfg(target_os = "linux")]
+use super::mutation::replace_exact;
 
 fn complete(batch: TransferBatch) -> TransferReport {
     let TransferBatchOutcome::Complete(report) = batch.run() else {
@@ -13,6 +21,18 @@ fn validates_names() {
         assert!(validate_name(bad).is_err());
     }
     assert!(validate_name("new folder").is_ok());
+}
+
+#[test]
+fn browse_error_preserves_the_io_error_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let error = read_directory(&temp.path().join("missing")).unwrap_err();
+
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.is::<io::Error>())
+    );
 }
 
 #[test]

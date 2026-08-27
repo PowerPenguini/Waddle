@@ -1,4 +1,12 @@
-use super::*;
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use super::{
+    Action, Error, Fingerprint, TransferItem, TransferKind, TrashItem, TreeFingerprint,
+    store::Effect, trash,
+};
 
 #[derive(Clone, Copy)]
 pub(super) enum Direction {
@@ -6,7 +14,7 @@ pub(super) enum Direction {
     Redo,
 }
 
-pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect, String> {
+pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect, Error> {
     match action {
         Action::Rename {
             before,
@@ -29,17 +37,18 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
         }
         Action::NewFolder { path, fingerprint } => match direction {
             Direction::Undo => {
-                let mut entries = fs::read_dir(&*path)
-                    .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+                let mut entries = fs::read_dir(&*path).map_err(|error| {
+                    Error::io(format!("could not inspect {}", path.display()), error)
+                })?;
                 if entries.next().is_some() {
-                    return Err(format!(
+                    return Err(Error::message(format!(
                         "Refused Undo: {} is no longer empty",
                         path.display()
-                    ));
+                    )));
                 }
                 verify(path, fingerprint)?;
                 fs::remove_dir(&*path)
-                    .map_err(|error| format!("could not undo New Folder: {error}"))?;
+                    .map_err(|error| Error::io("could not undo New Folder", error))?;
                 Ok(Effect {
                     status: "Undid New Folder".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
@@ -49,7 +58,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
             Direction::Redo => {
                 ensure_absent(path)?;
                 fs::create_dir(&*path)
-                    .map_err(|error| format!("could not redo New Folder: {error}"))?;
+                    .map_err(|error| Error::io("could not redo New Folder", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 Ok(Effect {
                     status: "Redid New Folder".to_owned(),
@@ -62,7 +71,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
             Direction::Undo => {
                 verify(path, fingerprint)?;
                 fs::remove_file(&*path)
-                    .map_err(|error| format!("could not undo New File: {error}"))?;
+                    .map_err(|error| Error::io("could not undo New File", error))?;
                 Ok(Effect {
                     status: "Undid New File".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
@@ -75,7 +84,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                     .write(true)
                     .create_new(true)
                     .open(&*path)
-                    .map_err(|error| format!("could not redo New File: {error}"))?;
+                    .map_err(|error| Error::io("could not redo New File", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 Ok(Effect {
                     status: "Redid New File".to_owned(),
@@ -104,7 +113,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
     }
 }
 
-fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, String> {
+fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, Error> {
     match direction {
         Direction::Undo => {
             for item in items.iter() {
@@ -117,13 +126,16 @@ fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, 
                     for previous in moved.iter().rev() {
                         let _ = crate::fs::journal_move(&previous.original, &previous.trashed);
                     }
-                    return Err(error);
+                    return Err(error.into());
                 }
                 moved.push(item.clone());
             }
             for item in items.iter() {
                 fs::remove_file(&item.info).map_err(|error| {
-                    format!("restored the item but could not remove Trash metadata: {error}")
+                    Error::io(
+                        "restored the item but could not remove Trash metadata",
+                        error,
+                    )
                 })?;
             }
             Ok(trash_effect(items, Direction::Undo))
@@ -181,12 +193,11 @@ fn apply_transfer(
     kind: TransferKind,
     items: &mut [TransferItem],
     direction: Direction,
-) -> Result<Effect, String> {
+) -> Result<Effect, Error> {
     if items.iter().any(|item| item.replaced_existing) {
-        return Err(
-            "Refused Undo: this transfer replaced an existing destination that cannot be restored"
-                .to_owned(),
-        );
+        return Err(Error::message(
+            "Refused Undo: this transfer replaced an existing destination that cannot be restored",
+        ));
     }
     match direction {
         Direction::Undo => {
@@ -204,7 +215,7 @@ fn apply_transfer(
                 };
                 if let Err(error) = result {
                     rollback_transfer(kind, items, &completed, Direction::Undo);
-                    return Err(error);
+                    return Err(error.into());
                 }
                 completed.push(item.source.clone());
             }
@@ -223,7 +234,7 @@ fn apply_transfer(
                 };
                 if let Err(error) = result {
                     rollback_transfer(kind, items, &completed, Direction::Redo);
-                    return Err(error);
+                    return Err(error.into());
                 }
                 item.result_fingerprint = TreeFingerprint::read(&item.destination)?;
                 completed.push(item.destination.clone());
@@ -290,44 +301,50 @@ fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direct
     }
 }
 
-fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), String> {
+fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), Error> {
     if &TreeFingerprint::read(path)? == expected {
         Ok(())
     } else {
-        Err(format!(
+        Err(Error::message(format!(
             "Refused operation: {} or its contents changed after it was recorded",
             path.display()
-        ))
+        )))
     }
 }
 
-fn verify(path: &Path, expected: &Fingerprint) -> Result<(), String> {
+fn verify(path: &Path, expected: &Fingerprint) -> Result<(), Error> {
     if &Fingerprint::read(path)? == expected {
         Ok(())
     } else {
-        Err(format!(
+        Err(Error::message(format!(
             "Refused operation: {} changed after it was recorded",
             path.display()
-        ))
+        )))
     }
 }
 
-fn ensure_absent(path: &Path) -> Result<(), String> {
+fn ensure_absent(path: &Path) -> Result<(), Error> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Ok(_) => Err(format!("Refused operation: {} now exists", path.display())),
-        Err(error) => Err(format!("could not inspect {}: {error}", path.display())),
+        Ok(_) => Err(Error::message(format!(
+            "Refused operation: {} now exists",
+            path.display()
+        ))),
+        Err(error) => Err(Error::io(
+            format!("could not inspect {}", path.display()),
+            error,
+        )),
     }
 }
 
 #[cfg(target_os = "linux")]
-fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), String> {
+fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let source = CString::new(source.as_os_str().as_bytes())
-        .map_err(|_| "source path contains NUL".to_owned())?;
+        .map_err(|_| Error::message("source path contains NUL"))?;
     let destination = CString::new(destination.as_os_str().as_bytes())
-        .map_err(|_| "destination path contains NUL".to_owned())?;
+        .map_err(|_| Error::message("destination path contains NUL"))?;
     // SAFETY: both C strings remain valid for the duration of the syscall.
     let result = unsafe {
         libc::syscall(
@@ -342,17 +359,17 @@ fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), String> {
     if result == 0 {
         Ok(())
     } else {
-        Err(format!(
-            "could not move entry: {}",
-            io::Error::last_os_error()
+        Err(Error::io(
+            "could not move entry",
+            io::Error::last_os_error(),
         ))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), String> {
+fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
     ensure_absent(destination)?;
-    fs::rename(source, destination).map_err(|error| format!("could not move entry: {error}"))
+    fs::rename(source, destination).map_err(|error| Error::io("could not move entry", error))
 }
 
 fn parent_folders(first: &Path, second: &Path) -> Vec<PathBuf> {

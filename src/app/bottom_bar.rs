@@ -1,6 +1,20 @@
 use super::view::View;
-use super::*;
-use iced::widget::{column, row};
+use iced::{
+    Alignment, Color, Element, Fill, Length, Padding,
+    widget::{
+        Column, Id, Row, Space, button, column, container, mouse_area, pin, row, scrollable, stack,
+        text, text_input,
+    },
+};
+
+use super::{
+    BrowserFocus, BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu,
+    EntryIconKind, FileOperationView, InputMode, MONO_FONT, MONO_FONT_SEMIBOLD, Message,
+    NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID, TransientPresentationKind,
+    compact_status_line, compact_text_button, context_button_style, context_menu_button_style,
+    format_transfer_snapshot, menu_style, open_with, status_background_style, status_input_style,
+    with_alpha,
+};
 
 pub(super) fn command_output_action_spacing() -> f32 {
     12.0
@@ -8,7 +22,7 @@ pub(super) fn command_output_action_spacing() -> f32 {
 
 impl<'a> View<'a> {
     pub(super) fn status_bar(self) -> Element<'a, Message> {
-        let height = self.status_height();
+        let height = self.app().status_height();
         let status_model = self.app().browser_status_model();
         let transient = self.app().transient_presentation().kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
@@ -52,7 +66,7 @@ impl<'a> View<'a> {
                         .font(MONO_FONT)
                         .size(12)
                         .line_height(iced::Pixels(15.0))
-                        .color(with_alpha(self.iced_theme().palette().text, 0.84))
+                        .color(with_alpha(self.app().iced_theme().palette().text, 0.84))
                         .width(Fill)
                         .wrapping(iced::advanced::text::Wrapping::WordOrGlyph),
                 )
@@ -77,9 +91,9 @@ impl<'a> View<'a> {
         } else if transient == TransientPresentationKind::TransferHistory {
             self.transfer_history_bar()
         } else {
-            let status: Element<'_, Message> = match self.browser_input.mode() {
+            let status: Element<'_, Message> = match self.app().browser_input.mode() {
                 InputMode::Search => {
-                    let prefix = if self.search.is_recursive() {
+                    let prefix = if self.app().search.is_recursive() {
                         "//"
                     } else {
                         "/"
@@ -89,7 +103,7 @@ impl<'a> View<'a> {
                             .size(12)
                             .line_height(iced::Pixels(15.0))
                             .color(self.accent_color()),
-                        text_input("", self.search.query())
+                        text_input("", self.app().search.query())
                             .id(Id::new(SEARCH_ID))
                             .on_input(Message::SearchChanged)
                             .on_submit(Message::SearchSubmitted)
@@ -106,11 +120,11 @@ impl<'a> View<'a> {
                     .into()
                 }
                 InputMode::Command => row![
-                    text(self.command.prefix().unwrap_or(':').to_string())
+                    text(self.app().command.prefix().unwrap_or(':').to_string())
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(self.accent_color()),
-                    text_input("", self.command.text())
+                    text_input("", self.app().command.text())
                         .id(Id::new(COMMAND_ID))
                         .on_input(Message::CommandChanged)
                         .on_submit(Message::CommandSubmitted)
@@ -128,21 +142,22 @@ impl<'a> View<'a> {
                     if let FileOperationView::Rename { value, error } =
                         self.app().file_operations.view()
                     {
-                        let feedback: Element<'_, Message> = if self.foreground_operation_active() {
-                            self.spinner(13.0).into()
-                        } else if error.is_empty() {
-                            text("Enter save  ·  Esc cancel")
-                                .size(11)
-                                .line_height(iced::Pixels(13.0))
-                                .color(self.secondary_text_color())
-                                .into()
-                        } else {
-                            text(error)
-                                .size(11)
-                                .line_height(iced::Pixels(13.0))
-                                .color(self.iced_theme().palette().danger)
-                                .into()
-                        };
+                        let feedback: Element<'_, Message> =
+                            if self.app().foreground_operation_active() {
+                                self.app().spinner(13.0).into()
+                            } else if error.is_empty() {
+                                text("Enter save  ·  Esc cancel")
+                                    .size(11)
+                                    .line_height(iced::Pixels(13.0))
+                                    .color(self.secondary_text_color())
+                                    .into()
+                            } else {
+                                text(error)
+                                    .size(11)
+                                    .line_height(iced::Pixels(13.0))
+                                    .color(self.app().iced_theme().palette().danger)
+                                    .into()
+                            };
                         row![
                             text("rename")
                                 .font(MONO_FONT)
@@ -152,11 +167,11 @@ impl<'a> View<'a> {
                             text_input("", value)
                                 .id(Id::new(RENAME_ID))
                                 .on_input_maybe(
-                                    (!self.foreground_operation_active())
+                                    (!self.app().foreground_operation_active())
                                         .then_some(Message::RenameChanged),
                                 )
                                 .on_submit_maybe(
-                                    (!self.foreground_operation_active())
+                                    (!self.app().foreground_operation_active())
                                         .then_some(Message::RenameSubmitted),
                                 )
                                 .font(MONO_FONT)
@@ -183,16 +198,19 @@ impl<'a> View<'a> {
                             .style(move |theme| {
                                 status_background_style(
                                     theme,
-                                    self.presentation.focus_is(BrowserFocus::BottomBar),
-                                    self.presentation
-                                        .copy_feedback_intensity(self.reduced_motion()),
+                                    self.app().presentation.focus_is(BrowserFocus::BottomBar),
+                                    self.app()
+                                        .presentation
+                                        .copy_feedback_intensity(self.app().reduced_motion()),
                                 )
                             })
                             .into();
                     }
                     let indicator: Element<'_, Message> =
-                        if self.foreground_operation_active() || self.navigation.loading() {
-                            self.spinner(13.0).into()
+                        if self.app().foreground_operation_active()
+                            || self.app().navigation.loading()
+                        {
+                            self.app().spinner(13.0).into()
                         } else {
                             Space::new().width(0).into()
                         };
@@ -202,15 +220,17 @@ impl<'a> View<'a> {
                             text(status_model.text)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
-                                .color(if self.presentation.notice().is_some() {
-                                    self.iced_theme().palette().danger
+                                .color(if self.app().presentation.notice().is_some() {
+                                    self.app().iced_theme().palette().danger
                                 } else {
                                     self.secondary_text_color()
                                 })
                                 .width(Fill),
                         )
                         .spacing(
-                            if self.foreground_operation_active() || self.navigation.loading() {
+                            if self.app().foreground_operation_active()
+                                || self.app().navigation.loading()
+                            {
                                 7
                             } else {
                                 0
@@ -238,20 +258,21 @@ impl<'a> View<'a> {
             .style(move |theme| {
                 status_background_style(
                     theme,
-                    self.presentation.focus_is(BrowserFocus::BottomBar),
-                    self.presentation
-                        .copy_feedback_intensity(self.reduced_motion()),
+                    self.app().presentation.focus_is(BrowserFocus::BottomBar),
+                    self.app()
+                        .presentation
+                        .copy_feedback_intensity(self.app().reduced_motion()),
                 )
             })
             .into()
     }
 
     fn transfer_status_line(self) -> Element<'a, Message> {
-        let transfers = self.transfers.overview();
+        let transfers = self.app().transfers.overview();
         let mut line = Row::new().spacing(8).align_y(Alignment::Center);
         if let Some(snapshot) = transfers.snapshot {
             line = line
-                .push(self.spinner(13.0))
+                .push(self.app().spinner(13.0))
                 .push(
                     text(format_transfer_snapshot(
                         transfers.active_action.unwrap_or("Transfer"),
@@ -281,7 +302,7 @@ impl<'a> View<'a> {
     }
 
     fn transfer_history_bar(self) -> Element<'a, Message> {
-        let transfers = self.transfers.overview();
+        let transfers = self.app().transfers.overview();
         let mut header = Row::new()
             .push(
                 text("transfers")
@@ -360,7 +381,7 @@ impl<'a> View<'a> {
                     text("trash")
                         .font(MONO_FONT)
                         .size(11)
-                        .color(self.iced_theme().palette().danger),
+                        .color(self.app().iced_theme().palette().danger),
                     text(message)
                         .size(11)
                         .line_height(iced::Pixels(13.0))
@@ -368,7 +389,7 @@ impl<'a> View<'a> {
                     text("Y/n")
                         .font(MONO_FONT_SEMIBOLD)
                         .size(11)
-                        .color(self.iced_theme().palette().danger),
+                        .color(self.app().iced_theme().palette().danger),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -378,12 +399,12 @@ impl<'a> View<'a> {
                     text("delete permanently")
                         .font(MONO_FONT_SEMIBOLD)
                         .size(11)
-                        .color(self.iced_theme().palette().danger),
+                        .color(self.app().iced_theme().palette().danger),
                     text(message).size(11).width(Fill),
                     text("Y/n")
                         .font(MONO_FONT_SEMIBOLD)
                         .size(11)
-                        .color(self.iced_theme().palette().danger),
+                        .color(self.app().iced_theme().palette().danger),
                 ]
                 .spacing(8)
                 .height(25)
@@ -419,7 +440,7 @@ impl<'a> View<'a> {
                     text("error")
                         .font(MONO_FONT_SEMIBOLD)
                         .size(11)
-                        .color(self.iced_theme().palette().danger),
+                        .color(self.app().iced_theme().palette().danger),
                     Space::new().width(Fill),
                     text("Esc close")
                         .font(MONO_FONT)
@@ -543,7 +564,7 @@ impl<'a> View<'a> {
         } else {
             text(error)
                 .size(11)
-                .color(self.iced_theme().palette().danger)
+                .color(self.app().iced_theme().palette().danger)
                 .into()
         };
         let custom = row![
@@ -585,8 +606,8 @@ impl<'a> View<'a> {
         value: &'a str,
         error: &'a str,
     ) -> Element<'a, Message> {
-        let feedback: Element<'_, Message> = if self.foreground_operation_active() {
-            self.spinner(13.0).into()
+        let feedback: Element<'_, Message> = if self.app().foreground_operation_active() {
+            self.app().spinner(13.0).into()
         } else if error.is_empty() {
             text("Enter create  ·  Esc cancel")
                 .font(MONO_FONT)
@@ -597,7 +618,7 @@ impl<'a> View<'a> {
             text(error)
                 .size(11)
                 .line_height(iced::Pixels(13.0))
-                .color(self.iced_theme().palette().danger)
+                .color(self.app().iced_theme().palette().danger)
                 .into()
         };
         compact_status_line(
@@ -610,11 +631,12 @@ impl<'a> View<'a> {
                 text_input("", value)
                     .id(Id::new(NEW_FOLDER_ID))
                     .on_input_maybe(
-                        (!self.foreground_operation_active())
+                        (!self.app().foreground_operation_active())
                             .then_some(Message::PromptInputChanged),
                     )
                     .on_submit_maybe(
-                        (!self.foreground_operation_active()).then_some(Message::PromptSubmit),
+                        (!self.app().foreground_operation_active())
+                            .then_some(Message::PromptSubmit),
                     )
                     .font(MONO_FONT)
                     .size(12)
@@ -630,19 +652,19 @@ impl<'a> View<'a> {
     }
 
     fn search_count_view(self) -> Element<'a, Message> {
-        if !self.search.is_recursive() || self.search.query().is_empty() {
+        if !self.app().search.is_recursive() || self.app().search.query().is_empty() {
             return Space::new().into();
         }
-        if self.search.is_loading() {
-            return row![Space::new().width(Fill), self.spinner(13.0)]
+        if self.app().search.is_loading() {
+            return row![Space::new().width(Fill), self.app().spinner(13.0)]
                 .width(108)
                 .align_y(Alignment::Center)
                 .into();
         }
-        let label = if self.search.is_truncated() {
+        let label = if self.app().search.is_truncated() {
             "1000+ matches".to_owned()
         } else {
-            format!("{} matches", self.navigation.entries().len())
+            format!("{} matches", self.app().navigation.entries().len())
         };
         text(label)
             .size(11)
@@ -653,7 +675,12 @@ impl<'a> View<'a> {
 
     pub(super) fn context_menu_view(self, menu: ContextMenu) -> Element<'a, Message> {
         let mut actions = Column::new();
-        for (index, (label, message)) in self.context_actions(menu.target).into_iter().enumerate() {
+        for (index, (label, message)) in self
+            .app()
+            .context_actions(menu.target)
+            .into_iter()
+            .enumerate()
+        {
             let focused = index == menu.focused;
             actions = actions.push(
                 mouse_area(
@@ -676,17 +703,18 @@ impl<'a> View<'a> {
     }
 
     pub(super) fn accent_color(self) -> Color {
-        if self.high_contrast() {
-            return self.iced_theme().palette().primary;
+        if self.app().high_contrast() {
+            return self.app().iced_theme().palette().primary;
         }
-        self.accent
+        self.app()
+            .accent
             .as_ref()
             .map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent)
     }
 
     pub(super) fn secondary_text_color(self) -> Color {
-        let mut color = self.iced_theme().palette().text;
-        color.a = if self.high_contrast() || self.reduced_transparency() {
+        let mut color = self.app().iced_theme().palette().text;
+        color.a = if self.app().high_contrast() || self.app().reduced_transparency() {
             1.0
         } else {
             0.62
@@ -695,17 +723,18 @@ impl<'a> View<'a> {
     }
 
     pub(super) fn selection_text_color(self) -> Color {
-        if self.high_contrast() {
+        if self.app().high_contrast() {
             return Color::BLACK;
         }
-        self.accent
+        self.app()
+            .accent
             .as_ref()
             .and_then(|colors| colors.selection_foreground)
-            .unwrap_or(self.iced_theme().palette().text)
+            .unwrap_or(self.app().iced_theme().palette().text)
     }
 
     pub(super) fn entry_icon_color(self, kind: EntryIconKind) -> Color {
-        let palette = self.iced_theme().palette();
+        let palette = self.app().iced_theme().palette();
         match kind {
             EntryIconKind::Folder | EntryIconKind::Code => palette.primary,
             EntryIconKind::Image | EntryIconKind::Spreadsheet => palette.success,

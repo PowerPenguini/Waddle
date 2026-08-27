@@ -866,7 +866,7 @@ fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> Compl
 
 fn completion_from_consequences(
     consequences: Consequences,
-    journal_action: Result<Option<journal::Action>, String>,
+    journal_action: Result<Option<journal::Action>, journal::Error>,
     notice: Option<String>,
     sync_location_monitoring: bool,
 ) -> CompletionOutcome {
@@ -890,12 +890,15 @@ fn completion_from_consequences(
 }
 
 fn undo_outcome(
-    action: Result<Option<journal::Action>, String>,
+    action: Result<Option<journal::Action>, journal::Error>,
     subject: &'static str,
 ) -> UndoOutcome {
     match action {
         Ok(Some(action)) => UndoOutcome::Record { subject, action },
-        Err(error) => UndoOutcome::Unavailable { subject, error },
+        Err(error) => UndoOutcome::Unavailable {
+            subject,
+            error: error.to_string(),
+        },
         Ok(None) => UndoOutcome::None,
     }
 }

@@ -1,7 +1,19 @@
-use super::*;
-
 #[cfg(target_os = "linux")]
 use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+
+use std::{
+    collections::VecDeque,
+    fmt, fs, io,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+
+use gio::prelude::FileExt;
+
+use super::{BrowseOptions, EntryMetadata, FileEntry, OpenedDirectory, SearchResults, SortKey};
+
+#[cfg(not(target_os = "linux"))]
+use super::entry_metadata;
 
 impl FileEntry {
     pub fn is_directory(&self) -> bool {
@@ -64,7 +76,11 @@ impl fmt::Display for FsError {
     }
 }
 
-impl std::error::Error for FsError {}
+impl std::error::Error for FsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 pub fn validate_name(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {

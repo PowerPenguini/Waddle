@@ -41,20 +41,17 @@ mod x11_dnd;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 use crate::{
     fs, journal, theme,
     transfer::{
-        Action as TransferAction, ClipboardImport, Event as TransferEvent, NativeUpdate,
-        Outcome as TransferOutcome, Preview as TransferPreview, Request as TransferRequest,
+        Action as TransferAction, ClipboardImport, Event as TransferEvent,
+        Outcome as TransferOutcome,
     },
 };
 use browser_input::{
-    BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
+    BottomInput, BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
     NamedKey as InputNamedKey, Press as InputPress,
 };
 use command::{CommandSession, ProcessAdapter};
@@ -62,7 +59,6 @@ use file_operation::{
     FileOperationSession, GioTrashAdapter, View as FileOperationView, Work as FileOperationWork,
 };
 use fs::FileEntry;
-use gio::prelude::*;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
     DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
@@ -71,22 +67,26 @@ use grid::{
 };
 use iced::time::Instant;
 use iced::{
-    Alignment, Animation, Background, Border, Color, Element, Fill, Font, Length, Padding, Point,
-    Shadow, Size, Subscription, Task, Theme, Vector,
-    animation::Easing,
-    application, event, gradient, keyboard, mouse, system, time,
-    widget::{
-        self, Button, Column, Grid, Id, Row, Space, button, container, mouse_area, pin, rule,
-        scrollable, stack, svg, text, text_input,
-    },
-    window,
+    Color, Element, Font, Point, Size, Subscription, Task, Theme, application, event, keyboard,
+    system, time, widget, window,
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
     Outcome as NavigationOutcome, Request as NavigationRequest, Transition as NavigationTransition,
 };
 use operations::{Completion, Kind as OperationKind, Operations};
-use presentation::*;
+use presentation::{
+    BrowserFocus, BrowserStatusModel, BrowserStatusPresentation, Presentation,
+    TransientPresentation, TransientPresentationKind, apply_opacity, browser_background_style,
+    clears_status_notice, clip_file_name, compact_status_line, compact_text_button,
+    context_button_style, context_menu_button_style, entry_content_opacity, entry_icon_asset,
+    entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, focus_container_style,
+    format_transfer_snapshot, grid_background_style, list_row_style, marquee_style, menu_style,
+    rgba, sidebar_style, solid_background_style, status_background_style, status_input_style,
+    themed_svg, tile_label, tile_style, toolbar_button, toolbar_button_style,
+    transient_scrollbar_style, transient_vertical_scrollbar, tree_button_style, tree_icon_asset,
+    with_alpha,
+};
 use search::{SearchSession, Update as SearchUpdate};
 use transfer_session::{
     BatchUpdate as TransferBatchUpdate, CancelUpdate as TransferCancelUpdate,
@@ -339,7 +339,7 @@ impl App {
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
-            Err(error) => (journal::Journal::empty_default(), Some(error)),
+            Err(error) => (journal::Journal::empty_default(), Some(error.to_string())),
         };
         let (location_monitoring, watch_error) = match location_monitoring::Native::open() {
             Ok(monitoring) => (Some(monitoring), None),

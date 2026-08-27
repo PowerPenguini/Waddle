@@ -1,4 +1,16 @@
-use super::*;
+use std::{path::PathBuf, time::Duration};
+
+use iced::{Task, event, keyboard, mouse, time::Instant, window};
+
+use crate::{fs, theme, transfer::Event as TransferEvent};
+
+use super::{
+    App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
+    DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
+    MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
+    NavigationTransition, Scrollbar, X11_INBOUND_ID, clears_status_notice, find_window_after_delay,
+    location_monitoring, native_clipboard, transfer_integration, transfer_session,
+};
 
 impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
@@ -685,9 +697,7 @@ impl App {
             },
             InputContext {
                 transfer_conflict: self.transfers.overview().conflict_prompt.is_some(),
-                prompt_active: self.file_operations.prompt_active(),
-                prompt_accepts_enter: self.file_operations.prompt_accepts_enter(),
-                prompt_uses_yes_no: self.file_operations.prompt_uses_yes_no(),
+                prompt: self.file_operations.prompt_interaction(),
                 foreground_operation_active: self.foreground_operation_active(),
                 command_output: self.command.output().is_some(),
                 visual_active: self.grid.visual_active(),
@@ -696,7 +706,10 @@ impl App {
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
                 file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
-                active_bottom_input_empty: self.active_bottom_input_empty(),
+                bottom_input: BottomInput::new(
+                    self.bottom_input_active(),
+                    self.active_bottom_input_empty(),
+                ),
             },
         );
         self.apply_input_intent(intent)
@@ -1001,9 +1014,9 @@ impl App {
         };
         match self.grid.navigate_context(navigation, actions.len()) {
             ContextOutcome::Activate(index) => actions
-                .get(index)
-                .map(|(_, message)| message.clone())
-                .map_or_else(Task::none, |message| self.update(message)),
+                .into_iter()
+                .nth(index)
+                .map_or_else(Task::none, |(_, message)| self.update(message)),
             ContextOutcome::None | ContextOutcome::Closed => Task::none(),
         }
     }
