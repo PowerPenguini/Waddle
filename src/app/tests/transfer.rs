@@ -252,7 +252,7 @@ fn directory_events_confirm_only_observed_external_cut_moves() {
 }
 
 #[test]
-fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
+fn raw_mouse_drag_selects_only_intersected_grid_tiles_and_finishes_on_release() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
     app.grid.resize(iced::Size::new(820.0, 560.0));
@@ -261,8 +261,11 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
             .map(|index| entry(&format!("item-{index}")))
             .collect(),
     );
-    let content_top =
-        TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET;
+    let content_top = TOOLBAR_HEIGHT
+        + TOOLBAR_DIVIDER_HEIGHT
+        + LIST_VIEW_TOP_INSET
+        + LIST_HEADER_HEIGHT
+        + CONTENT_GUTTER;
     let start = iced::Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top + 110.0);
     let column_width = app
         .grid
@@ -293,7 +296,7 @@ fn raw_mouse_drag_selects_a_grid_rectangle_and_finishes_on_release() {
             .iter()
             .copied()
             .collect::<Vec<_>>(),
-        [0, 1, 5, 6]
+        [5]
     );
 
     let _ = app.handle_event(
@@ -485,13 +488,19 @@ fn incoming_drop_targets_folders_empty_grid_and_rejects_files_and_toolbar() {
     folder.directory = true;
     app.navigation
         .replace_displayed_entries(vec![folder.clone(), entry("file.txt")]);
+    let tile_y = TOOLBAR_HEIGHT
+        + TOOLBAR_DIVIDER_HEIGHT
+        + LIST_VIEW_TOP_INSET
+        + LIST_HEADER_HEIGHT
+        + CONTENT_GUTTER
+        + 8.0;
 
     assert_eq!(
-        app.drop_destination_at(iced::Point::new(250.0, 80.0), true),
+        app.drop_destination_at(iced::Point::new(250.0, tile_y), true),
         Some(folder.path)
     );
     assert_eq!(
-        app.drop_destination_at(iced::Point::new(365.0, 80.0), true),
+        app.drop_destination_at(iced::Point::new(365.0, tile_y), true),
         None
     );
     assert_eq!(

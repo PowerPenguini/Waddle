@@ -1,4 +1,16 @@
-use super::*;
+use std::{path::PathBuf, time::Duration};
+
+use iced::{Task, event, keyboard, mouse, time::Instant, window};
+
+use crate::{fs, theme, transfer::Event as TransferEvent};
+
+use super::{
+    App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
+    DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
+    MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
+    NavigationTransition, Scrollbar, X11_INBOUND_ID, clears_status_notice, find_window_after_delay,
+    location_monitoring, native_clipboard, transfer_integration, transfer_session,
+};
 
 impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
@@ -201,21 +213,7 @@ impl App {
                 Task::none()
             }
             Message::EntryReleased(index) => self.finish_entry_press(index),
-            Message::EntryHovered(index) => {
-                self.grid.enter(index);
-                Task::none()
-            }
-            Message::EntryUnhovered(index) => {
-                self.grid.leave(index);
-                Task::none()
-            }
-            Message::EntryDoubleClicked(index) => {
-                if self.view_preferences.single_click_activation() {
-                    Task::none()
-                } else {
-                    self.activate_entry(index, true)
-                }
-            }
+            Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
             Message::EntryContext(index) => {
                 if self.prompt_blocks_action() {
                     return Task::none();
@@ -229,6 +227,13 @@ impl App {
                 } else {
                     Task::none()
                 }
+            }
+            Message::ContextFocused(index) => {
+                if let Some(menu) = self.grid.context_menu() {
+                    let item_count = self.context_actions(menu.target).len();
+                    self.grid.focus_context(index, item_count);
+                }
+                Task::none()
             }
             Message::ContextNewFolder => {
                 self.grid.close_context();
@@ -280,7 +285,7 @@ impl App {
                 self.grid.close_context();
                 Task::none()
             }
-            Message::MouseBackHeld(started) => self.hold_mouse_back(started),
+            Message::MouseBackTick(now) => self.finish_single_mouse_back_click(now),
             Message::GridScrolled(y) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
@@ -538,7 +543,7 @@ impl App {
                 self.transition_navigation(NavigationTransition::HistoryForward)
             }
             iced::Event::Window(window::Event::Unfocused) => {
-                self.mouse_back_press = None;
+                self.mouse_back_gesture = None;
                 if self.grid.finish_marquee() {
                     self.schedule_details()
                 } else {
@@ -576,41 +581,62 @@ impl App {
 
     fn press_mouse_back(&mut self) -> Task<Message> {
         self.prepare_navigation_transition();
-        let started = Instant::now();
-        self.mouse_back_press = Some(MouseBackPress {
-            started,
-            held: false,
-        });
-        Task::perform(
-            async move {
-                tokio::time::sleep(MOUSE_BACK_HOLD_DURATION).await;
-                started
-            },
-            Message::MouseBackHeld,
-        )
-    }
-
-    fn hold_mouse_back(&mut self, started: Instant) -> Task<Message> {
-        let Some(press) = self
-            .mouse_back_press
-            .as_mut()
-            .filter(|press| press.started == started && !press.held)
-        else {
-            return Task::none();
-        };
-        press.held = true;
-        self.transition_navigation(NavigationTransition::Parent)
+        let now = Instant::now();
+        match self.mouse_back_gesture.take() {
+            Some(MouseBackGesture::AwaitingSecondClick { first_released_at })
+                if now.saturating_duration_since(first_released_at)
+                    < MOUSE_BACK_DOUBLE_CLICK_INTERVAL =>
+            {
+                self.mouse_back_gesture = Some(MouseBackGesture::SecondPressed);
+                Task::none()
+            }
+            Some(MouseBackGesture::AwaitingSecondClick { .. }) => {
+                let task = self.transition_navigation(NavigationTransition::Back);
+                self.mouse_back_gesture = Some(MouseBackGesture::FirstPressed);
+                task
+            }
+            Some(gesture @ MouseBackGesture::FirstPressed)
+            | Some(gesture @ MouseBackGesture::SecondPressed) => {
+                self.mouse_back_gesture = Some(gesture);
+                Task::none()
+            }
+            None => {
+                self.mouse_back_gesture = Some(MouseBackGesture::FirstPressed);
+                Task::none()
+            }
+        }
     }
 
     fn release_mouse_back(&mut self) -> Task<Message> {
-        let Some(press) = self.mouse_back_press.take() else {
+        match self.mouse_back_gesture.take() {
+            Some(MouseBackGesture::FirstPressed) => {
+                self.mouse_back_gesture = Some(MouseBackGesture::AwaitingSecondClick {
+                    first_released_at: Instant::now(),
+                });
+                Task::none()
+            }
+            Some(MouseBackGesture::SecondPressed) => {
+                self.transition_navigation(NavigationTransition::Parent)
+            }
+            Some(gesture @ MouseBackGesture::AwaitingSecondClick { .. }) => {
+                self.mouse_back_gesture = Some(gesture);
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn finish_single_mouse_back_click(&mut self, now: Instant) -> Task<Message> {
+        let Some(MouseBackGesture::AwaitingSecondClick { first_released_at }) =
+            self.mouse_back_gesture
+        else {
             return Task::none();
         };
-        if press.held {
-            Task::none()
-        } else {
-            self.transition_navigation(NavigationTransition::Back)
+        if now.saturating_duration_since(first_released_at) < MOUSE_BACK_DOUBLE_CLICK_INTERVAL {
+            return Task::none();
         }
+        self.mouse_back_gesture = None;
+        self.transition_navigation(NavigationTransition::Back)
     }
 
     pub(super) fn handle_key(
@@ -671,9 +697,7 @@ impl App {
             },
             InputContext {
                 transfer_conflict: self.transfers.overview().conflict_prompt.is_some(),
-                prompt_active: self.file_operations.prompt_active(),
-                prompt_accepts_enter: self.file_operations.prompt_accepts_enter(),
-                prompt_uses_yes_no: self.file_operations.prompt_uses_yes_no(),
+                prompt: self.file_operations.prompt_interaction(),
                 foreground_operation_active: self.foreground_operation_active(),
                 command_output: self.command.output().is_some(),
                 visual_active: self.grid.visual_active(),
@@ -682,7 +706,10 @@ impl App {
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
                 file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
-                active_bottom_input_empty: self.active_bottom_input_empty(),
+                bottom_input: BottomInput::new(
+                    self.bottom_input_active(),
+                    self.active_bottom_input_empty(),
+                ),
             },
         );
         self.apply_input_intent(intent)
@@ -987,9 +1014,9 @@ impl App {
         };
         match self.grid.navigate_context(navigation, actions.len()) {
             ContextOutcome::Activate(index) => actions
-                .get(index)
-                .map(|(_, message)| message.clone())
-                .map_or_else(Task::none, |message| self.update(message)),
+                .into_iter()
+                .nth(index)
+                .map_or_else(Task::none, |(_, message)| self.update(message)),
             ContextOutcome::None | ContextOutcome::Closed => Task::none(),
         }
     }

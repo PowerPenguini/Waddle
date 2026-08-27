@@ -1,4 +1,10 @@
-use super::*;
+use std::{
+    collections::HashMap,
+    fs,
+    io::{self, Read, Seek, SeekFrom},
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
+    path::{Path, PathBuf},
+};
 
 pub(super) fn copy_item_with_warnings(
     source: &Path,

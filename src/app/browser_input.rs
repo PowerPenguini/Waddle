@@ -1,4 +1,7 @@
-use super::grid::{DeleteMotion, Motion};
+use super::{
+    file_operation::PromptInteraction,
+    grid::{DeleteMotion, Motion},
+};
 
 pub(super) const HELP: &str = "\
 Keyboard navigation
@@ -98,11 +101,32 @@ pub(super) struct Press {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum BottomInput {
+    #[default]
+    Inactive,
+    Active {
+        empty: bool,
+    },
+}
+
+impl BottomInput {
+    pub(super) fn new(active: bool, empty: bool) -> Self {
+        if active {
+            Self::Active { empty }
+        } else {
+            Self::Inactive
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        matches!(self, Self::Active { empty: true })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Context {
     pub(super) transfer_conflict: bool,
-    pub(super) prompt_active: bool,
-    pub(super) prompt_accepts_enter: bool,
-    pub(super) prompt_uses_yes_no: bool,
+    pub(super) prompt: PromptInteraction,
     pub(super) foreground_operation_active: bool,
     pub(super) command_output: bool,
     pub(super) visual_active: bool,
@@ -110,7 +134,7 @@ pub(super) struct Context {
     pub(super) has_selection: bool,
     pub(super) pending_cut: bool,
     pub(super) file_operators_allowed: bool,
-    pub(super) active_bottom_input_empty: bool,
+    pub(super) bottom_input: BottomInput,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,19 +310,19 @@ impl BrowserInput {
                 _ => Intent::None,
             };
         }
-        if context.prompt_active {
+        if context.prompt.is_active() {
             let answer = press.text.as_deref().map(str::to_ascii_lowercase);
             return if context.foreground_operation_active {
                 Intent::None
             } else if press.named == NamedKey::Escape
-                || press.named == NamedKey::Backspace && context.active_bottom_input_empty
+                || press.named == NamedKey::Backspace && context.bottom_input.is_empty()
             {
                 Intent::PromptCancel
-            } else if context.prompt_uses_yes_no && answer.as_deref() == Some("y") {
+            } else if context.prompt.uses_yes_no() && answer.as_deref() == Some("y") {
                 Intent::PromptConfirm
-            } else if context.prompt_uses_yes_no && answer.as_deref() == Some("n") {
+            } else if context.prompt.uses_yes_no() && answer.as_deref() == Some("n") {
                 Intent::PromptCancel
-            } else if press.named == NamedKey::Enter && context.prompt_accepts_enter {
+            } else if press.named == NamedKey::Enter && context.prompt.accepts_enter() {
                 Intent::PromptConfirm
             } else {
                 Intent::None
@@ -310,7 +334,7 @@ impl BrowserInput {
                 return Intent::CompleteCommand;
             }
             let cancel = press.named == NamedKey::Escape
-                || press.named == NamedKey::Backspace && context.active_bottom_input_empty;
+                || press.named == NamedKey::Backspace && context.bottom_input.is_empty();
             if !cancel {
                 return Intent::None;
             }
@@ -722,7 +746,7 @@ mod tests {
                     ..Press::default()
                 },
                 Context {
-                    prompt_active: true,
+                    prompt: PromptInteraction::Input,
                     ..Context::default()
                 }
             ),
@@ -754,7 +778,7 @@ mod tests {
                     ..Press::default()
                 },
                 Context {
-                    active_bottom_input_empty: true,
+                    bottom_input: BottomInput::Active { empty: true },
                     ..Context::default()
                 }
             ),
@@ -769,8 +793,8 @@ mod tests {
                     ..Press::default()
                 },
                 Context {
-                    prompt_active: true,
-                    active_bottom_input_empty: true,
+                    prompt: PromptInteraction::Input,
+                    bottom_input: BottomInput::Active { empty: true },
                     ..Context::default()
                 }
             ),
@@ -781,9 +805,7 @@ mod tests {
     #[test]
     fn deletion_prompts_accept_yes_no_and_keep_enter_escape_aliases() {
         let context = Context {
-            prompt_active: true,
-            prompt_accepts_enter: true,
-            prompt_uses_yes_no: true,
+            prompt: PromptInteraction::Confirmation,
             ..Context::default()
         };
         let mut input = BrowserInput::default();

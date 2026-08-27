@@ -1,11 +1,5 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-use gio::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::{io, path::PathBuf};
 
 mod effects;
 mod fingerprint;
@@ -26,6 +20,75 @@ mod tests;
 const VERSION: u32 = 1;
 const MAX_OPERATIONS: usize = 100;
 const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+#[derive(Debug)]
+pub(crate) enum Error {
+    Io {
+        context: String,
+        source: io::Error,
+    },
+    Json {
+        context: &'static str,
+        source: serde_json::Error,
+    },
+    Desktop {
+        context: String,
+        source: gio::glib::Error,
+    },
+    Message(String),
+}
+
+impl Error {
+    fn io(context: impl Into<String>, source: io::Error) -> Self {
+        Self::Io {
+            context: context.into(),
+            source,
+        }
+    }
+
+    fn json(context: &'static str, source: serde_json::Error) -> Self {
+        Self::Json { context, source }
+    }
+
+    fn desktop(context: impl Into<String>, source: gio::glib::Error) -> Self {
+        Self::Desktop {
+            context: context.into(),
+            source,
+        }
+    }
+
+    fn message(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
+    }
+}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { context, source } => write!(formatter, "{context}: {source}"),
+            Self::Json { context, source } => write!(formatter, "{context}: {source}"),
+            Self::Desktop { context, source } => write!(formatter, "{context}: {source}"),
+            Self::Message(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Json { source, .. } => Some(source),
+            Self::Desktop { source, .. } => Some(source),
+            Self::Message(_) => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredJournal {
@@ -113,7 +176,7 @@ pub(crate) struct TrashItem {
 }
 
 impl Action {
-    pub(crate) fn rename(before: PathBuf, after: PathBuf) -> Result<Self, String> {
+    pub(crate) fn rename(before: PathBuf, after: PathBuf) -> Result<Self, Error> {
         Ok(Self::Rename {
             fingerprint: Fingerprint::read(&after)?,
             before,
@@ -121,14 +184,14 @@ impl Action {
         })
     }
 
-    pub(crate) fn new_folder(path: PathBuf) -> Result<Self, String> {
+    pub(crate) fn new_folder(path: PathBuf) -> Result<Self, Error> {
         Ok(Self::NewFolder {
             fingerprint: Fingerprint::read(&path)?,
             path,
         })
     }
 
-    pub(crate) fn new_file(path: PathBuf) -> Result<Self, String> {
+    pub(crate) fn new_file(path: PathBuf) -> Result<Self, Error> {
         Ok(Self::NewFile {
             fingerprint: Fingerprint::read(&path)?,
             path,
@@ -138,7 +201,7 @@ impl Action {
     pub(crate) fn transfer(
         kind: TransferKind,
         receipts: &[crate::fs::TransferReceipt],
-    ) -> Result<Option<Self>, String> {
+    ) -> Result<Option<Self>, Error> {
         if receipts.is_empty() {
             return Ok(None);
         }
@@ -158,11 +221,11 @@ impl Action {
                     replaced_existing: receipt.replaced_existing,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(Some(Self::Transfer { kind, items }))
     }
 
-    pub(crate) fn trash(receipts: &[TrashReceipt]) -> Result<Option<Self>, String> {
+    pub(crate) fn trash(receipts: &[TrashReceipt]) -> Result<Option<Self>, Error> {
         if receipts.is_empty() {
             return Ok(None);
         }
@@ -176,11 +239,11 @@ impl Action {
                     fingerprint: TreeFingerprint::read(&receipt.trashed)?,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(Some(Self::Trash { items }))
     }
 
-    pub(crate) fn restore(receipts: &[TrashReceipt]) -> Result<Option<Self>, String> {
+    pub(crate) fn restore(receipts: &[TrashReceipt]) -> Result<Option<Self>, Error> {
         if receipts.is_empty() {
             return Ok(None);
         }
@@ -194,7 +257,7 @@ impl Action {
                     fingerprint: TreeFingerprint::read(&receipt.original)?,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(Some(Self::Restore { items }))
     }
 }

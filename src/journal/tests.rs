@@ -1,4 +1,20 @@
 use super::*;
+use std::{error::Error as _, fs};
+
+#[test]
+fn malformed_journal_preserves_the_json_error_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("operations.json");
+    fs::write(&path, b"{").unwrap();
+
+    let error = Journal::open(path).unwrap_err();
+
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.is::<serde_json::Error>())
+    );
+}
 
 #[test]
 fn rename_and_new_folder_round_trip_across_a_reopened_journal() {
@@ -43,7 +59,7 @@ fn unsafe_inverse_is_refused_and_redo_is_cleared_by_new_work() {
         .record(Action::rename(before.clone(), after.clone()).unwrap())
         .unwrap();
     fs::write(&after, "changed size").unwrap();
-    assert!(journal.undo().unwrap_err().contains("changed"));
+    assert!(journal.undo().unwrap_err().to_string().contains("changed"));
 
     fs::remove_file(&after).unwrap();
     fs::write(&after, "original").unwrap();
@@ -52,7 +68,7 @@ fn unsafe_inverse_is_refused_and_redo_is_cleared_by_new_work() {
     let folder = temp.path().join("new");
     fs::create_dir(&folder).unwrap();
     journal.record(Action::new_folder(folder).unwrap()).unwrap();
-    assert_eq!(journal.redo().unwrap_err(), "Nothing to redo");
+    assert_eq!(journal.redo().unwrap_err().to_string(), "Nothing to redo");
 }
 
 #[test]
@@ -91,7 +107,13 @@ fn new_folder_undo_refuses_non_empty_directory() {
         .unwrap();
     fs::write(folder.join("later"), "work").unwrap();
 
-    assert!(journal.undo().unwrap_err().contains("no longer empty"));
+    assert!(
+        journal
+            .undo()
+            .unwrap_err()
+            .to_string()
+            .contains("no longer empty")
+    );
     assert!(folder.join("later").exists());
 }
 
@@ -109,7 +131,7 @@ fn new_file_undo_and_redo_survive_restart_and_refuse_changed_content() {
 
     let mut journal = Journal::open(path).unwrap();
     fs::write(&file, "later content").unwrap();
-    assert!(journal.undo().unwrap_err().contains("changed"));
+    assert!(journal.undo().unwrap_err().to_string().contains("changed"));
     fs::write(&file, "").unwrap();
     journal.stored.entries[0].action = Action::new_file(file.clone()).unwrap();
     journal.undo().unwrap();
@@ -207,7 +229,11 @@ fn undo_copy_replace_refuses_without_removing_the_replacement() {
         .unwrap();
     let error = journal.undo().unwrap_err();
 
-    assert!(error.contains("replaced an existing destination"));
+    assert!(
+        error
+            .to_string()
+            .contains("replaced an existing destination")
+    );
     assert_eq!(fs::read_to_string(destination).unwrap(), "incoming");
     assert_eq!(fs::read_to_string(source).unwrap(), "incoming");
 }
@@ -248,7 +274,11 @@ fn undo_directory_merge_refuses_without_removing_preexisting_entries() {
 
     let error = journal.undo().unwrap_err();
 
-    assert!(error.contains("replaced an existing destination"));
+    assert!(
+        error
+            .to_string()
+            .contains("replaced an existing destination")
+    );
     assert_eq!(
         fs::read_to_string(destination.join("preexisting.txt")).unwrap(),
         "preexisting"
@@ -287,7 +317,11 @@ fn legacy_transfer_entries_refuse_undo_conservatively() {
 
     let error = journal.undo().unwrap_err();
 
-    assert!(error.contains("replaced an existing destination"));
+    assert!(
+        error
+            .to_string()
+            .contains("replaced an existing destination")
+    );
     assert_eq!(fs::read_to_string(destination).unwrap(), "content");
 }
 
@@ -314,7 +348,13 @@ fn copy_undo_refuses_a_changed_result_tree() {
         .unwrap();
     fs::write(copied.join("later"), "user work").unwrap();
 
-    assert!(journal.undo().unwrap_err().contains("contents changed"));
+    assert!(
+        journal
+            .undo()
+            .unwrap_err()
+            .to_string()
+            .contains("contents changed")
+    );
     assert!(copied.join("later").exists());
 }
 
@@ -342,7 +382,7 @@ fn trash_undo_restores_only_the_verified_receipt() {
         )
         .unwrap();
     fs::write(&trashed, "changed after trash").unwrap();
-    assert!(journal.undo().unwrap_err().contains("changed"));
+    assert!(journal.undo().unwrap_err().to_string().contains("changed"));
     assert!(!original.exists());
 
     fs::write(&trashed, "content").unwrap();

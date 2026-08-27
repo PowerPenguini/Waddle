@@ -22,6 +22,18 @@ enum StartupBehavior {
     Cwd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClickActivation {
+    Single,
+    Double,
+}
+
+impl ClickActivation {
+    fn is_single(self) -> bool {
+        self == Self::Single
+    }
+}
+
 impl PreferenceOverride {
     pub(super) fn resolve(self, system: bool) -> bool {
         match self {
@@ -37,7 +49,6 @@ struct BrowsePatch {
     view: Option<ViewMode>,
     sort: Option<SortKey>,
     descending: Option<bool>,
-    folders_first: Option<bool>,
     show_hidden: Option<bool>,
 }
 
@@ -51,9 +62,6 @@ impl BrowsePatch {
         }
         if let Some(descending) = self.descending {
             options.descending = descending;
-        }
-        if let Some(folders_first) = self.folders_first {
-            options.folders_first = folders_first;
         }
         if let Some(show_hidden) = self.show_hidden {
             options.show_hidden = show_hidden;
@@ -71,9 +79,6 @@ impl BrowsePatch {
         if before.descending != after.descending {
             self.descending = Some(after.descending);
         }
-        if before.folders_first != after.folders_first {
-            self.folders_first = Some(after.folders_first);
-        }
         if before.show_hidden != after.show_hidden {
             self.show_hidden = Some(after.show_hidden);
         }
@@ -89,9 +94,6 @@ impl BrowsePatch {
         if self.descending == Some(base.descending) {
             self.descending = None;
         }
-        if self.folders_first == Some(base.folders_first) {
-            self.folders_first = None;
-        }
         if self.show_hidden == Some(base.show_hidden) {
             self.show_hidden = None;
         }
@@ -105,7 +107,8 @@ impl BrowsePatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GlobalSettings {
     browse: BrowseOptions,
-    single_click_activation: bool,
+    file_click: ClickActivation,
+    folder_click: ClickActivation,
     high_contrast: PreferenceOverride,
     reduced_motion: PreferenceOverride,
     reduced_transparency: PreferenceOverride,
@@ -117,7 +120,8 @@ impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
             browse: BrowseOptions::default(),
-            single_click_activation: false,
+            file_click: ClickActivation::Double,
+            folder_click: ClickActivation::Single,
             high_contrast: PreferenceOverride::Auto,
             reduced_motion: PreferenceOverride::Auto,
             reduced_transparency: PreferenceOverride::Auto,
@@ -248,8 +252,12 @@ impl Preferences {
         }
     }
 
-    pub(super) fn single_click_activation(&self) -> bool {
-        self.session.global.single_click_activation
+    pub(super) fn activates_on_single_click(&self, directory: bool) -> bool {
+        if directory {
+            self.session.global.folder_click.is_single()
+        } else {
+            self.session.global.file_click.is_single()
+        }
     }
 
     pub(super) fn high_contrast(&self) -> PreferenceOverride {
@@ -352,17 +360,13 @@ impl Preferences {
             "session global"
         };
         format!(
-            "{scope}: view={} sort={} direction={} folders-first={} hidden={} click={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
+            "{scope}: view={} sort={} direction={} hidden={} file-click={} folder-click={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
             view_label(options.view),
             sort_label(options.sort),
             direction_label(options.descending),
-            options.folders_first,
             options.show_hidden,
-            if self.session.global.single_click_activation {
-                "single"
-            } else {
-                "double"
-            },
+            click_label(self.session.global.file_click),
+            click_label(self.session.global.folder_click),
             override_label(self.session.global.high_contrast),
             override_label(self.session.global.reduced_motion),
             override_label(self.session.global.reduced_transparency),
@@ -373,7 +377,7 @@ impl Preferences {
     }
 }
 
-const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nfolders-first: keep folders before files\nhidden: show dot-prefixed entries\nclick: single or double activation (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
+const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nhidden: show dot-prefixed entries\nfile-click: single or double activation (global session)\nfolder-click: single or double activation (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
 
 fn load_config(path: &Path, home: Option<&Path>) -> Result<Config, String> {
     let source = match fs::read_to_string(path) {
@@ -468,10 +472,14 @@ fn apply_global_option(
         ("sort", "type") => settings.browse.sort = SortKey::Type,
         ("direction", "ascending" | "asc") => settings.browse.descending = false,
         ("direction", "descending" | "desc") => settings.browse.descending = true,
-        ("folders-first", value) => settings.browse.folders_first = parse_bool(name, value)?,
         ("hidden", value) => settings.browse.show_hidden = parse_bool(name, value)?,
-        ("click", "single") => settings.single_click_activation = true,
-        ("click", "double") => settings.single_click_activation = false,
+        ("file-click", value) => settings.file_click = parse_click_activation(name, value)?,
+        ("folder-click", value) => settings.folder_click = parse_click_activation(name, value)?,
+        ("click", value) => {
+            let activation = parse_click_activation(name, value)?;
+            settings.file_click = activation;
+            settings.folder_click = activation;
+        }
         ("high-contrast", value) => settings.high_contrast = parse_override(name, value)?,
         ("reduced-motion", value) => settings.reduced_motion = parse_override(name, value)?,
         ("reduced-transparency", value) => {
@@ -483,7 +491,7 @@ fn apply_global_option(
         ("startup", _) if !from_config => {
             return Err("startup is config-only; edit waddlerc".to_owned());
         }
-        ("view" | "sort" | "direction" | "click" | "startup", _) => {
+        ("view" | "sort" | "direction" | "startup", _) => {
             return Err(format!("invalid value for {name}: {value}"));
         }
         _ => return Err(format!("unknown setting: {name}")),
@@ -506,15 +514,13 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
                 patch.descending = None;
                 Ok(())
             }
-            "folders-first" => {
-                patch.folders_first = None;
-                Ok(())
-            }
             "hidden" => {
                 patch.show_hidden = None;
                 Ok(())
             }
             "click"
+            | "file-click"
+            | "folder-click"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -533,10 +539,11 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
         ("sort", "type") => patch.sort = Some(SortKey::Type),
         ("direction", "ascending" | "asc") => patch.descending = Some(false),
         ("direction", "descending" | "desc") => patch.descending = Some(true),
-        ("folders-first", value) => patch.folders_first = Some(parse_bool(name, value)?),
         ("hidden", value) => patch.show_hidden = Some(parse_bool(name, value)?),
         (
             "click"
+            | "file-click"
+            | "folder-click"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -556,6 +563,14 @@ fn split_option(argument: &str) -> Result<(&str, &str), String> {
     argument
         .split_once('=')
         .ok_or_else(|| format!("expected option=value, got: {argument}"))
+}
+
+fn parse_click_activation(name: &str, value: &str) -> Result<ClickActivation, String> {
+    match value {
+        "single" => Ok(ClickActivation::Single),
+        "double" => Ok(ClickActivation::Double),
+        _ => Err(format!("invalid value for {name}: {value}")),
+    }
 }
 
 fn parse_override(name: &str, value: &str) -> Result<PreferenceOverride, String> {
@@ -596,6 +611,13 @@ fn direction_label(descending: bool) -> &'static str {
         "descending"
     } else {
         "ascending"
+    }
+}
+
+fn click_label(value: ClickActivation) -> &'static str {
+    match value {
+        ClickActivation::Single => "single",
+        ClickActivation::Double => "double",
     }
 }
 
@@ -669,12 +691,12 @@ mod tests {
     fn runtime_settings_layer_over_config_without_writing_it() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("waddlerc");
-        let source = "set view=list folders-first=true\nsetlocal /work hidden=false\n";
+        let source = "set view=list\nsetlocal /work hidden=false\n";
         fs::write(&path, source).unwrap();
         let mut preferences = Preferences::open_at(path.clone(), Some(temp.path()));
 
         preferences
-            .apply_command(Path::new("/work"), false, "view=grid folders-first=false")
+            .apply_command(Path::new("/work"), false, "view=grid")
             .unwrap();
         preferences
             .apply_command(Path::new("/work"), true, "sort=size hidden=true")
@@ -683,13 +705,59 @@ mod tests {
         assert_eq!(options.view, ViewMode::Grid);
         assert_eq!(options.sort, SortKey::Size);
         assert!(options.show_hidden);
-        assert!(!options.folders_first);
 
         preferences
             .apply_command(Path::new("/work"), true, "hidden&")
             .unwrap();
         assert!(!preferences.for_directory(Path::new("/work")).show_hidden);
         assert_eq!(fs::read_to_string(path).unwrap(), source);
+    }
+
+    #[test]
+    fn files_default_to_double_click_and_folders_default_to_single_click() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
+
+        assert!(!preferences.activates_on_single_click(false));
+        assert!(preferences.activates_on_single_click(true));
+        preferences
+            .apply_command(
+                Path::new("/work"),
+                false,
+                "file-click=single folder-click=double",
+            )
+            .unwrap();
+        assert!(preferences.activates_on_single_click(false));
+        assert!(!preferences.activates_on_single_click(true));
+    }
+
+    #[test]
+    fn legacy_click_setting_applies_to_files_and_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
+
+        preferences
+            .apply_command(Path::new("/work"), false, "click=double")
+            .unwrap();
+
+        assert!(!preferences.activates_on_single_click(false));
+        assert!(!preferences.activates_on_single_click(true));
+    }
+
+    #[test]
+    fn folders_first_is_no_longer_a_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
+
+        let global = preferences
+            .apply_command(Path::new("/work"), false, "folders-first=true")
+            .unwrap_err();
+        let local = preferences
+            .apply_command(Path::new("/work"), true, "folders-first=false")
+            .unwrap_err();
+
+        assert!(global.contains("unknown setting: folders-first"));
+        assert!(local.contains("unknown setting: folders-first"));
     }
 
     #[test]

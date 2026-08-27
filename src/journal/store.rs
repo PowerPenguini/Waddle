@@ -1,4 +1,12 @@
-use super::*;
+use std::{
+    fs, io,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use super::{
+    Action, Direction, Entry, Error, MAX_AGE_SECONDS, MAX_OPERATIONS, StoredJournal, VERSION, apply,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Effect {
@@ -14,7 +22,7 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
-    pub(crate) fn open_default() -> Result<Self, String> {
+    pub(crate) fn open_default() -> Result<Self, Error> {
         Self::open(default_path())
     }
 
@@ -25,18 +33,18 @@ impl Journal {
         }
     }
 
-    pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
+    pub(crate) fn open(path: PathBuf) -> Result<Self, Error> {
         let mut stored = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<StoredJournal>(&bytes)
-                .map_err(|error| format!("could not read operation journal: {error}"))?,
+                .map_err(|error| Error::json("could not decode operation journal", error))?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => StoredJournal::default(),
-            Err(error) => return Err(format!("could not read operation journal: {error}")),
+            Err(error) => return Err(Error::io("could not read operation journal", error)),
         };
         if stored.version != VERSION {
-            return Err(format!(
+            return Err(Error::message(format!(
                 "operation journal version {} is unsupported",
                 stored.version
-            ));
+            )));
         }
         stored.cursor = stored.cursor.min(stored.entries.len());
         let mut journal = Self { path, stored };
@@ -44,11 +52,11 @@ impl Journal {
         Ok(journal)
     }
 
-    pub(crate) fn record(&mut self, action: Action) -> Result<(), String> {
+    pub(crate) fn record(&mut self, action: Action) -> Result<(), Error> {
         self.record_at(action, now_seconds())
     }
 
-    pub(super) fn record_at(&mut self, action: Action, recorded_at: u64) -> Result<(), String> {
+    pub(super) fn record_at(&mut self, action: Action, recorded_at: u64) -> Result<(), Error> {
         self.stored.entries.truncate(self.stored.cursor);
         self.stored.entries.push(Entry {
             recorded_at,
@@ -59,9 +67,9 @@ impl Journal {
         self.save()
     }
 
-    pub(crate) fn undo(&mut self) -> Result<Effect, String> {
+    pub(crate) fn undo(&mut self) -> Result<Effect, Error> {
         let Some(index) = self.stored.cursor.checked_sub(1) else {
-            return Err("Nothing to undo".to_owned());
+            return Err(Error::message("Nothing to undo"));
         };
         let effect = apply(&mut self.stored.entries[index].action, Direction::Undo)?;
         self.stored.cursor = index;
@@ -69,9 +77,9 @@ impl Journal {
         Ok(effect)
     }
 
-    pub(crate) fn redo(&mut self) -> Result<Effect, String> {
+    pub(crate) fn redo(&mut self) -> Result<Effect, Error> {
         let Some(entry) = self.stored.entries.get_mut(self.stored.cursor) else {
-            return Err("Nothing to redo".to_owned());
+            return Err(Error::message("Nothing to redo"));
         };
         let effect = apply(&mut entry.action, Direction::Redo)?;
         self.stored.cursor += 1;
@@ -96,19 +104,19 @@ impl Journal {
         }
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&self) -> Result<(), Error> {
         let Some(directory) = self.path.parent() else {
-            return Err("operation journal path has no parent".to_owned());
+            return Err(Error::message("operation journal path has no parent"));
         };
         fs::create_dir_all(directory)
-            .map_err(|error| format!("could not create operation journal directory: {error}"))?;
+            .map_err(|error| Error::io("could not create operation journal directory", error))?;
         let temporary = self.path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&self.stored)
-            .map_err(|error| format!("could not encode operation journal: {error}"))?;
+            .map_err(|error| Error::json("could not encode operation journal", error))?;
         fs::write(&temporary, bytes)
-            .map_err(|error| format!("could not write operation journal: {error}"))?;
+            .map_err(|error| Error::io("could not write operation journal", error))?;
         fs::rename(&temporary, &self.path)
-            .map_err(|error| format!("could not commit operation journal: {error}"))
+            .map_err(|error| Error::io("could not commit operation journal", error))
     }
 }
 

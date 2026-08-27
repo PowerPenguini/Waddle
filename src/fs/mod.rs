@@ -1,16 +1,5 @@
-use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
-    ffi::{OsStr, OsString},
-    fmt, fs,
-    io::{self, Read, Seek, SeekFrom},
-    os::fd::AsRawFd,
-    os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsString, fs, path::PathBuf};
 
-use gio::prelude::*;
-
-use crate::transfer::Action;
 use serde::{Deserialize, Serialize};
 
 mod browse;
@@ -27,11 +16,7 @@ pub use mutation::{create_file, create_folder, delete_permanently, display_name,
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
 pub(crate) use browse::format_size;
-use mutation::replace_exact;
-use mutation::{available_copy_destination, transfer_exact, tree_bytes};
 pub(crate) use mutation::{journal_copy, journal_move, journal_remove};
-use transfer_batch::FileIdentity;
-use tree_copy::{copy_item_with_warnings, remove_incomplete_copy};
 
 #[cfg(test)]
 use mutation::{move_exact, rename_noreplace};
@@ -55,10 +40,10 @@ pub enum ViewMode {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SortKey {
-    #[default]
     Name,
     Modified,
     Size,
+    #[default]
     Type,
 }
 
@@ -67,7 +52,6 @@ pub struct BrowseOptions {
     pub view: ViewMode,
     pub sort: SortKey,
     pub descending: bool,
-    pub folders_first: bool,
     pub show_hidden: bool,
 }
 
@@ -75,9 +59,8 @@ impl Default for BrowseOptions {
     fn default() -> Self {
         Self {
             view: ViewMode::Grid,
-            sort: SortKey::Name,
+            sort: SortKey::Type,
             descending: false,
-            folders_first: true,
             show_hidden: true,
         }
     }

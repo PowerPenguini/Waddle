@@ -11,7 +11,7 @@ pub(super) struct GioTrashAdapter;
 
 impl TrashAdapter for GioTrashAdapter {
     fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
-        journal::trash(path)
+        journal::trash(path).map_err(|error| error.to_string())
     }
 }
 
@@ -66,6 +66,29 @@ pub(super) enum View<'a> {
     Trash { message: &'a str },
     PermanentDelete { message: &'a str, detail: &'a str },
     Error { message: &'a str },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum PromptInteraction {
+    #[default]
+    Inactive,
+    Input,
+    Acknowledgement,
+    Confirmation,
+}
+
+impl PromptInteraction {
+    pub(super) fn is_active(self) -> bool {
+        self != Self::Inactive
+    }
+
+    pub(super) fn accepts_enter(self) -> bool {
+        matches!(self, Self::Acknowledgement | Self::Confirmation)
+    }
+
+    pub(super) fn uses_yes_no(self) -> bool {
+        self == Self::Confirmation
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -173,7 +196,7 @@ struct TrashCompletion {
 pub(super) struct CompletionEffects {
     pub(super) status: Option<String>,
     pub(super) detail: Option<String>,
-    pub(super) journal_action: Result<Option<journal::Action>, String>,
+    pub(super) journal_action: Result<Option<journal::Action>, journal::Error>,
     pub(super) refresh: bool,
     pub(super) select: Option<PathBuf>,
     pub(super) renamed: bool,
@@ -217,32 +240,18 @@ impl FileOperationSession {
     }
 
     pub(super) fn prompt_active(&self) -> bool {
-        matches!(
-            self.state,
-            State::NewFolder { .. }
-                | State::NewFile { .. }
-                | State::Trash { .. }
-                | State::PermanentDelete { .. }
-                | State::TrashDelete { .. }
-                | State::Error { .. }
-        )
+        self.prompt_interaction().is_active()
     }
 
-    pub(super) fn prompt_accepts_enter(&self) -> bool {
-        matches!(
-            self.state,
-            State::Trash { .. }
-                | State::PermanentDelete { .. }
-                | State::TrashDelete { .. }
-                | State::Error { .. }
-        )
-    }
-
-    pub(super) fn prompt_uses_yes_no(&self) -> bool {
-        matches!(
-            self.state,
-            State::Trash { .. } | State::PermanentDelete { .. } | State::TrashDelete { .. }
-        )
+    pub(super) fn prompt_interaction(&self) -> PromptInteraction {
+        match self.state {
+            State::NewFolder { .. } | State::NewFile { .. } => PromptInteraction::Input,
+            State::Trash { .. } | State::PermanentDelete { .. } | State::TrashDelete { .. } => {
+                PromptInteraction::Confirmation
+            }
+            State::Error { .. } => PromptInteraction::Acknowledgement,
+            State::Idle | State::Rename { .. } => PromptInteraction::Inactive,
+        }
     }
 
     pub(super) fn expanded_detail(&self) -> Option<&str> {
@@ -494,7 +503,7 @@ struct StateConsequences {
     renamed: bool,
 }
 
-fn journal_action(completion: &CompletionKind) -> Result<Option<journal::Action>, String> {
+fn journal_action(completion: &CompletionKind) -> Result<Option<journal::Action>, journal::Error> {
     match completion {
         CompletionKind::Name {
             kind: NameKind::Rename { source },

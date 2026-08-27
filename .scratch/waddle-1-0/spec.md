@@ -98,14 +98,14 @@ entry, discard metadata, claim an unsafe Undo, or leave a partial destination lo
 61. As a user running several mutations, I want one ordered queue, so that conflicts and Undo remain predictable.
 62. As a user diagnosing a failure, I want 30 days of local operation reports that I can copy, so that I can inspect or share exact errors.
 63. As a standard desktop user, I want Ctrl-click, Shift-click, Ctrl+A, arrows, Shift-arrows, Space, Home, and End, so that selection works as expected.
-64. As a user, I want configurable single-click or double-click activation with double-click as the default, so that folder activation matches my desktop preference.
+64. As a user, I want separate single-click or double-click activation settings for files and folders, with files defaulting to double click and folders to single click, so that each entry type matches my desktop preference.
 65. As a user, I want breadcrumbs with `Ctrl+L` access to editable paths, so that navigation is both discoverable and precise.
 66. As a user, I want Grid and List views, so that image-heavy and metadata-heavy folders can use different layouts.
-67. As a user, I want sorting by Name, Modified, Size, or Type in either direction, so that I can find relevant entries quickly.
-68. As a user, I want natural filename ordering and configurable folders-first, so that names with numbers and mixed entry types sort predictably.
+67. As a user, I want sorting by Name, Modified, Size, or Type in either direction, with Type ascending as the default and folders fixed before size-sorted files, so that I can find relevant entries quickly.
+68. As a user, I want natural filename ordering across folders and files, with Type ordering folders before extension types and generic files last, so that names with numbers and mixed entry types sort predictably.
 69. As a user, I want global view defaults with per-folder overrides, so that different folders can retain useful layouts.
 70. As a user browsing images, I want asynchronously generated thumbnails with a bounded cache, so that Grid view is useful without blocking input.
-71. As a user, I want Ctrl+H to toggle hidden entries in the folder and filename search, so that display and search use the same boundary.
+71. As a user, I want Ctrl+H to toggle hidden entries in the folder and filename search, with visible hidden entries subtly muted, so that display and search use the same boundary.
 72. As an X11 user, I want external drag and drop, so that file exchange matches the Wayland build.
 73. As a user dragging through a long folder, I want edge autoscroll, so that off-screen destinations remain reachable.
 74. As a user dragging over the sidebar, I want folders to expand after a short hover, so that nested destinations become reachable.
@@ -184,10 +184,10 @@ entry, discard metadata, claim an unsafe Undo, or leave a partial destination lo
 - Keep diagnostics local for 30 days and let the user copy a report.
 - Bound shell output while the command runs. Keep direct shell execution enabled without a warning prompt, and describe its permissions accurately.
 - Extend Grid interaction with standard multi-selection and navigation while preserving Visual selection and Vim motions.
-- Add configurable click activation. Double-click is the default.
+- Add separate `file-click` and `folder-click` activation settings. Files default to double click and folders to single click.
 - Add breadcrumbs and use `Ctrl+L` to enter an editable location.
 - Add List view and keep Grid view. Both consume the same ordered entry model and operator-range rules.
-- Support Name, Modified, Size, and Type sorting in either direction, natural filename ordering, and configurable folders-first.
+- Support Name, Modified, Size, and Type sorting in either direction, with natural filename ordering across folders and files. Type orders Folder first, extension types next, and generic File last. Size keeps folders first and applies direction only to files.
 - Store global view defaults plus optional per-directory overrides.
 - Generate image thumbnails outside the UI thread and keep the cache bounded.
 - Make Ctrl+H control hidden entries in both the folder and filename Search session.

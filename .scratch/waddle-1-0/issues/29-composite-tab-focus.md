@@ -19,7 +19,7 @@ Browser mode now owns a wrapping five-stop `Tab` and `Shift+Tab` order: toolbar,
 sidebar, Grid or List, and bottom bar. Arrow keys and Vim motions move inside the focused
 composite; Enter and Space activate its current control. Every region draws an explicit primary
 focus border that is independent of hover and selection. Context menus have their own wrapping
-keyboard cursor, consume keyboard input until they close, and support arrows, Home, End, Enter,
+active cursor shared by pointer hover and keyboard navigation, consume keyboard input until they close, and support arrows, Home, End, Enter,
 Space, Tab, Shift+Tab, and Escape. Existing inline prompts continue to own their text input and
 confirmation keys. Transient controls do not replace the browser focus value, so closing them
 reveals the same focus ring that was active before opening.

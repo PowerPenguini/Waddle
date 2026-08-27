@@ -1,4 +1,8 @@
-use super::*;
+use std::{fs, path::Path};
+
+use serde::{Deserialize, Serialize};
+
+use super::Error;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Fingerprint {
@@ -15,7 +19,7 @@ pub(super) struct TreeFingerprint {
 }
 
 impl TreeFingerprint {
-    pub(super) fn read(path: &Path) -> Result<Self, String> {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
         let mut digest = Fnv::default();
         hash_tree(path, Path::new(""), &mut digest)?;
         Ok(Self {
@@ -42,11 +46,11 @@ impl Fnv {
     }
 }
 
-fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), String> {
+fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Error> {
     use std::{io::Read, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
     let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("could not fingerprint {}: {error}", path.display()))?;
+        .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?;
     digest.write(relative.as_os_str().as_bytes());
     digest.write(&metadata.mode().to_le_bytes());
     digest.write(&metadata.size().to_le_bytes());
@@ -55,25 +59,28 @@ fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Strin
     if metadata.file_type().is_symlink() {
         digest.write(
             fs::read_link(path)
-                .map_err(|error| error.to_string())?
+                .map_err(|error| Error::io("could not read symbolic link", error))?
                 .as_os_str()
                 .as_bytes(),
         );
     } else if metadata.is_dir() {
         let mut entries = fs::read_dir(path)
-            .map_err(|error| format!("could not fingerprint {}: {error}", path.display()))?
+            .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Error::io("could not read directory entry", error))?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             hash_tree(&entry.path(), &relative.join(entry.file_name()), digest)?;
         }
     } else {
-        let mut file = fs::File::open(path)
-            .map_err(|error| format!("could not fingerprint {}: {error}", path.display()))?;
+        let mut file = fs::File::open(path).map_err(|error| {
+            Error::io(format!("could not fingerprint {}", path.display()), error)
+        })?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| Error::io("could not read file for fingerprint", error))?;
             if read == 0 {
                 break;
             }
@@ -84,11 +91,11 @@ fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Strin
 }
 
 impl Fingerprint {
-    pub(super) fn read(path: &Path) -> Result<Self, String> {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
         use std::os::unix::fs::MetadataExt;
 
         let metadata = fs::symlink_metadata(path)
-            .map_err(|error| format!("could not verify {}: {error}", path.display()))?;
+            .map_err(|error| Error::io(format!("could not verify {}", path.display()), error))?;
         Ok(Self {
             kind: metadata.mode() & libc::S_IFMT,
             size: metadata.size(),

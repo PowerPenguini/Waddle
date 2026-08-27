@@ -1,4 +1,18 @@
-use super::*;
+use std::path::PathBuf;
+
+use iced::{
+    Task,
+    widget::{self, Id},
+};
+
+use crate::journal;
+
+use super::{
+    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationSession, FileOperationWork,
+    GioTrashAdapter, InputMode, Message, NEW_FOLDER_ID, NavigationTransition, OPEN_WITH_ID,
+    OperationKind, RENAME_ID, TransientPresentation, command, file_operation, open_with, places,
+    presentation::command_failure_report, properties, recent, transfer_integration, trash,
+};
 
 impl App {
     pub(super) fn begin_command(&mut self, prefix: char) -> Task<Message> {
@@ -629,7 +643,8 @@ impl App {
         Task::perform(
             self.operations
                 .run_foreground(OperationKind::Mutation, move |_| {
-                    let result = if redo { journal.redo() } else { journal.undo() };
+                    let result = if redo { journal.redo() } else { journal.undo() }
+                        .map_err(|error| error.to_string());
                     Ok((journal, result))
                 }),
             |completion| match completion {

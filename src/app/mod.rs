@@ -41,20 +41,17 @@ mod x11_dnd;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 use crate::{
     fs, journal, theme,
     transfer::{
-        Action as TransferAction, ClipboardImport, Event as TransferEvent, NativeUpdate,
-        Outcome as TransferOutcome, Preview as TransferPreview, Request as TransferRequest,
+        Action as TransferAction, ClipboardImport, Event as TransferEvent,
+        Outcome as TransferOutcome,
     },
 };
 use browser_input::{
-    BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
+    BottomInput, BrowserInput, Context as InputContext, Intent as InputIntent, Mode as InputMode,
     NamedKey as InputNamedKey, Press as InputPress,
 };
 use command::{CommandSession, ProcessAdapter};
@@ -62,31 +59,34 @@ use file_operation::{
     FileOperationSession, GioTrashAdapter, View as FileOperationView, Work as FileOperationWork,
 };
 use fs::FileEntry;
-use gio::prelude::*;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
     DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
-    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_ROW_HEIGHT, TILE_WIDTH,
-    TOOLBAR_HEIGHT,
+    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT,
+    TILE_WIDTH, TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{
-    Alignment, Animation, Background, Border, Color, Element, Fill, Font, Length, Padding, Point,
-    Shadow, Size, Subscription, Task, Theme, Vector,
-    animation::Easing,
-    application, event, gradient, keyboard, mouse, system, time,
-    widget::{
-        self, Button, Column, Grid, Id, Row, Space, button, container, mouse_area, pin, rule,
-        scrollable, stack, svg, text, text_input,
-    },
-    window,
+    Color, Element, Font, Point, Size, Subscription, Task, Theme, application, event, keyboard,
+    system, time, widget, window,
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
     Outcome as NavigationOutcome, Request as NavigationRequest, Transition as NavigationTransition,
 };
 use operations::{Completion, Kind as OperationKind, Operations};
-use presentation::*;
+use presentation::{
+    BrowserFocus, BrowserStatusModel, BrowserStatusPresentation, Presentation,
+    TransientPresentation, TransientPresentationKind, apply_opacity, browser_background_style,
+    clears_status_notice, clip_file_name, compact_status_line, compact_text_button,
+    context_button_style, context_menu_button_style, entry_content_opacity, entry_icon_asset,
+    entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, focus_container_style,
+    format_transfer_snapshot, grid_background_style, list_row_style, marquee_style, menu_style,
+    rgba, sidebar_style, solid_background_style, status_background_style, status_input_style,
+    themed_svg, tile_label, tile_style, toolbar_button, toolbar_button_style,
+    transient_scrollbar_style, transient_vertical_scrollbar, tree_button_style, tree_icon_asset,
+    with_alpha,
+};
 use search::{SearchSession, Update as SearchUpdate};
 use transfer_session::{
     BatchUpdate as TransferBatchUpdate, CancelUpdate as TransferCancelUpdate,
@@ -117,7 +117,7 @@ const SCROLLBAR_THUMB_WIDTH: f32 = 4.0;
 const SCROLLBAR_FADE_IN: Duration = Duration::from_millis(100);
 const SCROLLBAR_HOLD: Duration = Duration::from_millis(500);
 const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(200);
-const MOUSE_BACK_HOLD_DURATION: Duration = Duration::from_millis(450);
+const MOUSE_BACK_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(350);
 const _: () = assert!(SCROLLBAR_THUMB_WIDTH < SCROLLBAR_TRACK_WIDTH);
 const _: () = assert!(SCROLLBAR_TRACK_WIDTH < 10.0);
 const UI_FONT: Font = Font::with_name("Roboto");
@@ -157,9 +157,10 @@ enum EntryIconKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MouseBackPress {
-    started: Instant,
-    held: bool,
+enum MouseBackGesture {
+    FirstPressed,
+    AwaitingSecondClick { first_released_at: Instant },
+    SecondPressed,
 }
 
 #[derive(Clone, Debug)]
@@ -200,10 +201,9 @@ enum Message {
     FavoriteReleased(usize),
     EntryPressed(usize),
     EntryReleased(usize),
-    EntryHovered(usize),
-    EntryUnhovered(usize),
     EntryDoubleClicked(usize),
     EntryContext(usize),
+    ContextFocused(usize),
     ContextNewFolder,
     ContextNewFile,
     ContextProperties,
@@ -217,7 +217,7 @@ enum Message {
     ContextDeletePermanent,
     ContextEmptyTrash,
     CloseContext,
-    MouseBackHeld(Instant),
+    MouseBackTick(Instant),
     GridScrolled(f32),
     GridPointerMoved(Point),
     NavigationFinished {
@@ -306,7 +306,7 @@ struct App {
     presentation: Presentation,
     location_input: String,
     modifiers: keyboard::Modifiers,
-    mouse_back_press: Option<MouseBackPress>,
+    mouse_back_gesture: Option<MouseBackGesture>,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
@@ -339,7 +339,7 @@ impl App {
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
-            Err(error) => (journal::Journal::empty_default(), Some(error)),
+            Err(error) => (journal::Journal::empty_default(), Some(error.to_string())),
         };
         let (location_monitoring, watch_error) = match location_monitoring::Native::open() {
             Ok(monitoring) => (Some(monitoring), None),
@@ -376,7 +376,7 @@ impl App {
             presentation: Presentation::new(now, startup_error),
             location_input: current.display().to_string(),
             modifiers: keyboard::Modifiers::default(),
-            mouse_back_press: None,
+            mouse_back_gesture: None,
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
             accent,
@@ -424,6 +424,13 @@ impl App {
         if self.transfers.overview().active {
             subscriptions
                 .push(time::every(Duration::from_millis(100)).map(|_| Message::PollTransfer));
+        }
+        if matches!(
+            self.mouse_back_gesture,
+            Some(MouseBackGesture::AwaitingSecondClick { .. })
+        ) {
+            subscriptions
+                .push(time::every(MOUSE_BACK_DOUBLE_CLICK_INTERVAL).map(Message::MouseBackTick));
         }
         Subscription::batch(subscriptions)
     }

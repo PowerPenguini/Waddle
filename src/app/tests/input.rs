@@ -24,6 +24,9 @@ fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
     assert_eq!(app.grid.context_menu().unwrap().focused, 1);
     assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
 
+    let _ = app.update(Message::ContextFocused(0));
+    assert_eq!(app.grid.context_menu().unwrap().focused, 0);
+
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
     assert!(app.grid.context_menu().is_none());

@@ -18,36 +18,6 @@ fn set_tree_from_the_bottom_bar_updates_layout_without_persisting() {
 }
 
 #[test]
-fn folders_first_is_a_setting_not_a_toolbar_control() {
-    let temp = tempfile::tempdir().unwrap();
-    let (mut app, _) = App::new();
-    app.view_preferences =
-        super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
-    app.navigation = NavigationSession::new(temp.path().to_path_buf());
-    app.navigation.settle_for_test();
-    assert!(
-        app.view_preferences
-            .for_directory(app.navigation.current())
-            .folders_first
-    );
-
-    app.view_preferences
-        .apply_command(app.navigation.current(), false, "folders-first=false")
-        .unwrap();
-    app.presentation.set_focus(BrowserFocus::Toolbar);
-    app.presentation.set_toolbar_cursor(usize::MAX);
-    let _ = app.move_focused(Motion::Last, 1, false);
-
-    assert_eq!(app.presentation.toolbar_cursor(), 4);
-    assert_eq!(app.presentation.status(), "Toolbar control 5 of 5");
-    assert!(
-        !app.view_preferences
-            .for_directory(app.navigation.current())
-            .folders_first
-    );
-}
-
-#[test]
 fn list_headers_select_and_reverse_each_sort_property() {
     let temp = tempfile::tempdir().unwrap();
     let (mut app, _) = App::new();
@@ -72,6 +42,19 @@ fn list_headers_select_and_reverse_each_sort_property() {
     let options = app.view_preferences.for_directory(app.navigation.current());
     assert_eq!(options.sort, crate::fs::SortKey::Modified);
     assert!(!options.descending);
+}
+
+#[test]
+fn grid_sort_controls_cover_every_sort_property() {
+    assert_eq!(
+        super::view::GRID_SORT_CONTROLS.map(|(_, sort)| sort),
+        [
+            crate::fs::SortKey::Name,
+            crate::fs::SortKey::Type,
+            crate::fs::SortKey::Size,
+            crate::fs::SortKey::Modified,
+        ]
+    );
 }
 
 #[test]
@@ -103,7 +86,7 @@ fn list_header_name_aligns_with_entry_names() {
 }
 
 #[test]
-fn single_click_activation_keeps_modified_clicks_for_selection() {
+fn folders_open_with_one_click_by_default_and_modified_clicks_only_select() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");
     std::fs::create_dir(&child).unwrap();
@@ -117,10 +100,6 @@ fn single_click_activation_keeps_modified_clicks_for_selection() {
         directory: true,
         metadata: Default::default(),
     }]);
-    app.view_preferences
-        .apply_command(app.navigation.current(), false, "click=single")
-        .unwrap();
-
     app.modifiers = keyboard::Modifiers::CTRL;
     let _ = app.activate_entry(0, false);
     assert!(app.navigation.pending_path().is_none());
@@ -233,17 +212,6 @@ fn transient_scrollbar_is_thin_rounded_and_has_no_rail() {
         visible.vertical_rail.scroller.border.radius.top_left,
         super::SCROLLBAR_THUMB_WIDTH / 2.0
     );
-}
-
-#[test]
-fn entering_an_earlier_tile_is_not_cleared_by_the_previous_tiles_exit() {
-    let (mut app, _) = App::new();
-    app.grid.enter(1);
-
-    let _ = app.update(Message::EntryHovered(0));
-    let _ = app.update(Message::EntryUnhovered(1));
-
-    assert_eq!(app.grid.hovered(), Some(0));
 }
 
 #[test]

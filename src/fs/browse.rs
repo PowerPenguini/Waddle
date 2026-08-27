@@ -1,11 +1,49 @@
-use super::*;
-
 #[cfg(target_os = "linux")]
 use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+
+use std::{
+    collections::VecDeque,
+    fmt, fs, io,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+
+use gio::prelude::FileExt;
+
+use super::{BrowseOptions, EntryMetadata, FileEntry, OpenedDirectory, SearchResults, SortKey};
+
+#[cfg(not(target_os = "linux"))]
+use super::entry_metadata;
 
 impl FileEntry {
     pub fn is_directory(&self) -> bool {
         self.directory
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.name.as_encoded_bytes().first() == Some(&b'.')
+    }
+
+    pub fn type_label(&self) -> String {
+        if self.is_directory() {
+            "Folder".to_owned()
+        } else {
+            self.path
+                .extension()
+                .map(|extension| extension.to_string_lossy().to_uppercase())
+                .unwrap_or_else(|| "File".to_owned())
+        }
+    }
+
+    fn type_sort_key(&self) -> (u8, String) {
+        let rank = if self.is_directory() {
+            0
+        } else if self.path.extension().is_some() {
+            1
+        } else {
+            2
+        };
+        (rank, self.type_label().to_lowercase())
     }
 }
 
@@ -38,7 +76,11 @@ impl fmt::Display for FsError {
     }
 }
 
-impl std::error::Error for FsError {}
+impl std::error::Error for FsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 pub fn validate_name(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
@@ -78,49 +120,51 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
         };
         let metadata = read_entry_metadata(&entry);
         let sort_name = name.to_string_lossy().into_owned();
-        let extension = path
-            .extension()
-            .map(|extension| extension.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        entries.push((
+        let sort_size = metadata.size.unwrap_or_default();
+        let sort_modified = metadata.modified.unwrap_or_default();
+        let file_entry = FileEntry {
+            path,
+            name,
             directory,
-            sort_name,
-            metadata.size.unwrap_or_default(),
-            metadata.modified.unwrap_or_default(),
-            extension,
-            FileEntry {
-                path,
-                name,
-                directory,
-                metadata,
-            },
-        ));
+            metadata,
+        };
+        let sort_type = file_entry.type_sort_key();
+        entries.push((sort_name, sort_size, sort_modified, sort_type, file_entry));
     }
     entries.sort_by(|a, b| {
-        let folders = if options.folders_first {
-            b.0.cmp(&a.0)
-        } else {
-            std::cmp::Ordering::Equal
-        };
+        if options.sort == SortKey::Size {
+            return b
+                .4
+                .is_directory()
+                .cmp(&a.4.is_directory())
+                .then_with(|| {
+                    if a.4.is_directory() {
+                        natural_cmp(&a.0, &b.0)
+                    } else if options.descending {
+                        a.1.cmp(&b.1).reverse()
+                    } else {
+                        a.1.cmp(&b.1)
+                    }
+                })
+                .then_with(|| natural_cmp(&a.0, &b.0))
+                .then_with(|| a.4.name.cmp(&b.4.name));
+        }
         let ordered = match options.sort {
-            SortKey::Name => natural_cmp(&a.1, &b.1),
-            SortKey::Modified => a.3.cmp(&b.3),
-            SortKey::Size => a.2.cmp(&b.2),
-            SortKey::Type => a.4.cmp(&b.4).then_with(|| natural_cmp(&a.1, &b.1)),
+            SortKey::Name => natural_cmp(&a.0, &b.0),
+            SortKey::Modified => a.2.cmp(&b.2),
+            SortKey::Type => a.3.cmp(&b.3).then_with(|| natural_cmp(&a.0, &b.0)),
+            SortKey::Size => unreachable!("size sorting returns above"),
         };
-        folders
-            .then_with(|| {
-                if options.descending {
-                    ordered.reverse()
-                } else {
-                    ordered
-                }
-            })
-            .then_with(|| a.5.name.cmp(&b.5.name))
+        (if options.descending {
+            ordered.reverse()
+        } else {
+            ordered
+        })
+        .then_with(|| a.4.name.cmp(&b.4.name))
     });
     Ok(entries
         .into_iter()
-        .map(|(_, _, _, _, _, entry)| entry)
+        .map(|(_, _, _, _, entry)| entry)
         .collect())
 }
 

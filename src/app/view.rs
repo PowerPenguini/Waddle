@@ -1,6 +1,38 @@
-use super::*;
-use iced::widget::{column, row};
-use std::ops::Deref;
+use std::path::Path;
+
+use iced::{
+    Alignment, Element, Fill, Length, Padding,
+    time::Instant,
+    widget::{
+        self, Column, Grid, Id, Row, Space, button, column, container, mouse_area, pin, row, rule,
+        scrollable, stack, svg, text, text_input,
+    },
+};
+
+use crate::{fs, fs::FileEntry, transfer::Preview as TransferPreview};
+
+use super::{
+    App, BrowserFocus, CONTENT_GUTTER, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID, InputMode,
+    LIST_COLUMN_SPACING, LIST_ENTRY_ICON_WIDTH, LIST_HEADER_HEIGHT, LIST_HEADER_HORIZONTAL_PADDING,
+    LIST_HEADER_ICON_SLOT_WIDTH, LIST_HORIZONTAL_PADDING, LIST_MODIFIED_WIDTH,
+    LIST_NAME_APPROX_CHARACTER_WIDTH, LIST_NAME_MIN_CHARACTERS, LIST_ROW_HEIGHT,
+    LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH, LIST_TYPE_WIDTH,
+    LIST_VIEW_TOP_INSET, LOCATION_ID, MONO_FONT, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
+    Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
+    UI_FONT_SEMIBOLD, apply_opacity, browser_background_style, clip_file_name,
+    entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg, flat_input_style,
+    focus_container_style, grid_background_style, list_row_style, marquee_style, native_dnd, rgba,
+    sidebar_style, solid_background_style, themed_svg, tile_label, tile_style, toolbar_button,
+    toolbar_button_style, transient_scrollbar_style, transient_vertical_scrollbar, tree,
+    tree_button_style, tree_icon_asset, with_alpha,
+};
+
+pub(super) const GRID_SORT_CONTROLS: [(&str, fs::SortKey); 4] = [
+    ("Name", fs::SortKey::Name),
+    ("Type", fs::SortKey::Type),
+    ("Size", fs::SortKey::Size),
+    ("Modified", fs::SortKey::Modified),
+];
 
 #[derive(Clone, Copy)]
 pub(super) struct View<'a> {
@@ -44,21 +76,21 @@ impl<'a> View<'a> {
         if let Some(preview) = self.drag_preview_view() {
             layers.push(preview);
         }
-        if let Some(menu) = self.grid.context_menu() {
+        if let Some(menu) = self.app.grid.context_menu() {
             layers.push(self.context_menu_view(menu));
         }
         stack(layers).width(Fill).height(Fill).into()
     }
 
     fn drag_preview_view(self) -> Option<Element<'a, Message>> {
-        let entries = self.transfers.overview().pointer_drag.entries();
+        let entries = self.app.transfers.overview().pointer_drag.entries();
         let preview = self.drag_preview(entries)?;
         let preview_bytes = native_dnd::preview_svg(preview).ok()?;
         let preview = svg(svg::Handle::from_memory(preview_bytes))
             .width(native_dnd::ICON_SIZE as f32)
             .height(native_dnd::ICON_SIZE as f32);
 
-        let origin = self.grid.drag_preview_origin();
+        let origin = self.app.grid.drag_preview_origin();
         Some(
             pin(preview)
                 .x(origin.x.max(0.0))
@@ -70,7 +102,7 @@ impl<'a> View<'a> {
     fn drag_preview(self, entries: &[FileEntry]) -> Option<TransferPreview> {
         let first = entries.first()?;
         let icon_kind = entry_icon_kind(first);
-        let palette = self.iced_theme().palette();
+        let palette = self.app.iced_theme().palette();
         let background = palette.background;
         let icon_color = self.entry_icon_color(icon_kind);
         let accent = self.accent_color();
@@ -78,7 +110,7 @@ impl<'a> View<'a> {
         Some(TransferPreview {
             icon: entry_icon_asset(icon_kind),
             count: entries.len(),
-            copy: self.modifiers.control(),
+            copy: self.app.modifiers.control(),
             background: rgba(background, 0.92),
             icon_color: rgba(icon_color, 1.0),
             accent: rgba(accent, 1.0),
@@ -87,7 +119,7 @@ impl<'a> View<'a> {
     }
 
     fn layout(self) -> Element<'a, Message> {
-        if self.view_preferences.tree_visible() {
+        if self.app.view_preferences.tree_visible() {
             row![self.sidebar(), self.browser()]
                 .spacing(0)
                 .width(Fill)
@@ -100,13 +132,13 @@ impl<'a> View<'a> {
 
     fn sidebar(self) -> Element<'a, Message> {
         let mut rows = Column::new().spacing(0);
-        for tree_row in self.sidebar_tree.rows(self.navigation.current()) {
+        for tree_row in self.app.sidebar_tree.rows(self.app.navigation.current()) {
             rows = rows.push(self.tree_row(tree_row));
         }
-        let scrollbar_opacity = self.grid.scrollbar_opacity(
+        let scrollbar_opacity = self.app.grid.scrollbar_opacity(
             Scrollbar::Sidebar,
-            self.presentation.now(),
-            self.reduced_motion(),
+            self.app.presentation.now(),
+            self.app.reduced_motion(),
         );
         let content = column![
             container(
@@ -114,7 +146,7 @@ impl<'a> View<'a> {
                     .font(UI_FONT_SEMIBOLD)
                     .size(12)
                     .line_height(iced::Pixels(14.0))
-                    .color(with_alpha(self.iced_theme().palette().text, 0.68)),
+                    .color(with_alpha(self.app.iced_theme().palette().text, 0.68)),
             )
             .height(30)
             .center_y(30),
@@ -135,13 +167,17 @@ impl<'a> View<'a> {
             .height(Fill)
             .padding(Padding::from([8, 12]))
             .style(move |theme| {
-                sidebar_style(theme, self.high_contrast() || self.reduced_transparency())
+                sidebar_style(
+                    theme,
+                    self.app.high_contrast() || self.app.reduced_transparency(),
+                )
             })
             .into()
     }
 
     fn tree_row(self, tree_row: TreeRow) -> Element<'a, Message> {
-        let drop_target = self.drop_highlight_path().as_deref() == Some(tree_row.path.as_path());
+        let drop_target =
+            self.app.drop_highlight_path().as_deref() == Some(tree_row.path.as_path());
         let mut line = Row::new()
             .spacing(6)
             .height(Fill)
@@ -162,14 +198,14 @@ impl<'a> View<'a> {
             self.accent_color()
         };
         let selected = tree_row.selected;
-        let focused = self.presentation.focus_is(BrowserFocus::Sidebar) && tree_row.focused;
+        let focused = self.app.presentation.focus_is(BrowserFocus::Sidebar) && tree_row.focused;
         let label_color = if selected || focused {
             self.selection_text_color()
         } else {
-            self.iced_theme().palette().text
+            self.app.iced_theme().palette().text
         };
         if tree_row.loading {
-            line = line.push(self.spinner(17.0));
+            line = line.push(self.app.spinner(17.0));
         } else {
             line = line.push(themed_svg(icon, 17.0, icon_color));
         }
@@ -218,48 +254,50 @@ impl<'a> View<'a> {
         let parent = toolbar_button(
             include_bytes!("../ui/icons/up.svg"),
             "Parent folder",
-            self.navigation.folder_displayed() && self.navigation.current().parent().is_some(),
+            self.app.navigation.folder_displayed()
+                && self.app.navigation.current().parent().is_some(),
             Message::Parent,
-            self.iced_theme().palette().text,
-            self.iced_theme().palette().background,
-            self.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.presentation.toolbar_cursor() == 0,
+            self.app.iced_theme().palette().text,
+            self.app.iced_theme().palette().background,
+            self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.app.presentation.toolbar_cursor() == 0,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
             "Back",
-            self.navigation.can_go_back(),
+            self.app.navigation.can_go_back(),
             Message::Back,
-            self.iced_theme().palette().text,
-            self.iced_theme().palette().background,
-            self.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.presentation.toolbar_cursor() == 1,
+            self.app.iced_theme().palette().text,
+            self.app.iced_theme().palette().background,
+            self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.app.presentation.toolbar_cursor() == 1,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
             "Forward",
-            self.navigation.can_go_forward(),
+            self.app.navigation.can_go_forward(),
             Message::Forward,
-            self.iced_theme().palette().text,
-            self.iced_theme().palette().background,
-            self.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.presentation.toolbar_cursor() == 2,
+            self.app.iced_theme().palette().text,
+            self.app.iced_theme().palette().background,
+            self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.app.presentation.toolbar_cursor() == 2,
         );
         let refresh = toolbar_button(
             include_bytes!("../ui/icons/refresh.svg"),
             "Refresh",
-            !self.navigation.loading(),
+            !self.app.navigation.loading(),
             Message::Refresh,
-            self.iced_theme().palette().text,
-            self.iced_theme().palette().background,
-            self.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.presentation.toolbar_cursor() == 3,
+            self.app.iced_theme().palette().text,
+            self.app.iced_theme().palette().background,
+            self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                && self.app.presentation.toolbar_cursor() == 3,
         );
         let options = self
+            .app
             .view_preferences
-            .for_directory(self.navigation.current());
-        let location: Element<'_, Message> = if !self.navigation.folder_displayed() {
-            let label = self.navigation.location_label();
+            .for_directory(self.app.navigation.current());
+        let location: Element<'_, Message> = if !self.app.navigation.folder_displayed() {
+            let label = self.app.navigation.location_label();
             container(text(label).font(UI_FONT_SEMIBOLD).size(13))
                 .width(Fill)
                 .height(34)
@@ -267,7 +305,7 @@ impl<'a> View<'a> {
                 .center_y(34)
                 .into()
         } else {
-            let input = text_input("Location", &self.location_input)
+            let input = text_input("Location", &self.app.location_input)
                 .id(Id::new(LOCATION_ID))
                 .on_input(Message::LocationChanged)
                 .on_submit(Message::LocationSubmitted)
@@ -278,7 +316,7 @@ impl<'a> View<'a> {
                 .line_height(iced::Pixels(17.0))
                 .style(flat_input_style)
                 .width(Fill);
-            if self.browser_input.mode() == InputMode::Location {
+            if self.app.browser_input.mode() == InputMode::Location {
                 let accent = self.accent_color();
                 column![
                     container(input).width(Fill).height(33).center_y(33),
@@ -299,7 +337,10 @@ impl<'a> View<'a> {
             .width(Fill)
             .height(34)
             .style(move |theme| {
-                focus_container_style(theme, self.presentation.focus_is(BrowserFocus::Location))
+                focus_container_style(
+                    theme,
+                    self.app.presentation.focus_is(BrowserFocus::Location),
+                )
             });
         container(
             row![
@@ -316,10 +357,10 @@ impl<'a> View<'a> {
                     "Toggle view",
                     true,
                     Message::ToggleView,
-                    self.iced_theme().palette().text,
-                    self.iced_theme().palette().background,
-                    self.presentation.focus_is(BrowserFocus::Toolbar)
-                        && self.presentation.toolbar_cursor() == 4,
+                    self.app.iced_theme().palette().text,
+                    self.app.iced_theme().palette().background,
+                    self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                        && self.app.presentation.toolbar_cursor() == 4,
                 ),
             ]
             .spacing(4)
@@ -333,16 +374,18 @@ impl<'a> View<'a> {
 
     fn grid_body(self) -> Element<'a, Message> {
         if self
+            .app
             .view_preferences
-            .for_directory(self.navigation.current())
+            .for_directory(self.app.navigation.current())
             .view
             == fs::ViewMode::List
         {
             return self.list_body();
         }
-        let visible = self
-            .grid
-            .visible_range(self.navigation.entries().len(), self.status_height());
+        let visible = self.app.grid.visible_range(
+            self.app.navigation.entries().len(),
+            self.app.status_height(),
+        );
         let mut grid = Grid::with_capacity(visible.last_index.saturating_sub(visible.first_index))
             .columns(visible.columns)
             .height(widget::grid::aspect_ratio(
@@ -356,10 +399,10 @@ impl<'a> View<'a> {
         let top = Space::new().width(Fill).height(visible.top_space);
         let bottom = Space::new().width(Fill).height(visible.bottom_space);
         let content = column![top, grid, bottom];
-        let scrollbar_opacity = self.grid.scrollbar_opacity(
+        let scrollbar_opacity = self.app.grid.scrollbar_opacity(
             Scrollbar::Entries,
-            self.presentation.now(),
-            self.reduced_motion(),
+            self.app.presentation.now(),
+            self.app.reduced_motion(),
         );
         let scroll = scrollable(content)
             .id(Id::new(GRID_SCROLL_ID))
@@ -368,17 +411,43 @@ impl<'a> View<'a> {
             .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
             .width(Fill)
             .height(Fill);
-        let area: Element<'_, Message> = mouse_area(container(scroll).padding(Padding {
-            top: CONTENT_GUTTER + LIST_VIEW_TOP_INSET,
-            right: CONTENT_GUTTER,
-            bottom: CONTENT_GUTTER,
-            left: CONTENT_GUTTER,
-        }))
+        let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
+            Row::new()
+                .spacing(4)
+                .width(Fill)
+                .height(LIST_HEADER_HEIGHT)
+                .align_y(Alignment::Center),
+            |controls, (label, sort)| {
+                controls.push(self.sort_header(label, sort, Length::FillPortion(1)))
+            },
+        );
+        let area: Element<'_, Message> = mouse_area(
+            container(column![
+                container(sort_controls)
+                    .height(LIST_HEADER_HEIGHT)
+                    .padding(Padding::from([0, LIST_HORIZONTAL_PADDING])),
+                container(scroll)
+                    .padding(Padding {
+                        top: CONTENT_GUTTER,
+                        ..Padding::ZERO
+                    })
+                    .width(Fill)
+                    .height(Fill),
+            ])
+            .padding(Padding {
+                top: LIST_VIEW_TOP_INSET,
+                right: CONTENT_GUTTER,
+                bottom: CONTENT_GUTTER,
+                left: CONTENT_GUTTER,
+            })
+            .width(Fill)
+            .height(Fill),
+        )
         .on_move(Message::GridPointerMoved)
         .into();
         let content = self.with_marquee(area);
         let current_drop_target =
-            self.drop_highlight_path().as_deref() == Some(self.navigation.current());
+            self.app.drop_highlight_path().as_deref() == Some(self.app.navigation.current());
         container(content)
             .width(Fill)
             .height(Fill)
@@ -387,22 +456,27 @@ impl<'a> View<'a> {
                 grid_background_style(
                     theme,
                     current_drop_target,
-                    self.presentation.focus_is(BrowserFocus::Entries),
+                    self.app.presentation.focus_is(BrowserFocus::Entries),
                 )
             })
             .into()
     }
 
     fn list_body(self) -> Element<'a, Message> {
-        let visible = self
-            .grid
-            .list_visible_range(self.navigation.entries().len(), self.status_height());
+        let visible = self.app.grid.list_visible_range(
+            self.app.navigation.entries().len(),
+            self.app.status_height(),
+        );
         let top = Space::new()
             .height(visible.start as f32 * LIST_ROW_HEIGHT)
             .width(Fill);
         let bottom = Space::new()
             .height(
-                self.navigation.entries().len().saturating_sub(visible.end) as f32
+                self.app
+                    .navigation
+                    .entries()
+                    .len()
+                    .saturating_sub(visible.end) as f32
                     * LIST_ROW_HEIGHT,
             )
             .width(Fill);
@@ -414,25 +488,25 @@ impl<'a> View<'a> {
         let (show_size, show_modified) = self.list_column_visibility();
         let mut header = Row::new()
             .push(Space::new().width(LIST_HEADER_ICON_SLOT_WIDTH))
-            .push(self.list_sort_header("Name", fs::SortKey::Name, Fill))
-            .push(self.list_sort_header("Type", fs::SortKey::Type, LIST_TYPE_WIDTH))
+            .push(self.sort_header("Name", fs::SortKey::Name, Fill))
+            .push(self.sort_header("Type", fs::SortKey::Type, LIST_TYPE_WIDTH))
             .width(Fill)
             .spacing(LIST_COLUMN_SPACING)
             .align_y(Alignment::Center);
         if show_size {
-            header = header.push(self.list_sort_header("Size", fs::SortKey::Size, LIST_SIZE_WIDTH));
+            header = header.push(self.sort_header("Size", fs::SortKey::Size, LIST_SIZE_WIDTH));
         }
         if show_modified {
-            header = header.push(self.list_sort_header(
+            header = header.push(self.sort_header(
                 "Modified",
                 fs::SortKey::Modified,
                 LIST_MODIFIED_WIDTH,
             ));
         }
-        let scrollbar_opacity = self.grid.scrollbar_opacity(
+        let scrollbar_opacity = self.app.grid.scrollbar_opacity(
             Scrollbar::Entries,
-            self.presentation.now(),
-            self.reduced_motion(),
+            self.app.presentation.now(),
+            self.app.reduced_motion(),
         );
         let area: Element<'_, Message> = mouse_area(
             container(column![
@@ -459,7 +533,7 @@ impl<'a> View<'a> {
                 grid_background_style(
                     theme,
                     false,
-                    self.presentation.focus_is(BrowserFocus::Entries),
+                    self.app.presentation.focus_is(BrowserFocus::Entries),
                 )
             }),
         )
@@ -469,7 +543,7 @@ impl<'a> View<'a> {
     }
 
     fn with_marquee(self, area: Element<'a, Message>) -> Element<'a, Message> {
-        let Some(bounds) = self.grid.marquee_bounds(self.status_height()) else {
+        let Some(bounds) = self.app.grid.marquee_bounds(self.app.status_height()) else {
             return area;
         };
         let selection = container(Space::new())
@@ -491,15 +565,16 @@ impl<'a> View<'a> {
         stack![area, overlay].into()
     }
 
-    fn list_sort_header<'b>(
+    fn sort_header<'b>(
         self,
         label: &'b str,
         sort: fs::SortKey,
         width: impl Into<Length>,
     ) -> Element<'b, Message> {
         let options = self
+            .app
             .view_preferences
-            .for_directory(self.navigation.current());
+            .for_directory(self.app.navigation.current());
         let active = options.sort == sort;
         let direction = if active {
             if options.descending { " ↓" } else { " ↑" }
@@ -514,7 +589,7 @@ impl<'a> View<'a> {
                         .size(10)
                         .wrapping(iced::advanced::text::Wrapping::None)
                         .color(if active {
-                            self.iced_theme().palette().text
+                            self.app.iced_theme().palette().text
                         } else {
                             self.secondary_text_color()
                         }),
@@ -536,13 +611,13 @@ impl<'a> View<'a> {
     }
 
     fn list_column_visibility(self) -> (bool, bool) {
-        let width = self.grid.window_width() + (SIDEBAR_WIDTH - self.grid.sidebar_width());
+        let width = self.app.grid.window_width() + (SIDEBAR_WIDTH - self.app.grid.sidebar_width());
         (width >= LIST_SHOW_SIZE_AT, width >= LIST_SHOW_MODIFIED_AT)
     }
 
     fn list_name_character_limit(self) -> usize {
         let (show_size, show_modified) = self.list_column_visibility();
-        let fixed_width = self.grid.sidebar_width()
+        let fixed_width = self.app.grid.sidebar_width()
             + CONTENT_GUTTER * 2.0
             + f32::from(LIST_HORIZONTAL_PADDING) * 2.0
             + LIST_ENTRY_ICON_WIDTH
@@ -555,31 +630,28 @@ impl<'a> View<'a> {
             };
         let column_count = 3 + usize::from(show_size) + usize::from(show_modified);
         let spacing = (column_count.saturating_sub(1)) as f32 * LIST_COLUMN_SPACING;
-        let available = (self.grid.window_width() - fixed_width - spacing)
+        let available = (self.app.grid.window_width() - fixed_width - spacing)
             .max(LIST_NAME_MIN_CHARACTERS as f32 * LIST_NAME_APPROX_CHARACTER_WIDTH);
         (available / LIST_NAME_APPROX_CHARACTER_WIDTH).floor() as usize
     }
 
     fn file_list_row(self, index: usize) -> Element<'a, Message> {
-        let entry = &self.navigation.entries()[index];
-        let selected = self.grid.is_selected(index);
+        let entry = &self.app.navigation.entries()[index];
+        let selected = self.app.grid.is_selected(index);
         let selected_above = index
             .checked_sub(1)
-            .is_some_and(|neighbor| self.grid.is_selected(neighbor));
-        let selected_below = self.grid.is_selected(index.saturating_add(1));
-        let focused = self.presentation.focus_is(BrowserFocus::Entries)
-            && self.grid.selected_entry() == Some(index);
-        let hovered = self.grid.hovered() == Some(index);
+            .is_some_and(|neighbor| self.app.grid.is_selected(neighbor));
+        let selected_below = self.app.grid.is_selected(index.saturating_add(1));
+        let focused = self.app.presentation.focus_is(BrowserFocus::Entries)
+            && self.app.grid.selected_entry() == Some(index);
+        let hovered = self.app.grid.hovered() == Some(index);
+        let content_opacity = entry_content_opacity(
+            entry.is_hidden(),
+            selected || hovered || focused,
+            self.app.reduced_transparency(),
+        );
         let icon_kind = entry_icon_kind(entry);
-        let kind = if entry.is_directory() {
-            "Folder".to_owned()
-        } else {
-            entry
-                .path
-                .extension()
-                .map(|extension| extension.to_string_lossy().to_uppercase())
-                .unwrap_or_else(|| "File".to_owned())
-        };
+        let kind = entry.type_label();
         let size = if entry.is_directory() {
             "—".to_owned()
         } else {
@@ -603,15 +675,22 @@ impl<'a> View<'a> {
             self.list_name_character_limit(),
         );
         let mut content = Row::new()
-            .push(entry_svg(
-                icon_kind,
-                LIST_ENTRY_ICON_WIDTH,
-                self.entry_icon_color(icon_kind),
-            ))
+            .push(
+                entry_svg(
+                    icon_kind,
+                    LIST_ENTRY_ICON_WIDTH,
+                    self.entry_icon_color(icon_kind),
+                )
+                .opacity(content_opacity),
+            )
             .push(
                 container(
                     text(name)
                         .size(13)
+                        .color(apply_opacity(
+                            self.app.iced_theme().palette().text,
+                            content_opacity,
+                        ))
                         .wrapping(iced::advanced::text::Wrapping::None),
                 )
                 .width(Fill)
@@ -621,7 +700,7 @@ impl<'a> View<'a> {
                 text(kind)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_TYPE_WIDTH),
             )
             .width(Fill)
@@ -632,7 +711,7 @@ impl<'a> View<'a> {
                 text(size)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_SIZE_WIDTH),
             );
         }
@@ -641,7 +720,7 @@ impl<'a> View<'a> {
                 text(modified)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_MODIFIED_WIDTH),
             );
         }
@@ -668,39 +747,47 @@ impl<'a> View<'a> {
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
             .on_right_press(Message::EntryContext(index))
-            .on_enter(Message::EntryHovered(index))
-            .on_exit(Message::EntryUnhovered(index))
             .into()
     }
 
     fn file_tile(self, index: usize) -> Element<'a, Message> {
-        let entry = &self.navigation.entries()[index];
+        let entry = &self.app.navigation.entries()[index];
         let label = tile_label(&clip_file_name(
             &fs::display_name(&entry.name),
             GRID_NAME_MAX_CHARACTERS,
         ));
-        let selected = self.grid.is_selected(index);
-        let focused = self.presentation.focus_is(BrowserFocus::Entries)
-            && self.grid.selected_entry() == Some(index);
-        let hovered = self.grid.hovered() == Some(index);
+        let selected = self.app.grid.is_selected(index);
+        let focused = self.app.presentation.focus_is(BrowserFocus::Entries)
+            && self.app.grid.selected_entry() == Some(index);
+        let hovered = self.app.grid.hovered() == Some(index);
         let drop_target = entry.is_directory()
-            && self.drop_highlight_path().as_deref() == Some(entry.path.as_path());
+            && self.app.drop_highlight_path().as_deref() == Some(entry.path.as_path());
+        let content_opacity = entry_content_opacity(
+            entry.is_hidden(),
+            selected || hovered || focused || drop_target,
+            self.app.reduced_transparency(),
+        );
         let icon_kind = entry_icon_kind(entry);
-        let icon: Element<'_, Message> = self.thumbnails.handle(&entry.path).map_or_else(
-            || entry_svg(icon_kind, 48.0, self.entry_icon_color(icon_kind)).into(),
+        let icon: Element<'_, Message> = self.app.thumbnails.handle(&entry.path).map_or_else(
+            || {
+                entry_svg(icon_kind, 48.0, self.entry_icon_color(icon_kind))
+                    .opacity(content_opacity)
+                    .into()
+            },
             |handle| {
                 widget::image(handle.clone())
                     .width(48)
                     .height(48)
                     .content_fit(iced::ContentFit::Cover)
                     .border_radius(5)
+                    .opacity(content_opacity)
                     .into()
             },
         );
         let label_color = if selected {
             self.selection_text_color()
         } else {
-            self.iced_theme().palette().text
+            self.app.iced_theme().palette().text
         };
         let content = column![
             container(icon)
@@ -713,7 +800,7 @@ impl<'a> View<'a> {
                     .font(UI_FONT)
                     .size(13)
                     .line_height(iced::Pixels(16.0))
-                    .color(label_color)
+                    .color(apply_opacity(label_color, content_opacity))
                     .width(Fill)
                     .height(34)
                     .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
@@ -728,7 +815,7 @@ impl<'a> View<'a> {
         .align_x(Alignment::Center);
         let tile = container(content)
             .width(TILE_WIDTH)
-            .height(108)
+            .height(TILE_HEIGHT)
             .padding(Padding {
                 top: 10.0,
                 right: 7.0,
@@ -737,18 +824,16 @@ impl<'a> View<'a> {
             })
             .clip(true)
             .style(move |theme| tile_style(theme, selected, hovered, focused, drop_target));
-        mouse_area(container(tile).width(Fill).center_x(Fill))
+        let tile = mouse_area(tile)
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
-            .on_right_press(Message::EntryContext(index))
-            .on_enter(Message::EntryHovered(index))
-            .on_exit(Message::EntryUnhovered(index))
-            .into()
+            .on_right_press(Message::EntryContext(index));
+        container(tile).width(Fill).center_x(Fill).into()
     }
 
     fn drag_activation_bar(self, path: &Path) -> Element<'a, Message> {
-        let Some(progress) = self.grid.drag_hover_progress(path, Instant::now()) else {
+        let Some(progress) = self.app.grid.drag_hover_progress(path, Instant::now()) else {
             return Space::new().width(Fill).height(2).into();
         };
         let filled = ((progress * 100.0).round() as u16).clamp(1, 99);
@@ -765,13 +850,5 @@ impl<'a> View<'a> {
         .width(Fill)
         .height(2)
         .into()
-    }
-}
-
-impl Deref for View<'_> {
-    type Target = App;
-
-    fn deref(&self) -> &Self::Target {
-        self.app
     }
 }

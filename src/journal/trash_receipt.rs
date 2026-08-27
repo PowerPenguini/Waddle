@@ -1,14 +1,23 @@
-use super::*;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, String> {
+use gio::prelude::*;
+
+use super::{Error, TrashReceipt};
+
+pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, Error> {
     gio::File::for_path(path)
         .trash(None::<&gio::Cancellable>)
-        .map_err(|error| format!("could not move {} to Trash: {error}", path.display()))?;
+        .map_err(|error| {
+            Error::desktop(format!("could not move {} to Trash", path.display()), error)
+        })?;
     locate_trash(path).ok_or_else(|| {
-        format!(
+        Error::message(format!(
             "moved {} to Trash, but its recovery metadata could not be located",
             path.display()
-        )
+        ))
     })
 }
 

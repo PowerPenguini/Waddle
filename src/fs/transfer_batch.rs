@@ -1,4 +1,17 @@
-use super::*;
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fs, io,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+
+use crate::transfer::Action;
+
+use super::{
+    ConflictChoice, FsError, TransferConflict, TransferFailure, TransferProgress, TransferReceipt,
+    TransferReport, TransferWarning,
+    mutation::{available_copy_destination, replace_exact, transfer_exact, tree_bytes},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct FileIdentity {

@@ -19,5 +19,6 @@ The Grid now keeps an active cursor, a selection anchor, and the selected set as
 Ctrl-click toggles one item, Shift-click selects the anchored display range, and conventional
 keyboard movement composes with Shift without entering Visual mode. Ctrl+A and Space operate on
 the same set. These operations remain index/range based and the view still virtualizes rows, so
-they do not add per-entry widgets outside the visible window. Mouse activation now defaults to a
-double click; a single click only updates selection.
+they do not add per-entry widgets outside the visible window. Folders activate with one click by
+default, while files require two. `folder-click` and `file-click` configure the behaviors
+independently.

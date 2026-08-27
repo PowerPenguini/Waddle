@@ -89,12 +89,24 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
         event::Status::Captured,
     );
+    let Some(MouseBackGesture::AwaitingSecondClick { first_released_at }) = app.mouse_back_gesture
+    else {
+        panic!("first Back click should wait for a possible double click");
+    };
+    assert!(app.navigation.pending_path().is_none());
+    let _ = app.update(Message::MouseBackTick(
+        first_released_at + MOUSE_BACK_DOUBLE_CLICK_INTERVAL,
+    ));
     assert_eq!(
         app.navigation.pending_path(),
         Some(PathBuf::from("/back").as_path())
     );
-
     app.navigation.settle_for_test();
+    let _ = app.update(Message::MouseBackTick(
+        first_released_at + MOUSE_BACK_DOUBLE_CLICK_INTERVAL,
+    ));
+    assert!(app.navigation.pending_path().is_none());
+
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Forward)),
         event::Status::Captured,
@@ -106,7 +118,7 @@ fn mouse_side_buttons_request_back_and_forward_navigation() {
 }
 
 #[test]
-fn holding_mouse_back_navigates_to_the_parent_without_also_using_history() {
+fn double_clicking_mouse_back_navigates_to_parent_without_using_history() {
     let (mut app, _) = App::new();
     app.navigation = NavigationSession::new(PathBuf::from("/current/folder"));
     app.navigation
@@ -116,18 +128,83 @@ fn holding_mouse_back_navigates_to_the_parent_without_also_using_history() {
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
         event::Status::Captured,
     );
-    let started = app.mouse_back_press.unwrap().started;
-    let _ = app.update(Message::MouseBackHeld(started));
+    assert!(app.navigation.pending_path().is_none());
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    let Some(MouseBackGesture::AwaitingSecondClick { first_released_at }) = app.mouse_back_gesture
+    else {
+        panic!("first Back click should wait for a possible double click");
+    };
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    assert!(app.navigation.pending_path().is_none());
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
+        event::Status::Captured,
+    );
 
     assert_eq!(
         app.navigation.pending_path(),
         Some(PathBuf::from("/current").as_path())
     );
     app.navigation.settle_for_test();
+    let _ = app.update(Message::MouseBackTick(
+        first_released_at + MOUSE_BACK_DOUBLE_CLICK_INTERVAL,
+    ));
+    assert!(app.navigation.pending_path().is_none());
+}
+
+#[test]
+fn holding_mouse_back_no_longer_navigates_to_parent() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current/folder"));
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
+    let _ = app.update(Message::MouseBackTick(
+        Instant::now() + MOUSE_BACK_DOUBLE_CLICK_INTERVAL,
+    ));
+
+    assert!(app.navigation.pending_path().is_none());
+}
+
+#[test]
+fn another_navigation_cancels_a_pending_single_mouse_back_click() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    app.navigation.seed_history(
+        vec![PathBuf::from("/back")],
+        vec![PathBuf::from("/forward")],
+    );
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)),
+        event::Status::Captured,
+    );
     let _ = app.handle_event(
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)),
         event::Status::Captured,
     );
+    let Some(MouseBackGesture::AwaitingSecondClick { first_released_at }) = app.mouse_back_gesture
+    else {
+        panic!("first Back click should wait for a possible double click");
+    };
+
+    let _ = app.update(Message::Forward);
+    assert_eq!(
+        app.navigation.pending_path(),
+        Some(PathBuf::from("/forward").as_path())
+    );
+    app.navigation.settle_for_test();
+    let _ = app.update(Message::MouseBackTick(
+        first_released_at + MOUSE_BACK_DOUBLE_CLICK_INTERVAL,
+    ));
     assert!(app.navigation.pending_path().is_none());
 }
 
