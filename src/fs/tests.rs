@@ -100,6 +100,8 @@ fn directory_entries_retain_size_and_modified_metadata_for_list_details() {
 #[cfg(target_os = "linux")]
 #[test]
 fn dormant_automount_metadata_stays_lazy() {
+    use std::collections::HashSet;
+
     let mut statx = unsafe { std::mem::zeroed::<libc::statx>() };
     statx.stx_mask = libc::STATX_SIZE | libc::STATX_MTIME;
     statx.stx_size = 4096;
@@ -109,11 +111,75 @@ fn dormant_automount_metadata_stays_lazy() {
     let dormant = super::browse::statx_entry_metadata(&statx);
     assert_eq!(dormant.size, None);
     assert_eq!(dormant.modified, None);
+    assert!(!super::browse::statx_is_watchable_directory(
+        &statx,
+        &HashSet::new()
+    ));
 
     statx.stx_attributes = 0;
+    statx.stx_mode = libc::S_IFDIR as u16;
     let ordinary = super::browse::statx_entry_metadata(&statx);
     assert_eq!(ordinary.size, Some(4096));
     assert_eq!(ordinary.modified, Some(123));
+    assert!(super::browse::statx_is_watchable_directory(
+        &statx,
+        &HashSet::new()
+    ));
+
+    statx.stx_mnt_id = 45;
+    assert!(!super::browse::statx_is_watchable_directory(
+        &statx,
+        &HashSet::from([45])
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_identifies_autofs_mount_ids_and_paths() {
+    assert_eq!(
+        super::browse::automount_mount(
+            "45 1 0:44 / /home/arc\\040files rw - autofs systemd-1 rw,fd=77"
+        ),
+        Some((45, PathBuf::from("/home/arc files")))
+    );
+    assert_eq!(
+        super::browse::automount_mount("46 1 8:1 / /home rw - ext4 /dev/sda1 rw"),
+        None
+    );
+}
+
+#[test]
+fn opened_directory_reuses_one_scan_for_sidebar_folders() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("folder-b")).unwrap();
+    fs::create_dir(temp.path().join("folder-a")).unwrap();
+    fs::create_dir(temp.path().join(".hidden-folder")).unwrap();
+    fs::write(temp.path().join("notes.txt"), "x").unwrap();
+    symlink(
+        temp.path().join("folder-a"),
+        temp.path().join("folder-link"),
+    )
+    .unwrap();
+
+    let opened = open_directory_with(
+        temp.path(),
+        BrowseOptions {
+            show_hidden: false,
+            ..BrowseOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        opened
+            .child_folders
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["folder-a", "folder-b"]
+    );
 }
 
 #[test]
@@ -185,12 +251,16 @@ fn hidden_preference_is_shared_by_recursive_search_and_tree_traversal() {
 
     let hidden = search_directory_with_hidden(temp.path(), "needle", 100, false, || false).unwrap();
     assert!(hidden.entries.is_empty());
-    assert!(read_child_folders_with_hidden(temp.path(), false).is_empty());
+    assert!(
+        read_child_folders_with_hidden(temp.path(), false)
+            .unwrap()
+            .is_empty()
+    );
 
     let visible = search_directory_with_hidden(temp.path(), "needle", 100, true, || false).unwrap();
     assert_eq!(visible.entries.len(), 1);
     assert_eq!(
-        read_child_folders_with_hidden(temp.path(), true),
+        read_child_folders_with_hidden(temp.path(), true).unwrap(),
         [temp.path().join(".private")]
     );
 }
@@ -290,6 +360,7 @@ fn reads_child_folders_hidden_filtered_and_sorted() {
     fs::write(temp.path().join("file"), "x").unwrap();
 
     let names: Vec<_> = read_child_folders(temp.path())
+        .unwrap()
         .into_iter()
         .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();

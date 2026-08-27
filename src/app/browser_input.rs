@@ -133,6 +133,7 @@ pub(super) struct Context {
     pub(super) selection_count: usize,
     pub(super) has_selection: bool,
     pub(super) pending_cut: bool,
+    pub(super) navigation_pending: bool,
     pub(super) file_operators_allowed: bool,
     pub(super) bottom_input: BottomInput,
 }
@@ -153,6 +154,7 @@ pub(super) enum Intent {
     CopyCommandOutput,
     CancelVisual,
     CancelCut,
+    CancelNavigation,
     Copy,
     Cut,
     Paste,
@@ -390,6 +392,9 @@ impl BrowserInput {
             if self.pending_sequence().is_some() {
                 self.clear_sequence();
                 return Intent::Pending("Browser sequence cancelled".to_owned());
+            }
+            if context.navigation_pending {
+                return Intent::CancelNavigation;
             }
             return Intent::None;
         }
@@ -752,6 +757,41 @@ mod tests {
             ),
             Intent::PromptCancel
         );
+    }
+
+    #[test]
+    fn plain_escape_cancels_pending_navigation_after_browser_state() {
+        let mut input = BrowserInput::default();
+        let escape = Press {
+            named: NamedKey::Escape,
+            ..Press::default()
+        };
+
+        assert_eq!(
+            input.handle(
+                escape.clone(),
+                Context {
+                    navigation_pending: true,
+                    ..Context::default()
+                }
+            ),
+            Intent::CancelNavigation
+        );
+
+        assert!(matches!(
+            input.handle(text("d"), selected()),
+            Intent::Pending(_)
+        ));
+        assert!(matches!(
+            input.handle(
+                escape,
+                Context {
+                    navigation_pending: true,
+                    ..Context::default()
+                }
+            ),
+            Intent::Pending(_)
+        ));
     }
 
     #[test]

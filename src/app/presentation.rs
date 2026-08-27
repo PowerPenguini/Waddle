@@ -18,6 +18,8 @@ use super::{
 
 const COPY_FEEDBACK_HOLD: Duration = Duration::from_millis(320);
 const COPY_FEEDBACK_FADE: Duration = Duration::from_millis(680);
+const SPINNER_FRAME_DURATION: Duration = Duration::from_millis(100);
+const SPINNER_FRAME_COUNT: u128 = 8;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum BrowserFocus {
@@ -356,12 +358,13 @@ impl Presentation {
         self.now = now;
     }
 
-    pub(super) fn spinner_angle(&self, reduced_motion: bool) -> f32 {
+    pub(super) fn spinner_frame(&self, reduced_motion: bool) -> usize {
         if reduced_motion {
-            0.0
+            0
         } else {
-            self.now.duration_since(self.spinner_started).as_secs_f32() * std::f32::consts::TAU
-                / 0.9
+            ((self.now.duration_since(self.spinner_started).as_millis()
+                / SPINNER_FRAME_DURATION.as_millis())
+                % SPINNER_FRAME_COUNT) as usize
         }
     }
 

@@ -9,13 +9,13 @@ mod tree_copy;
 
 #[allow(unused_imports)]
 pub use browse::{
-    FsError, open_directory_with, read_child_folders_with_hidden, read_directory_with,
-    read_entry_details, search_directory_with_hidden, validate_name,
+    FsError, open_directory_with, read_child_folders_with_hidden, read_entry_details,
+    search_directory_with_hidden, validate_name,
 };
 pub use mutation::{create_file, create_folder, delete_permanently, display_name, rename_entry};
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
-pub(crate) use browse::format_size;
+pub(crate) use browse::{format_size, watchable_directories_without_automount};
 pub(crate) use mutation::{journal_copy, journal_move, journal_remove};
 
 #[cfg(test)]
@@ -26,7 +26,7 @@ use tree_copy::{get_xattr, set_xattr};
 use tree_copy::{record_metadata_result, set_times};
 
 #[cfg(test)]
-pub use browse::{read_child_folders, read_directory, search_directory};
+pub use browse::{read_child_folders, read_directory, read_directory_with, search_directory};
 
 #[cfg(test)]
 mod tests;
@@ -87,10 +87,11 @@ pub(crate) fn entry_metadata(metadata: &fs::Metadata) -> EntryMetadata {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OpenedDirectory {
     pub canonical_path: PathBuf,
     pub entries: Vec<FileEntry>,
+    pub child_folders: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]

@@ -8,8 +8,9 @@ use super::{
     App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
     DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, Scrollbar, X11_INBOUND_ID, clears_status_notice, find_window_after_delay,
-    location_monitoring, native_clipboard, transfer_integration, transfer_session,
+    NavigationTransition, Scrollbar, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
+    find_window_after_delay, location_monitoring, native_clipboard, transfer_integration,
+    transfer_session,
 };
 
 impl App {
@@ -183,8 +184,13 @@ impl App {
                 self.update_drag_hover(self.grid.cursor());
                 Task::none()
             }
-            Message::TreeLoaded(id, path, folders) => {
-                self.sidebar_tree.install_children(id, &path, folders);
+            Message::TreeLoaded { request, result } => {
+                if let TreeLoadOutcome::Failed(error) =
+                    self.sidebar_tree.complete_load(&request, result)
+                {
+                    self.presentation.set_status(error);
+                    self.sync_location_monitoring();
+                }
                 Task::none()
             }
             Message::FavoritePressed(index) => {
@@ -581,6 +587,11 @@ impl App {
 
     fn press_mouse_back(&mut self) -> Task<Message> {
         self.prepare_navigation_transition();
+        if self.navigation.loading() {
+            self.mouse_back_gesture = None;
+            self.cancel_pending_navigation();
+            return Task::none();
+        }
         let now = Instant::now();
         match self.mouse_back_gesture.take() {
             Some(MouseBackGesture::AwaitingSecondClick { first_released_at })
@@ -704,6 +715,7 @@ impl App {
                 selection_count: self.grid.selection_count(),
                 has_selection: self.grid.selected_entry().is_some(),
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
+                navigation_pending: self.navigation.loading(),
                 file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
                 bottom_input: BottomInput::new(
@@ -751,6 +763,10 @@ impl App {
                 self.schedule_details()
             }
             InputIntent::CancelCut => self.cancel_cut("Cut cancelled"),
+            InputIntent::CancelNavigation => {
+                self.cancel_pending_navigation();
+                Task::none()
+            }
             InputIntent::Copy => self.update(Message::Copy),
             InputIntent::Cut => self.cut_selection(),
             InputIntent::Paste => self.update(Message::Paste),

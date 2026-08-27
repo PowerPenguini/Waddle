@@ -114,7 +114,6 @@ impl<A: Adapter> LocationMonitoring<A> {
         for path in locations.displayed_sources {
             roles.entry(path).or_default().displayed_source = true;
         }
-        roles.retain(|path, _| path.is_dir());
         let mut paths = roles.keys().cloned().collect::<Vec<_>>();
         paths.sort();
         self.fallback = self.adapter.watch_many(paths);
@@ -344,5 +343,27 @@ mod tests {
                 invalidate_tree: vec![expanded],
             }
         );
+    }
+
+    #[test]
+    fn location_monitoring_does_not_probe_candidate_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let unavailable = temp.path().join("unavailable-automount");
+        let adapter = MemoryAdapter::default();
+        let mut monitoring = LocationMonitoring::new(adapter.clone());
+
+        monitoring.sync_locations(Locations {
+            current: unavailable.clone(),
+            current_is_displayed: true,
+            pending_cut_paths: Vec::new(),
+            expanded: vec![unavailable.clone()],
+            displayed_sources: Vec::new(),
+        });
+
+        assert_eq!(
+            adapter.watched.lock().unwrap().as_slice(),
+            [unavailable.as_path()]
+        );
+        assert!(monitoring.watched_paths().contains(&unavailable));
     }
 }

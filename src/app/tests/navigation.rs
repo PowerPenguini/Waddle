@@ -31,7 +31,7 @@ fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
     let requested = request.requested().unwrap().to_path_buf();
     let _ = app.finish_navigation(
         request,
-        NavigationCompletion::Folder(Ok((requested, vec![file.clone()]))),
+        NavigationCompletion::Folder(Ok(opened(requested, vec![file.clone()]))),
     );
 
     assert!(app.transfers.pending_cut_paths().is_empty());
@@ -69,6 +69,69 @@ fn captured_escape_leaves_the_recursive_search_input() {
     assert_eq!(app.browser_input.mode(), InputMode::Browser);
     assert!(!app.search.is_active());
     assert!(app.search.query().is_empty());
+}
+
+#[test]
+fn escape_cancels_pending_navigation_immediately() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    let _ = app.transition_navigation(NavigationTransition::Open {
+        requested: PathBuf::from("/slow"),
+        remember: true,
+        select: None,
+    });
+    assert_eq!(app.navigation.pending_path(), Some(Path::new("/slow")));
+
+    let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+
+    assert!(app.navigation.pending_path().is_none());
+    assert_eq!(app.navigation.current(), Path::new("/current"));
+}
+
+#[test]
+fn first_back_cancels_tree_navigation_and_second_back_uses_history() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    app.navigation
+        .seed_history(vec![PathBuf::from("/back")], Vec::new());
+    let root = app.sidebar_tree.rows(Path::new("/current"))[0].id;
+    assert!(
+        app.sidebar_tree
+            .install_children(root, Path::new("/"), vec![PathBuf::from("/slow")],)
+    );
+    let slow = app
+        .sidebar_tree
+        .rows(Path::new("/current"))
+        .into_iter()
+        .find(|row| row.path == Path::new("/slow"))
+        .unwrap();
+
+    let _ = app.activate_tree_row(slow.id);
+    assert_eq!(app.navigation.pending_path(), Some(Path::new("/slow")));
+    assert!(
+        app.sidebar_tree
+            .rows(Path::new("/current"))
+            .into_iter()
+            .find(|row| row.id == slow.id)
+            .unwrap()
+            .loading
+    );
+
+    let _ = app.update(Message::Back);
+    assert!(app.navigation.pending_path().is_none());
+    assert_eq!(app.navigation.current(), Path::new("/current"));
+    let slow_after_cancel = app
+        .sidebar_tree
+        .rows(Path::new("/current"))
+        .into_iter()
+        .find(|row| row.id == slow.id)
+        .unwrap();
+    assert!(!slow_after_cancel.loading);
+    assert!(!app.sidebar_tree.is_expanded(slow.id));
+
+    let _ = app.update(Message::Back);
+    assert_eq!(app.navigation.pending_path(), Some(Path::new("/back")));
 }
 
 #[test]

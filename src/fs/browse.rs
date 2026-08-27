@@ -1,5 +1,9 @@
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+use std::{
+    ffi::{CString, OsString},
+    mem::MaybeUninit,
+    os::unix::ffi::{OsStrExt, OsStringExt},
+};
 
 use std::{
     collections::VecDeque,
@@ -100,9 +104,20 @@ pub fn read_directory(path: &Path) -> Result<Vec<FileEntry>, FsError> {
     read_directory_with(path, BrowseOptions::default())
 }
 
+#[cfg(test)]
 pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<FileEntry>, FsError> {
+    scan_directory_with(path, options).map(|scan| scan.entries)
+}
+
+struct DirectoryScan {
+    entries: Vec<FileEntry>,
+    child_folders: Vec<PathBuf>,
+}
+
+fn scan_directory_with(path: &Path, options: BrowseOptions) -> Result<DirectoryScan, FsError> {
     let iter = fs::read_dir(path).map_err(|e| FsError::new("read", path, e))?;
     let mut entries = Vec::new();
+    let mut child_folders = Vec::new();
     for result in iter {
         let entry = result.map_err(|e| FsError::new("read an entry in", path, e))?;
         let name = entry.file_name();
@@ -113,6 +128,9 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
             .file_type()
             .map_err(|e| FsError::new("inspect", entry.path(), e))?;
         let path = entry.path();
+        if file_type.is_dir() {
+            child_folders.push(path.clone());
+        }
         let directory = if file_type.is_symlink() {
             path.is_dir()
         } else {
@@ -162,17 +180,32 @@ pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<Fi
         })
         .then_with(|| a.4.name.cmp(&b.4.name))
     });
-    Ok(entries
-        .into_iter()
-        .map(|(_, _, _, _, entry)| entry)
-        .collect())
+    child_folders.sort_by_key(|path| {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase()
+    });
+    Ok(DirectoryScan {
+        entries: entries
+            .into_iter()
+            .map(|(_, _, _, _, entry)| entry)
+            .collect(),
+        child_folders,
+    })
 }
 
 #[cfg(target_os = "linux")]
 fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
-    let path = entry.path();
+    statx_path(&entry.path())
+        .as_ref()
+        .map_or_else(EntryMetadata::default, statx_entry_metadata)
+}
+
+#[cfg(target_os = "linux")]
+fn statx_path(path: &Path) -> Option<libc::statx> {
     let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return EntryMetadata::default();
+        return None;
     };
     let mut metadata = MaybeUninit::<libc::statx>::zeroed();
     let flags = libc::AT_NO_AUTOMOUNT | libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_DONT_SYNC;
@@ -182,16 +215,15 @@ fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
             libc::AT_FDCWD,
             path.as_ptr(),
             flags,
-            libc::STATX_BASIC_STATS,
+            libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
             metadata.as_mut_ptr(),
         )
     };
     if result != 0 {
-        return EntryMetadata::default();
+        return None;
     }
     // SAFETY: statx returned success and initialized the output value.
-    let metadata = unsafe { metadata.assume_init() };
-    statx_entry_metadata(&metadata)
+    Some(unsafe { metadata.assume_init() })
 }
 
 #[cfg(target_os = "linux")]
@@ -205,6 +237,88 @@ pub(super) fn statx_entry_metadata(metadata: &libc::statx) -> EntryMetadata {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn watchable_directories_without_automount(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
+    let (automount_ids, automount_paths) = automount_mounts();
+    paths
+        .into_iter()
+        .filter(|path| {
+            !automount_paths
+                .iter()
+                .any(|automount| path == automount || path.starts_with(automount))
+        })
+        .filter(|path| {
+            statx_path(path)
+                .as_ref()
+                .is_some_and(|metadata| statx_is_watchable_directory(metadata, &automount_ids))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn statx_is_watchable_directory(
+    metadata: &libc::statx,
+    automounts: &std::collections::HashSet<u64>,
+) -> bool {
+    metadata.stx_attributes & libc::STATX_ATTR_AUTOMOUNT as u64 == 0
+        && metadata.stx_mode & libc::S_IFMT as u16 == libc::S_IFDIR as u16
+        && !automounts.contains(&metadata.stx_mnt_id)
+}
+
+#[cfg(target_os = "linux")]
+fn automount_mounts() -> (std::collections::HashSet<u64>, Vec<PathBuf>) {
+    let mounts = fs::read_to_string("/proc/self/mountinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(automount_mount)
+        .collect::<Vec<_>>();
+    (
+        mounts.iter().map(|(id, _)| *id).collect(),
+        mounts.into_iter().map(|(_, path)| path).collect(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn automount_mount(line: &str) -> Option<(u64, PathBuf)> {
+    let (mount, filesystem) = line.split_once(" - ")?;
+    if filesystem.split_whitespace().next()? != "autofs" {
+        return None;
+    }
+    let mut fields = mount.split_whitespace();
+    let id = fields.next()?.parse().ok()?;
+    let mountpoint = fields.nth(3)?;
+    Some((id, decode_mountinfo_path(mountpoint)))
+}
+
+#[cfg(target_os = "linux")]
+fn decode_mountinfo_path(value: &str) -> PathBuf {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..=index + 3]
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+        {
+            let value = u16::from(bytes[index + 1] - b'0') * 64
+                + u16::from(bytes[index + 2] - b'0') * 8
+                + u16::from(bytes[index + 3] - b'0');
+            if let Ok(value) = u8::try_from(value) {
+                decoded.push(value);
+                index += 4;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    PathBuf::from(OsString::from_vec(decoded))
+}
+
 #[cfg(not(target_os = "linux"))]
 fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
     entry
@@ -214,6 +328,13 @@ fn read_entry_metadata(entry: &fs::DirEntry) -> EntryMetadata {
         .map_or_else(EntryMetadata::default, entry_metadata)
 }
 
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn watchable_directories_without_automount(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
+    paths.into_iter().filter(|path| path.is_dir()).collect()
+}
+
 pub fn open_directory_with(
     path: &Path,
     options: BrowseOptions,
@@ -221,10 +342,11 @@ pub fn open_directory_with(
     let canonical_path = path
         .canonicalize()
         .map_err(|error| FsError::new("open", path, error))?;
-    let entries = read_directory_with(&canonical_path, options)?;
+    let scan = scan_directory_with(&canonical_path, options)?;
     Ok(OpenedDirectory {
         canonical_path,
-        entries,
+        entries: scan.entries,
+        child_folders: scan.child_folders,
     })
 }
 
@@ -325,28 +447,35 @@ pub fn search_directory_with_hidden(
 }
 
 #[cfg(test)]
-pub fn read_child_folders(path: &Path) -> Vec<PathBuf> {
+pub fn read_child_folders(path: &Path) -> Result<Vec<PathBuf>, FsError> {
     read_child_folders_with_hidden(path, false)
 }
 
-pub fn read_child_folders_with_hidden(path: &Path, show_hidden: bool) -> Vec<PathBuf> {
-    let mut folders: Vec<PathBuf> = fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            (show_hidden || !entry.file_name().to_string_lossy().starts_with('.'))
-                && entry.file_type().is_ok_and(|kind| kind.is_dir())
-        })
-        .map(|entry| entry.path())
-        .collect();
+pub fn read_child_folders_with_hidden(
+    path: &Path,
+    show_hidden: bool,
+) -> Result<Vec<PathBuf>, FsError> {
+    let iter = fs::read_dir(path).map_err(|error| FsError::new("read", path, error))?;
+    let mut folders = Vec::new();
+    for result in iter {
+        let entry = result.map_err(|error| FsError::new("read an entry in", path, error))?;
+        if !show_hidden && entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|error| FsError::new("inspect", entry.path(), error))?;
+        if file_type.is_dir() {
+            folders.push(entry.path());
+        }
+    }
     folders.sort_by_key(|path| {
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_lowercase()
     });
-    folders
+    Ok(folders)
 }
 
 fn natural_cmp(left: &str, right: &str) -> std::cmp::Ordering {

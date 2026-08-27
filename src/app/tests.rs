@@ -47,6 +47,14 @@ fn entry(name: &str) -> FileEntry {
     }
 }
 
+fn opened(path: PathBuf, entries: Vec<FileEntry>) -> fs::OpenedDirectory {
+    fs::OpenedDirectory {
+        canonical_path: path,
+        entries,
+        child_folders: Vec::new(),
+    }
+}
+
 fn press(app: &mut App, value: &'static str) {
     let key = keyboard::Key::Character(value.into());
     let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
