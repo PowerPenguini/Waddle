@@ -221,9 +221,11 @@ fn replace_watches(
     paths: Vec<PathBuf>,
 ) -> bool {
     let mut desired = HashSet::new();
-    let desired_order = paths
+    let candidates = paths
         .into_iter()
-        .filter(|path| desired.insert(path.clone()))
+        .filter(|path| desired.insert(path.clone()));
+    let desired_order = crate::fs::watchable_directories_without_automount(candidates)
+        .into_iter()
         .take(MAX_WATCHES)
         .collect::<Vec<_>>();
     desired = desired_order.iter().cloned().collect();

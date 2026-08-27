@@ -234,7 +234,7 @@ fn live_refresh_preserves_scroll_selection_rename_and_pending_cut_by_path() {
 
     let _ = app.finish_navigation(
         request,
-        NavigationCompletion::Folder(Ok((current, vec![first.clone(), cut]))),
+        NavigationCompletion::Folder(Ok(opened(current, vec![first.clone(), cut]))),
     );
 
     assert_eq!(app.grid.scroll_offset(), 173.0);

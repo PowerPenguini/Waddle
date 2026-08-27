@@ -58,6 +58,36 @@ fn grid_sort_controls_cover_every_sort_property() {
 }
 
 #[test]
+fn empty_folder_state_ignores_loading_and_search_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation.settle_for_test();
+
+    assert!(view::View::empty_folder_state_visible(&app));
+
+    app.navigation
+        .replace_displayed_entries(vec![entry("note.txt")]);
+    assert!(!view::View::empty_folder_state_visible(&app));
+
+    app.navigation.replace_displayed_entries(Vec::new());
+    let _ = app.transition_navigation(NavigationTransition::Open {
+        requested: temp.path().join("slow"),
+        remember: true,
+        select: None,
+    });
+    assert!(!view::View::empty_folder_state_visible(&app));
+
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation.settle_for_test();
+    app.search.begin(&app.grid);
+    let _ = app
+        .search
+        .update(&mut app.navigation, &mut app.grid, "/missing".to_owned());
+    assert!(!view::View::empty_folder_state_visible(&app));
+}
+
+#[test]
 fn list_columns_preserve_name_space_as_the_window_narrows() {
     let (mut app, _) = App::new();
 
@@ -289,4 +319,21 @@ fn spinner_animation_runs_for_tree_and_background_loading() {
     let activity = app.operations.begin_foreground();
     assert!(app.spinner_active());
     drop(activity);
+}
+
+#[test]
+fn spinner_uses_stable_frames_and_stops_for_reduced_motion() {
+    let started = iced::time::Instant::now();
+    let mut presentation = presentation::Presentation::new(started, None);
+
+    assert_eq!(presentation.spinner_frame(false), 0);
+    presentation.set_now(started + Duration::from_millis(99));
+    assert_eq!(presentation.spinner_frame(false), 0);
+    presentation.set_now(started + Duration::from_millis(100));
+    assert_eq!(presentation.spinner_frame(false), 1);
+    presentation.set_now(started + Duration::from_millis(799));
+    assert_eq!(presentation.spinner_frame(false), 7);
+    presentation.set_now(started + Duration::from_millis(800));
+    assert_eq!(presentation.spinner_frame(false), 0);
+    assert_eq!(presentation.spinner_frame(true), 0);
 }

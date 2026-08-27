@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::fs::FileEntry;
+use crate::fs::{FileEntry, OpenedDirectory};
 
 use super::{grid::GridInteraction, trash};
 
@@ -109,7 +109,7 @@ pub(super) enum Outcome {
 }
 
 pub(super) enum Completion {
-    Folder(Result<(PathBuf, Vec<FileEntry>), String>),
+    Folder(Result<OpenedDirectory, String>),
     Recent(Result<Vec<FileEntry>, String>),
     Trash(Result<Vec<trash::Entry>, String>),
     Cancelled,
@@ -119,6 +119,7 @@ pub(super) enum Completion {
 struct Display {
     location: DisplayedLocation,
     entries: Vec<FileEntry>,
+    child_folders: Vec<PathBuf>,
     trash_entries: Vec<trash::Entry>,
 }
 
@@ -144,6 +145,7 @@ impl NavigationSession {
             display: Display {
                 location: DisplayedLocation::Folder,
                 entries: Vec::new(),
+                child_folders: Vec::new(),
                 trash_entries: Vec::new(),
             },
             pending: None,
@@ -157,6 +159,10 @@ impl NavigationSession {
 
     pub(super) fn entries(&self) -> &[FileEntry] {
         &self.display.entries
+    }
+
+    pub(super) fn child_folders(&self) -> &[PathBuf] {
+        &self.display.child_folders
     }
 
     pub(super) fn displayed_location(&self) -> DisplayedLocation {
@@ -181,6 +187,10 @@ impl NavigationSession {
 
     pub(super) fn loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub(super) fn cancel_pending(&mut self) -> Option<Request> {
+        self.pending.take()
     }
 
     pub(super) fn can_go_back(&self) -> bool {
@@ -314,10 +324,14 @@ impl NavigationSession {
         &mut self,
         kind: &Kind,
         select: &[PathBuf],
-        result: Result<(PathBuf, Vec<FileEntry>), String>,
+        result: Result<OpenedDirectory, String>,
         hidden_paths: &[PathBuf],
     ) -> Outcome {
-        let (canonical, mut entries) = match result {
+        let OpenedDirectory {
+            canonical_path: canonical,
+            mut entries,
+            child_folders,
+        } = match result {
             Ok(opened) => opened,
             Err(error) => {
                 if matches!(kind, Kind::Refresh) && !self.current.is_dir() {
@@ -370,6 +384,7 @@ impl NavigationSession {
         self.display = Display {
             location: DisplayedLocation::Folder,
             entries,
+            child_folders,
             trash_entries: Vec::new(),
         };
         self.commit(selected, refresh, DisplayedLocation::Folder)
@@ -383,6 +398,7 @@ impl NavigationSession {
         self.display = Display {
             location: DisplayedLocation::Recent,
             entries,
+            child_folders: Vec::new(),
             trash_entries: Vec::new(),
         };
         self.commit(Vec::new(), false, DisplayedLocation::Recent)
@@ -400,6 +416,7 @@ impl NavigationSession {
         self.display = Display {
             location: DisplayedLocation::Trash,
             entries,
+            child_folders: Vec::new(),
             trash_entries,
         };
         self.commit(Vec::new(), false, DisplayedLocation::Trash)
@@ -454,6 +471,7 @@ impl NavigationSession {
         self.display = Display {
             location: DisplayedLocation::Folder,
             entries,
+            child_folders: Vec::new(),
             trash_entries: Vec::new(),
         };
     }
@@ -508,6 +526,14 @@ mod tests {
         }
     }
 
+    fn opened(path: &str, entries: Vec<FileEntry>) -> crate::fs::OpenedDirectory {
+        crate::fs::OpenedDirectory {
+            canonical_path: PathBuf::from(path),
+            entries,
+            child_folders: Vec::new(),
+        }
+    }
+
     fn trash_entry(path: &str, original: &str) -> trash::Entry {
         let file = entry(path);
         trash::Entry {
@@ -531,10 +557,7 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(
-            session.complete(
-                &request,
-                Completion::Folder(Ok((PathBuf::from("/next"), vec![])))
-            ),
+            session.complete(&request, Completion::Folder(Ok(opened("/next", vec![])))),
             Outcome::Committed(_)
         ));
         assert_eq!(session.current(), Path::new("/next"));
@@ -542,20 +565,14 @@ mod tests {
 
         let request = session.transition(Transition::Back).unwrap();
         assert!(matches!(
-            session.complete(
-                &request,
-                Completion::Folder(Ok((PathBuf::from("/start"), vec![])))
-            ),
+            session.complete(&request, Completion::Folder(Ok(opened("/start", vec![])))),
             Outcome::Committed(_)
         ));
         assert_eq!(session.current(), Path::new("/start"));
         assert!(session.can_go_forward());
 
         let request = session.transition(Transition::HistoryForward).unwrap();
-        let _ = session.complete(
-            &request,
-            Completion::Folder(Ok((PathBuf::from("/next"), vec![]))),
-        );
+        let _ = session.complete(&request, Completion::Folder(Ok(opened("/next", vec![]))));
         assert_eq!(session.current(), Path::new("/next"));
     }
 
@@ -578,10 +595,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            session.complete(
-                &stale,
-                Completion::Folder(Ok((PathBuf::from("/stale"), vec![])))
-            ),
+            session.complete(&stale, Completion::Folder(Ok(opened("/stale", vec![])))),
             Outcome::Ignored
         ));
         assert_eq!(session.current(), Path::new("/start"));
@@ -596,6 +610,36 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_pending_navigation_preserves_location_and_history() {
+        let mut session = NavigationSession::new(PathBuf::from("/current"));
+        session.seed_history(vec![PathBuf::from("/back")], Vec::new());
+        let pending = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/slow"),
+                remember: true,
+                select: None,
+            })
+            .unwrap();
+
+        assert_eq!(session.cancel_pending(), Some(pending.clone()));
+        assert!(!session.loading());
+        assert_eq!(session.current(), Path::new("/current"));
+        assert!(session.can_go_back());
+        assert!(matches!(
+            session.complete(
+                &pending,
+                Completion::Folder(Ok(crate::fs::OpenedDirectory {
+                    canonical_path: PathBuf::from("/slow"),
+                    entries: Vec::new(),
+                    child_folders: Vec::new(),
+                }))
+            ),
+            Outcome::Ignored
+        ));
+        assert_eq!(session.current(), Path::new("/current"));
+    }
+
+    #[test]
     fn same_path_refreshes_are_distinguished_by_request_identity() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
         let stale = session.refresh(None);
@@ -604,7 +648,7 @@ mod tests {
         assert!(matches!(
             session.complete(
                 &stale,
-                Completion::Folder(Ok((PathBuf::from("/start"), vec![entry("/start/stale")])))
+                Completion::Folder(Ok(opened("/start", vec![entry("/start/stale")])))
             ),
             Outcome::Ignored
         ));
@@ -612,12 +656,29 @@ mod tests {
         assert!(matches!(
             session.complete(
                 &latest,
-                Completion::Folder(Ok((PathBuf::from("/start"), vec![entry("/start/latest")])))
+                Completion::Folder(Ok(opened("/start", vec![entry("/start/latest")])))
             ),
             Outcome::Committed(_)
         ));
         assert_eq!(session.entries()[0].path, PathBuf::from("/start/latest"));
         assert!(!session.loading());
+    }
+
+    #[test]
+    fn committed_folder_keeps_child_folders_from_the_same_scan() {
+        let mut session = NavigationSession::new(PathBuf::from("/start"));
+        let request = session.refresh(None);
+        let mut snapshot = opened("/start", vec![entry("/start/file")]);
+        snapshot.child_folders = vec![PathBuf::from("/start/alpha"), PathBuf::from("/start/beta")];
+
+        assert!(matches!(
+            session.complete(&request, Completion::Folder(Ok(snapshot))),
+            Outcome::Committed(_)
+        ));
+        assert_eq!(
+            session.child_folders(),
+            [PathBuf::from("/start/alpha"), PathBuf::from("/start/beta")]
+        );
     }
 
     #[test]
@@ -638,7 +699,7 @@ mod tests {
         assert_eq!(exit.requested(), Some(Path::new("/start")));
         let _ = session.complete(
             &exit,
-            Completion::Folder(Ok((PathBuf::from("/start"), vec![entry("/start/one")]))),
+            Completion::Folder(Ok(opened("/start", vec![entry("/start/one")]))),
         );
         assert!(session.can_go_back());
 
@@ -681,8 +742,8 @@ mod tests {
         let request = session.refresh(Some(selected.clone()));
         let outcome = session.complete(
             &request,
-            Completion::Folder(Ok((
-                PathBuf::from("/start"),
+            Completion::Folder(Ok(opened(
+                "/start",
                 vec![entry("/start/one"), entry("/start/two")],
             ))),
         );
@@ -701,8 +762,8 @@ mod tests {
         ]);
         let outcome = session.complete(
             &request,
-            Completion::Folder(Ok((
-                PathBuf::from("/start"),
+            Completion::Folder(Ok(opened(
+                "/start",
                 vec![
                     entry("/start/one"),
                     entry("/start/two"),
@@ -720,8 +781,8 @@ mod tests {
         let request = session.transition(Transition::Parent).unwrap();
         let outcome = session.complete(
             &request,
-            Completion::Folder(Ok((
-                PathBuf::from("/start"),
+            Completion::Folder(Ok(opened(
+                "/start",
                 vec![entry("/start/child"), entry("/start/sibling")],
             ))),
         );
@@ -739,8 +800,8 @@ mod tests {
         ]);
         let outcome = session.complete_with_hidden_paths(
             &request,
-            Completion::Folder(Ok((
-                PathBuf::from("/start"),
+            Completion::Folder(Ok(opened(
+                "/start",
                 vec![entry("/start/one"), entry("/start/two")],
             ))),
             &[PathBuf::from("/start/one")],
@@ -794,7 +855,7 @@ mod tests {
             .unwrap();
         let _ = session.complete(
             &request,
-            Completion::Folder(Ok((PathBuf::from("/start"), Vec::new()))),
+            Completion::Folder(Ok(opened("/start", Vec::new()))),
         );
 
         assert!(!session.can_go_back());

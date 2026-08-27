@@ -241,9 +241,7 @@ impl App {
     pub(super) fn expand_tree_row(&mut self, id: u64) -> Task<Message> {
         self.sidebar_tree
             .expand(id)
-            .map_or_else(Task::none, |request| {
-                self.load_tree_node(request.id, request.path)
-            })
+            .map_or_else(Task::none, |request| self.load_tree_node(request))
     }
 
     pub(super) fn drop_highlight_path(&self) -> Option<PathBuf> {
@@ -465,7 +463,7 @@ impl App {
         Task::batch(
             reloads
                 .into_iter()
-                .map(|request| self.load_tree_node(request.id, request.path)),
+                .map(|request| self.load_tree_node(request)),
         )
     }
 

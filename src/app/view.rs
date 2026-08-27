@@ -12,11 +12,11 @@ use iced::{
 use crate::{fs, fs::FileEntry, transfer::Preview as TransferPreview};
 
 use super::{
-    App, BrowserFocus, CONTENT_GUTTER, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID, InputMode,
-    LIST_COLUMN_SPACING, LIST_ENTRY_ICON_WIDTH, LIST_HEADER_HEIGHT, LIST_HEADER_HORIZONTAL_PADDING,
-    LIST_HEADER_ICON_SLOT_WIDTH, LIST_HORIZONTAL_PADDING, LIST_MODIFIED_WIDTH,
-    LIST_NAME_APPROX_CHARACTER_WIDTH, LIST_NAME_MIN_CHARACTERS, LIST_ROW_HEIGHT,
-    LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH, LIST_TYPE_WIDTH,
+    App, BrowserFocus, CONTENT_GUTTER, EntryIconKind, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID,
+    InputMode, LIST_COLUMN_SPACING, LIST_ENTRY_ICON_WIDTH, LIST_HEADER_HEIGHT,
+    LIST_HEADER_HORIZONTAL_PADDING, LIST_HEADER_ICON_SLOT_WIDTH, LIST_HORIZONTAL_PADDING,
+    LIST_MODIFIED_WIDTH, LIST_NAME_APPROX_CHARACTER_WIDTH, LIST_NAME_MIN_CHARACTERS,
+    LIST_ROW_HEIGHT, LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH, LIST_TYPE_WIDTH,
     LIST_VIEW_TOP_INSET, LOCATION_ID, MONO_FONT, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
     Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
     UI_FONT_SEMIBOLD, apply_opacity, browser_background_style, clip_file_name,
@@ -68,6 +68,11 @@ impl<'a> View<'a> {
             view.list_column_visibility(),
             view.list_name_character_limit(),
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn empty_folder_state_visible(app: &'a App) -> bool {
+        Self::new(app).shows_empty_folder_state()
     }
 
     fn view(self) -> Element<'a, Message> {
@@ -265,7 +270,7 @@ impl<'a> View<'a> {
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
             "Back",
-            self.app.navigation.can_go_back(),
+            self.app.navigation.loading() || self.app.navigation.can_go_back(),
             Message::Back,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
@@ -411,6 +416,18 @@ impl<'a> View<'a> {
             .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
             .width(Fill)
             .height(Fill);
+        let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
+            self.empty_folder_state()
+        } else {
+            container(scroll)
+                .padding(Padding {
+                    top: CONTENT_GUTTER,
+                    ..Padding::ZERO
+                })
+                .width(Fill)
+                .height(Fill)
+                .into()
+        };
         let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
             Row::new()
                 .spacing(4)
@@ -426,13 +443,7 @@ impl<'a> View<'a> {
                 container(sort_controls)
                     .height(LIST_HEADER_HEIGHT)
                     .padding(Padding::from([0, LIST_HORIZONTAL_PADDING])),
-                container(scroll)
-                    .padding(Padding {
-                        top: CONTENT_GUTTER,
-                        ..Padding::ZERO
-                    })
-                    .width(Fill)
-                    .height(Fill),
+                entries,
             ])
             .padding(Padding {
                 top: LIST_VIEW_TOP_INSET,
@@ -508,20 +519,26 @@ impl<'a> View<'a> {
             self.app.presentation.now(),
             self.app.reduced_motion(),
         );
+        let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
+            self.empty_folder_state()
+        } else {
+            scrollable(rows)
+                .id(Id::new(GRID_SCROLL_ID))
+                .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
+                .direction(transient_vertical_scrollbar())
+                .style(move |theme, status| {
+                    transient_scrollbar_style(theme, status, scrollbar_opacity)
+                })
+                .width(Fill)
+                .height(Fill)
+                .into()
+        };
         let area: Element<'_, Message> = mouse_area(
             container(column![
                 container(header)
                     .height(LIST_HEADER_HEIGHT)
                     .padding(Padding::from([0, LIST_HORIZONTAL_PADDING])),
-                scrollable(rows)
-                    .id(Id::new(GRID_SCROLL_ID))
-                    .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
-                    .direction(transient_vertical_scrollbar())
-                    .style(move |theme, status| {
-                        transient_scrollbar_style(theme, status, scrollbar_opacity)
-                    })
-                    .width(Fill)
-                    .height(Fill),
+                entries,
             ])
             .padding(Padding::from([
                 LIST_VIEW_TOP_INSET as u16,
@@ -540,6 +557,32 @@ impl<'a> View<'a> {
         .on_move(Message::GridPointerMoved)
         .into();
         self.with_marquee(area)
+    }
+
+    fn shows_empty_folder_state(self) -> bool {
+        self.app.navigation.folder_displayed()
+            && self.app.navigation.entries().is_empty()
+            && !self.app.navigation.loading()
+            && !self.app.search.is_recursive()
+    }
+
+    fn empty_folder_state(self) -> Element<'a, Message> {
+        let icon = entry_svg(
+            EntryIconKind::Folder,
+            44.0,
+            self.entry_icon_color(EntryIconKind::Folder),
+        )
+        .opacity(0.38);
+        let label = text("This folder is empty")
+            .font(UI_FONT)
+            .size(13)
+            .color(apply_opacity(self.secondary_text_color(), 0.82));
+        container(column![icon, label].spacing(12).align_x(Alignment::Center))
+            .width(Fill)
+            .height(Fill)
+            .center_x(Fill)
+            .center_y(Fill)
+            .into()
     }
 
     fn with_marquee(self, area: Element<'a, Message>) -> Element<'a, Message> {

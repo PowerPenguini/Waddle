@@ -15,6 +15,7 @@ pub(super) enum Kind {
     Navigation,
     Details,
     Search,
+    Tree,
     Background,
     Mutation,
     Command,
@@ -57,6 +58,7 @@ impl Drop for ForegroundActivity {
 pub(super) struct Operations {
     navigation: Arc<Semaphore>,
     background: Arc<Semaphore>,
+    tree: Arc<Semaphore>,
     mutation: Arc<Semaphore>,
     navigation_generation: Arc<AtomicU64>,
     details_generation: Arc<AtomicU64>,
@@ -69,6 +71,7 @@ impl Default for Operations {
         Self {
             navigation: Arc::new(Semaphore::new(2)),
             background: Arc::new(Semaphore::new(2)),
+            tree: Arc::new(Semaphore::new(2)),
             mutation: Arc::new(Semaphore::new(1)),
             navigation_generation: Arc::new(AtomicU64::new(0)),
             details_generation: Arc::new(AtomicU64::new(0)),
@@ -178,13 +181,14 @@ impl Operations {
             Kind::Navigation => Some(Arc::clone(&self.navigation_generation)),
             Kind::Details => Some(Arc::clone(&self.details_generation)),
             Kind::Search => Some(Arc::clone(&self.search_generation)),
-            Kind::Background | Kind::Mutation | Kind::Command => None,
+            Kind::Tree | Kind::Background | Kind::Mutation | Kind::Command => None,
         }
     }
 
     fn lane(&self, kind: Kind) -> Arc<Semaphore> {
         match kind {
             Kind::Navigation => Arc::clone(&self.navigation),
+            Kind::Tree => Arc::clone(&self.tree),
             Kind::Details | Kind::Search | Kind::Background => Arc::clone(&self.background),
             Kind::Mutation | Kind::Command => Arc::clone(&self.mutation),
         }

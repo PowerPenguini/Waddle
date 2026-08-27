@@ -92,7 +92,10 @@ use transfer_session::{
     BatchUpdate as TransferBatchUpdate, CancelUpdate as TransferCancelUpdate,
     DragRelease as TransferDragRelease, TransferSession,
 };
-use tree::{Activation as TreeActivation, MoveOutcome as TreeMoveOutcome, SidebarTree, TreeRow};
+use tree::{
+    Activation as TreeActivation, LoadOutcome as TreeLoadOutcome, LoadRequest as TreeLoadRequest,
+    MoveOutcome as TreeMoveOutcome, SidebarTree, TreeRow,
+};
 
 const STATUS_HEIGHT: f32 = 25.0;
 const SEARCH_LIMIT: usize = 1000;
@@ -196,7 +199,10 @@ enum Message {
     LocationSubmitted,
     TreeRow(u64),
     SidebarScrolled(f32),
-    TreeLoaded(u64, PathBuf, Vec<PathBuf>),
+    TreeLoaded {
+        request: TreeLoadRequest,
+        result: Result<Vec<PathBuf>, String>,
+    },
     FavoritePressed(usize),
     FavoriteReleased(usize),
     EntryPressed(usize),
@@ -222,7 +228,7 @@ enum Message {
     GridPointerMoved(Point),
     NavigationFinished {
         request: NavigationRequest,
-        result: Result<(PathBuf, Vec<FileEntry>), String>,
+        result: Result<fs::OpenedDirectory, String>,
     },
     NavigationCancelled(NavigationRequest),
     DetailsFinished {
@@ -307,6 +313,7 @@ struct App {
     location_input: String,
     modifiers: keyboard::Modifiers,
     mouse_back_gesture: Option<MouseBackGesture>,
+    pending_tree_navigation: Option<(NavigationRequest, TreeLoadRequest)>,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
@@ -377,6 +384,7 @@ impl App {
             location_input: current.display().to_string(),
             modifiers: keyboard::Modifiers::default(),
             mouse_back_gesture: None,
+            pending_tree_navigation: None,
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
             accent,
@@ -485,13 +493,18 @@ impl App {
     }
 
     fn spinner(&self, size: f32) -> widget::Svg<'static> {
-        let angle = self.presentation.spinner_angle(self.reduced_motion());
-        themed_svg(
-            include_bytes!("../ui/icons/spinner.svg"),
-            size,
-            view::View::new(self).accent_color(),
-        )
-        .rotation(angle)
+        const FRAMES: [&[u8]; 8] = [
+            include_bytes!("../ui/icons/spinner-0.svg"),
+            include_bytes!("../ui/icons/spinner-1.svg"),
+            include_bytes!("../ui/icons/spinner-2.svg"),
+            include_bytes!("../ui/icons/spinner-3.svg"),
+            include_bytes!("../ui/icons/spinner-4.svg"),
+            include_bytes!("../ui/icons/spinner-5.svg"),
+            include_bytes!("../ui/icons/spinner-6.svg"),
+            include_bytes!("../ui/icons/spinner-7.svg"),
+        ];
+        let frame = self.presentation.spinner_frame(self.reduced_motion());
+        themed_svg(FRAMES[frame], size, view::View::new(self).accent_color())
     }
 
     fn foreground_operation_active(&self) -> bool {

@@ -128,6 +128,13 @@ pub(super) struct LoadRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum LoadOutcome {
+    Installed,
+    Failed(String),
+    Ignored,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Activation {
     Recent,
     Trash,
@@ -468,6 +475,51 @@ impl SidebarTree {
         true
     }
 
+    pub(super) fn complete_load(
+        &mut self,
+        request: &LoadRequest,
+        result: Result<Vec<PathBuf>, String>,
+    ) -> LoadOutcome {
+        if find_node(&self.roots, request.id)
+            .is_none_or(|node| node.path != request.path || !node.loading)
+        {
+            return LoadOutcome::Ignored;
+        }
+        match result {
+            Ok(folders) => {
+                if self.install_children(request.id, &request.path, folders) {
+                    LoadOutcome::Installed
+                } else {
+                    LoadOutcome::Ignored
+                }
+            }
+            Err(error) => {
+                let Some(node) = find_node_mut(&mut self.roots, request.id) else {
+                    return LoadOutcome::Ignored;
+                };
+                node.loading = false;
+                node.loaded = false;
+                node.expanded = false;
+                self.retain_valid_cursor();
+                LoadOutcome::Failed(error)
+            }
+        }
+    }
+
+    pub(super) fn cancel_load(&mut self, request: &LoadRequest) -> bool {
+        let Some(node) = find_node_mut(&mut self.roots, request.id) else {
+            return false;
+        };
+        if node.path != request.path || !node.loading {
+            return false;
+        }
+        node.loading = false;
+        node.loaded = false;
+        node.expanded = false;
+        self.retain_valid_cursor();
+        true
+    }
+
     pub(super) fn invalidate(&mut self, changed_folders: &[PathBuf]) -> Vec<LoadRequest> {
         let mut reloads = Vec::new();
         invalidate_folders(&mut self.roots, changed_folders, &mut reloads);
@@ -678,5 +730,57 @@ mod tests {
             .map(|row| row.label)
             .collect::<Vec<_>>();
         assert_eq!(labels, ["Second", "First"]);
+    }
+
+    #[test]
+    fn failed_and_cancelled_loads_stop_loading_and_remain_retryable() {
+        let mut tree = SidebarTree::new(Vec::new());
+        let root = tree.rows(Path::new("/"))[0].id;
+        assert!(tree.install_children(
+            root,
+            Path::new("/"),
+            vec![PathBuf::from("/slow"), PathBuf::from("/cancelled")],
+        ));
+
+        let slow = tree
+            .rows(Path::new("/"))
+            .into_iter()
+            .find(|row| row.path == Path::new("/slow"))
+            .unwrap();
+        let Activation::Folder {
+            load: Some(slow_request),
+            ..
+        } = tree.activate(slow.id).unwrap()
+        else {
+            panic!("unloaded folder should request a load");
+        };
+        assert_eq!(
+            tree.complete_load(&slow_request, Err("mount timed out".to_owned())),
+            LoadOutcome::Failed("mount timed out".to_owned())
+        );
+        assert!(!tree.is_expanded(slow.id));
+        assert!(matches!(
+            tree.activate(slow.id),
+            Some(Activation::Folder { load: Some(_), .. })
+        ));
+
+        let cancelled = tree
+            .rows(Path::new("/"))
+            .into_iter()
+            .find(|row| row.path == Path::new("/cancelled"))
+            .unwrap();
+        let Activation::Folder {
+            load: Some(cancelled_request),
+            ..
+        } = tree.activate(cancelled.id).unwrap()
+        else {
+            panic!("unloaded folder should request a load");
+        };
+        assert!(tree.cancel_load(&cancelled_request));
+        assert!(!tree.is_expanded(cancelled.id));
+        assert_eq!(
+            tree.complete_load(&cancelled_request, Ok(Vec::new())),
+            LoadOutcome::Ignored
+        );
     }
 }
