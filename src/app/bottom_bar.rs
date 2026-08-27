@@ -656,10 +656,13 @@ impl<'a> View<'a> {
         for (index, (label, message)) in self.context_actions(menu.target).into_iter().enumerate() {
             let focused = index == menu.focused;
             actions = actions.push(
-                button(text(label).size(13))
-                    .on_press(message)
-                    .style(move |theme, status| context_button_style(theme, status, focused))
-                    .width(Fill),
+                mouse_area(
+                    button(text(label).size(13))
+                        .on_press(message)
+                        .style(move |theme, _| context_menu_button_style(theme, focused))
+                        .width(Fill),
+                )
+                .on_enter(Message::ContextFocused(index)),
             );
         }
         let panel = container(scrollable(actions).height(Length::Shrink))

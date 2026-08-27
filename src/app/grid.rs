@@ -328,6 +328,15 @@ impl GridInteraction {
         self.context_menu = None;
     }
 
+    pub(super) fn focus_context(&mut self, index: usize, item_count: usize) {
+        if index >= item_count {
+            return;
+        }
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.focused = index;
+        }
+    }
+
     pub(super) fn take_context_entry(&mut self) -> Option<usize> {
         match self.context_menu.take()?.target {
             ContextTarget::Entry(index) => Some(index),
@@ -376,6 +385,9 @@ impl GridInteraction {
 
     pub(super) fn move_cursor(&mut self, position: Point, entry_count: usize) -> bool {
         self.cursor = position;
+        self.hovered = self
+            .index_at(position, entry_count)
+            .filter(|&index| self.point_over_entry(position, index));
         if let Some(marquee) = &mut self.marquee {
             marquee.current = position;
             self.update_marquee_selection(entry_count);
@@ -409,16 +421,6 @@ impl GridInteraction {
     #[cfg(test)]
     pub(super) fn scroll_offset(&self) -> f32 {
         self.scroll_y
-    }
-
-    pub(super) fn enter(&mut self, index: usize) {
-        self.hovered = Some(index);
-    }
-
-    pub(super) fn leave(&mut self, index: usize) {
-        if self.hovered == Some(index) {
-            self.hovered = None;
-        }
     }
 
     pub(super) fn hovered(&self) -> Option<usize> {
@@ -766,7 +768,8 @@ impl GridInteraction {
             - status_height
             - 2.0 * CONTENT_GUTTER
             - LIST_VIEW_TOP_INSET)
-            .max(TILE_ROW_HEIGHT);
+            - LIST_HEADER_HEIGHT;
+        let viewport_height = viewport_height.max(TILE_ROW_HEIGHT);
         let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
         let visible_rows = (viewport_height / TILE_ROW_HEIGHT).ceil() as usize + 2;
         let last_row = (first_row + visible_rows).min(total_rows);
@@ -1031,7 +1034,11 @@ impl GridInteraction {
 }
 
 fn content_top() -> f32 {
-    TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + CONTENT_GUTTER + LIST_VIEW_TOP_INSET
+    TOOLBAR_HEIGHT
+        + TOOLBAR_DIVIDER_HEIGHT
+        + LIST_VIEW_TOP_INSET
+        + LIST_HEADER_HEIGHT
+        + CONTENT_GUTTER
 }
 
 #[cfg(test)]
@@ -1122,6 +1129,25 @@ mod tests {
         let start = Point::new(CONTENT_GUTTER + 2.0, content_top() + 2.0);
         assert!(grid.start_marquee(start, 8, 25.0, true));
         assert_eq!(grid.marquee_bounds(25.0).unwrap().x, CONTENT_GUTTER + 2.0);
+    }
+
+    #[test]
+    fn moving_between_grid_tiles_clears_hover() {
+        let mut grid = grid();
+        let column_width = grid.column_width();
+        let first_tile_left = SIDEBAR_WIDTH + CONTENT_GUTTER + (column_width - TILE_WIDTH) / 2.0;
+        let second_tile_left = first_tile_left + column_width;
+        let gap_middle = (first_tile_left + TILE_WIDTH + second_tile_left) / 2.0;
+        let tile_middle_y = content_top() + TILE_HEIGHT / 2.0;
+
+        grid.move_cursor(
+            Point::new(first_tile_left + TILE_WIDTH / 2.0, tile_middle_y),
+            3,
+        );
+        assert_eq!(grid.hovered(), Some(0));
+        grid.move_cursor(Point::new(gap_middle, tile_middle_y), 3);
+
+        assert_eq!(grid.hovered(), None);
     }
 
     #[test]
@@ -1296,7 +1322,7 @@ mod tests {
             content_top() + 2.0 - TOOLBAR_HEIGHT - TOOLBAR_DIVIDER_HEIGHT
         );
         assert_eq!(bounds.width, 164.0);
-        assert_eq!(bounds.height, 466.0);
+        assert_eq!(bounds.height, grid.window_size.height - 25.0 - start.y);
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
             [5, 6, 10, 11, 15, 16]
@@ -1388,13 +1414,24 @@ mod tests {
     #[test]
     fn grid_local_pointer_coordinates_update_the_window_marquee() {
         let mut grid = GridInteraction::default();
-        let start = Point::new(300.0, 177.0);
+        let start = Point::new(300.0, content_top() + TILE_HEIGHT + 2.0);
         assert!(grid.start_marquee(start, 10, 25.0, true));
 
-        assert!(grid.move_pointer_in_grid(Point::new(203.0, 53.0), 10));
+        assert!(grid.move_pointer_in_grid(Point::new(203.0, 53.0 + LIST_HEADER_HEIGHT), 10));
         let bounds = grid.marquee_bounds(25.0).unwrap();
         assert_eq!(bounds.width, 123.0);
         assert_eq!(bounds.height, 77.0);
+    }
+
+    #[test]
+    fn grid_sort_controls_do_not_start_a_marquee() {
+        let mut grid = GridInteraction::default();
+        let header = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 8.0,
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_VIEW_TOP_INSET + 4.0,
+        );
+
+        assert!(!grid.start_marquee(header, 10, 25.0, true));
     }
 
     #[test]
@@ -1417,7 +1454,7 @@ mod tests {
             Some(DropZone::Sidebar(0))
         );
         assert_eq!(
-            grid.drop_zone(Point::new(290.0, 70.0), 2, 3, 25.0, true),
+            grid.drop_zone(Point::new(290.0, content_top() + 3.0), 2, 3, 25.0, true,),
             Some(DropZone::Entry(0))
         );
         assert_eq!(
@@ -1489,6 +1526,22 @@ mod tests {
             ContextOutcome::Closed
         );
         assert!(grid.context_menu().is_none());
+    }
+
+    #[test]
+    fn context_menu_pointer_focus_replaces_the_keyboard_focus() {
+        let mut grid = GridInteraction::default();
+        grid.move_cursor(Point::new(790.0, 500.0), 2);
+        assert!(grid.open_background_context(2, 25.0));
+
+        grid.navigate_context(ContextNavigation::Next { wrap: false }, 3);
+        assert_eq!(grid.context_menu().unwrap().focused, 1);
+
+        grid.focus_context(2, 3);
+        assert_eq!(grid.context_menu().unwrap().focused, 2);
+
+        grid.focus_context(usize::MAX, 3);
+        assert_eq!(grid.context_menu().unwrap().focused, 2);
     }
 
     #[test]

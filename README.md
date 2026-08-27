@@ -111,12 +111,14 @@ To keep settings between launches, create
 
 ```vim
 " Waddle configuration
-set view=list sort=name folders-first=true
-set tree=true startup=last
+set view=list sort=name
+set tree=true startup=last file-click=double folder-click=single
 setlocal "~/Downloads" view=grid hidden=false
 ```
 
 Waddle only reads this file. It never creates or rewrites it.
+The legacy `click=single|double` option remains accepted and applies the same behavior to files and
+folders.
 
 Commands entered with `!` run through Bash with your user permissions. They are not sandboxed and
 can change any file your account can access.

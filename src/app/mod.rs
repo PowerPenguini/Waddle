@@ -117,7 +117,7 @@ const SCROLLBAR_THUMB_WIDTH: f32 = 4.0;
 const SCROLLBAR_FADE_IN: Duration = Duration::from_millis(100);
 const SCROLLBAR_HOLD: Duration = Duration::from_millis(500);
 const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(200);
-const MOUSE_BACK_HOLD_DURATION: Duration = Duration::from_millis(450);
+const MOUSE_BACK_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(350);
 const _: () = assert!(SCROLLBAR_THUMB_WIDTH < SCROLLBAR_TRACK_WIDTH);
 const _: () = assert!(SCROLLBAR_TRACK_WIDTH < 10.0);
 const UI_FONT: Font = Font::with_name("Roboto");
@@ -157,9 +157,10 @@ enum EntryIconKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MouseBackPress {
-    started: Instant,
-    held: bool,
+enum MouseBackGesture {
+    FirstPressed,
+    AwaitingSecondClick { first_released_at: Instant },
+    SecondPressed,
 }
 
 #[derive(Clone, Debug)]
@@ -200,10 +201,9 @@ enum Message {
     FavoriteReleased(usize),
     EntryPressed(usize),
     EntryReleased(usize),
-    EntryHovered(usize),
-    EntryUnhovered(usize),
     EntryDoubleClicked(usize),
     EntryContext(usize),
+    ContextFocused(usize),
     ContextNewFolder,
     ContextNewFile,
     ContextProperties,
@@ -217,7 +217,7 @@ enum Message {
     ContextDeletePermanent,
     ContextEmptyTrash,
     CloseContext,
-    MouseBackHeld(Instant),
+    MouseBackTick(Instant),
     GridScrolled(f32),
     GridPointerMoved(Point),
     NavigationFinished {
@@ -306,7 +306,7 @@ struct App {
     presentation: Presentation,
     location_input: String,
     modifiers: keyboard::Modifiers,
-    mouse_back_press: Option<MouseBackPress>,
+    mouse_back_gesture: Option<MouseBackGesture>,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
@@ -376,7 +376,7 @@ impl App {
             presentation: Presentation::new(now, startup_error),
             location_input: current.display().to_string(),
             modifiers: keyboard::Modifiers::default(),
-            mouse_back_press: None,
+            mouse_back_gesture: None,
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
             accent,
@@ -424,6 +424,13 @@ impl App {
         if self.transfers.overview().active {
             subscriptions
                 .push(time::every(Duration::from_millis(100)).map(|_| Message::PollTransfer));
+        }
+        if matches!(
+            self.mouse_back_gesture,
+            Some(MouseBackGesture::AwaitingSecondClick { .. })
+        ) {
+            subscriptions
+                .push(time::every(MOUSE_BACK_DOUBLE_CLICK_INTERVAL).map(Message::MouseBackTick));
         }
         Subscription::batch(subscriptions)
     }

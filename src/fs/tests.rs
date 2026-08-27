@@ -16,18 +16,50 @@ fn validates_names() {
 }
 
 #[test]
-fn reads_hidden_by_default_and_keeps_directories_first() {
+fn reads_hidden_by_default_and_sorts_by_type_ascending() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("Alpha"), "x").unwrap();
     fs::write(temp.path().join("beta"), "x").unwrap();
     fs::write(temp.path().join(".hidden"), "x").unwrap();
     fs::create_dir(temp.path().join("z-folder")).unwrap();
-    let names: Vec<_> = read_directory(temp.path())
-        .unwrap()
-        .into_iter()
-        .map(|e| display_name(&e.name))
-        .collect();
+    let entries = read_directory(temp.path()).unwrap();
+    assert!(
+        entries
+            .iter()
+            .find(|entry| entry.name == ".hidden")
+            .is_some_and(FileEntry::is_hidden)
+    );
+    assert!(
+        entries
+            .iter()
+            .find(|entry| entry.name == "Alpha")
+            .is_some_and(|entry| !entry.is_hidden())
+    );
+    let names: Vec<_> = entries.into_iter().map(|e| display_name(&e.name)).collect();
     assert_eq!(names, ["z-folder", ".hidden", "Alpha", "beta"]);
+}
+
+#[test]
+fn type_sort_orders_folders_extensions_then_extensionless_files() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("a-folder")).unwrap();
+    fs::write(temp.path().join("z-file"), "x").unwrap();
+    fs::write(temp.path().join("notes.md"), "x").unwrap();
+
+    let entries = read_directory_with(
+        temp.path(),
+        BrowseOptions {
+            sort: SortKey::Type,
+            ..BrowseOptions::default()
+        },
+    )
+    .unwrap();
+    let names: Vec<_> = entries
+        .iter()
+        .map(|entry| display_name(&entry.name))
+        .collect();
+
+    assert_eq!(names, ["a-folder", "notes.md", "z-file"]);
 }
 
 #[test]
@@ -73,7 +105,7 @@ fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
     let natural = read_directory_with(
         temp.path(),
         BrowseOptions {
-            folders_first: false,
+            sort: SortKey::Name,
             ..BrowseOptions::default()
         },
     )
@@ -86,7 +118,6 @@ fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
         BrowseOptions {
             sort: SortKey::Size,
             descending: true,
-            folders_first: false,
             show_hidden: true,
             ..BrowseOptions::default()
         },
@@ -94,6 +125,36 @@ fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
     .unwrap();
     assert_eq!(display_name(&by_size[0].name), "file-10.txt");
     assert!(by_size.iter().any(|entry| entry.name == ".hidden"));
+}
+
+#[test]
+fn size_sort_keeps_folders_first_in_both_directions() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("z-folder")).unwrap();
+    fs::create_dir(temp.path().join("a-folder")).unwrap();
+    fs::write(temp.path().join("small.bin"), vec![0; 2]).unwrap();
+    fs::write(temp.path().join("large.bin"), vec![0; 10]).unwrap();
+
+    for (descending, expected) in [
+        (false, ["a-folder", "z-folder", "small.bin", "large.bin"]),
+        (true, ["a-folder", "z-folder", "large.bin", "small.bin"]),
+    ] {
+        let entries = read_directory_with(
+            temp.path(),
+            BrowseOptions {
+                sort: SortKey::Size,
+                descending,
+                ..BrowseOptions::default()
+            },
+        )
+        .unwrap();
+        let names: Vec<_> = entries
+            .iter()
+            .map(|entry| display_name(&entry.name))
+            .collect();
+
+        assert_eq!(names, expected);
+    }
 }
 
 #[test]

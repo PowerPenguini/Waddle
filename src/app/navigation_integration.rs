@@ -32,6 +32,7 @@ impl App {
         &mut self,
         transition: NavigationTransition,
     ) -> Task<Message> {
+        self.mouse_back_gesture = None;
         if self.prompt_blocks_action() {
             return Task::none();
         }
@@ -248,6 +249,12 @@ impl App {
         let Some(entry) = self.navigation.entries().get(index).cloned() else {
             return Task::none();
         };
+        let activates_on_single_click = self
+            .view_preferences
+            .activates_on_single_click(entry.is_directory());
+        if double && activates_on_single_click {
+            return Task::none();
+        }
         if double && self.browser_input.mode() == InputMode::Rename {
             self.cancel_rename();
         }
@@ -259,7 +266,7 @@ impl App {
                 self.modifiers.shift(),
                 self.navigation.entries().len(),
             );
-            if !self.view_preferences.single_click_activation() || modified {
+            if !activates_on_single_click || modified {
                 return self.schedule_details();
             }
         }

@@ -15,7 +15,7 @@ Type: feature
 
 ## Answer
 
-The toolbar retains direct view, sort, direction, folders-first, hidden-entry, and click controls.
+The browser exposes direct view and sorting controls, while hidden-entry and click behavior remain settings.
 `:set` reads or atomically changes their persistent global values, while `:setlocal` writes the
 current directory override and `option&` restores a field from the global value. `:set all` opens
 the documented option list in the bottom bar. Tab completes unambiguous setting names, and parser

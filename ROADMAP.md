@@ -156,8 +156,8 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Add `Ctrl+click`, `Shift+click`, `Ctrl+A`, arrow navigation, `Shift+arrows`, Space, Home,
   and End.
 - [x] Keep Visual selection and Vim motions as equivalent keyboard paths.
-- [x] Support configurable single-click or double-click activation, with double-click as the
-  default.
+- [x] Support separate single-click or double-click activation for files and folders. Files default
+  to double click and folders to single click.
 - [x] Add breadcrumbs and switch to editable location input with `Ctrl+L`.
 
 ### Views and sorting
@@ -165,7 +165,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Add List view alongside Grid.
 - [x] Sort by Name, Modified, Size, or Type in either direction.
 - [x] Use natural filename ordering.
-- [x] Make folders-first configurable.
+- [x] Sort folders and files together by the selected property.
 - [x] Store global view defaults and optional per-directory overrides.
 - [x] Add image thumbnails with asynchronous generation and a bounded cache.
 
@@ -226,7 +226,7 @@ needs external drag and drop and a native clipboard adapter.
 - [x] Load persistent settings from a manually maintained XDG `waddlerc`; keep `:set`,
   `:setlocal`, and view controls session-only.
 - [x] Let `:setlocal option&` remove a directory override.
-- [x] Include settings for view, sorting, folders-first, hidden files, click activation, contrast,
+- [x] Include settings for view, sorting, hidden files, click activation, contrast,
   reduced motion, startup behavior, and sidebar-tree visibility.
 - [x] Toggle the sidebar tree with `:set tree=true|false` or the Vim-style `Ctrl+W e` sequence.
 

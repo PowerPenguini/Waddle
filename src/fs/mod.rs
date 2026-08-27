@@ -55,10 +55,10 @@ pub enum ViewMode {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SortKey {
-    #[default]
     Name,
     Modified,
     Size,
+    #[default]
     Type,
 }
 
@@ -67,7 +67,6 @@ pub struct BrowseOptions {
     pub view: ViewMode,
     pub sort: SortKey,
     pub descending: bool,
-    pub folders_first: bool,
     pub show_hidden: bool,
 }
 
@@ -75,9 +74,8 @@ impl Default for BrowseOptions {
     fn default() -> Self {
         Self {
             view: ViewMode::Grid,
-            sort: SortKey::Name,
+            sort: SortKey::Type,
             descending: false,
-            folders_first: true,
             show_hidden: true,
         }
     }

@@ -201,21 +201,7 @@ impl App {
                 Task::none()
             }
             Message::EntryReleased(index) => self.finish_entry_press(index),
-            Message::EntryHovered(index) => {
-                self.grid.enter(index);
-                Task::none()
-            }
-            Message::EntryUnhovered(index) => {
-                self.grid.leave(index);
-                Task::none()
-            }
-            Message::EntryDoubleClicked(index) => {
-                if self.view_preferences.single_click_activation() {
-                    Task::none()
-                } else {
-                    self.activate_entry(index, true)
-                }
-            }
+            Message::EntryDoubleClicked(index) => self.activate_entry(index, true),
             Message::EntryContext(index) => {
                 if self.prompt_blocks_action() {
                     return Task::none();
@@ -229,6 +215,13 @@ impl App {
                 } else {
                     Task::none()
                 }
+            }
+            Message::ContextFocused(index) => {
+                if let Some(menu) = self.grid.context_menu() {
+                    let item_count = self.context_actions(menu.target).len();
+                    self.grid.focus_context(index, item_count);
+                }
+                Task::none()
             }
             Message::ContextNewFolder => {
                 self.grid.close_context();
@@ -280,7 +273,7 @@ impl App {
                 self.grid.close_context();
                 Task::none()
             }
-            Message::MouseBackHeld(started) => self.hold_mouse_back(started),
+            Message::MouseBackTick(now) => self.finish_single_mouse_back_click(now),
             Message::GridScrolled(y) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
@@ -538,7 +531,7 @@ impl App {
                 self.transition_navigation(NavigationTransition::HistoryForward)
             }
             iced::Event::Window(window::Event::Unfocused) => {
-                self.mouse_back_press = None;
+                self.mouse_back_gesture = None;
                 if self.grid.finish_marquee() {
                     self.schedule_details()
                 } else {
@@ -576,41 +569,62 @@ impl App {
 
     fn press_mouse_back(&mut self) -> Task<Message> {
         self.prepare_navigation_transition();
-        let started = Instant::now();
-        self.mouse_back_press = Some(MouseBackPress {
-            started,
-            held: false,
-        });
-        Task::perform(
-            async move {
-                tokio::time::sleep(MOUSE_BACK_HOLD_DURATION).await;
-                started
-            },
-            Message::MouseBackHeld,
-        )
-    }
-
-    fn hold_mouse_back(&mut self, started: Instant) -> Task<Message> {
-        let Some(press) = self
-            .mouse_back_press
-            .as_mut()
-            .filter(|press| press.started == started && !press.held)
-        else {
-            return Task::none();
-        };
-        press.held = true;
-        self.transition_navigation(NavigationTransition::Parent)
+        let now = Instant::now();
+        match self.mouse_back_gesture.take() {
+            Some(MouseBackGesture::AwaitingSecondClick { first_released_at })
+                if now.saturating_duration_since(first_released_at)
+                    < MOUSE_BACK_DOUBLE_CLICK_INTERVAL =>
+            {
+                self.mouse_back_gesture = Some(MouseBackGesture::SecondPressed);
+                Task::none()
+            }
+            Some(MouseBackGesture::AwaitingSecondClick { .. }) => {
+                let task = self.transition_navigation(NavigationTransition::Back);
+                self.mouse_back_gesture = Some(MouseBackGesture::FirstPressed);
+                task
+            }
+            Some(gesture @ MouseBackGesture::FirstPressed)
+            | Some(gesture @ MouseBackGesture::SecondPressed) => {
+                self.mouse_back_gesture = Some(gesture);
+                Task::none()
+            }
+            None => {
+                self.mouse_back_gesture = Some(MouseBackGesture::FirstPressed);
+                Task::none()
+            }
+        }
     }
 
     fn release_mouse_back(&mut self) -> Task<Message> {
-        let Some(press) = self.mouse_back_press.take() else {
+        match self.mouse_back_gesture.take() {
+            Some(MouseBackGesture::FirstPressed) => {
+                self.mouse_back_gesture = Some(MouseBackGesture::AwaitingSecondClick {
+                    first_released_at: Instant::now(),
+                });
+                Task::none()
+            }
+            Some(MouseBackGesture::SecondPressed) => {
+                self.transition_navigation(NavigationTransition::Parent)
+            }
+            Some(gesture @ MouseBackGesture::AwaitingSecondClick { .. }) => {
+                self.mouse_back_gesture = Some(gesture);
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn finish_single_mouse_back_click(&mut self, now: Instant) -> Task<Message> {
+        let Some(MouseBackGesture::AwaitingSecondClick { first_released_at }) =
+            self.mouse_back_gesture
+        else {
             return Task::none();
         };
-        if press.held {
-            Task::none()
-        } else {
-            self.transition_navigation(NavigationTransition::Back)
+        if now.saturating_duration_since(first_released_at) < MOUSE_BACK_DOUBLE_CLICK_INTERVAL {
+            return Task::none();
         }
+        self.mouse_back_gesture = None;
+        self.transition_navigation(NavigationTransition::Back)
     }
 
     pub(super) fn handle_key(

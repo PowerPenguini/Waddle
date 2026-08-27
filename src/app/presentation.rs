@@ -643,6 +643,23 @@ pub(super) fn browser_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(theme.palette().background)
 }
 
+pub(super) fn entry_content_opacity(
+    hidden: bool,
+    emphasized: bool,
+    reduced_transparency: bool,
+) -> f32 {
+    if hidden && !emphasized && !reduced_transparency {
+        0.70
+    } else {
+        1.0
+    }
+}
+
+pub(super) fn apply_opacity(mut color: Color, opacity: f32) -> Color {
+    color.a *= opacity.clamp(0.0, 1.0);
+    color
+}
+
 pub(super) fn transient_vertical_scrollbar() -> scrollable::Direction {
     scrollable::Direction::Vertical(
         scrollable::Scrollbar::new()
@@ -906,6 +923,10 @@ pub(super) fn context_button_style(
     style
 }
 
+pub(super) fn context_menu_button_style(theme: &Theme, focused: bool) -> button::Style {
+    context_button_style(theme, button::Status::Active, focused)
+}
+
 pub(super) fn command_failure_report(
     result: &Result<command::Completion, String>,
 ) -> Option<(String, String)> {
@@ -1042,6 +1063,29 @@ pub(super) fn menu_style(theme: &Theme) -> container::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_menu_draws_only_its_shared_active_item() {
+        let theme = Theme::Dark;
+
+        assert!(
+            context_menu_button_style(&theme, false)
+                .background
+                .is_none()
+        );
+        assert!(context_menu_button_style(&theme, true).background.is_some());
+    }
+
+    #[test]
+    fn hidden_entry_opacity_yields_to_interaction_and_accessibility() {
+        assert_eq!(entry_content_opacity(false, false, false), 1.0);
+        assert_eq!(entry_content_opacity(true, false, false), 0.70);
+        assert_eq!(entry_content_opacity(true, true, false), 1.0);
+        assert_eq!(entry_content_opacity(true, false, true), 1.0);
+
+        let color = apply_opacity(Color::from_rgba8(10, 20, 30, 0.5), 0.70);
+        assert!((color.a - 0.35).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn copy_feedback_holds_then_fades_to_the_normal_background() {

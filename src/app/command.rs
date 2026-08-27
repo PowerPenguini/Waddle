@@ -39,9 +39,9 @@ Settings
   view=grid|list
   sort=name|type|size|modified
   direction=ascending|descending
-  folders-first=true|false
   hidden=true|false
-  click=single|double
+  file-click=single|double
+  folder-click=single|double
   high-contrast=auto|true|false
   reduced-motion=auto|true|false
   reduced-transparency=auto|true|false
@@ -396,9 +396,9 @@ impl CommandSession {
             "set view=",
             "set sort=",
             "set direction=",
-            "set folders-first=",
             "set hidden=",
-            "set click=",
+            "set file-click=",
+            "set folder-click=",
             "set high-contrast=",
             "set reduced-motion=",
             "set reduced-transparency=",
@@ -411,12 +411,12 @@ impl CommandSession {
             "set sort=type",
             "set direction=ascending",
             "set direction=descending",
-            "set folders-first=true",
-            "set folders-first=false",
             "set hidden=true",
             "set hidden=false",
-            "set click=single",
-            "set click=double",
+            "set file-click=single",
+            "set file-click=double",
+            "set folder-click=single",
+            "set folder-click=double",
             "set high-contrast=auto",
             "set high-contrast=true",
             "set high-contrast=false",
@@ -432,12 +432,10 @@ impl CommandSession {
             "setlocal view=",
             "setlocal sort=",
             "setlocal direction=",
-            "setlocal folders-first=",
             "setlocal hidden=",
             "setlocal view&",
             "setlocal sort&",
             "setlocal direction&",
-            "setlocal folders-first&",
             "setlocal hidden&",
             "setlocal view=grid",
             "setlocal view=list",
@@ -447,8 +445,6 @@ impl CommandSession {
             "setlocal sort=type",
             "setlocal direction=ascending",
             "setlocal direction=descending",
-            "setlocal folders-first=true",
-            "setlocal folders-first=false",
             "setlocal hidden=true",
             "setlocal hidden=false",
         ];
@@ -793,6 +789,14 @@ mod tests {
         session.change("set view=l".to_owned());
         assert!(session.complete_setting());
         assert_eq!(session.text(), "set view=list");
+        session.change("set file-c".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set file-click=");
+        session.change("set folder-click=d".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set folder-click=double");
+        session.change("set folders".to_owned());
+        assert!(!session.complete_setting());
     }
 
     #[test]

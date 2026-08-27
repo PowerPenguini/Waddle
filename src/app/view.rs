@@ -2,6 +2,13 @@ use super::*;
 use iced::widget::{column, row};
 use std::ops::Deref;
 
+pub(super) const GRID_SORT_CONTROLS: [(&str, fs::SortKey); 4] = [
+    ("Name", fs::SortKey::Name),
+    ("Type", fs::SortKey::Type),
+    ("Size", fs::SortKey::Size),
+    ("Modified", fs::SortKey::Modified),
+];
+
 #[derive(Clone, Copy)]
 pub(super) struct View<'a> {
     app: &'a App,
@@ -368,12 +375,38 @@ impl<'a> View<'a> {
             .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
             .width(Fill)
             .height(Fill);
-        let area: Element<'_, Message> = mouse_area(container(scroll).padding(Padding {
-            top: CONTENT_GUTTER + LIST_VIEW_TOP_INSET,
-            right: CONTENT_GUTTER,
-            bottom: CONTENT_GUTTER,
-            left: CONTENT_GUTTER,
-        }))
+        let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
+            Row::new()
+                .spacing(4)
+                .width(Fill)
+                .height(LIST_HEADER_HEIGHT)
+                .align_y(Alignment::Center),
+            |controls, (label, sort)| {
+                controls.push(self.sort_header(label, sort, Length::FillPortion(1)))
+            },
+        );
+        let area: Element<'_, Message> = mouse_area(
+            container(column![
+                container(sort_controls)
+                    .height(LIST_HEADER_HEIGHT)
+                    .padding(Padding::from([0, LIST_HORIZONTAL_PADDING])),
+                container(scroll)
+                    .padding(Padding {
+                        top: CONTENT_GUTTER,
+                        ..Padding::ZERO
+                    })
+                    .width(Fill)
+                    .height(Fill),
+            ])
+            .padding(Padding {
+                top: LIST_VIEW_TOP_INSET,
+                right: CONTENT_GUTTER,
+                bottom: CONTENT_GUTTER,
+                left: CONTENT_GUTTER,
+            })
+            .width(Fill)
+            .height(Fill),
+        )
         .on_move(Message::GridPointerMoved)
         .into();
         let content = self.with_marquee(area);
@@ -414,16 +447,16 @@ impl<'a> View<'a> {
         let (show_size, show_modified) = self.list_column_visibility();
         let mut header = Row::new()
             .push(Space::new().width(LIST_HEADER_ICON_SLOT_WIDTH))
-            .push(self.list_sort_header("Name", fs::SortKey::Name, Fill))
-            .push(self.list_sort_header("Type", fs::SortKey::Type, LIST_TYPE_WIDTH))
+            .push(self.sort_header("Name", fs::SortKey::Name, Fill))
+            .push(self.sort_header("Type", fs::SortKey::Type, LIST_TYPE_WIDTH))
             .width(Fill)
             .spacing(LIST_COLUMN_SPACING)
             .align_y(Alignment::Center);
         if show_size {
-            header = header.push(self.list_sort_header("Size", fs::SortKey::Size, LIST_SIZE_WIDTH));
+            header = header.push(self.sort_header("Size", fs::SortKey::Size, LIST_SIZE_WIDTH));
         }
         if show_modified {
-            header = header.push(self.list_sort_header(
+            header = header.push(self.sort_header(
                 "Modified",
                 fs::SortKey::Modified,
                 LIST_MODIFIED_WIDTH,
@@ -491,7 +524,7 @@ impl<'a> View<'a> {
         stack![area, overlay].into()
     }
 
-    fn list_sort_header<'b>(
+    fn sort_header<'b>(
         self,
         label: &'b str,
         sort: fs::SortKey,
@@ -570,16 +603,13 @@ impl<'a> View<'a> {
         let focused = self.presentation.focus_is(BrowserFocus::Entries)
             && self.grid.selected_entry() == Some(index);
         let hovered = self.grid.hovered() == Some(index);
+        let content_opacity = entry_content_opacity(
+            entry.is_hidden(),
+            selected || hovered || focused,
+            self.reduced_transparency(),
+        );
         let icon_kind = entry_icon_kind(entry);
-        let kind = if entry.is_directory() {
-            "Folder".to_owned()
-        } else {
-            entry
-                .path
-                .extension()
-                .map(|extension| extension.to_string_lossy().to_uppercase())
-                .unwrap_or_else(|| "File".to_owned())
-        };
+        let kind = entry.type_label();
         let size = if entry.is_directory() {
             "—".to_owned()
         } else {
@@ -603,15 +633,22 @@ impl<'a> View<'a> {
             self.list_name_character_limit(),
         );
         let mut content = Row::new()
-            .push(entry_svg(
-                icon_kind,
-                LIST_ENTRY_ICON_WIDTH,
-                self.entry_icon_color(icon_kind),
-            ))
+            .push(
+                entry_svg(
+                    icon_kind,
+                    LIST_ENTRY_ICON_WIDTH,
+                    self.entry_icon_color(icon_kind),
+                )
+                .opacity(content_opacity),
+            )
             .push(
                 container(
                     text(name)
                         .size(13)
+                        .color(apply_opacity(
+                            self.iced_theme().palette().text,
+                            content_opacity,
+                        ))
                         .wrapping(iced::advanced::text::Wrapping::None),
                 )
                 .width(Fill)
@@ -621,7 +658,7 @@ impl<'a> View<'a> {
                 text(kind)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_TYPE_WIDTH),
             )
             .width(Fill)
@@ -632,7 +669,7 @@ impl<'a> View<'a> {
                 text(size)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_SIZE_WIDTH),
             );
         }
@@ -641,7 +678,7 @@ impl<'a> View<'a> {
                 text(modified)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(self.secondary_text_color())
+                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
                     .width(LIST_MODIFIED_WIDTH),
             );
         }
@@ -668,8 +705,6 @@ impl<'a> View<'a> {
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
             .on_right_press(Message::EntryContext(index))
-            .on_enter(Message::EntryHovered(index))
-            .on_exit(Message::EntryUnhovered(index))
             .into()
     }
 
@@ -685,15 +720,25 @@ impl<'a> View<'a> {
         let hovered = self.grid.hovered() == Some(index);
         let drop_target = entry.is_directory()
             && self.drop_highlight_path().as_deref() == Some(entry.path.as_path());
+        let content_opacity = entry_content_opacity(
+            entry.is_hidden(),
+            selected || hovered || focused || drop_target,
+            self.reduced_transparency(),
+        );
         let icon_kind = entry_icon_kind(entry);
         let icon: Element<'_, Message> = self.thumbnails.handle(&entry.path).map_or_else(
-            || entry_svg(icon_kind, 48.0, self.entry_icon_color(icon_kind)).into(),
+            || {
+                entry_svg(icon_kind, 48.0, self.entry_icon_color(icon_kind))
+                    .opacity(content_opacity)
+                    .into()
+            },
             |handle| {
                 widget::image(handle.clone())
                     .width(48)
                     .height(48)
                     .content_fit(iced::ContentFit::Cover)
                     .border_radius(5)
+                    .opacity(content_opacity)
                     .into()
             },
         );
@@ -713,7 +758,7 @@ impl<'a> View<'a> {
                     .font(UI_FONT)
                     .size(13)
                     .line_height(iced::Pixels(16.0))
-                    .color(label_color)
+                    .color(apply_opacity(label_color, content_opacity))
                     .width(Fill)
                     .height(34)
                     .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
@@ -737,14 +782,12 @@ impl<'a> View<'a> {
             })
             .clip(true)
             .style(move |theme| tile_style(theme, selected, hovered, focused, drop_target));
-        mouse_area(container(tile).width(Fill).center_x(Fill))
+        let tile = mouse_area(tile)
             .on_press(Message::EntryPressed(index))
             .on_release(Message::EntryReleased(index))
             .on_double_click(Message::EntryDoubleClicked(index))
-            .on_right_press(Message::EntryContext(index))
-            .on_enter(Message::EntryHovered(index))
-            .on_exit(Message::EntryUnhovered(index))
-            .into()
+            .on_right_press(Message::EntryContext(index));
+        container(tile).width(Fill).center_x(Fill).into()
     }
 
     fn drag_activation_bar(self, path: &Path) -> Element<'a, Message> {
