@@ -439,7 +439,7 @@ impl<'a> View<'a> {
                 entries,
             ])
             .padding(Padding {
-                top: 0.0,
+                top: LIST_VIEW_TOP_INSET,
                 right: CONTENT_GUTTER,
                 bottom: 0.0,
                 left: CONTENT_GUTTER,

@@ -770,6 +770,7 @@ impl GridInteraction {
             - TOOLBAR_HEIGHT
             - TOOLBAR_DIVIDER_HEIGHT
             - status_height
+            - LIST_VIEW_TOP_INSET
             - LIST_HEADER_HEIGHT;
         let viewport_height = viewport_height.max(TILE_ROW_HEIGHT);
         let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
@@ -1093,7 +1094,7 @@ fn rectangles_intersect(left: Rectangle, right: Rectangle) -> bool {
 }
 
 fn content_top() -> f32 {
-    TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_HEADER_HEIGHT
+    TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
 }
 
 #[cfg(test)]
@@ -1108,7 +1109,7 @@ mod tests {
     fn first_grid_row_starts_immediately_below_the_sort_header() {
         assert_eq!(
             content_top(),
-            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_HEADER_HEIGHT
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
         );
     }
 
