@@ -443,12 +443,10 @@ impl Worker {
                 self.receive_increment()?;
             }
             Event::SelectionClear(event) if event.selection == self.atoms.clipboard => {
-                if let Some(active) = self.active.take() {
+                if self.active.take().is_some() {
                     let _ = self
                         .events
-                        .unbounded_send(TransferEvent::ClipboardOwnershipLost {
-                            generation: active.generation,
-                        });
+                        .unbounded_send(TransferEvent::ClipboardOwnershipLost);
                 }
                 self.sends.clear();
             }

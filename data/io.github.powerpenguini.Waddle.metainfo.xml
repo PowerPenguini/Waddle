@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.4" date="2026-08-30">
+      <description>
+        <ul>
+          <li>Reveal the exact files requested by browsers and desktop integrations.</li>
+          <li>Preserve multi-selection for context menus and make Vim-style Trash and Cut flows more reliable.</li>
+          <li>Clip long sidebar folder names with an ellipsis.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.3" date="2026-08-29">
       <description>
         <ul>

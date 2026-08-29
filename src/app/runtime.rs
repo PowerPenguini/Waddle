@@ -18,6 +18,28 @@ use super::{
     transfer_session,
 };
 
+fn is_modifier_key(key: &keyboard::Key) -> bool {
+    matches!(
+        key,
+        keyboard::Key::Named(
+            keyboard::key::Named::Alt
+                | keyboard::key::Named::AltGraph
+                | keyboard::key::Named::CapsLock
+                | keyboard::key::Named::Control
+                | keyboard::key::Named::Fn
+                | keyboard::key::Named::FnLock
+                | keyboard::key::Named::NumLock
+                | keyboard::key::Named::ScrollLock
+                | keyboard::key::Named::Shift
+                | keyboard::key::Named::Symbol
+                | keyboard::key::Named::SymbolLock
+                | keyboard::key::Named::Meta
+                | keyboard::key::Named::Hyper
+                | keyboard::key::Named::Super
+        )
+    )
+}
+
 impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -28,14 +50,24 @@ impl App {
                 self.handle_event(event, status)
             }
             Message::FindWindow => window::latest().map(Message::WindowAvailable),
-            Message::WindowAvailable(Some(id)) => {
-                window::run(id, native_clipboard::Attached::attach).map(Message::NativeReady)
-            }
+            Message::WindowAvailable(Some(id)) => Task::batch([
+                window::run(id, native_clipboard::Attached::attach).map(Message::NativeReady),
+                window::size(id).map(Message::WindowResized),
+            ]),
             Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
                 self.grid.resize(size);
+                self.window_size_known = true;
                 self.startup.remember_size(size);
-                self.load_visible_thumbnails()
+                let reveal = std::mem::take(&mut self.pending_reveal_scroll);
+                Task::batch([
+                    self.load_visible_thumbnails(),
+                    if reveal {
+                        Task::done(Message::ScrollToSelected)
+                    } else {
+                        Task::none()
+                    },
+                ])
             }
             Message::NativeReady(result) => {
                 if let Err(error) = self.transfers.install_native(result) {
@@ -319,6 +351,7 @@ impl App {
                 self.update_drag_hover(self.grid.cursor());
                 self.load_visible_thumbnails()
             }
+            Message::ScrollToSelected => self.scroll_to_selected(),
             Message::GridPointerMoved(point) => {
                 if self
                     .grid
@@ -701,6 +734,9 @@ impl App {
         modifiers: keyboard::Modifiers,
         produced: Option<&str>,
     ) -> Task<Message> {
+        if is_modifier_key(&key) {
+            return Task::none();
+        }
         let modified_text = match &modified_key {
             keyboard::Key::Character(value) => Some(value.to_string()),
             _ => None,

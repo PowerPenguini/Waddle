@@ -34,6 +34,7 @@ impl App {
             .requested()
             .expect("folder navigation request")
             .to_path_buf();
+        let revealed = navigation.selected_paths().to_vec();
         let options = self.view_preferences.for_directory(&requested);
         self.presentation.set_status(format!(
             "Opening {}…  •  Esc/Back cancel",
@@ -42,7 +43,10 @@ impl App {
         Task::perform(
             self.operations.run(OperationKind::Navigation, {
                 let path = requested.clone();
-                move |_| fs::open_directory_with(&path, options).map_err(|error| error.to_string())
+                move |_| {
+                    fs::open_directory_revealing(&path, options, &revealed)
+                        .map_err(|error| error.to_string())
+                }
             }),
             move |completion| match completion {
                 Completion::Finished(result) => Message::NavigationFinished {
@@ -147,11 +151,18 @@ impl App {
                 self.location_input = commit.location_input().to_owned();
                 self.sync_location_monitoring();
                 self.presentation.set_status(commit.status().to_owned());
+                let reveal_selection = commit.reveal_selection();
+                self.pending_reveal_scroll = reveal_selection && !self.window_size_known;
                 match commit.location() {
                     DisplayedLocation::Folder => Task::batch([
                         self.load_root_if_needed(),
                         self.schedule_details(),
                         self.load_visible_thumbnails(),
+                        if reveal_selection {
+                            Task::done(Message::ScrollToSelected)
+                        } else {
+                            Task::none()
+                        },
                     ]),
                     DisplayedLocation::Recent => self.load_visible_thumbnails(),
                     DisplayedLocation::Trash => Task::none(),

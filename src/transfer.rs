@@ -58,9 +58,7 @@ pub(crate) enum Event {
         action: Action,
     },
     Error(String),
-    ClipboardOwnershipLost {
-        generation: u64,
-    },
+    ClipboardOwnershipLost,
 }
 
 pub(crate) type AdapterCompletion = Pin<Box<dyn Future<Output = Result<Outcome, String>> + Send>>;
@@ -149,7 +147,6 @@ pub(crate) enum NativeUpdate {
     Notice(String),
     Start(Request),
     Error(String),
-    ClipboardLost(bool),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -350,17 +347,6 @@ impl TransferState {
             .map(|payload| payload.generation)?;
         self.clipboard = None;
         Some(generation)
-    }
-
-    pub(crate) fn lose_clipboard(&mut self, generation: u64) -> bool {
-        if self.clipboard.as_ref().is_some_and(|payload| {
-            payload.action == Action::Move && payload.generation == generation
-        }) {
-            self.clipboard = None;
-            true
-        } else {
-            false
-        }
     }
 
     pub(crate) fn import_clipboard(&mut self, import: ClipboardImport) -> bool {
@@ -568,9 +554,7 @@ impl TransferState {
                 self.hover = None;
                 NativeUpdate::Error(format!("Drag-and-drop failed: {error}"))
             }
-            Event::ClipboardOwnershipLost { generation } => {
-                NativeUpdate::ClipboardLost(self.lose_clipboard(generation))
-            }
+            Event::ClipboardOwnershipLost => NativeUpdate::None,
         }
     }
 
@@ -1028,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn cut_stays_pending_until_cancel_or_the_matching_ownership_is_lost() {
+    fn cut_stays_pending_until_cancel() {
         let entries = [entry("/start/one", false), entry("/start/two", false)];
         let mut state = TransferState::default();
 
@@ -1036,16 +1020,10 @@ mod tests {
             state.cut(&entries).as_deref(),
             Some("Cut: 2 items, p paste, Esc cancel")
         );
-        let generation = state.clipboard_payload().unwrap().generation;
         assert_eq!(
             state.pending_cut_paths(),
             [PathBuf::from("/start/one"), PathBuf::from("/start/two")]
         );
-        assert!(!state.lose_clipboard(generation + 1));
-        assert!(state.lose_clipboard(generation));
-        assert!(state.pending_cut_paths().is_empty());
-
-        state.cut(&entries).unwrap();
         assert!(state.cancel_cut().is_some());
         assert!(state.pending_cut_paths().is_empty());
     }

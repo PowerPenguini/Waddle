@@ -1,8 +1,9 @@
 use std::{fs, path::PathBuf};
 
-use gio::prelude::FileExt;
 use iced::{Point, Size, window};
 use serde::{Deserialize, Serialize};
+
+use crate::launch;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
@@ -27,7 +28,7 @@ impl Default for Stored {
 pub(super) struct State {
     path: PathBuf,
     stored: Stored,
-    requested: Option<PathBuf>,
+    requested: Option<launch::Target>,
     error: Option<String>,
 }
 
@@ -61,7 +62,8 @@ impl State {
 
     pub(super) fn initial_directory(&self, remember_last: bool) -> PathBuf {
         self.requested
-            .clone()
+            .as_ref()
+            .map(|target| target.directory.clone())
             .or_else(|| {
                 remember_last
                     .then(|| self.stored.last_directory.clone())
@@ -69,6 +71,13 @@ impl State {
             })
             .filter(|path| path.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
+    }
+
+    pub(super) fn initial_selection(&self) -> Vec<PathBuf> {
+        self.requested
+            .as_ref()
+            .map(|target| target.selected.clone())
+            .unwrap_or_default()
     }
 
     pub(super) fn error(&self) -> Option<&str> {
@@ -128,41 +137,29 @@ impl State {
     }
 }
 
-fn resolve_location(argument: &str) -> Result<PathBuf, String> {
-    let path = if argument.starts_with("file://") {
-        gio::File::for_uri(argument)
-            .path()
-            .ok_or_else(|| "the file URI is not a local path".to_owned())?
-    } else {
-        let path = PathBuf::from(argument);
-        if path.is_absolute() {
-            path
-        } else {
-            std::env::current_dir()
-                .map_err(|error| error.to_string())?
-                .join(path)
-        }
-    };
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-    if canonical.is_dir() {
-        Ok(canonical)
-    } else {
-        canonical
-            .parent()
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("{} has no parent directory", canonical.display()))
-    }
+#[cfg(test)]
+fn resolve_location(argument: &str) -> Result<launch::Target, String> {
+    launch::location(argument.as_ref())
 }
 
 #[cfg(not(test))]
-fn requested_location() -> (Option<PathBuf>, Option<String>) {
-    let Some(argument) = std::env::args_os().nth(1) else {
+fn requested_location() -> (Option<launch::Target>, Option<String>) {
+    let mut arguments = std::env::args_os().skip(1);
+    let Some(argument) = arguments.next() else {
         return (None, None);
     };
-    let argument = argument.to_string_lossy();
-    match resolve_location(&argument) {
+    let result = if argument == "--show-items" {
+        launch::show_items(arguments).and_then(|mut targets| {
+            if targets.len() == 1 {
+                Ok(targets.remove(0))
+            } else {
+                Err("one Waddle window can reveal items from only one folder".to_owned())
+            }
+        })
+    } else {
+        launch::location(&argument)
+    };
+    match result {
         Ok(path) => (Some(path), None),
         Err(error) => (None, Some(error)),
     }
@@ -181,21 +178,31 @@ fn state_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use gio::prelude::FileExt;
+
     use super::*;
 
     #[test]
-    fn local_paths_and_file_uris_resolve_files_to_their_parent() {
+    fn local_paths_and_file_uris_preserve_the_file_to_reveal() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("note.txt");
         fs::write(&file, "x").unwrap();
-        assert_eq!(
-            resolve_location(file.to_str().unwrap()).unwrap(),
-            temp.path()
-        );
-        assert_eq!(
-            resolve_location(&gio::File::for_path(&file).uri()).unwrap(),
-            temp.path()
-        );
+        let path_target = resolve_location(file.to_str().unwrap()).unwrap();
+        let uri_target = resolve_location(&gio::File::for_path(&file).uri()).unwrap();
+
+        assert_eq!(path_target.directory, temp.path());
+        assert_eq!(path_target.selected.as_slice(), std::slice::from_ref(&file));
+        assert_eq!(uri_target.directory, temp.path());
+        assert_eq!(uri_target.selected, [file]);
+    }
+
+    #[test]
+    fn directory_locations_do_not_request_a_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = resolve_location(temp.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(target.directory, temp.path());
+        assert!(target.selected.is_empty());
     }
 
     #[test]
@@ -247,7 +254,10 @@ mod tests {
                 last_directory: Some(PathBuf::from("/")),
                 ..Stored::default()
             },
-            requested: Some(temp.path().to_path_buf()),
+            requested: Some(launch::Target {
+                directory: temp.path().to_path_buf(),
+                selected: Vec::new(),
+            }),
             error: None,
         };
 

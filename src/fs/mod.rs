@@ -7,9 +7,11 @@ mod mutation;
 mod transfer_batch;
 mod tree_copy;
 
+#[cfg(test)]
+pub use browse::open_directory_with;
 #[allow(unused_imports)]
 pub use browse::{
-    FsError, open_directory_with, read_child_folders_with_hidden, read_entry_details,
+    FsError, open_directory_revealing, read_child_folders_with_hidden, read_entry_details,
     search_directory_with_hidden, validate_name,
 };
 pub use mutation::{create_file, create_folder, delete_permanently, display_name, rename_entry};

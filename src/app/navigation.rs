@@ -29,6 +29,10 @@ pub(super) enum Transition {
     Hover {
         requested: PathBuf,
     },
+    Reveal {
+        requested: PathBuf,
+        selected: Vec<PathBuf>,
+    },
     Parent,
     Back,
     HistoryForward,
@@ -61,12 +65,17 @@ impl Request {
             Target::Recent | Target::Trash => None,
         }
     }
+
+    pub(super) fn selected_paths(&self) -> &[PathBuf] {
+        &self.select
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct Commit {
     selected: Vec<usize>,
     reset_scroll: bool,
+    reveal_selection: bool,
     location: DisplayedLocation,
     location_input: String,
     status: String,
@@ -92,6 +101,10 @@ impl Commit {
 
     pub(super) fn status(&self) -> &str {
         &self.status
+    }
+
+    pub(super) fn reveal_selection(&self) -> bool {
+        self.reveal_selection
     }
 
     #[cfg(test)]
@@ -209,6 +222,16 @@ impl NavigationSession {
                 select,
             } => Some(self.forward(requested, remember, select)),
             Transition::Hover { requested } => Some(self.forward(requested, true, None)),
+            Transition::Reveal {
+                requested,
+                selected,
+            } => Some(self.begin(
+                Target::Folder {
+                    requested,
+                    kind: Kind::Forward { remember: false },
+                },
+                selected,
+            )),
             Transition::Parent => self.parent(),
             Transition::Back => self.back(),
             Transition::HistoryForward => self.history_forward(),
@@ -387,7 +410,12 @@ impl NavigationSession {
             child_folders,
             trash_entries: Vec::new(),
         };
-        self.commit(selected, refresh, DisplayedLocation::Folder)
+        self.commit(
+            selected,
+            refresh,
+            matches!(kind, Kind::Forward { .. }) && !select.is_empty(),
+            DisplayedLocation::Folder,
+        )
     }
 
     fn complete_recent(&mut self, result: Result<Vec<FileEntry>, String>) -> Outcome {
@@ -401,7 +429,7 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries: Vec::new(),
         };
-        self.commit(Vec::new(), false, DisplayedLocation::Recent)
+        self.commit(Vec::new(), false, false, DisplayedLocation::Recent)
     }
 
     fn complete_trash(&mut self, result: Result<Vec<trash::Entry>, String>) -> Outcome {
@@ -419,10 +447,16 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries,
         };
-        self.commit(Vec::new(), false, DisplayedLocation::Trash)
+        self.commit(Vec::new(), false, false, DisplayedLocation::Trash)
     }
 
-    fn commit(&self, selected: Vec<usize>, refresh: bool, location: DisplayedLocation) -> Outcome {
+    fn commit(
+        &self,
+        selected: Vec<usize>,
+        refresh: bool,
+        reveal_selection: bool,
+        location: DisplayedLocation,
+    ) -> Outcome {
         let status = match location {
             DisplayedLocation::Folder => String::new(),
             DisplayedLocation::Recent => format!("{} items  •  Recent", self.entries().len()),
@@ -431,6 +465,7 @@ impl NavigationSession {
         Outcome::Committed(Commit {
             selected,
             reset_scroll: !refresh,
+            reveal_selection,
             location,
             location_input: self.location_label(),
             status,
@@ -773,6 +808,41 @@ mod tests {
         );
 
         assert!(matches!(outcome, Outcome::Committed(commit) if commit.selected() == [0, 2]));
+    }
+
+    #[test]
+    fn explicit_reveal_scrolls_every_selection_but_refresh_does_not() {
+        let first = PathBuf::from("/start/one");
+        let second = PathBuf::from("/start/two");
+        let mut session = NavigationSession::new(PathBuf::from("/start"));
+        let request = session
+            .transition(Transition::Reveal {
+                requested: PathBuf::from("/start"),
+                selected: vec![second.clone(), first],
+            })
+            .unwrap();
+        let outcome = session.complete(
+            &request,
+            Completion::Folder(Ok(opened(
+                "/start",
+                vec![entry("/start/one"), entry("/start/two")],
+            ))),
+        );
+
+        assert!(
+            matches!(outcome, Outcome::Committed(commit) if commit.reveal_selection() && commit.selected() == [0, 1])
+        );
+
+        let request = session.refresh(Some(second));
+        let outcome = session.complete(
+            &request,
+            Completion::Folder(Ok(opened(
+                "/start",
+                vec![entry("/start/one"), entry("/start/two")],
+            ))),
+        );
+
+        assert!(matches!(outcome, Outcome::Committed(commit) if !commit.reveal_selection()));
     }
 
     #[test]

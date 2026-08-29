@@ -1,14 +1,20 @@
 mod app;
+mod file_manager_service;
 mod fs;
 mod journal;
+mod launch;
 mod theme;
 mod transfer;
 #[path = "clipboard.rs"]
 mod transfer_formats;
 
-fn main() -> iced::Result {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if file_manager_service::requested() {
+        return file_manager_service::run();
+    }
     prefer_transparent_wayland_backend();
-    app::run()
+    app::run()?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

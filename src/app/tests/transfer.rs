@@ -181,6 +181,29 @@ fn black_hole_delete_trashes_without_replacing_the_clipboard() {
 }
 
 #[test]
+fn black_hole_d_trashes_a_multiple_selection_without_a_motion() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two"), entry("three")]);
+    app.grid.select_only(Some(2), 3);
+    press(&mut app, "y");
+    let copied = app.transfers.clipboard_payload().unwrap();
+
+    app.grid.select_click(0, false, false, 3);
+    app.grid.select_click(1, true, false, 3);
+    for key in ["\"", "_", "d"] {
+        press(&mut app, key);
+    }
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Trash { message } if message == "Move 2 selected items to Trash?"
+    ));
+    assert_eq!(app.transfers.clipboard_payload(), Some(copied));
+}
+
+#[test]
 fn visual_cut_hides_the_complete_selection_and_escape_restores_it() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();

@@ -27,6 +27,17 @@ use super::{
     tree_button_style, tree_icon_asset, with_alpha,
 };
 
+const TREE_LABEL_ROOT_MAX_CHARACTERS: usize = 23;
+const TREE_LABEL_DEPTH_CHARACTER_COST: usize = 2;
+const TREE_LABEL_MIN_CHARACTERS: usize = 8;
+
+fn clip_tree_label(label: &str, depth: usize) -> String {
+    let max_characters = TREE_LABEL_ROOT_MAX_CHARACTERS
+        .saturating_sub(depth.saturating_mul(TREE_LABEL_DEPTH_CHARACTER_COST))
+        .max(TREE_LABEL_MIN_CHARACTERS);
+    clip_file_name(label, max_characters)
+}
+
 pub(super) const GRID_SORT_CONTROLS: [(&str, fs::SortKey); 4] = [
     ("Name", fs::SortKey::Name),
     ("Type", fs::SortKey::Type),
@@ -209,19 +220,24 @@ impl<'a> View<'a> {
         } else {
             self.app.iced_theme().palette().text
         };
+        let label = clip_tree_label(&tree_row.label, tree_row.depth);
         if tree_row.loading {
             line = line.push(self.app.spinner(17.0));
         } else {
             line = line.push(themed_svg(icon, 17.0, icon_color));
         }
         line = line.push(
-            text(tree_row.label)
-                .size(13)
-                .line_height(iced::Pixels(16.0))
-                .color(label_color)
-                .width(Fill)
-                .height(Fill)
-                .align_y(Alignment::Center),
+            container(
+                text(label)
+                    .size(13)
+                    .line_height(iced::Pixels(16.0))
+                    .color(label_color)
+                    .wrapping(iced::advanced::text::Wrapping::None),
+            )
+            .width(Fill)
+            .height(Fill)
+            .align_y(Alignment::Center)
+            .clip(true),
         );
         let content = column![line.height(30), self.drag_activation_bar(&tree_row.path)].spacing(0);
         let button = button(content)
@@ -942,6 +958,15 @@ mod tests {
 
     use super::*;
     use crate::app::grid::TOOLBAR_DIVIDER_HEIGHT;
+
+    #[test]
+    fn tree_labels_end_with_an_ellipsis_before_the_sidebar_edge() {
+        assert_eq!(clip_tree_label("Pictures", 0), "Pictures");
+        assert_eq!(
+            clip_tree_label("Waddle-LinkedIn-2026-08-28", 1),
+            "Waddle-LinkedIn-2026…"
+        );
+    }
 
     #[test]
     fn marquee_overlay_keeps_the_scrollable_widget_root_stable() {

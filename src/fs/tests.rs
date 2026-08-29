@@ -183,6 +183,33 @@ fn opened_directory_reuses_one_scan_for_sidebar_folders() {
 }
 
 #[test]
+fn revealed_hidden_entry_bypasses_filter_without_showing_its_siblings() {
+    let temp = tempfile::tempdir().unwrap();
+    let revealed = temp.path().join(".download");
+    fs::write(&revealed, "x").unwrap();
+    fs::write(temp.path().join(".other"), "x").unwrap();
+
+    let opened = open_directory_revealing(
+        temp.path(),
+        BrowseOptions {
+            show_hidden: false,
+            ..BrowseOptions::default()
+        },
+        std::slice::from_ref(&revealed),
+    )
+    .unwrap();
+
+    assert_eq!(
+        opened
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_path())
+            .collect::<Vec<_>>(),
+        [revealed.as_path()]
+    );
+}
+
+#[test]
 fn browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("file-10.txt"), vec![0; 10]).unwrap();

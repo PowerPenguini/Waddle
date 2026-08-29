@@ -1,46 +1,88 @@
 use super::*;
 
 #[test]
-fn clipboard_ownership_loss_survives_refresh_as_a_notice() {
+fn startup_reveal_waits_for_actual_window_geometry_before_final_scroll() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/start"));
+    app.window_size_known = false;
+    let selected = PathBuf::from("/start/revealed.txt");
+    let request = app
+        .navigation
+        .transition(NavigationTransition::Reveal {
+            requested: PathBuf::from("/start"),
+            selected: vec![selected.clone()],
+        })
+        .unwrap();
+
+    let _ = app.finish_navigation(
+        request,
+        NavigationCompletion::Folder(Ok(opened(
+            PathBuf::from("/start"),
+            vec![entry("first.txt"), entry("revealed.txt")],
+        ))),
+    );
+
+    assert!(app.pending_reveal_scroll);
+    let _ = app.update(Message::WindowResized(iced::Size::new(420.0, 513.0)));
+    assert!(app.window_size_known);
+    assert!(!app.pending_reveal_scroll);
+    assert_eq!(
+        app.grid
+            .selected_entry()
+            .map(|index| &app.navigation.entries()[index].path),
+        Some(&selected)
+    );
+}
+
+#[test]
+fn clipboard_ownership_loss_keeps_the_internal_cut_pending() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("notes.txt");
-    std_fs::write(&path, "notes").unwrap();
-    let file = FileEntry {
-        path: path.clone(),
-        name: "notes.txt".into(),
-        directory: false,
-        metadata: Default::default(),
-    };
+    let paths = [temp.path().join("notes.txt"), temp.path().join("todo.txt")];
+    for path in &paths {
+        std_fs::write(path, "notes").unwrap();
+    }
     let (mut app, _) = App::new();
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
-    app.navigation.replace_displayed_entries(vec![file.clone()]);
+    app.navigation.replace_displayed_entries(
+        paths
+            .iter()
+            .map(|path| FileEntry {
+                path: path.clone(),
+                name: path.file_name().unwrap().to_os_string(),
+                directory: false,
+                metadata: Default::default(),
+            })
+            .collect(),
+    );
     app.navigation.settle_for_test();
-    app.grid.select_only(Some(0), 1);
+    app.grid.select_click(0, false, false, 2);
+    app.grid.select_click(1, true, false, 2);
 
-    let _ = app.cut_selection();
-    let generation = app.transfers.clipboard_payload().unwrap().generation;
+    press(&mut app, "d");
     assert!(app.navigation.entries().is_empty());
 
     let update = app.transfers.handle_native_with_adapter(
         &NoopTransferAdapter,
-        TransferEvent::ClipboardOwnershipLost { generation },
+        TransferEvent::ClipboardOwnershipLost,
         |_, _| None,
     );
     let _ = app.apply_native_update(update);
-    let request = app.navigation.pending_request().unwrap();
-    let requested = request.requested().unwrap().to_path_buf();
-    let _ = app.finish_navigation(
-        request,
-        NavigationCompletion::Folder(Ok(opened(requested, vec![file.clone()]))),
-    );
 
-    assert!(app.transfers.pending_cut_paths().is_empty());
-    assert_eq!(app.navigation.entries().len(), 1);
-    assert_eq!(app.navigation.entries()[0].path, file.path);
+    assert_eq!(app.transfers.pending_cut_paths(), paths);
+    assert!(app.navigation.entries().is_empty());
+    assert!(app.navigation.pending_request().is_none());
     assert_eq!(
-        app.presentation.notice(),
-        Some("Cut restored after clipboard ownership changed")
+        app.presentation.status(),
+        "Cut: 2 items, p paste, Esc cancel"
     );
+    assert_eq!(app.presentation.notice(), None);
+
+    let request = app
+        .transfers
+        .paste(temp.path().join("destination"))
+        .unwrap();
+    assert_eq!(request.paths, paths);
+    assert_eq!(request.action, TransferAction::Move);
 }
 
 #[test]

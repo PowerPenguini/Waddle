@@ -226,6 +226,7 @@ enum Message {
     CloseContext,
     MouseBackTick(Instant),
     GridScrolled(f32),
+    ScrollToSelected,
     GridPointerMoved(Point),
     NavigationFinished {
         request: NavigationRequest,
@@ -316,6 +317,8 @@ struct App {
     modifiers: keyboard::Modifiers,
     mouse_back_gesture: Option<MouseBackGesture>,
     pending_tree_navigation: Option<(NavigationRequest, TreeLoadRequest)>,
+    window_size_known: bool,
+    pending_reveal_scroll: bool,
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
@@ -338,6 +341,7 @@ impl App {
         let tree_visible = view_preferences.tree_visible();
         let current =
             startup.initial_directory(view_preferences.remember_last_directory_on_startup());
+        let initial_selection = startup.initial_selection();
         let recent = recent::Recent::open_default();
         let trash = trash::Trash::open_default();
         let mut locations = recent.sidebar_entry().into_iter().collect::<Vec<_>>();
@@ -388,11 +392,22 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             mouse_back_gesture: None,
             pending_tree_navigation: None,
+            window_size_known: false,
+            pending_reveal_scroll: false,
             system_mode: iced::theme::Mode::Dark,
             system_accessibility,
             accent,
         };
-        let navigation = app.navigation.refresh(None);
+        let navigation = if initial_selection.is_empty() {
+            app.navigation.refresh(None)
+        } else {
+            app.navigation
+                .transition(NavigationTransition::Reveal {
+                    requested: current,
+                    selected: initial_selection,
+                })
+                .expect("reveal navigation always creates a request")
+        };
         let initial = Task::batch([
             app.request_navigation(navigation),
             system::theme().map(Message::SystemTheme),

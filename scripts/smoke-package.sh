@@ -14,6 +14,10 @@ package_root=$(find "$smoke_dir" -mindepth 1 -maxdepth 1 -type d -name 'waddle-*
 test -n "$package_root"
 test -x "$package_root/bin/waddle"
 desktop-file-validate "$package_root/share/applications/io.github.powerpenguini.Waddle.desktop"
+service_file="$package_root/share/dbus-1/services/org.freedesktop.FileManager1.service"
+test -f "$service_file"
+grep -Fx 'Name=org.freedesktop.FileManager1' "$service_file"
+grep -Fx 'Exec=/usr/bin/waddle --file-manager-service' "$service_file"
 appstreamcli validate --no-net "$package_root/share/metainfo/io.github.powerpenguini.Waddle.metainfo.xml"
 rsvg-convert "$package_root/share/icons/hicolor/scalable/apps/io.github.powerpenguini.Waddle.svg" \
   --width 128 --height 128 --output "$smoke_dir/icon.png"

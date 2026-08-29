@@ -93,6 +93,35 @@ fn captured_context_menu_click_does_not_start_marquee_or_clear_selection() {
 }
 
 #[test]
+fn right_clicking_one_of_multiple_selected_entries_keeps_the_selection() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(vec![
+        entry("one.txt"),
+        entry("two.txt"),
+        entry("three.txt"),
+    ]);
+    app.grid.select_click(0, false, false, 3);
+    app.grid.select_click(1, true, false, 3);
+
+    let _ = app.update(Message::EntryContext(0));
+
+    assert_eq!(
+        app.grid
+            .selected_indices()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(app.grid.selected_entry(), Some(0));
+    assert_eq!(
+        app.grid.context_menu().map(|menu| menu.target),
+        Some(ContextTarget::Entry(0))
+    );
+}
+
+#[test]
 fn right_clicking_empty_grid_space_opens_a_creation_context_menu() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
@@ -240,6 +269,66 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
     press(&mut app, "3");
     press(&mut app, "q");
     assert_eq!(app.presentation.status(), "Invalid Browser sequence: 3q");
+}
+
+#[test]
+fn modifier_presses_do_not_cancel_a_pending_browser_sequence() {
+    let (mut app, _) = App::new();
+    let shift = keyboard::Key::Named(keyboard::key::Named::Shift);
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character("'".into()),
+            modified_key: keyboard::Key::Character("\"".into()),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Quote),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::SHIFT,
+            text: Some("\"".into()),
+            repeat: false,
+        }),
+        event::Status::Ignored,
+    );
+    assert_eq!(app.presentation.status(), "\"  •  awaiting _");
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyReleased {
+            key: shift.clone(),
+            modified_key: shift.clone(),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ShiftLeft),
+            location: keyboard::Location::Left,
+            modifiers: keyboard::Modifiers::empty(),
+        }),
+        event::Status::Ignored,
+    );
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: shift.clone(),
+            modified_key: shift,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ShiftLeft),
+            location: keyboard::Location::Left,
+            modifiers: keyboard::Modifiers::SHIFT,
+            text: None,
+            repeat: false,
+        }),
+        event::Status::Ignored,
+    );
+
+    assert_eq!(app.presentation.status(), "\"  •  awaiting _");
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character("-".into()),
+            modified_key: keyboard::Key::Character("_".into()),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Minus),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::SHIFT,
+            text: Some("_".into()),
+            repeat: false,
+        }),
+        event::Status::Ignored,
+    );
+
+    assert_eq!(app.presentation.status(), "\"_  •  awaiting d or x");
 }
 
 #[test]

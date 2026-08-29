@@ -8,6 +8,7 @@ cargo fmt --all -- --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo build --release --locked
+scripts/smoke-file-manager-service.sh target/release/waddle
 
 if [[ -n "${DISPLAY:-}" ]]; then
   WADDLE_X11_TEST=1 cargo test x11 -- --test-threads=1

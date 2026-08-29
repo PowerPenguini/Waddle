@@ -15,6 +15,8 @@ install -Dm0644 "$project_root/README.md" "$stage_dir/$archive_name/README.md"
 install -Dm0644 "$project_root/LICENSE" "$stage_dir/$archive_name/LICENSE"
 install -Dm0644 "$project_root/data/io.github.powerpenguini.Waddle.desktop" \
   "$stage_dir/$archive_name/share/applications/io.github.powerpenguini.Waddle.desktop"
+install -Dm0644 "$project_root/data/org.freedesktop.FileManager1.service" \
+  "$stage_dir/$archive_name/share/dbus-1/services/org.freedesktop.FileManager1.service"
 install -Dm0644 "$project_root/data/io.github.powerpenguini.Waddle.metainfo.xml" \
   "$stage_dir/$archive_name/share/metainfo/io.github.powerpenguini.Waddle.metainfo.xml"
 install -Dm0644 "$project_root/data/icons/hicolor/scalable/apps/io.github.powerpenguini.Waddle.svg" \

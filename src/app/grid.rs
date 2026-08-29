@@ -305,7 +305,11 @@ impl GridInteraction {
         if index >= entry_count {
             return false;
         }
-        self.select_only(Some(index), entry_count);
+        if self.selection.contains(&index) {
+            self.selected = Some(index);
+        } else {
+            self.select_only(Some(index), entry_count);
+        }
         self.context_menu = Some(ContextMenu {
             target: ContextTarget::Entry(index),
             point: self.cursor,
@@ -1793,5 +1797,35 @@ mod tests {
         assert_eq!(grid.selected_entry(), Some(1));
         assert_eq!(grid.take_context_entry(), Some(1));
         assert!(grid.context_menu().is_none());
+    }
+
+    #[test]
+    fn entry_context_preserves_a_selection_that_contains_its_target() {
+        let mut grid = GridInteraction::default();
+        grid.select_click(0, false, false, 3);
+        grid.select_click(1, true, false, 3);
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [0, 1]
+        );
+
+        assert!(grid.open_entry_context(0, 3));
+
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(grid.selected_entry(), Some(0));
+        assert_eq!(
+            grid.context_menu().map(|menu| menu.target),
+            Some(ContextTarget::Entry(0))
+        );
+
+        grid.close_context();
+        assert!(grid.open_entry_context(2, 3));
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [2]
+        );
     }
 }

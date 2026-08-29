@@ -65,16 +65,12 @@ impl App {
         self.refresh(None)
     }
 
-    pub(super) fn restore_cut_after_clipboard_loss(&mut self) -> Task<Message> {
-        let message = "Cut restored after clipboard ownership changed".to_owned();
-        self.presentation.set_status(message.clone());
-        self.presentation.set_notice(message);
-        self.refresh(None)
-    }
-
     pub(super) fn paste(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
+        }
+        if !self.transfers.pending_cut_paths().is_empty() {
+            return self.paste_current();
         }
         match self.transfers.clipboard_read() {
             None => self.paste_current(),
@@ -308,8 +304,6 @@ impl App {
                 self.show_error(error);
                 Task::none()
             }
-            NativeUpdate::ClipboardLost(true) => self.restore_cut_after_clipboard_loss(),
-            NativeUpdate::ClipboardLost(false) => Task::none(),
         }
     }
 

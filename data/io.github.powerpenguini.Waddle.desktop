@@ -8,4 +8,5 @@ Terminal=false
 StartupNotify=true
 Categories=System;FileTools;FileManager;
 MimeType=inode/directory;
+Implements=org.freedesktop.FileManager1
 Keywords=files;folders;explorer;vim;

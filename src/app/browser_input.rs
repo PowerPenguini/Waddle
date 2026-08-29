@@ -35,7 +35,9 @@ Selection and file operations
   x  Cut the selection
   dd  Cut the active entry
   d{motion}  Cut through 0, $, h, j, k, l, or d
-  \"_x / \"_dd / \"_d{motion}  Trash without changing clipboard
+  \"_x / \"_d  Trash a multi-item or Visual selection
+  \"_dd / \"_d{motion}  Trash the active item or range
+    Black-hole Trash leaves the clipboard unchanged
   Delete  Move the selection to Trash
   u / Ctrl+R  Undo / redo
   r  Rename the active entry
@@ -517,6 +519,13 @@ impl BrowserInput {
                     Intent::Pending(self.pending_status())
                 }
                 (2, Some("x")) if context.file_operators_allowed => {
+                    self.clear_sequence();
+                    Intent::Trash
+                }
+                (2, Some("d"))
+                    if context.file_operators_allowed
+                        && (context.visual_active || context.selection_count > 1) =>
+                {
                     self.clear_sequence();
                     Intent::Trash
                 }

@@ -1447,13 +1447,12 @@ impl DataSourceHandler for Worker {
             .is_some_and(|drag| drag.source.inner() == source)
         {
             self.finish_active(Outcome::Cancelled);
-        } else if let Some(clipboard) = self
+        } else if self
             .clipboard
             .take_if(|clipboard| clipboard.source.inner() == source)
+            .is_some()
         {
-            let _ = self.events.unbounded_send(Event::ClipboardOwnershipLost {
-                generation: clipboard.generation,
-            });
+            let _ = self.events.unbounded_send(Event::ClipboardOwnershipLost);
         }
     }
 

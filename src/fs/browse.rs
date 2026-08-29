@@ -106,7 +106,7 @@ pub fn read_directory(path: &Path) -> Result<Vec<FileEntry>, FsError> {
 
 #[cfg(test)]
 pub fn read_directory_with(path: &Path, options: BrowseOptions) -> Result<Vec<FileEntry>, FsError> {
-    scan_directory_with(path, options).map(|scan| scan.entries)
+    scan_directory_with(path, options, &[]).map(|scan| scan.entries)
 }
 
 struct DirectoryScan {
@@ -114,14 +114,21 @@ struct DirectoryScan {
     child_folders: Vec<PathBuf>,
 }
 
-fn scan_directory_with(path: &Path, options: BrowseOptions) -> Result<DirectoryScan, FsError> {
+fn scan_directory_with(
+    path: &Path,
+    options: BrowseOptions,
+    revealed: &[PathBuf],
+) -> Result<DirectoryScan, FsError> {
     let iter = fs::read_dir(path).map_err(|e| FsError::new("read", path, e))?;
     let mut entries = Vec::new();
     let mut child_folders = Vec::new();
     for result in iter {
         let entry = result.map_err(|e| FsError::new("read an entry in", path, e))?;
         let name = entry.file_name();
-        if !options.show_hidden && name.to_string_lossy().starts_with('.') {
+        if !options.show_hidden
+            && name.to_string_lossy().starts_with('.')
+            && !revealed.contains(&entry.path())
+        {
             continue;
         }
         let file_type = entry
@@ -335,14 +342,23 @@ pub(crate) fn watchable_directories_without_automount(
     paths.into_iter().filter(|path| path.is_dir()).collect()
 }
 
+#[cfg(test)]
 pub fn open_directory_with(
     path: &Path,
     options: BrowseOptions,
 ) -> Result<OpenedDirectory, FsError> {
+    open_directory_revealing(path, options, &[])
+}
+
+pub fn open_directory_revealing(
+    path: &Path,
+    options: BrowseOptions,
+    revealed: &[PathBuf],
+) -> Result<OpenedDirectory, FsError> {
     let canonical_path = path
         .canonicalize()
         .map_err(|error| FsError::new("open", path, error))?;
-    let scan = scan_directory_with(&canonical_path, options)?;
+    let scan = scan_directory_with(&canonical_path, options, revealed)?;
     Ok(OpenedDirectory {
         canonical_path,
         entries: scan.entries,
