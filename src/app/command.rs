@@ -25,6 +25,7 @@ Commands
   :q  Quit Waddle
   :COMMAND  Run Bash and keep its final directory
   !COMMAND  Run Bash without changing Waddle's directory
+  $selected  Selected paths in Bash; use outside quotes
 
   Targets default to selection; relative paths use this folder
   Quote paths with spaces; put -- before Open With paths
@@ -49,7 +50,13 @@ Settings
   startup=last|cwd (waddlerc only)";
 
 pub(super) trait Adapter {
-    fn execute(&self, current: &Path, prefix: char, command: &str) -> Result<ShellReport, Failure>;
+    fn execute(
+        &self,
+        current: &Path,
+        prefix: char,
+        command: &str,
+        selected: &[PathBuf],
+    ) -> Result<ShellReport, Failure>;
 
     fn launch_terminal(&self, current: &Path) -> Result<(), String>;
 }
@@ -58,10 +65,17 @@ pub(super) trait Adapter {
 pub(super) struct ProcessAdapter;
 
 impl Adapter for ProcessAdapter {
-    fn execute(&self, current: &Path, prefix: char, command: &str) -> Result<ShellReport, Failure> {
-        shell::execute(current, prefix, command).map_err(|error| match error {
+    fn execute(
+        &self,
+        current: &Path,
+        prefix: char,
+        command: &str,
+        selected: &[PathBuf],
+    ) -> Result<ShellReport, Failure> {
+        shell::execute(current, prefix, command, selected).map_err(|error| match error {
             ShellError::RequiresTerminal => Failure::RequiresTerminal,
             ShellError::Io(error) => Failure::Other(error.to_string()),
+            ShellError::Placeholder(error) => Failure::Other(error.to_owned()),
         })
     }
 
@@ -91,6 +105,7 @@ enum ExecutionKind {
 #[derive(Clone, Debug)]
 pub(super) struct Execution {
     current: PathBuf,
+    selected: Vec<PathBuf>,
     kind: ExecutionKind,
 }
 
@@ -104,10 +119,15 @@ impl Execution {
         }
     }
 
+    pub(super) fn with_selected(mut self, selected: Vec<PathBuf>) -> Self {
+        self.selected = selected;
+        self
+    }
+
     pub(super) fn run<A: Adapter>(self, adapter: &A) -> Completion {
         match self.kind {
             ExecutionKind::Shell { prefix, command } => {
-                Completion::Shell(adapter.execute(&self.current, prefix, &command))
+                Completion::Shell(adapter.execute(&self.current, prefix, &command, &self.selected))
             }
             ExecutionKind::Terminal => Completion::Terminal {
                 directory: self.current.clone(),
@@ -222,6 +242,7 @@ impl CommandSession {
         if prefix == ':' && matches!(trimmed, "terminal" | "t") {
             return CommandAction::Execute(Execution {
                 current,
+                selected: Vec::new(),
                 kind: ExecutionKind::Terminal,
             });
         }
@@ -305,6 +326,7 @@ impl CommandSession {
         }
         CommandAction::Execute(Execution {
             current,
+            selected: Vec::new(),
             kind: ExecutionKind::Shell { prefix, command },
         })
     }
@@ -573,16 +595,24 @@ mod tests {
     #[derive(Default)]
     struct MemoryAdapter {
         calls: Mutex<Vec<String>>,
+        selected_calls: Mutex<Vec<Vec<PathBuf>>>,
         shell_result: Mutex<Option<Result<ShellReport, Failure>>>,
         terminal_result: Mutex<Option<Result<(), String>>>,
     }
 
     impl Adapter for MemoryAdapter {
-        fn execute(&self, _: &Path, prefix: char, command: &str) -> Result<ShellReport, Failure> {
+        fn execute(
+            &self,
+            _: &Path,
+            prefix: char,
+            command: &str,
+            selected: &[PathBuf],
+        ) -> Result<ShellReport, Failure> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("{prefix}{command}"));
+            self.selected_calls.lock().unwrap().push(selected.to_vec());
             self.shell_result.lock().unwrap().take().unwrap()
         }
 
@@ -609,6 +639,7 @@ mod tests {
         assert!(output.summary.starts_with(":help"));
         assert!(output.detail.contains(":terminal, :t"));
         assert!(output.detail.contains(":favorite add [LABEL]"));
+        assert!(output.detail.contains("$selected"));
         assert!(output.detail.contains("Tab / Shift+Tab"));
         assert!(output.detail.contains("\"_dd / \"_d{motion}"));
         assert!(output.detail.contains("Name/Type/Size/Modified header"));
@@ -816,11 +847,16 @@ mod tests {
         let CommandAction::Execute(execution) = session.submit(PathBuf::from("/work")) else {
             panic!("expected execution");
         };
+        let selected = vec![PathBuf::from("/work/a.txt"), PathBuf::from("/work/b c.txt")];
 
-        let completion = execution.run(&adapter);
+        let completion = execution.with_selected(selected.clone()).run(&adapter);
         let consequences = session.complete(Ok(completion), Path::new("/work"));
 
         assert_eq!(adapter.calls.lock().unwrap().as_slice(), ["!true"]);
+        assert_eq!(
+            adapter.selected_calls.lock().unwrap().as_slice(),
+            [selected]
+        );
         assert_eq!(consequences.status.as_deref(), Some("!true  •  exit 0"));
         assert!(consequences.refresh);
         assert!(session.output().is_none());

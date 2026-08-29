@@ -183,6 +183,12 @@ impl App {
                 }
             }
             command::CommandAction::Execute(execution) => {
+                let execution = execution.with_selected(
+                    self.selected_entries()
+                        .into_iter()
+                        .map(|entry| entry.path)
+                        .collect(),
+                );
                 self.presentation.set_status(execution.status());
                 let adapter = self.command_adapter;
                 Task::perform(

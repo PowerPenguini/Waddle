@@ -818,6 +818,17 @@ impl App {
                     .set_status(format!("Focus: {}", self.focus_label()));
                 Task::none()
             }
+            InputIntent::MoveFocusIn(direction) => {
+                self.presentation
+                    .move_focus_in(direction, self.view_preferences.tree_visible());
+                if self.presentation.focus_is(BrowserFocus::Sidebar) {
+                    self.sidebar_tree
+                        .focus_current_or_first(self.navigation.current());
+                }
+                self.presentation
+                    .set_status(format!("Focus: {}", self.focus_label()));
+                Task::none()
+            }
             InputIntent::CompleteCommand => {
                 if !self.command.complete_setting() {
                     self.presentation

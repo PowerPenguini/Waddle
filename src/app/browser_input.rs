@@ -1,6 +1,7 @@
 use super::{
     file_operation::PromptInteraction,
     grid::{DeleteMotion, Motion},
+    presentation::FocusDirection,
 };
 
 pub(super) const HELP: &str = "\
@@ -15,6 +16,7 @@ Keyboard navigation
   F5  Refresh the current view
   Ctrl+L  Edit the current location
   Ctrl+O / Ctrl+I  Go back / forward
+  Ctrl+W h/j/k/l  Move focus; skip the bottom bar
   Ctrl+W e  Toggle the sidebar tree
 
 Vim navigation
@@ -164,6 +166,7 @@ pub(super) enum Intent {
     ToggleTree,
     BeginLocation,
     MoveFocus { reverse: bool },
+    MoveFocusIn(FocusDirection),
     CompleteCommand,
     SelectAll,
     ToggleActive,
@@ -259,7 +262,7 @@ impl BrowserInput {
         } else if self.black_hole_stage == 2 {
             "awaiting d or x"
         } else if self.window_pending {
-            "awaiting e"
+            "awaiting h, j, k, l, or e"
         } else if self.g_pending {
             "awaiting g"
         } else {
@@ -417,12 +420,19 @@ impl BrowserInput {
 
         let text = press.text.as_deref();
         if self.window_pending {
-            return if !press.control && !press.alt && !press.logo && text == Some("e") {
-                self.clear_sequence();
-                Intent::ToggleTree
-            } else {
-                self.invalid_sequence(text.unwrap_or("key"))
+            if press.alt || press.logo {
+                return self.invalid_sequence(text.unwrap_or("key"));
+            }
+            let intent = match text {
+                Some("h") => Intent::MoveFocusIn(FocusDirection::Left),
+                Some("j") => Intent::MoveFocusIn(FocusDirection::Down),
+                Some("k") => Intent::MoveFocusIn(FocusDirection::Up),
+                Some("l") => Intent::MoveFocusIn(FocusDirection::Right),
+                Some("e") if !press.control => Intent::ToggleTree,
+                _ => return self.invalid_sequence(text.unwrap_or("key")),
             };
+            self.clear_sequence();
+            return intent;
         }
         if press.control && !press.alt && !press.logo {
             let count = self.count.take().unwrap_or(1);
@@ -974,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn control_w_e_toggles_tree_and_uses_normal_sequence_rules() {
+    fn control_w_moves_focus_toggles_tree_and_uses_normal_sequence_rules() {
         let mut input = BrowserInput::default();
         let control_w = Press {
             text: Some("w".to_owned()),
@@ -984,10 +994,41 @@ mod tests {
 
         assert_eq!(
             input.handle(control_w.clone(), selected()),
-            Intent::Pending("Ctrl+W  •  awaiting e".to_owned())
+            Intent::Pending("Ctrl+W  •  awaiting h, j, k, l, or e".to_owned())
         );
-        assert_eq!(input.handle(text("e"), selected()), Intent::ToggleTree);
+        assert_eq!(
+            input.handle(
+                Press {
+                    text: Some("h".to_owned()),
+                    control: true,
+                    ..Press::default()
+                },
+                selected()
+            ),
+            Intent::MoveFocusIn(FocusDirection::Left)
+        );
         assert_eq!(input.pending_sequence(), None);
+
+        for (key, direction) in [
+            ("j", FocusDirection::Down),
+            ("k", FocusDirection::Up),
+            ("l", FocusDirection::Right),
+        ] {
+            assert!(matches!(
+                input.handle(control_w.clone(), selected()),
+                Intent::Pending(_)
+            ));
+            assert_eq!(
+                input.handle(text(key), selected()),
+                Intent::MoveFocusIn(direction)
+            );
+        }
+
+        assert!(matches!(
+            input.handle(control_w.clone(), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(input.handle(text("e"), selected()), Intent::ToggleTree);
 
         assert!(matches!(
             input.handle(control_w.clone(), selected()),
