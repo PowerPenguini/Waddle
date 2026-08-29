@@ -149,7 +149,14 @@ pub(super) struct VisibleRange {
 #[derive(Clone, Debug)]
 struct Marquee {
     start: Point,
+    start_scroll_y: f32,
     current: Point,
+}
+
+impl Marquee {
+    fn start_in_viewport(&self, scroll_y: f32) -> Point {
+        Point::new(self.start.x, self.start.y + self.start_scroll_y - scroll_y)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -711,6 +718,7 @@ impl GridInteraction {
         }
         self.marquee = Some(Marquee {
             start: point,
+            start_scroll_y: self.scroll_y,
             current: point,
         });
         self.update_marquee_selection(entry_count);
@@ -727,15 +735,16 @@ impl GridInteraction {
 
     pub(super) fn marquee_bounds(&self, status_height: f32) -> Option<Rectangle> {
         let marquee = self.marquee.as_ref()?;
+        let start = marquee.start_in_viewport(self.scroll_y);
         let origin = Point::new(self.sidebar_width, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
         let size = Size::new(
             (self.window_size.width - origin.x).max(0.0),
             (self.window_size.height - origin.y - status_height).max(0.0),
         );
-        let left = (marquee.start.x.min(marquee.current.x) - origin.x).clamp(0.0, size.width);
-        let right = (marquee.start.x.max(marquee.current.x) - origin.x).clamp(0.0, size.width);
-        let top = (marquee.start.y.min(marquee.current.y) - origin.y).clamp(0.0, size.height);
-        let bottom = (marquee.start.y.max(marquee.current.y) - origin.y).clamp(0.0, size.height);
+        let left = (start.x.min(marquee.current.x) - origin.x).clamp(0.0, size.width);
+        let right = (start.x.max(marquee.current.x) - origin.x).clamp(0.0, size.width);
+        let top = (start.y.min(marquee.current.y) - origin.y).clamp(0.0, size.height);
+        let bottom = (start.y.max(marquee.current.y) - origin.y).clamp(0.0, size.height);
         Some(Rectangle::new(
             Point::new(left, top),
             Size::new(right - left, bottom - top),
@@ -918,11 +927,10 @@ impl GridInteraction {
         (row >= 0 && column >= 0 && column < self.columns() as i32).then_some((row, column))
     }
 
-    fn selection_cell_at(&self, point: Point) -> (i32, i32) {
+    fn selection_cell_at(&self, point: Point, scroll_y: f32) -> (i32, i32) {
         let column =
             ((point.x - self.sidebar_width - CONTENT_GUTTER) / self.column_width()).floor() as i32;
-        let row =
-            ((point.y - self.entries_top() + self.scroll_y) / self.row_height()).floor() as i32;
+        let row = ((point.y - self.entries_top() + scroll_y) / self.row_height()).floor() as i32;
         (row, column)
     }
 
@@ -986,16 +994,18 @@ impl GridInteraction {
         let Some(marquee) = &self.marquee else {
             return;
         };
-        let (start_row, start_column) = self.selection_cell_at(marquee.start);
-        let (end_row, end_column) = self.selection_cell_at(marquee.current);
+        let start = marquee.start_in_viewport(self.scroll_y);
+        let (start_row, start_column) =
+            self.selection_cell_at(marquee.start, marquee.start_scroll_y);
+        let (end_row, end_column) = self.selection_cell_at(marquee.current, self.scroll_y);
         let selection_bounds = Rectangle::new(
             Point::new(
-                marquee.start.x.min(marquee.current.x),
-                marquee.start.y.min(marquee.current.y),
+                start.x.min(marquee.current.x),
+                start.y.min(marquee.current.y),
             ),
             Size::new(
-                (marquee.current.x - marquee.start.x).abs(),
-                (marquee.current.y - marquee.start.y).abs(),
+                (marquee.current.x - start.x).abs(),
+                (marquee.current.y - start.y).abs(),
             ),
         );
         self.select_rectangle(
@@ -1479,8 +1489,9 @@ mod tests {
 
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
-            [5, 6, 10, 11, 15, 16, 20, 21, 25, 26]
+            [0, 1, 5, 6, 10, 11, 15, 16, 20, 21, 25, 26]
         );
+        assert_eq!(grid.marquee_bounds(status_height).unwrap().y, 0.0);
     }
 
     #[test]
