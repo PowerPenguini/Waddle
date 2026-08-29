@@ -50,6 +50,7 @@ pub(super) struct ShellReport {
 #[derive(Debug)]
 pub(super) enum ShellError {
     Io(io::Error),
+    Placeholder(&'static str),
     RequiresTerminal,
 }
 
@@ -57,6 +58,7 @@ impl fmt::Display for ShellError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => error.fmt(formatter),
+            Self::Placeholder(error) => formatter.write_str(error),
             Self::RequiresTerminal => {
                 formatter.write_str("command requires an interactive terminal")
             }
@@ -142,9 +144,17 @@ pub(super) fn execute(
     current: &Path,
     prefix: char,
     command: &str,
+    selected: &[PathBuf],
 ) -> Result<ShellReport, ShellError> {
     let mode = CommandMode::from_prefix(prefix);
-    let mut child = Command::new("bash")
+    let (expanded_command, uses_selected) = expand_selected(command)?;
+    if uses_selected && selected.is_empty() {
+        return Err(ShellError::Placeholder(
+            "$selected requires at least one selected entry",
+        ));
+    }
+    let mut process = Command::new("bash");
+    process
         .arg("-c")
         .arg(
             r#"command_text=$WADDLE_COMMAND_TEXT
@@ -155,13 +165,16 @@ printf '\x00WADDLE_PWD\x00%s\x00' "$PWD"
 exit "$status""#,
         )
         .arg("waddle")
-        .env("WADDLE_COMMAND_TEXT", command)
+        .env("WADDLE_COMMAND_TEXT", expanded_command)
         .current_dir(current)
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    if uses_selected {
+        process.args(selected.iter().map(|path| selected_argument(current, path)));
+    }
+    let mut child = process.spawn()?;
 
     let screen_detected = Arc::new(AtomicBool::new(false));
     let stdout_reader = spawn_output_reader(
@@ -198,6 +211,100 @@ exit "$status""#,
         final_directory,
         successful: status.success(),
     })
+}
+
+fn selected_argument(current: &Path, selected: &Path) -> PathBuf {
+    if let Ok(relative) = selected.strip_prefix(current)
+        && !relative.as_os_str().is_empty()
+    {
+        Path::new(".").join(relative)
+    } else if selected.is_absolute() {
+        selected.to_path_buf()
+    } else {
+        current.join(selected)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Quote {
+    Unquoted,
+    Single,
+    Double,
+}
+
+fn expand_selected(command: &str) -> Result<(String, bool), ShellError> {
+    let mut expanded = String::with_capacity(command.len());
+    let mut quote = Quote::Unquoted;
+    let mut index = 0;
+    let mut used = false;
+
+    while index < command.len() {
+        let remaining = &command[index..];
+        let character = remaining
+            .chars()
+            .next()
+            .expect("index must remain on a character boundary");
+
+        if character == '\\' && quote != Quote::Single {
+            expanded.push(character);
+            index += character.len_utf8();
+            if index < command.len() {
+                let escaped = command[index..]
+                    .chars()
+                    .next()
+                    .expect("escaped character must exist");
+                expanded.push(escaped);
+                index += escaped.len_utf8();
+            }
+            continue;
+        }
+
+        match (quote, character) {
+            (Quote::Unquoted, '\'') => quote = Quote::Single,
+            (Quote::Unquoted, '"') => quote = Quote::Double,
+            (Quote::Single, '\'') | (Quote::Double, '"') => quote = Quote::Unquoted,
+            _ => {}
+        }
+
+        if character == '$'
+            && quote != Quote::Single
+            && let Some(length) = selected_placeholder_length(remaining)
+        {
+            if quote == Quote::Double {
+                return Err(ShellError::Placeholder(
+                    "use $selected outside quotes so paths stay separate",
+                ));
+            }
+            expanded.push_str("\"$@\"");
+            index += length;
+            used = true;
+            continue;
+        }
+
+        expanded.push(character);
+        index += character.len_utf8();
+    }
+
+    Ok((expanded, used))
+}
+
+fn selected_placeholder_length(value: &str) -> Option<usize> {
+    const PLAIN: &str = "$selected";
+    const BRACED: &str = "${selected}";
+
+    if value.starts_with(BRACED) {
+        return Some(BRACED.len());
+    }
+    let suffix = value.strip_prefix(PLAIN)?;
+    if suffix
+        .chars()
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+    {
+        None
+    } else {
+        Some(PLAIN.len())
+    }
 }
 
 fn wait_for_command(
@@ -369,9 +476,101 @@ mod tests {
 
     #[test]
     fn successful_silent_command_has_empty_detail() {
-        let report = execute(Path::new("."), '!', "true").unwrap();
+        let report = execute(Path::new("."), '!', "true", &[]).unwrap();
 
         assert!(report.detail.is_empty());
+    }
+
+    #[test]
+    fn selected_placeholder_passes_exact_paths_as_separate_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = [
+            temp.path().join("a file.txt"),
+            temp.path().join("quote's.txt"),
+            temp.path().join("$(touch injected)"),
+        ];
+
+        let report = execute(temp.path(), '!', "printf '<%s>\\n' $selected", &selected).unwrap();
+
+        let expected = selected
+            .iter()
+            .map(|path| {
+                format!(
+                    "<{}>",
+                    Path::new(".")
+                        .join(path.file_name().expect("selected path must have a name"))
+                        .display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(report.detail, expected);
+        assert!(!temp.path().join("injected").exists());
+    }
+
+    #[test]
+    fn selected_placeholder_rejects_empty_selection_and_double_quotes() {
+        let empty = execute(Path::new("."), '!', "printf '%s' $selected", &[]).unwrap_err();
+        assert_eq!(
+            empty.to_string(),
+            "$selected requires at least one selected entry"
+        );
+
+        let quoted = execute(
+            Path::new("."),
+            '!',
+            "printf '%s' \"$selected\"",
+            &[PathBuf::from("one")],
+        )
+        .unwrap_err();
+        assert_eq!(
+            quoted.to_string(),
+            "use $selected outside quotes so paths stay separate"
+        );
+    }
+
+    #[test]
+    fn selected_placeholder_respects_shell_quoting_and_variable_names() {
+        assert_eq!(
+            expand_selected("printf '%s' '$selected' \\$selected $selected_file").unwrap(),
+            (
+                "printf '%s' '$selected' \\$selected $selected_file".to_owned(),
+                false
+            )
+        );
+        assert_eq!(
+            expand_selected("printf '%s\\n' ${selected} $selected").unwrap(),
+            ("printf '%s\\n' \"$@\" \"$@\"".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn commands_without_placeholder_keep_positional_parameters_empty() {
+        let report = execute(
+            Path::new("."),
+            '!',
+            "printf '%s' \"${1-unset}\"",
+            &[PathBuf::from("ignored")],
+        )
+        .unwrap();
+
+        assert_eq!(report.detail, "unset");
+    }
+
+    #[test]
+    fn selected_arguments_are_relative_here_and_absolute_elsewhere() {
+        assert_eq!(
+            selected_argument(Path::new("/work"), Path::new("/work/-option")),
+            PathBuf::from("./-option")
+        );
+        assert_eq!(
+            selected_argument(Path::new("/work"), Path::new("/elsewhere/file")),
+            PathBuf::from("/elsewhere/file")
+        );
+        assert_eq!(
+            selected_argument(Path::new("/work"), Path::new("relative/file")),
+            PathBuf::from("/work/relative/file")
+        );
     }
 
     #[test]

@@ -31,6 +31,14 @@ pub(super) enum BrowserFocus {
     BottomBar,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FocusDirection {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
 impl BrowserFocus {
     const ORDER: [Self; 5] = [
         Self::Toolbar,
@@ -60,6 +68,23 @@ impl BrowserFocus {
             Self::Sidebar => "sidebar",
             Self::Entries => "files",
             Self::BottomBar => "bottom bar",
+        }
+    }
+
+    fn moved_in(self, direction: FocusDirection, tree_visible: bool) -> Self {
+        match (self, direction) {
+            (Self::Toolbar, FocusDirection::Left) if tree_visible => Self::Sidebar,
+            (Self::Toolbar, FocusDirection::Right) => Self::Location,
+            (Self::Toolbar, FocusDirection::Down) => Self::Entries,
+            (Self::Location, FocusDirection::Left) => Self::Toolbar,
+            (Self::Location, FocusDirection::Down) => Self::Entries,
+            (Self::Sidebar, FocusDirection::Right) => Self::Entries,
+            (Self::Entries, FocusDirection::Left) if tree_visible => Self::Sidebar,
+            (Self::Entries, FocusDirection::Up) => Self::Location,
+            (Self::BottomBar, FocusDirection::Left) if tree_visible => Self::Sidebar,
+            (Self::BottomBar, FocusDirection::Up) => Self::Location,
+            (Self::BottomBar, _) => Self::Entries,
+            _ => self,
         }
     }
 }
@@ -240,6 +265,10 @@ impl Presentation {
         if !tree_visible && self.focus == BrowserFocus::Sidebar {
             self.focus = self.focus.moved(reverse);
         }
+    }
+
+    pub(super) fn move_focus_in(&mut self, direction: FocusDirection, tree_visible: bool) {
+        self.focus = self.focus.moved_in(direction, tree_visible);
     }
 
     pub(super) fn focus_label(&self) -> &'static str {

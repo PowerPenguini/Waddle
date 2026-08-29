@@ -1,5 +1,16 @@
 use super::*;
 
+fn press_window_motion(app: &mut App, motion: &'static str) {
+    let control_w = keyboard::Key::Character("w".into());
+    let _ = app.handle_key(
+        control_w.clone(),
+        control_w,
+        keyboard::Modifiers::CTRL,
+        Some("\u{17}"),
+    );
+    press(app, motion);
+}
+
 #[test]
 fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
     let (mut app, _) = App::new();
@@ -31,6 +42,27 @@ fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
     assert!(app.grid.context_menu().is_none());
     assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+}
+
+#[test]
+fn control_w_hjkl_moves_spatially_without_targeting_the_bottom_bar() {
+    let (mut app, _) = App::new();
+
+    press_window_motion(&mut app, "h");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+    press_window_motion(&mut app, "l");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    press_window_motion(&mut app, "k");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Location);
+    press_window_motion(&mut app, "h");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Toolbar);
+    press_window_motion(&mut app, "j");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+
+    app.presentation.set_focus(BrowserFocus::BottomBar);
+    press_window_motion(&mut app, "j");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.presentation.status(), "Focus: files");
 }
 
 #[test]
@@ -112,17 +144,18 @@ fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
     app.move_browser_focus(true);
     assert_eq!(app.presentation.focus(), BrowserFocus::Location);
 
-    let control_w = keyboard::Key::Character("w".into());
-    let _ = app.handle_key(
-        control_w.clone(),
-        control_w,
-        keyboard::Modifiers::CTRL,
-        Some("\u{17}"),
-    );
-    press(&mut app, "e");
+    app.presentation.set_focus(BrowserFocus::Entries);
+    press_window_motion(&mut app, "h");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+
+    press_window_motion(&mut app, "e");
     assert!(app.view_preferences.tree_visible());
     assert_eq!(app.grid.sidebar_width(), SIDEBAR_WIDTH);
     assert_eq!(app.presentation.status(), "Tree shown");
+
+    app.presentation.set_focus(BrowserFocus::Entries);
+    press_window_motion(&mut app, "h");
+    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
 }
 
 #[test]
