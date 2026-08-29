@@ -582,10 +582,56 @@ impl<'a> View<'a> {
         let Some(bounds) = self.app.grid.marquee_bounds(self.app.status_height()) else {
             return stack![area].into();
         };
-        let selection = container(Space::new())
+        let accent = self.accent_color();
+        let fill: Element<'_, Message> = container(Space::new())
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| marquee_style(accent))
+            .into();
+        let left: Element<'_, Message> = container(Space::new())
+            .width(1)
+            .height(Fill)
+            .style(move |_| solid_background_style(accent))
+            .into();
+        let right: Element<'_, Message> = container(
+            container(Space::new())
+                .width(1)
+                .height(Fill)
+                .style(move |_| solid_background_style(accent)),
+        )
+        .align_right(Fill)
+        .height(Fill)
+        .into();
+        let mut selection_layers = vec![fill, left, right];
+        if !self
+            .app
+            .grid
+            .marquee_bottom_clipped(self.app.status_height())
+        {
+            selection_layers.push(
+                container(
+                    container(Space::new())
+                        .width(Fill)
+                        .height(1)
+                        .style(move |_| solid_background_style(accent)),
+                )
+                .width(Fill)
+                .align_bottom(Fill)
+                .into(),
+            );
+        }
+        if !self.app.grid.marquee_top_clipped() {
+            selection_layers.push(
+                container(Space::new())
+                    .width(Fill)
+                    .height(1)
+                    .style(move |_| solid_background_style(accent))
+                    .into(),
+            );
+        }
+        let selection = stack(selection_layers)
             .width(bounds.width)
-            .height(bounds.height)
-            .style(move |_| marquee_style(self.accent_color()));
+            .height(bounds.height);
         let overlay = column![
             Space::new().height(bounds.y),
             row![

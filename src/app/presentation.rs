@@ -907,13 +907,7 @@ pub(super) fn is_high_contrast_theme(theme: &Theme) -> bool {
 }
 
 pub(super) fn marquee_style(accent: Color) -> container::Style {
-    container::Style::default()
-        .background(with_alpha(accent, 0.18))
-        .border(Border {
-            width: 1.0,
-            color: accent,
-            ..Border::default()
-        })
+    container::Style::default().background(with_alpha(accent, 0.18))
 }
 
 pub(super) fn themed_svg(icon: &'static [u8], size: f32, color: Color) -> widget::Svg<'static> {
