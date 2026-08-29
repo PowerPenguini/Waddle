@@ -741,10 +741,11 @@ impl GridInteraction {
             (self.window_size.width - origin.x).max(0.0),
             (self.window_size.height - origin.y - status_height).max(0.0),
         );
+        let entries_top = (LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT).min(size.height);
         let left = (start.x.min(marquee.current.x) - origin.x).clamp(0.0, size.width);
         let right = (start.x.max(marquee.current.x) - origin.x).clamp(0.0, size.width);
-        let top = (start.y.min(marquee.current.y) - origin.y).clamp(0.0, size.height);
-        let bottom = (start.y.max(marquee.current.y) - origin.y).clamp(0.0, size.height);
+        let top = (start.y.min(marquee.current.y) - origin.y).clamp(entries_top, size.height);
+        let bottom = (start.y.max(marquee.current.y) - origin.y).clamp(entries_top, size.height);
         Some(Rectangle::new(
             Point::new(left, top),
             Size::new(right - left, bottom - top),
@@ -1491,7 +1492,26 @@ mod tests {
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
             [0, 1, 5, 6, 10, 11, 15, 16, 20, 21, 25, 26]
         );
-        assert_eq!(grid.marquee_bounds(status_height).unwrap().y, 0.0);
+        assert_eq!(
+            grid.marquee_bounds(status_height).unwrap().y,
+            LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
+        );
+    }
+
+    #[test]
+    fn scrolled_marquee_stays_below_the_sort_header() {
+        let mut grid = GridInteraction::default();
+        let status_height = 25.0;
+        let start = Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top() + 2.0);
+        assert!(grid.start_marquee(start, 30, status_height, true));
+        grid.move_cursor(Point::new(400.0, 600.0), 30);
+
+        grid.scroll_entries(TILE_ROW_HEIGHT, Instant::now(), 30);
+
+        assert_eq!(
+            grid.marquee_bounds(status_height).unwrap().y,
+            LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
+        );
     }
 
     #[test]
