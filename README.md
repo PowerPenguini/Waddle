@@ -25,7 +25,7 @@ It is built for local Linux files and takes file safety seriously. Copying or mo
 shows progress and conflicts. Partial failures remain visible. Undo refuses to overwrite changes
 made after the original operation.
 
-> Waddle is currently a 0.0.2 preview. Most of the planned 1.0 experience is implemented, but
+> Waddle is currently a 0.0.3 preview. Most of the planned 1.0 experience is implemented, but
 > compatibility and package testing still need to finish before the first stable release.
 
 ## Why Waddle
