@@ -691,13 +691,15 @@ pub(super) fn browser_background_style(theme: &Theme) -> container::Style {
     container::Style::default().background(theme.palette().background)
 }
 
+const HIDDEN_ENTRY_OPACITY: f32 = 0.50;
+
 pub(super) fn entry_content_opacity(
     hidden: bool,
     emphasized: bool,
     reduced_transparency: bool,
 ) -> f32 {
     if hidden && !emphasized && !reduced_transparency {
-        0.70
+        HIDDEN_ENTRY_OPACITY
     } else {
         1.0
     }
@@ -1121,12 +1123,12 @@ mod tests {
     #[test]
     fn hidden_entry_opacity_yields_to_interaction_and_accessibility() {
         assert_eq!(entry_content_opacity(false, false, false), 1.0);
-        assert_eq!(entry_content_opacity(true, false, false), 0.70);
+        assert_eq!(entry_content_opacity(true, false, false), 0.50);
         assert_eq!(entry_content_opacity(true, true, false), 1.0);
         assert_eq!(entry_content_opacity(true, false, true), 1.0);
 
-        let color = apply_opacity(Color::from_rgba8(10, 20, 30, 0.5), 0.70);
-        assert!((color.a - 0.35).abs() < f32::EPSILON);
+        let color = apply_opacity(Color::from_rgba8(10, 20, 30, 0.5), 0.50);
+        assert!((color.a - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]
