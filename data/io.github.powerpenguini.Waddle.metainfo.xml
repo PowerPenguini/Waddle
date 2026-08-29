@@ -27,7 +27,7 @@
         <ul>
           <li>Reveal the exact files requested by browsers and desktop integrations.</li>
           <li>Preserve multi-selection for context menus and make Vim-style Trash and Cut flows more reliable.</li>
-          <li>Clip long sidebar folder names with an ellipsis.</li>
+          <li>Clip long sidebar folder names with an ellipsis and make hidden files more transparent.</li>
         </ul>
       </description>
     </release>
