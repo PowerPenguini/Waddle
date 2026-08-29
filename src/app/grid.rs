@@ -752,6 +752,27 @@ impl GridInteraction {
         ))
     }
 
+    pub(super) fn marquee_top_clipped(&self) -> bool {
+        let Some(marquee) = self.marquee.as_ref() else {
+            return false;
+        };
+        let start = marquee.start_in_viewport(self.scroll_y);
+        let origin_y = TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT;
+        let top = start.y.min(marquee.current.y) - origin_y;
+        top < LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
+    }
+
+    pub(super) fn marquee_bottom_clipped(&self, status_height: f32) -> bool {
+        let Some(marquee) = self.marquee.as_ref() else {
+            return false;
+        };
+        let start = marquee.start_in_viewport(self.scroll_y);
+        let origin_y = TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT;
+        let bottom = start.y.max(marquee.current.y) - origin_y;
+        let viewport_bottom = (self.window_size.height - origin_y - status_height).max(0.0);
+        bottom > viewport_bottom
+    }
+
     fn columns(&self) -> usize {
         if self.list_mode {
             return 1;
@@ -1505,6 +1526,7 @@ mod tests {
         let start = Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top() + 2.0);
         assert!(grid.start_marquee(start, 30, status_height, true));
         grid.move_cursor(Point::new(400.0, 600.0), 30);
+        assert!(!grid.marquee_top_clipped());
 
         grid.scroll_entries(TILE_ROW_HEIGHT, Instant::now(), 30);
 
@@ -1512,6 +1534,25 @@ mod tests {
             grid.marquee_bounds(status_height).unwrap().y,
             LIST_VIEW_TOP_INSET + LIST_HEADER_HEIGHT
         );
+        assert!(grid.marquee_top_clipped());
+    }
+
+    #[test]
+    fn upward_scrolled_marquee_has_an_open_bottom_edge() {
+        let mut grid = GridInteraction::default();
+        let status_height = 25.0;
+        grid.set_scroll(TILE_ROW_HEIGHT);
+        let start = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0,
+            grid.window_size.height - status_height - 2.0,
+        );
+        assert!(grid.start_marquee(start, 30, status_height, true));
+        grid.move_cursor(Point::new(400.0, content_top() + 2.0), 30);
+        assert!(!grid.marquee_bottom_clipped(status_height));
+
+        grid.scroll_entries(-TILE_ROW_HEIGHT, Instant::now(), 30);
+
+        assert!(grid.marquee_bottom_clipped(status_height));
     }
 
     #[test]

@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.3" date="2026-08-29">
+      <description>
+        <ul>
+          <li>Add Vim-style Ctrl+W directional focus and selected-file variables for shell commands.</li>
+          <li>Auto-scroll marquee selection at viewport edges while preserving its anchor and final scroll position.</li>
+          <li>Keep marquee borders aligned with the visible file area when selection extends beyond it.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.2" date="2026-08-27">
       <description>
         <ul>
