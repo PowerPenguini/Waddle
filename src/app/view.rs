@@ -419,14 +419,7 @@ impl<'a> View<'a> {
         let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
             self.empty_folder_state()
         } else {
-            container(scroll)
-                .padding(Padding {
-                    top: CONTENT_GUTTER,
-                    ..Padding::ZERO
-                })
-                .width(Fill)
-                .height(Fill)
-                .into()
+            container(scroll).width(Fill).height(Fill).into()
         };
         let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
             Row::new()
@@ -446,9 +439,9 @@ impl<'a> View<'a> {
                 entries,
             ])
             .padding(Padding {
-                top: LIST_VIEW_TOP_INSET,
+                top: 0.0,
                 right: CONTENT_GUTTER,
-                bottom: CONTENT_GUTTER,
+                bottom: 0.0,
                 left: CONTENT_GUTTER,
             })
             .width(Fill)

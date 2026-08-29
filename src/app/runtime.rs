@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use iced::{
     Task, event, keyboard, mouse,
     time::Instant,
-    widget::{self, Id},
+    widget::{self, Id, scrollable},
     window,
 };
 
@@ -13,7 +13,7 @@ use super::{
     App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
     DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, Scrollbar, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
+    NavigationTransition, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
     find_window_after_delay, location_monitoring, native_clipboard, transfer_integration,
     transfer_session,
 };
@@ -199,7 +199,7 @@ impl App {
             Message::SidebarScrolled(y) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
-                self.grid.scroll(Scrollbar::Sidebar, y, now);
+                self.grid.scroll_sidebar(y, now);
                 self.update_drag_hover(self.grid.cursor());
                 Task::none()
             }
@@ -314,7 +314,8 @@ impl App {
             Message::GridScrolled(y) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
-                self.grid.scroll(Scrollbar::Entries, y, now);
+                self.grid
+                    .scroll_entries(y, now, self.navigation.entries().len());
                 self.update_drag_hover(self.grid.cursor());
                 self.load_visible_thumbnails()
             }
@@ -412,7 +413,7 @@ impl App {
             }
             Message::AnimationFrame(now) => {
                 self.presentation.tick(now);
-                self.tick_drag_hover(now)
+                Task::batch([self.tick_marquee_autoscroll(), self.tick_drag_hover(now)])
             }
             Message::RenameChanged(value) => {
                 if self.browser_input.mode() == InputMode::Rename {
@@ -455,6 +456,17 @@ impl App {
             }
             Message::Noop => Task::none(),
         }
+    }
+
+    fn tick_marquee_autoscroll(&self) -> Task<Message> {
+        let delta = self.grid.marquee_autoscroll(self.status_height());
+        if delta.abs() <= f32::EPSILON {
+            return Task::none();
+        }
+        widget::operation::scroll_by(
+            Id::new(super::GRID_SCROLL_ID),
+            scrollable::AbsoluteOffset { x: 0.0, y: delta },
+        )
     }
 
     pub(super) fn handle_event(

@@ -407,7 +407,7 @@ impl App {
         let animation = if self.presentation.animation_active(
             reduced_motion,
             self.spinner_active(),
-            self.drag_in_progress(),
+            self.drag_in_progress() || self.grid.marquee_active(),
             scrollbar_visible,
         ) {
             time::every(if reduced_motion {

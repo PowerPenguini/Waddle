@@ -22,6 +22,8 @@ pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 const TILE_PITCH: f32 = 112.0;
 const TREE_TOP: f32 = 44.0;
 const TREE_ROW_HEIGHT: f32 = 32.0;
+const AUTOSCROLL_EDGE: f32 = 44.0;
+const AUTOSCROLL_STEP: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DropZone {
@@ -200,17 +202,15 @@ impl GridInteraction {
         }
     }
 
-    pub(super) fn scroll(&mut self, scrollbar: Scrollbar, offset: f32, now: Instant) {
-        match scrollbar {
-            Scrollbar::Sidebar => {
-                self.sidebar_scrollbar.show(now);
-                self.sidebar_scroll_y = offset.max(0.0);
-            }
-            Scrollbar::Entries => {
-                self.entry_scrollbar.show(now);
-                self.scroll_y = offset.max(0.0);
-            }
-        }
+    pub(super) fn scroll_sidebar(&mut self, offset: f32, now: Instant) {
+        self.sidebar_scrollbar.show(now);
+        self.sidebar_scroll_y = offset.max(0.0);
+    }
+
+    pub(super) fn scroll_entries(&mut self, offset: f32, now: Instant, entry_count: usize) {
+        self.entry_scrollbar.show(now);
+        self.scroll_y = offset.max(0.0);
+        self.update_marquee_selection(entry_count);
     }
 
     fn settle_scrollbars(&mut self, now: Instant) {
@@ -721,6 +721,10 @@ impl GridInteraction {
         self.marquee.take().is_some()
     }
 
+    pub(super) fn marquee_active(&self) -> bool {
+        self.marquee.is_some()
+    }
+
     pub(super) fn marquee_bounds(&self, status_height: f32) -> Option<Rectangle> {
         let marquee = self.marquee.as_ref()?;
         let origin = Point::new(self.sidebar_width, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT);
@@ -762,12 +766,10 @@ impl GridInteraction {
     pub(super) fn visible_range(&self, entry_count: usize, status_height: f32) -> VisibleRange {
         let columns = self.columns();
         let total_rows = entry_count.div_ceil(columns);
-        let viewport_height = (self.window_size.height
+        let viewport_height = self.window_size.height
             - TOOLBAR_HEIGHT
             - TOOLBAR_DIVIDER_HEIGHT
             - status_height
-            - 2.0 * CONTENT_GUTTER
-            - LIST_VIEW_TOP_INSET)
             - LIST_HEADER_HEIGHT;
         let viewport_height = viewport_height.max(TILE_ROW_HEIGHT);
         let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
@@ -841,24 +843,30 @@ impl GridInteraction {
     }
 
     pub(super) fn drag_autoscroll(&self, status_height: f32) -> (f32, f32) {
-        const EDGE: f32 = 44.0;
-        const STEP: f32 = 12.0;
         let top = TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT;
         let bottom = self.window_size.height - status_height;
-        let direction = |y: f32, top: f32, bottom: f32| {
-            if y < top + EDGE {
-                -STEP * (1.0 - ((y - top).max(0.0) / EDGE))
-            } else if y > bottom - EDGE {
-                STEP * (1.0 - ((bottom - y).max(0.0) / EDGE))
-            } else {
-                0.0
-            }
-        };
         if self.cursor.x < self.sidebar_width {
-            (0.0, direction(self.cursor.y, 30.0, self.window_size.height))
+            (
+                0.0,
+                edge_autoscroll_delta(self.cursor.y, 30.0, self.window_size.height),
+            )
         } else {
-            (direction(self.cursor.y, top, bottom), 0.0)
+            (edge_autoscroll_delta(self.cursor.y, top, bottom), 0.0)
         }
+    }
+
+    pub(super) fn marquee_autoscroll(&self, status_height: f32) -> f32 {
+        if !self.marquee_active()
+            || self.cursor.x < self.sidebar_width
+            || self.cursor.x >= self.window_size.width
+        {
+            return 0.0;
+        }
+        edge_autoscroll_delta(
+            self.cursor.y,
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
+            self.window_size.height - status_height,
+        )
     }
 
     pub(super) fn selected_items<T: Clone>(&self, items: &[T]) -> Vec<T> {
@@ -888,7 +896,7 @@ impl GridInteraction {
             || point.x >= self.window_size.width
             || over_entry_scrollbar
             || point.y < self.entries_top()
-            || point.y >= self.window_size.height - status_height - CONTENT_GUTTER
+            || point.y >= self.window_size.height - status_height
         {
             return false;
         }
@@ -1067,6 +1075,16 @@ impl GridInteraction {
     }
 }
 
+fn edge_autoscroll_delta(y: f32, top: f32, bottom: f32) -> f32 {
+    if y < top + AUTOSCROLL_EDGE {
+        -AUTOSCROLL_STEP * (1.0 - ((y - top).max(0.0) / AUTOSCROLL_EDGE))
+    } else if y > bottom - AUTOSCROLL_EDGE {
+        AUTOSCROLL_STEP * (1.0 - ((bottom - y).max(0.0) / AUTOSCROLL_EDGE))
+    } else {
+        0.0
+    }
+}
+
 fn rectangles_intersect(left: Rectangle, right: Rectangle) -> bool {
     left.x < right.x + right.width
         && left.x + left.width > right.x
@@ -1075,11 +1093,7 @@ fn rectangles_intersect(left: Rectangle, right: Rectangle) -> bool {
 }
 
 fn content_top() -> f32 {
-    TOOLBAR_HEIGHT
-        + TOOLBAR_DIVIDER_HEIGHT
-        + LIST_VIEW_TOP_INSET
-        + LIST_HEADER_HEIGHT
-        + CONTENT_GUTTER
+    TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_HEADER_HEIGHT
 }
 
 #[cfg(test)]
@@ -1091,13 +1105,21 @@ mod tests {
     }
 
     #[test]
+    fn first_grid_row_starts_immediately_below_the_sort_header() {
+        assert_eq!(
+            content_top(),
+            TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + LIST_HEADER_HEIGHT
+        );
+    }
+
+    #[test]
     fn scrollbars_keep_their_timing_inside_grid_interaction() {
         let now = Instant::now();
         let mut grid = grid();
 
         assert!(!grid.scrollbar_visible());
         assert_eq!(grid.scrollbar_opacity(Scrollbar::Entries, now, false), 0.0);
-        grid.scroll(Scrollbar::Entries, 0.0, now);
+        grid.scroll_entries(0.0, now, 0);
         assert!(grid.scrollbar_visible());
         assert_eq!(
             grid.scrollbar_opacity(Scrollbar::Entries, now + SCROLLBAR_FADE_IN / 2, false),
@@ -1411,6 +1433,56 @@ mod tests {
     }
 
     #[test]
+    fn marquee_at_the_content_edge_requests_autoscroll_only_while_active() {
+        let mut grid = GridInteraction::default();
+        let status_height = 25.0;
+        let start = Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top() + 2.0);
+        assert!(grid.start_marquee(start, 100, status_height, true));
+
+        grid.move_cursor(
+            Point::new(400.0, grid.window_size.height - status_height - 1.0),
+            100,
+        );
+        assert!(grid.marquee_autoscroll(status_height) > 0.0);
+
+        grid.move_cursor(
+            Point::new(400.0, TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + 1.0),
+            100,
+        );
+        assert!(grid.marquee_autoscroll(status_height) < 0.0);
+
+        grid.move_cursor(Point::new(30.0, grid.window_size.height - 1.0), 100);
+        assert_eq!(grid.marquee_autoscroll(status_height), 0.0);
+
+        assert!(grid.finish_marquee());
+        grid.move_cursor(
+            Point::new(400.0, grid.window_size.height - status_height - 1.0),
+            100,
+        );
+        assert_eq!(grid.marquee_autoscroll(status_height), 0.0);
+    }
+
+    #[test]
+    fn entry_scroll_recomputes_an_active_marquee_selection() {
+        let mut grid = GridInteraction::default();
+        let status_height = 25.0;
+        let start = Point::new(SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0, content_top() + 2.0);
+        assert!(grid.start_marquee(start, 30, status_height, true));
+        grid.move_cursor(Point::new(400.0, 600.0), 30);
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [0, 1, 5, 6, 10, 11, 15, 16, 20, 21]
+        );
+
+        grid.scroll_entries(TILE_ROW_HEIGHT, Instant::now(), 30);
+
+        assert_eq!(
+            grid.selected_indices().iter().copied().collect::<Vec<_>>(),
+            [5, 6, 10, 11, 15, 16, 20, 21, 25, 26]
+        );
+    }
+
+    #[test]
     fn marquee_maps_a_rectangular_grid_range_through_the_public_interaction() {
         let mut grid = grid();
         let content_top = content_top();
@@ -1491,15 +1563,31 @@ mod tests {
     }
 
     #[test]
+    fn marquee_can_start_next_to_the_status_bar_without_a_bottom_gutter() {
+        let mut grid = GridInteraction::default();
+        let status_height = 25.0;
+        let point = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0,
+            grid.window_size.height - status_height - 1.0,
+        );
+
+        assert!(grid.start_marquee(point, 0, status_height, true));
+    }
+
+    #[test]
     fn grid_local_pointer_coordinates_update_the_window_marquee() {
         let mut grid = GridInteraction::default();
         let start = Point::new(300.0, content_top() + TILE_HEIGHT + 2.0);
         assert!(grid.start_marquee(start, 10, 25.0, true));
 
-        assert!(grid.move_pointer_in_grid(Point::new(203.0, 53.0 + LIST_HEADER_HEIGHT), 10));
+        let pointer = Point::new(203.0, 53.0 + LIST_HEADER_HEIGHT);
+        assert!(grid.move_pointer_in_grid(pointer, 10));
         let bounds = grid.marquee_bounds(25.0).unwrap();
         assert_eq!(bounds.width, 123.0);
-        assert_eq!(bounds.height, 77.0);
+        assert_eq!(
+            bounds.height,
+            start.y - pointer.y - TOOLBAR_HEIGHT - TOOLBAR_DIVIDER_HEIGHT
+        );
     }
 
     #[test]

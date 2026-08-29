@@ -361,15 +361,15 @@ impl Presentation {
         &self,
         reduced_motion: bool,
         spinner_active: bool,
-        drag_active: bool,
+        pointer_activity: bool,
         scrollbar_visible: bool,
     ) -> bool {
         if reduced_motion {
-            return drag_active || scrollbar_visible || self.copy_feedback.active(self.now);
+            return pointer_activity || scrollbar_visible || self.copy_feedback.active(self.now);
         }
         self.output_expansion.is_animating(self.now)
             || spinner_active
-            || drag_active
+            || pointer_activity
             || scrollbar_visible
             || self.copy_feedback.active(self.now)
     }
