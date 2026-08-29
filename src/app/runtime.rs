@@ -1,6 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
-use iced::{Task, event, keyboard, mouse, time::Instant, window};
+use iced::{
+    Task, event, keyboard, mouse,
+    time::Instant,
+    widget::{self, Id},
+    window,
+};
 
 use crate::{fs, theme, transfer::Event as TransferEvent};
 
@@ -158,19 +163,33 @@ impl App {
                 self.location_input = value;
                 Task::none()
             }
+            Message::LocationFocusChanged(focused) => {
+                self.set_location_input_focus(focused);
+                if focused {
+                    widget::operation::focus(Id::new(super::LOCATION_ID))
+                } else {
+                    Task::none()
+                }
+            }
             Message::LocationSubmitted => {
                 self.browser_input.leave_mode();
+                self.location_input_focused = false;
                 let input = PathBuf::from(&self.location_input);
                 let requested = if input.is_absolute() {
                     input
                 } else {
                     self.navigation.current().join(input)
                 };
-                self.transition_navigation(NavigationTransition::Open {
-                    requested,
-                    remember: true,
-                    select: None,
-                })
+                Task::batch([
+                    self.transition_navigation(NavigationTransition::Open {
+                        requested,
+                        remember: true,
+                        select: None,
+                    }),
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    ),
+                ])
             }
             Message::TreeRow(id) => {
                 self.presentation.set_focus(BrowserFocus::Sidebar);
@@ -445,6 +464,10 @@ impl App {
     ) -> Task<Message> {
         let refocus_bottom_input =
             matches!(event, iced::Event::Mouse(mouse::Event::ButtonPressed(_)));
+        let refresh_location_focus = matches!(
+            event,
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+        );
         let task = match event {
             iced::Event::Window(window::Event::FileHovered(path)) => match self
                 .transfers
@@ -578,11 +601,20 @@ impl App {
             }
             _ => Task::none(),
         };
-        if refocus_bottom_input {
-            Task::batch([task, self.refocus_bottom_input()])
-        } else {
-            task
-        }
+        Task::batch([
+            task,
+            if refocus_bottom_input {
+                self.refocus_bottom_input()
+            } else {
+                Task::none()
+            },
+            if refresh_location_focus {
+                widget::operation::is_focused(Id::new(super::LOCATION_ID))
+                    .map(Message::LocationFocusChanged)
+            } else {
+                Task::none()
+            },
+        ])
     }
 
     fn press_mouse_back(&mut self) -> Task<Message> {
@@ -747,6 +779,7 @@ impl App {
             }
             InputIntent::CancelOpenWith => self.cancel_open_with(),
             InputIntent::CancelLocation => {
+                self.location_input_focused = false;
                 self.location_input = self.navigation.current().display().to_string();
                 self.startup
                     .remember_directory(self.navigation.current().to_path_buf());
@@ -848,6 +881,19 @@ impl App {
 
     pub(super) fn focus_label(&self) -> &'static str {
         self.presentation.focus_label()
+    }
+
+    fn set_location_input_focus(&mut self, focused: bool) {
+        if focused {
+            if !self.location_input_focused {
+                self.location_input = self.navigation.current().display().to_string();
+            }
+            self.browser_input.enter(InputMode::Location);
+        } else if self.location_input_focused && self.browser_input.mode() == InputMode::Location {
+            self.browser_input.leave_mode();
+            self.location_input = self.navigation.current().display().to_string();
+        }
+        self.location_input_focused = focused;
     }
 
     pub(super) fn move_browser_focus(&mut self, reverse: bool) {

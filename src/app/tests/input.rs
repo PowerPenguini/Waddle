@@ -381,6 +381,35 @@ fn command_submit_enter_does_not_activate_the_selected_entry() {
 }
 
 #[test]
+fn focused_location_input_owns_control_a_even_when_the_event_is_ignored() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two"), entry("three")]);
+    app.grid
+        .select_only(Some(1), app.navigation.entries().len());
+    let focus = app.update(Message::LocationFocusChanged(true));
+    let key = keyboard::Key::Character("a".into());
+
+    let _ = app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::KeyA),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        }),
+        event::Status::Ignored,
+    );
+
+    assert_eq!(app.browser_input.mode(), InputMode::Location);
+    assert_eq!(focus.units(), 1);
+    assert_eq!(app.grid.selected_indices(), &[1].into_iter().collect());
+}
+
+#[test]
 fn captured_mouse_click_refocuses_an_active_bottom_input() {
     let (mut app, _) = App::new();
     let _ = app.begin_command(':');
@@ -390,14 +419,14 @@ fn captured_mouse_click_refocuses_an_active_bottom_input() {
         event::Status::Captured,
     );
 
-    assert_eq!(task.units(), 1);
+    assert_eq!(task.units(), 2);
 
     let (mut browser, _) = App::new();
     let task = browser.handle_event(
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
         event::Status::Captured,
     );
-    assert_eq!(task.units(), 0);
+    assert_eq!(task.units(), 1);
 }
 
 #[test]

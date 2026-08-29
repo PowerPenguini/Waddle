@@ -330,6 +330,7 @@ impl App {
             self.cancel_rename();
         }
         self.location_input = self.navigation.current().display().to_string();
+        self.location_input_focused = true;
         self.browser_input.enter(InputMode::Location);
         widget::operation::focus(Id::new(LOCATION_ID))
     }
