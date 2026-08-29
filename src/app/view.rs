@@ -419,14 +419,7 @@ impl<'a> View<'a> {
         let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
             self.empty_folder_state()
         } else {
-            container(scroll)
-                .padding(Padding {
-                    top: CONTENT_GUTTER,
-                    ..Padding::ZERO
-                })
-                .width(Fill)
-                .height(Fill)
-                .into()
+            container(scroll).width(Fill).height(Fill).into()
         };
         let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
             Row::new()
@@ -448,7 +441,7 @@ impl<'a> View<'a> {
             .padding(Padding {
                 top: LIST_VIEW_TOP_INSET,
                 right: CONTENT_GUTTER,
-                bottom: CONTENT_GUTTER,
+                bottom: 0.0,
                 left: CONTENT_GUTTER,
             })
             .width(Fill)
@@ -587,7 +580,7 @@ impl<'a> View<'a> {
 
     fn with_marquee(self, area: Element<'a, Message>) -> Element<'a, Message> {
         let Some(bounds) = self.app.grid.marquee_bounds(self.app.status_height()) else {
-            return area;
+            return stack![area].into();
         };
         let selection = container(Space::new())
             .width(bounds.width)
@@ -893,5 +886,42 @@ impl<'a> View<'a> {
         .width(Fill)
         .height(2)
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::Point;
+    use iced::advanced::widget::Tree;
+
+    use super::*;
+    use crate::app::grid::TOOLBAR_DIVIDER_HEIGHT;
+
+    #[test]
+    fn marquee_overlay_keeps_the_scrollable_widget_root_stable() {
+        let (mut app, _) = App::new();
+        let area =
+            || -> Element<'_, Message> { scrollable(Space::new()).width(Fill).height(Fill).into() };
+        let before = View::new(&app).with_marquee(area());
+        let root_tag = Tree::new(before.as_widget()).tag;
+        drop(before);
+
+        let point = Point::new(
+            SIDEBAR_WIDTH + CONTENT_GUTTER + 2.0,
+            TOOLBAR_HEIGHT
+                + TOOLBAR_DIVIDER_HEIGHT
+                + LIST_VIEW_TOP_INSET
+                + LIST_HEADER_HEIGHT
+                + 2.0,
+        );
+        assert!(app.grid.start_marquee(point, 0, app.status_height(), true));
+        let active = View::new(&app).with_marquee(area());
+
+        assert_eq!(Tree::new(active.as_widget()).tag, root_tag);
+        drop(active);
+
+        assert!(app.grid.finish_marquee());
+        let finished = View::new(&app).with_marquee(area());
+        assert_eq!(Tree::new(finished.as_widget()).tag, root_tag);
     }
 }
