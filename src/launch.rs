@@ -1,4 +1,12 @@
-use std::{ffi::OsStr, fs, path::PathBuf};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    fs,
+    io::{self, IsTerminal},
+    os::unix::process::CommandExt,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 use gio::prelude::FileExt;
 
@@ -6,6 +14,60 @@ use gio::prelude::FileExt;
 pub(crate) struct Target {
     pub(crate) directory: PathBuf,
     pub(crate) selected: Vec<PathBuf>,
+}
+
+pub(crate) fn detach_terminal_invocation() -> io::Result<bool> {
+    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    detach_if_terminal(
+        io::stdout().is_terminal(),
+        &arguments,
+        &CurrentExecutableLauncher,
+    )
+}
+
+trait DetachedLauncher {
+    fn launch(&self, arguments: &[OsString]) -> io::Result<()>;
+}
+
+struct CurrentExecutableLauncher;
+
+impl DetachedLauncher for CurrentExecutableLauncher {
+    fn launch(&self, arguments: &[OsString]) -> io::Result<()> {
+        spawn_detached(&env::current_exe()?, arguments)
+    }
+}
+
+fn detach_if_terminal(
+    stdout_is_terminal: bool,
+    arguments: &[OsString],
+    launcher: &impl DetachedLauncher,
+) -> io::Result<bool> {
+    if !stdout_is_terminal {
+        return Ok(false);
+    }
+    launcher.launch(arguments)?;
+    Ok(true)
+}
+
+fn spawn_detached(executable: &Path, arguments: &[OsString]) -> io::Result<()> {
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and this closure runs in the child
+    // after `fork` and before `exec`, without touching shared Rust state.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    command.spawn().map(|_| ())
 }
 
 pub(crate) fn location(argument: &OsStr) -> Result<Target, String> {
@@ -96,7 +158,57 @@ fn canonicalize(path: &std::path::Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, os::unix::ffi::OsStringExt};
+
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingLauncher {
+        launches: RefCell<Vec<Vec<OsString>>>,
+    }
+
+    impl DetachedLauncher for RecordingLauncher {
+        fn launch(&self, arguments: &[OsString]) -> io::Result<()> {
+            self.launches.borrow_mut().push(arguments.to_vec());
+            Ok(())
+        }
+    }
+
+    struct FailingLauncher;
+
+    impl DetachedLauncher for FailingLauncher {
+        fn launch(&self, _arguments: &[OsString]) -> io::Result<()> {
+            Err(io::Error::other("could not spawn Waddle"))
+        }
+    }
+
+    #[test]
+    fn terminal_invocations_detach_with_unchanged_arguments() {
+        let arguments = vec![
+            OsString::from("--show-items"),
+            OsString::from_vec(b"/tmp/non-utf8-\xff".to_vec()),
+        ];
+        let launcher = RecordingLauncher::default();
+
+        assert!(detach_if_terminal(true, &arguments, &launcher).unwrap());
+        assert_eq!(*launcher.launches.borrow(), vec![arguments]);
+    }
+
+    #[test]
+    fn non_terminal_invocations_stay_in_the_current_process() {
+        let launcher = RecordingLauncher::default();
+
+        assert!(!detach_if_terminal(false, &[], &launcher).unwrap());
+        assert!(launcher.launches.borrow().is_empty());
+    }
+
+    #[test]
+    fn terminal_launch_failures_are_returned_to_the_caller() {
+        let error = detach_if_terminal(true, &[], &FailingLauncher).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "could not spawn Waddle");
+    }
 
     #[test]
     fn locations_open_directories_and_reveal_files_without_resolving_their_names() {

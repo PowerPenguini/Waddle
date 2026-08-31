@@ -12,6 +12,7 @@ Type: feature
 - [x] Ctrl+A, arrows, Shift-arrows, Space, Home, and End work.
 - [x] Active and selected entries remain distinct and visible.
 - [x] Large Grid interaction stays responsive.
+- [x] A stationary click in empty edge space does not trigger marquee autoscroll.
 
 ## Answer
 
@@ -21,4 +22,5 @@ keyboard movement composes with Shift without entering Visual mode. Ctrl+A and S
 the same set. These operations remain index/range based and the view still virtualizes rows, so
 they do not add per-entry widgets outside the visible window. Folders activate with one click by
 default, while files require two. `folder-click` and `file-click` configure the behaviors
-independently.
+independently. Marquee autoscroll starts only after six pixels of pointer travel, so clicking empty
+space near the top or bottom edge does not move the viewport.

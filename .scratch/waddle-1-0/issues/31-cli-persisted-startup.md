@@ -12,10 +12,12 @@ Type: feature
 - [x] Explicit input overrides remembered state.
 - [x] Geometry, last folder, views, sorting, Favorites, and Undo history persist.
 - [x] Each invocation remains an independent process and window.
+- [x] Interactive terminal launches return the prompt while the window keeps running.
 
 ## Answer
 
 CLI location resolution, remembered last folder, window size and X11 position are implemented.
 Views, sorting, Favorites, and Undo persist in their owning modules. Window size, X11 position, and
 the last usable folder persist in startup state. An explicit CLI path or local file URI wins over
-the remembered location, and a file URI opens its containing folder.
+the remembered location, and a file URI opens its containing folder. Interactive terminal
+invocations detach the GUI after a successful spawn without changing desktop or D-Bus launches.

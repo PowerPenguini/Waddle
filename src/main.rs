@@ -12,6 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if file_manager_service::requested() {
         return file_manager_service::run();
     }
+    if launch::detach_terminal_invocation()? {
+        return Ok(());
+    }
     prefer_transparent_wayland_backend();
     app::run()?;
     Ok(())
