@@ -3,16 +3,17 @@ use std::{path::PathBuf, time::Duration};
 use gio::prelude::*;
 use iced::{
     Task,
-    widget::{self, Id, scrollable},
+    widget::{self, Id},
 };
 
 use crate::fs::{self, FileEntry};
 
 use super::{
-    App, Completion, DisplayedLocation, GRID_SCROLL_ID, InputMode, LOCATION_ID, Message, Motion,
+    App, Completion, DisplayedLocation, InputMode, LOCATION_ID, Message, Motion,
     NavigationCompletion, NavigationOutcome, NavigationRequest, NavigationTransition,
-    OperationKind, SEARCH_ID, SEARCH_LIMIT, SearchUpdate, TransferAction, TransferDragRelease,
-    TreeActivation, TreeLoadRequest, TreeMoveOutcome, thumbnail,
+    OperationKind, SEARCH_ID, SEARCH_LIMIT, ScrollTarget, SearchUpdate, TransferAction,
+    TransferDragRelease, TreeActivation, TreeLoadRequest, TreeMoveOutcome, runtime::scroll_command,
+    thumbnail,
 };
 
 impl App {
@@ -442,18 +443,32 @@ impl App {
             self.navigation.entries().len(),
             self.status_height(),
         );
-        Task::batch([self.schedule_details(), self.scroll_to_selected()])
+        Task::batch([
+            self.schedule_details(),
+            self.scroll_to_selected_with(motion.is_directional()),
+        ])
     }
 
-    pub(super) fn scroll_to_selected(&self) -> Task<Message> {
+    pub(super) fn scroll_to_selected(&mut self) -> Task<Message> {
+        self.scroll_to_selected_with(false)
+    }
+
+    pub(super) fn scroll_to_selected_with(&mut self, directional: bool) -> Task<Message> {
         let Some(index) = self.grid.selected_entry() else {
             return Task::none();
         };
-        let y = self.grid.scroll_target(index);
-        widget::operation::scroll_to(
-            Id::new(GRID_SCROLL_ID),
-            scrollable::AbsoluteOffset { x: 0.0, y },
-        )
+        let y = if directional {
+            self.grid
+                .directional_scroll_target(index, self.status_height())
+        } else {
+            self.grid.scroll_target(index)
+        };
+        let smooth = directional && !self.reduced_motion();
+        self.grid
+            .scroll_to(ScrollTarget::Entries, y, smooth, iced::time::Instant::now())
+            .map_or_else(Task::none, |command| {
+                scroll_command(ScrollTarget::Entries, command)
+            })
     }
 
     pub(super) fn schedule_details(&mut self) -> Task<Message> {

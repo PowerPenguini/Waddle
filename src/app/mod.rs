@@ -17,6 +17,7 @@ mod presentation;
 mod properties;
 mod recent;
 mod runtime;
+mod scroll_motion;
 mod search;
 mod shell;
 mod startup;
@@ -29,6 +30,7 @@ mod trash;
 mod tree;
 mod view;
 mod view_preferences;
+mod wheel_area;
 
 #[cfg(target_os = "linux")]
 mod native_clipboard;
@@ -62,13 +64,13 @@ use fs::FileEntry;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
     DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
-    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT,
+    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, ScrollTarget, TILE_HEIGHT, TILE_ROW_HEIGHT,
     TILE_WIDTH, TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{
     Color, Element, Font, Point, Size, Subscription, Task, Theme, application, event, keyboard,
-    system, time, widget, window,
+    mouse, system, time, widget, window,
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
@@ -199,7 +201,13 @@ enum Message {
     LocationFocusChanged(bool),
     LocationSubmitted,
     TreeRow(u64),
-    SidebarScrolled(f32),
+    Scrolled {
+        target: ScrollTarget,
+        offset: f32,
+        maximum: f32,
+    },
+    WheelScrolled(ScrollTarget, mouse::ScrollDelta),
+    TouchpadScrolled(ScrollTarget, mouse::ScrollDelta),
     TreeLoaded {
         request: TreeLoadRequest,
         result: Result<Vec<PathBuf>, String>,
@@ -225,7 +233,6 @@ enum Message {
     ContextEmptyTrash,
     CloseContext,
     MouseBackTick(Instant),
-    GridScrolled(f32),
     ScrollToSelected,
     GridPointerMoved(Point),
     NavigationFinished {
@@ -419,12 +426,14 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         let scrollbar_visible = self.grid.scrollbar_visible();
         let reduced_motion = self.reduced_motion();
-        let animation = if self.presentation.animation_active(
-            reduced_motion,
-            self.spinner_active(),
-            self.drag_in_progress() || self.grid.marquee_drag_active(),
-            scrollbar_visible,
-        ) {
+        let smooth_scroll_active = self.grid.scroll_animation_active();
+        let animation = if smooth_scroll_active
+            || self.presentation.animation_active(
+                reduced_motion,
+                self.spinner_active(),
+                self.drag_in_progress() || self.grid.marquee_drag_active(),
+                scrollbar_visible,
+            ) {
             time::every(if reduced_motion {
                 Duration::from_millis(100)
             } else {

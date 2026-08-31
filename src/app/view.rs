@@ -11,6 +11,7 @@ use iced::{
 
 use crate::{fs, fs::FileEntry, transfer::Preview as TransferPreview};
 
+use super::wheel_area::wheel_area;
 use super::{
     App, BrowserFocus, CONTENT_GUTTER, EntryIconKind, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID,
     InputMode, LIST_COLUMN_SPACING, LIST_ENTRY_ICON_WIDTH, LIST_HEADER_HEIGHT,
@@ -18,7 +19,7 @@ use super::{
     LIST_MODIFIED_WIDTH, LIST_NAME_APPROX_CHARACTER_WIDTH, LIST_NAME_MIN_CHARACTERS,
     LIST_ROW_HEIGHT, LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH, LIST_TYPE_WIDTH,
     LIST_VIEW_TOP_INSET, LOCATION_ID, MONO_FONT, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
-    Scrollbar, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
+    ScrollTarget, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
     UI_FONT_SEMIBOLD, apply_opacity, browser_background_style, clip_file_name,
     entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg, flat_input_style,
     focus_container_style, grid_background_style, list_row_style, marquee_style, native_dnd, rgba,
@@ -36,6 +37,14 @@ fn clip_tree_label(label: &str, depth: usize) -> String {
         .saturating_sub(depth.saturating_mul(TREE_LABEL_DEPTH_CHARACTER_COST))
         .max(TREE_LABEL_MIN_CHARACTERS);
     clip_file_name(label, max_characters)
+}
+
+fn scrolled(target: ScrollTarget, viewport: scrollable::Viewport) -> Message {
+    Message::Scrolled {
+        target,
+        offset: viewport.absolute_offset().y,
+        maximum: (viewport.content_bounds().height - viewport.bounds().height).max(0.0),
+    }
 }
 
 pub(super) const GRID_SORT_CONTROLS: [(&str, fs::SortKey); 4] = [
@@ -152,10 +161,20 @@ impl<'a> View<'a> {
             rows = rows.push(self.tree_row(tree_row));
         }
         let scrollbar_opacity = self.app.grid.scrollbar_opacity(
-            Scrollbar::Sidebar,
+            ScrollTarget::Sidebar,
             self.app.presentation.now(),
             self.app.reduced_motion(),
         );
+        let scroll = scrollable(container(rows).padding(Padding {
+            top: LIST_VIEW_TOP_INSET,
+            ..Padding::ZERO
+        }))
+        .id(Id::new(SIDEBAR_SCROLL_ID))
+        .on_scroll(|viewport| scrolled(ScrollTarget::Sidebar, viewport))
+        .direction(transient_vertical_scrollbar())
+        .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
+        .height(Fill);
+        let scroll = wheel_area(scroll, ScrollTarget::Sidebar);
         let content = column![
             container(
                 text("Locations")
@@ -166,17 +185,7 @@ impl<'a> View<'a> {
             )
             .height(30)
             .center_y(30),
-            scrollable(container(rows).padding(Padding {
-                top: LIST_VIEW_TOP_INSET,
-                ..Padding::ZERO
-            }))
-            .id(Id::new(SIDEBAR_SCROLL_ID))
-            .on_scroll(|viewport| Message::SidebarScrolled(viewport.absolute_offset().y))
-            .direction(transient_vertical_scrollbar())
-            .style(move |theme, status| {
-                transient_scrollbar_style(theme, status, scrollbar_opacity)
-            })
-            .height(Fill),
+            scroll,
         ];
         container(content)
             .width(SIDEBAR_WIDTH)
@@ -421,13 +430,13 @@ impl<'a> View<'a> {
         let bottom = Space::new().width(Fill).height(visible.bottom_space);
         let content = column![top, grid, bottom];
         let scrollbar_opacity = self.app.grid.scrollbar_opacity(
-            Scrollbar::Entries,
+            ScrollTarget::Entries,
             self.app.presentation.now(),
             self.app.reduced_motion(),
         );
         let scroll = scrollable(content)
             .id(Id::new(GRID_SCROLL_ID))
-            .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
+            .on_scroll(|viewport| scrolled(ScrollTarget::Entries, viewport))
             .direction(transient_vertical_scrollbar())
             .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
             .width(Fill)
@@ -435,7 +444,10 @@ impl<'a> View<'a> {
         let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
             self.empty_folder_state()
         } else {
-            container(scroll).width(Fill).height(Fill).into()
+            wheel_area(
+                container(scroll).width(Fill).height(Fill),
+                ScrollTarget::Entries,
+            )
         };
         let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
             Row::new()
@@ -524,23 +536,23 @@ impl<'a> View<'a> {
             ));
         }
         let scrollbar_opacity = self.app.grid.scrollbar_opacity(
-            Scrollbar::Entries,
+            ScrollTarget::Entries,
             self.app.presentation.now(),
             self.app.reduced_motion(),
         );
         let entries: Element<'_, Message> = if self.shows_empty_folder_state() {
             self.empty_folder_state()
         } else {
-            scrollable(rows)
+            let scroll = scrollable(rows)
                 .id(Id::new(GRID_SCROLL_ID))
-                .on_scroll(|viewport| Message::GridScrolled(viewport.absolute_offset().y))
+                .on_scroll(|viewport| scrolled(ScrollTarget::Entries, viewport))
                 .direction(transient_vertical_scrollbar())
                 .style(move |theme, status| {
                     transient_scrollbar_style(theme, status, scrollbar_opacity)
                 })
                 .width(Fill)
-                .height(Fill)
-                .into()
+                .height(Fill);
+            wheel_area(scroll, ScrollTarget::Entries)
         };
         let area: Element<'_, Message> = mouse_area(
             container(column![

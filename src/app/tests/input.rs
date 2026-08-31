@@ -272,6 +272,45 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
 }
 
 #[test]
+fn directional_entry_keys_reach_the_penultimate_row_before_scrolling() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(
+        (0..20)
+            .map(|index| entry(&format!("{index}.txt")))
+            .collect(),
+    );
+    app.grid.select_only(Some(0), 20);
+
+    press(&mut app, "j");
+    assert_eq!(app.grid.selected_entry(), Some(5));
+    assert!(!app.grid.scroll_animation_active());
+
+    press(&mut app, "j");
+    assert_eq!(app.grid.selected_entry(), Some(10));
+    assert!(!app.grid.scroll_animation_active());
+
+    press(&mut app, "j");
+    assert_eq!(app.grid.selected_entry(), Some(15));
+    assert!(app.grid.scroll_animation_active());
+
+    press(&mut app, "g");
+    press(&mut app, "g");
+    assert_eq!(app.grid.selected_entry(), Some(0));
+    assert!(!app.grid.scroll_animation_active());
+
+    let arrow_down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+    let _ = app.handle_key(
+        arrow_down.clone(),
+        arrow_down,
+        keyboard::Modifiers::empty(),
+        None,
+    );
+    assert_eq!(app.grid.selected_entry(), Some(5));
+    assert!(!app.grid.scroll_animation_active());
+}
+
+#[test]
 fn modifier_presses_do_not_cancel_a_pending_browser_sequence() {
     let (mut app, _) = App::new();
     let shift = keyboard::Key::Named(keyboard::key::Named::Shift);

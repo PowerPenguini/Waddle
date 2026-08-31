@@ -5,7 +5,7 @@ use iced::{Point, Rectangle, Size, time::Instant};
 pub(super) use super::drag_hover::{Effect as DragHoverEffect, Target as DragHoverTarget};
 use super::{
     SCROLLBAR_FADE_IN, SCROLLBAR_FADE_OUT, SCROLLBAR_HOLD, SCROLLBAR_TRACK_WIDTH, drag_hover,
-    duration_ratio,
+    duration_ratio, scroll_motion,
 };
 
 pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
@@ -34,7 +34,7 @@ pub(super) enum DropZone {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Scrollbar {
+pub(super) enum ScrollTarget {
     Sidebar,
     Entries,
 }
@@ -131,6 +131,12 @@ pub(super) enum Motion {
     HalfPageUp,
 }
 
+impl Motion {
+    pub(super) fn is_directional(self) -> bool {
+        matches!(self, Self::Left | Self::Right | Self::Up | Self::Down)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeleteMotion {
     Current,
@@ -186,6 +192,8 @@ pub(super) struct GridInteraction {
     context_menu: Option<ContextMenu>,
     sidebar_scrollbar: ScrollbarVisibility,
     entry_scrollbar: ScrollbarVisibility,
+    sidebar_scroll: scroll_motion::Motion,
+    entry_scroll: scroll_motion::Motion,
     drag_hover: drag_hover::State,
 }
 
@@ -214,19 +222,112 @@ impl GridInteraction {
             context_menu: None,
             sidebar_scrollbar: ScrollbarVisibility::default(),
             entry_scrollbar: ScrollbarVisibility::default(),
+            sidebar_scroll: scroll_motion::Motion::default(),
+            entry_scroll: scroll_motion::Motion::default(),
             drag_hover: drag_hover::State::default(),
         }
     }
 
-    pub(super) fn scroll_sidebar(&mut self, offset: f32, now: Instant) {
-        self.sidebar_scrollbar.show(now);
-        self.sidebar_scroll_y = offset.max(0.0);
+    pub(super) fn observe_scroll(
+        &mut self,
+        target: ScrollTarget,
+        offset: f32,
+        maximum: f32,
+        now: Instant,
+        entry_count: usize,
+    ) -> bool {
+        match target {
+            ScrollTarget::Sidebar => {
+                let offset = offset.max(0.0);
+                let moved = (self.sidebar_scroll_y - offset).abs() > f32::EPSILON;
+                if moved {
+                    self.sidebar_scrollbar.show(now);
+                }
+                self.sidebar_scroll_y = offset;
+                self.sidebar_scroll.observe(offset, maximum);
+                moved
+            }
+            ScrollTarget::Entries => {
+                let offset = offset.max(0.0);
+                let moved = (self.scroll_y - offset).abs() > f32::EPSILON;
+                if moved {
+                    self.entry_scrollbar.show(now);
+                }
+                self.scroll_y = offset;
+                self.entry_scroll.observe(offset, maximum);
+                if moved {
+                    self.update_marquee_selection(entry_count);
+                }
+                moved
+            }
+        }
     }
 
-    pub(super) fn scroll_entries(&mut self, offset: f32, now: Instant, entry_count: usize) {
-        self.entry_scrollbar.show(now);
-        self.scroll_y = offset.max(0.0);
-        self.update_marquee_selection(entry_count);
+    pub(super) fn wheel_scroll(
+        &mut self,
+        target: ScrollTarget,
+        delta: iced::mouse::ScrollDelta,
+        shift: bool,
+        smooth: bool,
+        now: Instant,
+    ) -> Option<scroll_motion::Command> {
+        self.scroll_mut(target).wheel(delta, shift, smooth, now)
+    }
+
+    pub(super) fn touchpad_scroll(
+        &mut self,
+        target: ScrollTarget,
+        delta: iced::mouse::ScrollDelta,
+        shift: bool,
+        momentum: bool,
+        now: Instant,
+    ) {
+        self.scroll_mut(target)
+            .touchpad(delta, shift, momentum, now);
+    }
+
+    pub(super) fn scroll_to(
+        &mut self,
+        target: ScrollTarget,
+        offset: f32,
+        smooth: bool,
+        now: Instant,
+    ) -> Option<scroll_motion::Command> {
+        self.scroll_mut(target).move_to(offset, smooth, now)
+    }
+
+    pub(super) fn tick_scroll(
+        &mut self,
+        now: Instant,
+    ) -> Vec<(ScrollTarget, scroll_motion::Command)> {
+        [ScrollTarget::Sidebar, ScrollTarget::Entries]
+            .into_iter()
+            .filter_map(|target| {
+                self.scroll_mut(target)
+                    .tick(now)
+                    .map(|command| (target, command))
+            })
+            .collect()
+    }
+
+    pub(super) fn scroll_animation_active(&self) -> bool {
+        self.sidebar_scroll.active() || self.entry_scroll.active()
+    }
+
+    pub(super) fn cancel_scroll(&mut self, target: ScrollTarget) {
+        self.scroll_mut(target).cancel();
+    }
+
+    pub(super) fn cancel_scrolls(&mut self) {
+        self.sidebar_scroll.cancel();
+        self.entry_scroll.cancel();
+    }
+
+    fn scroll_mut(&mut self, target: ScrollTarget) -> &mut scroll_motion::Motion {
+        match target {
+            ScrollTarget::Sidebar => &mut self.sidebar_scroll,
+            ScrollTarget::Entries => &mut self.entry_scroll,
+        }
     }
 
     fn settle_scrollbars(&mut self, now: Instant) {
@@ -240,13 +341,13 @@ impl GridInteraction {
 
     pub(super) fn scrollbar_opacity(
         &self,
-        scrollbar: Scrollbar,
+        scrollbar: ScrollTarget,
         now: Instant,
         reduced_motion: bool,
     ) -> f32 {
         match scrollbar {
-            Scrollbar::Sidebar => self.sidebar_scrollbar.opacity(now, reduced_motion),
-            Scrollbar::Entries => self.entry_scrollbar.opacity(now, reduced_motion),
+            ScrollTarget::Sidebar => self.sidebar_scrollbar.opacity(now, reduced_motion),
+            ScrollTarget::Entries => self.entry_scrollbar.opacity(now, reduced_motion),
         }
     }
 
@@ -297,6 +398,7 @@ impl GridInteraction {
         self.list_mode = list_mode;
         self.select_indices(selected, entry_count);
         self.details = None;
+        self.entry_scroll.cancel();
         if reset_scroll {
             self.reset_scroll();
         }
@@ -436,6 +538,7 @@ impl GridInteraction {
 
     fn reset_scroll(&mut self) {
         self.scroll_y = 0.0;
+        self.entry_scroll = scroll_motion::Motion::default();
     }
 
     #[cfg(test)]
@@ -810,6 +913,43 @@ impl GridInteraction {
         }
     }
 
+    pub(super) fn directional_scroll_target(&self, index: usize, status_height: f32) -> f32 {
+        let row_height = if self.list_mode {
+            LIST_ROW_HEIGHT
+        } else {
+            TILE_ROW_HEIGHT
+        };
+        let row = if self.list_mode {
+            index
+        } else {
+            index / self.columns()
+        };
+        let viewport_height = (self.window_size.height
+            - TOOLBAR_HEIGHT
+            - TOOLBAR_DIVIDER_HEIGHT
+            - status_height
+            - LIST_VIEW_TOP_INSET
+            - LIST_HEADER_HEIGHT)
+            .max(row_height);
+        let visible_rows = (viewport_height / row_height).ceil() as usize;
+        let last_safe_row = visible_rows.saturating_sub(2);
+        let selected_y = row as f32 * row_height;
+        let safe_top = if self.scroll_y > f32::EPSILON && visible_rows > 2 {
+            self.scroll_y + row_height
+        } else {
+            self.scroll_y
+        };
+        let safe_bottom = self.scroll_y + last_safe_row as f32 * row_height;
+
+        if selected_y < safe_top {
+            (selected_y - row_height).max(0.0)
+        } else if selected_y > safe_bottom {
+            selected_y - last_safe_row as f32 * row_height
+        } else {
+            self.scroll_y
+        }
+    }
+
     pub(super) fn visible_range(&self, entry_count: usize, status_height: f32) -> VisibleRange {
         let columns = self.columns();
         let total_rows = entry_count.div_ceil(columns);
@@ -1162,27 +1302,78 @@ mod tests {
     }
 
     #[test]
-    fn scrollbars_keep_their_timing_inside_grid_interaction() {
+    fn only_arrow_and_hjkl_motions_are_directional() {
+        for motion in [Motion::Left, Motion::Right, Motion::Up, Motion::Down] {
+            assert!(motion.is_directional());
+        }
+        for motion in [
+            Motion::First,
+            Motion::Last,
+            Motion::ViewportTop,
+            Motion::HalfPageDown,
+        ] {
+            assert!(!motion.is_directional());
+        }
+    }
+
+    #[test]
+    fn directional_scroll_keeps_one_visible_row_below_the_selection() {
+        let now = Instant::now();
+        let mut grid = GridInteraction::default();
+        let columns = grid.columns();
+
+        assert_eq!(grid.directional_scroll_target(columns, 25.0), 0.0);
+        assert_eq!(grid.directional_scroll_target(columns * 2, 25.0), 0.0);
+        assert_eq!(
+            grid.directional_scroll_target(columns * 3, 25.0),
+            TILE_ROW_HEIGHT
+        );
+
+        grid.observe_scroll(ScrollTarget::Entries, TILE_ROW_HEIGHT, 1_000.0, now, 30);
+        assert_eq!(
+            grid.directional_scroll_target(columns * 2, 25.0),
+            TILE_ROW_HEIGHT
+        );
+        assert_eq!(grid.directional_scroll_target(columns, 25.0), 0.0);
+    }
+
+    #[test]
+    fn only_real_scroll_movement_starts_and_restarts_scrollbar_timing() {
         let now = Instant::now();
         let mut grid = grid();
 
         assert!(!grid.scrollbar_visible());
-        assert_eq!(grid.scrollbar_opacity(Scrollbar::Entries, now, false), 0.0);
-        grid.scroll_entries(0.0, now, 0);
+        assert_eq!(
+            grid.scrollbar_opacity(ScrollTarget::Entries, now, false),
+            0.0
+        );
+        assert!(!grid.observe_scroll(ScrollTarget::Entries, 0.0, 1_000.0, now, 0));
+        assert!(!grid.scrollbar_visible());
+
+        assert!(grid.observe_scroll(ScrollTarget::Entries, 60.0, 1_000.0, now, 0));
         assert!(grid.scrollbar_visible());
         assert_eq!(
-            grid.scrollbar_opacity(Scrollbar::Entries, now + SCROLLBAR_FADE_IN / 2, false),
+            grid.scrollbar_opacity(ScrollTarget::Entries, now + SCROLLBAR_FADE_IN / 2, false),
             0.5
         );
         assert_eq!(
             grid.scrollbar_opacity(
-                Scrollbar::Entries,
+                ScrollTarget::Entries,
                 now + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT / 2,
                 false
             ),
             0.5
         );
         let _ = grid.tick(now + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT);
+        assert!(!grid.scrollbar_visible());
+
+        assert!(!grid.observe_scroll(
+            ScrollTarget::Entries,
+            60.0,
+            1_000.0,
+            now + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT,
+            0,
+        ));
         assert!(!grid.scrollbar_visible());
     }
 
@@ -1546,7 +1737,13 @@ mod tests {
             [0, 1, 5, 6, 10, 11, 15, 16, 20, 21]
         );
 
-        grid.scroll_entries(TILE_ROW_HEIGHT, Instant::now(), 30);
+        grid.observe_scroll(
+            ScrollTarget::Entries,
+            TILE_ROW_HEIGHT,
+            10_000.0,
+            Instant::now(),
+            30,
+        );
 
         assert_eq!(
             grid.selected_indices().iter().copied().collect::<Vec<_>>(),
@@ -1567,7 +1764,13 @@ mod tests {
         grid.move_cursor(Point::new(400.0, 600.0), 30);
         assert!(!grid.marquee_top_clipped());
 
-        grid.scroll_entries(TILE_ROW_HEIGHT, Instant::now(), 30);
+        grid.observe_scroll(
+            ScrollTarget::Entries,
+            TILE_ROW_HEIGHT,
+            10_000.0,
+            Instant::now(),
+            30,
+        );
 
         assert_eq!(
             grid.marquee_bounds(status_height).unwrap().y,
@@ -1589,7 +1792,13 @@ mod tests {
         grid.move_cursor(Point::new(400.0, content_top() + 2.0), 30);
         assert!(!grid.marquee_bottom_clipped(status_height));
 
-        grid.scroll_entries(-TILE_ROW_HEIGHT, Instant::now(), 30);
+        grid.observe_scroll(
+            ScrollTarget::Entries,
+            -TILE_ROW_HEIGHT,
+            10_000.0,
+            Instant::now(),
+            30,
+        );
 
         assert!(grid.marquee_bottom_clipped(status_height));
     }

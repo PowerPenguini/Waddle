@@ -13,9 +13,9 @@ use super::{
     App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
     DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
-    find_window_after_delay, location_monitoring, native_clipboard, transfer_integration,
-    transfer_session,
+    NavigationTransition, ScrollTarget, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
+    find_window_after_delay, location_monitoring, native_clipboard, scroll_motion,
+    transfer_integration, transfer_session,
 };
 
 fn is_modifier_key(key: &keyboard::Key) -> bool {
@@ -228,11 +228,48 @@ impl App {
                 self.sidebar_tree.focus(id);
                 self.activate_tree_row(id)
             }
-            Message::SidebarScrolled(y) => {
+            Message::Scrolled {
+                target,
+                offset,
+                maximum,
+            } => {
+                let now = Instant::now();
+                let moved = self.grid.observe_scroll(
+                    target,
+                    offset,
+                    maximum,
+                    now,
+                    self.navigation.entries().len(),
+                );
+                if !moved {
+                    return Task::none();
+                }
+                self.presentation.set_now(now);
+                self.update_drag_hover(self.grid.cursor());
+                if target == ScrollTarget::Entries {
+                    self.load_visible_thumbnails()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::WheelScrolled(target, delta) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
-                self.grid.scroll_sidebar(y, now);
-                self.update_drag_hover(self.grid.cursor());
+                let smooth = !self.reduced_motion()
+                    && !self.drag_in_progress()
+                    && !self.grid.marquee_drag_active();
+                self.grid
+                    .wheel_scroll(target, delta, self.modifiers.shift(), smooth, now)
+                    .map_or_else(Task::none, |command| scroll_command(target, command))
+            }
+            Message::TouchpadScrolled(target, delta) => {
+                let now = Instant::now();
+                self.presentation.set_now(now);
+                let momentum = !self.reduced_motion()
+                    && !self.drag_in_progress()
+                    && !self.grid.marquee_drag_active();
+                self.grid
+                    .touchpad_scroll(target, delta, self.modifiers.shift(), momentum, now);
                 Task::none()
             }
             Message::TreeLoaded { request, result } => {
@@ -343,14 +380,6 @@ impl App {
                 Task::none()
             }
             Message::MouseBackTick(now) => self.finish_single_mouse_back_click(now),
-            Message::GridScrolled(y) => {
-                let now = Instant::now();
-                self.presentation.set_now(now);
-                self.grid
-                    .scroll_entries(y, now, self.navigation.entries().len());
-                self.update_drag_hover(self.grid.cursor());
-                self.load_visible_thumbnails()
-            }
             Message::ScrollToSelected => self.scroll_to_selected(),
             Message::GridPointerMoved(point) => {
                 if self
@@ -446,7 +475,16 @@ impl App {
             }
             Message::AnimationFrame(now) => {
                 self.presentation.tick(now);
-                Task::batch([self.tick_marquee_autoscroll(), self.tick_drag_hover(now)])
+                if self.drag_in_progress() {
+                    self.grid.cancel_scrolls();
+                } else if self.grid.marquee_drag_active() {
+                    self.grid.cancel_scroll(ScrollTarget::Entries);
+                }
+                Task::batch([
+                    self.tick_smooth_scroll(now),
+                    self.tick_marquee_autoscroll(),
+                    self.tick_drag_hover(now),
+                ])
             }
             Message::RenameChanged(value) => {
                 if self.browser_input.mode() == InputMode::Rename {
@@ -491,11 +529,25 @@ impl App {
         }
     }
 
-    fn tick_marquee_autoscroll(&self) -> Task<Message> {
+    fn tick_smooth_scroll(&mut self, now: Instant) -> Task<Message> {
+        if self.reduced_motion() {
+            self.grid.cancel_scrolls();
+            return Task::none();
+        }
+        Task::batch(
+            self.grid
+                .tick_scroll(now)
+                .into_iter()
+                .map(|(target, command)| scroll_command(target, command)),
+        )
+    }
+
+    fn tick_marquee_autoscroll(&mut self) -> Task<Message> {
         let delta = self.grid.marquee_autoscroll(self.status_height());
         if delta.abs() <= f32::EPSILON {
             return Task::none();
         }
+        self.grid.cancel_scroll(ScrollTarget::Entries);
         widget::operation::scroll_by(
             Id::new(super::GRID_SCROLL_ID),
             scrollable::AbsoluteOffset { x: 0.0, y: delta },
@@ -578,6 +630,9 @@ impl App {
                 } else {
                     self.update_drag_hover(position);
                 }
+                if self.transfers.overview().pointer_drag.is_active() {
+                    self.grid.cancel_scrolls();
+                }
                 Task::batch(tasks)
             }
             iced::Event::Mouse(mouse::Event::CursorLeft)
@@ -595,6 +650,7 @@ impl App {
                     ) =>
             {
                 self.refresh_status();
+                self.grid.cancel_scroll(ScrollTarget::Entries);
                 Task::none()
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
@@ -1001,7 +1057,10 @@ impl App {
                     self.navigation.entries().len(),
                     self.status_height(),
                 );
-                Task::batch([self.schedule_details(), self.scroll_to_selected()])
+                Task::batch([
+                    self.schedule_details(),
+                    self.scroll_to_selected_with(motion.is_directional()),
+                ])
             }
             BrowserFocus::Entries => self.move_selection(motion, count),
             BrowserFocus::BottomBar => {
@@ -1139,6 +1198,24 @@ impl App {
                 .nth(index)
                 .map_or_else(Task::none, |(_, message)| self.update(message)),
             ContextOutcome::None | ContextOutcome::Closed => Task::none(),
+        }
+    }
+}
+
+pub(super) fn scroll_command(
+    target: ScrollTarget,
+    command: scroll_motion::Command,
+) -> Task<Message> {
+    let id = match target {
+        ScrollTarget::Sidebar => super::SIDEBAR_SCROLL_ID,
+        ScrollTarget::Entries => super::GRID_SCROLL_ID,
+    };
+    match command {
+        scroll_motion::Command::By(y) => {
+            widget::operation::scroll_by(Id::new(id), scrollable::AbsoluteOffset { x: 0.0, y })
+        }
+        scroll_motion::Command::To(y) => {
+            widget::operation::scroll_to(Id::new(id), scrollable::AbsoluteOffset { x: 0.0, y })
         }
     }
 }

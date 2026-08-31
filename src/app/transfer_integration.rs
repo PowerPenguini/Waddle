@@ -15,8 +15,8 @@ use crate::{
 
 use super::{
     App, DragHoverEffect, DragHoverTarget, DropZone, GRID_SCROLL_ID, Message, NavigationTransition,
-    SIDEBAR_SCROLL_ID, TransferBatchUpdate, TransferCancelUpdate, X11_INBOUND_ID, transfer_session,
-    view,
+    SIDEBAR_SCROLL_ID, ScrollTarget, TransferBatchUpdate, TransferCancelUpdate, X11_INBOUND_ID,
+    transfer_session, view,
 };
 
 pub(super) fn transfer_runtime_message(event: transfer_session::RuntimeEvent) -> Message {
@@ -208,6 +208,7 @@ impl App {
         let (grid_delta, sidebar_delta) = self.grid.drag_autoscroll(self.status_height());
         let mut tasks = Vec::new();
         if grid_delta.abs() > f32::EPSILON {
+            self.grid.cancel_scroll(ScrollTarget::Entries);
             tasks.push(widget::operation::scroll_by(
                 Id::new(GRID_SCROLL_ID),
                 scrollable::AbsoluteOffset {
@@ -217,6 +218,7 @@ impl App {
             ));
         }
         if sidebar_delta.abs() > f32::EPSILON {
+            self.grid.cancel_scroll(ScrollTarget::Sidebar);
             tasks.push(widget::operation::scroll_by(
                 Id::new(SIDEBAR_SCROLL_ID),
                 scrollable::AbsoluteOffset {
