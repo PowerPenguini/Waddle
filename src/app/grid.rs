@@ -24,6 +24,7 @@ const TREE_TOP: f32 = 44.0;
 const TREE_ROW_HEIGHT: f32 = 32.0;
 const AUTOSCROLL_EDGE: f32 = 44.0;
 const AUTOSCROLL_STEP: f32 = 12.0;
+const MARQUEE_DRAG_THRESHOLD: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DropZone {
@@ -151,11 +152,19 @@ struct Marquee {
     start: Point,
     start_scroll_y: f32,
     current: Point,
+    dragging: bool,
 }
 
 impl Marquee {
     fn start_in_viewport(&self, scroll_y: f32) -> Point {
         Point::new(self.start.x, self.start.y + self.start_scroll_y - scroll_y)
+    }
+
+    fn move_to(&mut self, point: Point) {
+        self.current = point;
+        let x = point.x - self.start.x;
+        let y = point.y - self.start.y;
+        self.dragging |= x * x + y * y >= MARQUEE_DRAG_THRESHOLD * MARQUEE_DRAG_THRESHOLD;
     }
 }
 
@@ -400,7 +409,7 @@ impl GridInteraction {
             .index_at(position, entry_count)
             .filter(|&index| self.point_over_entry(position, index));
         if let Some(marquee) = &mut self.marquee {
-            marquee.current = position;
+            marquee.move_to(position);
             self.update_marquee_selection(entry_count);
             true
         } else {
@@ -412,10 +421,10 @@ impl GridInteraction {
         let Some(marquee) = &mut self.marquee else {
             return false;
         };
-        marquee.current = Point::new(
+        marquee.move_to(Point::new(
             point.x + self.sidebar_width,
             point.y + TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
-        );
+        ));
         self.update_marquee_selection(entry_count);
         true
     }
@@ -724,6 +733,7 @@ impl GridInteraction {
             start: point,
             start_scroll_y: self.scroll_y,
             current: point,
+            dragging: false,
         });
         self.update_marquee_selection(entry_count);
         true
@@ -733,8 +743,10 @@ impl GridInteraction {
         self.marquee.take().is_some()
     }
 
-    pub(super) fn marquee_active(&self) -> bool {
-        self.marquee.is_some()
+    pub(super) fn marquee_drag_active(&self) -> bool {
+        self.marquee
+            .as_ref()
+            .is_some_and(|marquee| marquee.dragging)
     }
 
     pub(super) fn marquee_bounds(&self, status_height: f32) -> Option<Rectangle> {
@@ -892,7 +904,7 @@ impl GridInteraction {
     }
 
     pub(super) fn marquee_autoscroll(&self, status_height: f32) -> f32 {
-        if !self.marquee_active()
+        if !self.marquee_drag_active()
             || self.cursor.x < self.sidebar_width
             || self.cursor.x >= self.window_size.width
         {
@@ -1497,6 +1509,29 @@ mod tests {
             100,
         );
         assert_eq!(grid.marquee_autoscroll(status_height), 0.0);
+    }
+
+    #[test]
+    fn stationary_empty_edge_clicks_do_not_autoscroll_before_drag_threshold() {
+        let status_height = 25.0;
+        let x = SIDEBAR_WIDTH + 2.0;
+        let window_height = GridInteraction::default().window_size.height;
+
+        for (y, direction) in [
+            (content_top() + 2.0, -1.0),
+            (window_height - status_height - 2.0, 1.0),
+        ] {
+            let mut grid = GridInteraction::default();
+            let start = Point::new(x, y);
+            grid.move_cursor(start, 100);
+            assert!(grid.start_marquee(start, 100, status_height, true));
+
+            assert_eq!(grid.marquee_autoscroll(status_height), 0.0);
+            grid.move_cursor(Point::new(x + 5.0, y), 100);
+            assert_eq!(grid.marquee_autoscroll(status_height), 0.0);
+            grid.move_cursor(Point::new(x + 6.0, y), 100);
+            assert_eq!(grid.marquee_autoscroll(status_height).signum(), direction);
+        }
     }
 
     #[test]

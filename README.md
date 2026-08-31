@@ -25,7 +25,7 @@ It is built for local Linux files and takes file safety seriously. Copying or mo
 shows progress and conflicts. Partial failures remain visible. Undo refuses to overwrite changes
 made after the original operation.
 
-> Waddle is currently a 0.0.4 preview. Most of the planned 1.0 experience is implemented, but
+> Waddle is currently a 0.0.5 preview. Most of the planned 1.0 experience is implemented, but
 > compatibility and package testing still need to finish before the first stable release.
 
 ## Why Waddle
@@ -49,6 +49,9 @@ Waddle currently builds from source with Rust 1.92 or newer:
 cargo run
 cargo run -- ~/Downloads
 ```
+
+When launched from an interactive terminal, Waddle starts the window in a detached process and
+returns the prompt. Paths and local file URIs keep the same non-blocking behavior.
 
 <details>
 <summary>Debian and Ubuntu build dependencies</summary>
