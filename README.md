@@ -25,7 +25,7 @@ It is built for local Linux files and takes file safety seriously. Copying or mo
 shows progress and conflicts. Partial failures remain visible. Undo refuses to overwrite changes
 made after the original operation.
 
-> Waddle is currently a 0.0.6 preview. Most of the planned 1.0 experience is implemented, but
+> Waddle is currently a 0.0.7 preview. Most of the planned 1.0 experience is implemented, but
 > compatibility and package testing still need to finish before the first stable release.
 
 ## Why Waddle
@@ -34,7 +34,7 @@ made after the original operation.
 - Navigate with a mouse, arrow keys, or Vim-style motions. Switch between them whenever you want.
 - Copy, Cut, Paste, drag, restore from Trash, cancel long work, and retry failed items.
 - Search the current folder or everything below it without leaving the window.
-- Browse Favorites, Recent files, Trash, and mounted drives from the Sidebar.
+- Browse Favorites, Recent files, Trash, and storage volumes from the Sidebar. Activating an unmounted volume mounts and opens it.
 - Keep up to 100 recent operations available for safe Undo and Redo, including after a restart.
 - Run local commands or open a terminal in the current folder.
 - Keep your activity private. Waddle has no telemetry and does not upload operation history.

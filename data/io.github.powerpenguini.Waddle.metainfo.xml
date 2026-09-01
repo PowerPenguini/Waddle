@@ -12,7 +12,7 @@
     </p>
     <p>
       It supports desktop clipboard and drag-and-drop transfers, safe conflict handling,
-      persistent undo, search, Trash, Recent, mounted volumes, and file metadata actions.
+      persistent undo, search, Trash, Recent, storage volumes, and file metadata actions.
     </p>
   </description>
   <launchable type="desktop-id">io.github.powerpenguini.Waddle.desktop</launchable>
@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.7" date="2026-09-02">
+      <description>
+        <ul>
+          <li>Show storage volumes in the sidebar with mount, unmount, and capacity controls.</li>
+          <li>Run Trash operations as Transfers with progress, cancellation, retry, and history.</li>
+          <li>Separate metadata warnings from file-operation errors and improve removable-drive Undo.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.6" date="2026-09-01">
       <description>
         <ul>
