@@ -7,7 +7,10 @@ use std::{
 
 use gio::prelude::{FileEnumeratorExt, FileExt};
 
-use crate::{fs::FileEntry, journal};
+use crate::{
+    fs::{FileEntry, TransferProgress},
+    journal,
+};
 
 use super::{places, tree::NodeKind};
 
@@ -29,6 +32,126 @@ pub(super) struct RestoreReport {
 pub(super) struct DeleteReport {
     pub(super) deleted: usize,
     pub(super) failures: Vec<(FileEntry, String)>,
+}
+
+pub(super) trait Adapter {
+    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GioAdapter;
+
+impl Adapter for GioAdapter {
+    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
+        journal::trash(path).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Batch {
+    entries: Vec<FileEntry>,
+    total_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Report {
+    pub(super) receipts: Vec<journal::TrashReceipt>,
+    pub(super) failures: Vec<(FileEntry, String)>,
+    pub(super) retained: Vec<FileEntry>,
+    pub(super) cancelled: bool,
+    pub(super) undo: Result<Option<journal::Action>, String>,
+}
+
+impl Batch {
+    pub(super) fn new(entries: Vec<FileEntry>) -> Self {
+        let total_bytes = entries
+            .iter()
+            .filter_map(|entry| entry.metadata.size)
+            .fold(0_u64, u64::saturating_add);
+        Self {
+            entries,
+            total_bytes,
+        }
+    }
+
+    pub(super) fn run(
+        self,
+        cancelled: impl Fn() -> bool,
+        progress: impl FnMut(TransferProgress),
+    ) -> Report {
+        self.run_with(&GioAdapter, cancelled, progress, |receipts| {
+            journal::Action::trash(receipts).map_err(|error| error.to_string())
+        })
+    }
+
+    fn run_with<A: Adapter>(
+        self,
+        adapter: &A,
+        cancelled: impl Fn() -> bool,
+        mut progress: impl FnMut(TransferProgress),
+        prepare_undo: impl FnOnce(&[journal::TrashReceipt]) -> Result<Option<journal::Action>, String>,
+    ) -> Report {
+        let total_entries = self.entries.len() as u64;
+        let mut completed_entries = 0_u64;
+        let mut completed_bytes = 0_u64;
+        let mut receipts = Vec::new();
+        let mut failures = Vec::new();
+        let mut retained = Vec::new();
+        let mut entries = self.entries.into_iter();
+        publish_progress(
+            &mut progress,
+            completed_entries,
+            total_entries,
+            completed_bytes,
+            self.total_bytes,
+        );
+        let mut was_cancelled = false;
+        while let Some(entry) = entries.next() {
+            if cancelled() {
+                retained.push(entry);
+                retained.extend(entries);
+                was_cancelled = true;
+                break;
+            }
+            let bytes = entry.metadata.size.unwrap_or_default();
+            match adapter.trash(&entry.path) {
+                Ok(receipt) => receipts.push(receipt),
+                Err(error) => failures.push((entry, error)),
+            }
+            completed_entries = completed_entries.saturating_add(1);
+            completed_bytes = completed_bytes.saturating_add(bytes);
+            publish_progress(
+                &mut progress,
+                completed_entries,
+                total_entries,
+                completed_bytes,
+                self.total_bytes,
+            );
+        }
+        let undo = prepare_undo(&receipts);
+        Report {
+            receipts,
+            failures,
+            retained,
+            cancelled: was_cancelled,
+            undo,
+        }
+    }
+}
+
+fn publish_progress(
+    progress: &mut impl FnMut(TransferProgress),
+    completed_entries: u64,
+    total_entries: u64,
+    completed_bytes: u64,
+    total_bytes: u64,
+) {
+    progress(TransferProgress {
+        completed_entries,
+        total_entries,
+        completed_bytes,
+        total_bytes,
+    });
 }
 
 #[derive(Clone, Debug)]
@@ -335,7 +458,94 @@ fn data_home() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeSet, sync::Mutex};
+
     use super::*;
+
+    #[derive(Default)]
+    struct MemoryAdapter {
+        failures: BTreeSet<PathBuf>,
+        calls: Mutex<Vec<PathBuf>>,
+    }
+
+    impl Adapter for MemoryAdapter {
+        fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
+            self.calls.lock().unwrap().push(path.to_path_buf());
+            if self.failures.contains(path) {
+                Err("Trash unavailable".to_owned())
+            } else {
+                Ok(journal::TrashReceipt {
+                    original: path.to_path_buf(),
+                    trashed: PathBuf::from("/trash").join(path.file_name().unwrap_or_default()),
+                    info: PathBuf::from("/trash/info"),
+                })
+            }
+        }
+    }
+
+    fn file_entry(path: impl Into<PathBuf>, size: u64) -> FileEntry {
+        let path = path.into();
+        FileEntry {
+            name: path.file_name().unwrap_or_default().to_owned(),
+            path,
+            directory: false,
+            metadata: crate::fs::EntryMetadata {
+                size: Some(size),
+                modified: None,
+            },
+        }
+    }
+
+    #[test]
+    fn trash_batch_reports_progress_failures_and_retained_entries() {
+        let first = file_entry("/work/one", 10);
+        let second = file_entry("/work/two", 20);
+        let third = file_entry("/work/three", 30);
+        let adapter = MemoryAdapter {
+            failures: BTreeSet::from([second.path.clone()]),
+            ..MemoryAdapter::default()
+        };
+        let mut updates = Vec::new();
+        let report = Batch::new(vec![first.clone(), second.clone(), third.clone()]).run_with(
+            &adapter,
+            || adapter.calls.lock().unwrap().len() == 2,
+            |progress| updates.push(progress),
+            |_| Ok(None),
+        );
+
+        assert_eq!(report.receipts.len(), 1);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.retained.len(), 1);
+        assert_eq!(report.retained[0].path, third.path);
+        assert!(report.cancelled);
+        assert_eq!(
+            adapter.calls.lock().unwrap().as_slice(),
+            [first.path, second.path]
+        );
+        assert_eq!(
+            updates,
+            [
+                TransferProgress {
+                    completed_entries: 0,
+                    total_entries: 3,
+                    completed_bytes: 0,
+                    total_bytes: 60,
+                },
+                TransferProgress {
+                    completed_entries: 1,
+                    total_entries: 3,
+                    completed_bytes: 10,
+                    total_bytes: 60,
+                },
+                TransferProgress {
+                    completed_entries: 2,
+                    total_entries: 3,
+                    completed_bytes: 30,
+                    total_bytes: 60,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn trash_lists_original_locations_and_skips_orphaned_metadata() {

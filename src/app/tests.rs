@@ -12,7 +12,7 @@ use crate::app::grid::{
     SIDEBAR_WIDTH, TILE_ROW_HEIGHT, TOOLBAR_DIVIDER_HEIGHT, TOOLBAR_HEIGHT,
 };
 use crate::app::navigation::NavigationSession;
-use crate::app::tree::{MountRoot, NodeKind, SidebarTree};
+use crate::app::tree::{NodeKind, SidebarTree, VolumeRoot};
 use crate::fs::FileEntry;
 use crate::transfer::{
     Action as TransferAction, Adapter as TransferAdapter, AdapterCompletion, ClipboardImport,

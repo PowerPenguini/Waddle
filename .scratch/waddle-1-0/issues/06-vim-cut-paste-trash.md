@@ -17,3 +17,8 @@ Type: feature
 ## Answer
 
 The Browser key grammar now separates one-key Yank, Cut operators, and the black-hole Trash register. Counts compose before and after `d`; ranges follow current display order. `x` and Visual `d` or `x` use the complete selection. `"_dd`, `"_d{motion}`, and `"_x` reuse the existing Trash confirmation without replacing the clipboard. A focused sidebar rejects file operators instead of applying them to a stale Grid selection.
+
+## Comments
+
+- 2026-09-01: Accepting the Trash confirmation now submits the selected entries as one Transfer;
+  the black-hole register still leaves the clipboard unchanged.

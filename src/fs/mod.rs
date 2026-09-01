@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 mod browse;
 mod mutation;
+mod storage_usage;
 mod transfer_batch;
 mod tree_copy;
 
@@ -15,6 +16,7 @@ pub use browse::{
     search_directory_with_hidden, validate_name,
 };
 pub use mutation::{create_file, create_folder, delete_permanently, display_name, rename_entry};
+pub(crate) use storage_usage::{StorageUsage, storage_usage};
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
 pub(crate) use browse::{format_size, watchable_directories_without_automount};

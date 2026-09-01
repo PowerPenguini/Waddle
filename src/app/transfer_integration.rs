@@ -7,7 +7,7 @@ use iced::{
 };
 
 use crate::{
-    fs::{self, FileEntry},
+    fs::FileEntry,
     transfer::{
         Action as TransferAction, Event as TransferEvent, NativeUpdate, Request as TransferRequest,
     },
@@ -130,11 +130,11 @@ impl App {
     }
 
     pub(super) fn drop_destination_at(&self, point: Point, allow_current: bool) -> Option<PathBuf> {
-        let row_count = self.sidebar_tree.row_count(self.navigation.current());
+        let row_heights = self.sidebar_tree.row_heights(self.navigation.current());
         match self.grid.drop_zone(
             point,
             self.navigation.entries().len(),
-            row_count,
+            &row_heights,
             self.status_height(),
             allow_current,
         )? {
@@ -161,11 +161,11 @@ impl App {
             self.grid.cancel_drag_hover();
             return;
         }
-        let row_count = self.sidebar_tree.row_count(self.navigation.current());
+        let row_heights = self.sidebar_tree.row_heights(self.navigation.current());
         let target = match self.grid.drop_zone(
             point,
             self.navigation.entries().len(),
-            row_count,
+            &row_heights,
             self.status_height(),
             false,
         ) {
@@ -347,7 +347,7 @@ impl App {
     pub(super) fn finish_transfer_batch(
         &mut self,
         id: u64,
-        outcome: fs::TransferBatchOutcome,
+        outcome: transfer_session::WorkOutcome,
     ) -> Task<Message> {
         let current = self.navigation.current().to_path_buf();
         let update = self
@@ -407,8 +407,15 @@ impl App {
             transfer_session::CompletionPresentation::Status(status) => {
                 self.presentation.set_status(status);
             }
+            transfer_session::CompletionPresentation::Warning(warning) => {
+                self.show_warning(warning);
+            }
             transfer_session::CompletionPresentation::Error(error) => self.show_error(error),
             transfer_session::CompletionPresentation::Refresh => self.refresh_status(),
+        }
+        if !completion.trash_failures.is_empty() {
+            let failures = completion.trash_failures;
+            self.open_file_operation(move |session| session.finish_trash_transfer(failures));
         }
         let tree = if completion.changed_folders.is_empty() {
             Task::none()

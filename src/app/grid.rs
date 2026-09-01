@@ -21,7 +21,6 @@ pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
 const TILE_PITCH: f32 = 112.0;
 const TREE_TOP: f32 = 44.0;
-const TREE_ROW_HEIGHT: f32 = 32.0;
 const AUTOSCROLL_EDGE: f32 = 44.0;
 const AUTOSCROLL_STEP: f32 = 12.0;
 const MARQUEE_DRAG_THRESHOLD: f32 = 6.0;
@@ -981,7 +980,7 @@ impl GridInteraction {
         &self,
         point: Point,
         entry_count: usize,
-        tree_row_count: usize,
+        tree_row_heights: &[f32],
         status_height: f32,
         allow_current: bool,
     ) -> Option<DropZone> {
@@ -989,10 +988,17 @@ impl GridInteraction {
             return None;
         }
         if point.x < self.sidebar_width {
-            let index =
-                ((point.y - TREE_TOP + self.sidebar_scroll_y) / TREE_ROW_HEIGHT).floor() as isize;
-            let index = usize::try_from(index).ok()?;
-            return (index < tree_row_count).then_some(DropZone::Sidebar(index));
+            let mut y = point.y - TREE_TOP + self.sidebar_scroll_y;
+            if y < 0.0 {
+                return None;
+            }
+            for (index, height) in tree_row_heights.iter().enumerate() {
+                if y < *height {
+                    return Some(DropZone::Sidebar(index));
+                }
+                y -= height;
+            }
+            return None;
         }
         if point.x >= self.window_size.width
             || point.y < TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT
@@ -1409,7 +1415,7 @@ mod tests {
         let mut grid = grid();
         assert_eq!(grid.columns(), 3);
         assert_eq!(
-            grid.drop_zone(Point::new(10.0, 100.0), 8, 4, 25.0, true),
+            grid.drop_zone(Point::new(10.0, 100.0), 8, &[32.0; 4], 25.0, true),
             Some(DropZone::Sidebar(1))
         );
 
@@ -1417,7 +1423,7 @@ mod tests {
         assert_eq!(grid.sidebar_width(), 0.0);
         assert_eq!(grid.columns(), 4);
         assert_ne!(
-            grid.drop_zone(Point::new(10.0, 100.0), 8, 4, 25.0, true),
+            grid.drop_zone(Point::new(10.0, 100.0), 8, &[32.0; 4], 25.0, true),
             Some(DropZone::Sidebar(1))
         );
 
@@ -1928,19 +1934,25 @@ mod tests {
     fn drop_zones_distinguish_sidebar_tiles_empty_grid_and_chrome() {
         let grid = GridInteraction::default();
         assert_eq!(
-            grid.drop_zone(Point::new(20.0, 50.0), 2, 3, 25.0, true),
+            grid.drop_zone(Point::new(20.0, 50.0), 2, &[32.0; 3], 25.0, true),
             Some(DropZone::Sidebar(0))
         );
         assert_eq!(
-            grid.drop_zone(Point::new(290.0, content_top() + 3.0), 2, 3, 25.0, true,),
+            grid.drop_zone(
+                Point::new(290.0, content_top() + 3.0),
+                2,
+                &[32.0; 3],
+                25.0,
+                true,
+            ),
             Some(DropZone::Entry(0))
         );
         assert_eq!(
-            grid.drop_zone(Point::new(790.0, 500.0), 2, 3, 25.0, true),
+            grid.drop_zone(Point::new(790.0, 500.0), 2, &[32.0; 3], 25.0, true),
             Some(DropZone::Current)
         );
         assert_eq!(
-            grid.drop_zone(Point::new(300.0, 20.0), 2, 3, 25.0, true),
+            grid.drop_zone(Point::new(300.0, 20.0), 2, &[32.0; 3], 25.0, true),
             None
         );
     }

@@ -9,7 +9,9 @@ An active lookup over explorer entries that retains enough context to submit a m
 _Avoid_: Search mode, filter state
 
 **Transfer**:
-A Copy or Move request for one or more filesystem entries to their destination paths. Clipboard paste, internal drag, native drag, and restoring Trash entries are ways to initiate the same Transfer.
+A request that copies or moves one or more filesystem entries, moves them to Trash, or restores
+them from Trash. Clipboard paste, internal drag, native drag, confirmed Trash, and Restore are ways
+to initiate the same Transfer.
 _Avoid_: Drag operation, file move
 
 **Transfer session**:
@@ -25,7 +27,7 @@ The file-grid selection together with the pointer, context target, scroll, marqu
 _Avoid_: Selection state, grid math
 
 **Sidebar tree**:
-The hierarchical Computer, places, mounted drives, and expanded folders together with the focused row that the user can navigate or choose as a Transfer destination.
+The hierarchical Computer, places, storage volumes, and expanded folders together with the focused row that the user can navigate or choose as a Transfer destination. An unmounted volume has no filesystem location until activation mounts it.
 _Avoid_: Explorer state, folder tree
 
 **Browser key grammar**:
@@ -33,7 +35,7 @@ The modal meaning of browser key sequences, including Vim motions and pending op
 _Avoid_: Shortcut handler, key map
 
 **File operation session**:
-An active rename, New Folder, Trash, or permanent-delete interaction that retains its input, entries, and failure context until completion or cancellation.
+An active rename, New Folder, Trash confirmation, or permanent-delete interaction that retains its input, entries, and failure context until completion or cancellation. Confirmed Trash continues as a Transfer.
 _Avoid_: Prompt state, delete dialog
 
 **Transient presentation**:

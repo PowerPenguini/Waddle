@@ -1,11 +1,10 @@
 use super::*;
 
-struct FailingTrashAdapter;
+#[test]
+fn app_tests_do_not_open_the_user_operation_journal() {
+    let (app, _) = App::new();
 
-impl crate::app::file_operation::TrashAdapter for FailingTrashAdapter {
-    fn trash(&self, _path: &Path) -> Result<crate::journal::TrashReceipt, String> {
-        Err("Trash is unavailable".to_owned())
-    }
+    assert!(!app.journal.uses_default_storage());
 }
 
 #[test]
@@ -115,7 +114,7 @@ fn successful_inline_rename_returns_to_the_browser() {
         .file_operations
         .submit_name(app.navigation.current().to_path_buf())
         .unwrap()
-        .run(&GioTrashAdapter);
+        .run();
     let _ = app.finish_file_operation(completion);
 
     assert_eq!(app.browser_input.mode(), InputMode::Browser);
@@ -185,12 +184,17 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
     let _ = app.show_trash_prompt();
-    let completion = app
+    let Some(FileOperationConfirmation::Trash(entries)) = app
         .file_operations
         .confirm(app.navigation.current().to_path_buf())
-        .unwrap()
-        .run(&FailingTrashAdapter);
-    let _ = app.finish_file_operation(completion);
+    else {
+        panic!("Trash confirmation must start a Transfer");
+    };
+    app.file_operations.finish_trash_transfer(vec![(
+        entries[0].clone(),
+        "Trash is unavailable".to_owned(),
+    )]);
+    app.sync_transient_presentation();
 
     assert!(matches!(
         app.file_operations.view(),
@@ -268,8 +272,11 @@ fn deletion_prompt_accepts_y_and_n_from_the_keyboard() {
     let _ = app.show_trash_prompt();
     let key = keyboard::Key::Character("Y".into());
     let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("Y"));
-    assert!(app.foreground_operation_active());
-    assert!(app.file_operations.is_busy());
+    assert!(app.transfers.overview().active);
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
     drop(task);
 }
 

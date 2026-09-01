@@ -21,3 +21,8 @@ device/inode pairs to rebuild internal hardlinks, copies data extents with `SEEK
 and modification timestamps. Unsupported metadata is returned as a warning attached to the
 completed Transfer; a content-copy error still removes the incomplete root and is reported as a
 failure.
+
+## Comments
+
+- 2026-09-01: A completed Transfer with metadata loss now opens a yellow `warning`
+  acknowledgement. Content-copy failures remain red `error` acknowledgements.

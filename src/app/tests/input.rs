@@ -242,15 +242,30 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
     press(&mut app, "g");
     assert_eq!(app.grid.selected_entry(), Some(0));
 
-    let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
-    assert!(app.sidebar_tree.install_children(
-        root_id,
-        Path::new("/"),
-        vec![PathBuf::from("/tmp")],
-    ));
-    let child_id = app.sidebar_tree.rows(app.navigation.current())[1].id;
+    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+        id: "uuid:data".to_owned(),
+        path: Some(PathBuf::from("/data")),
+        label: "Data".to_owned(),
+        can_unmount: true,
+    }]);
+    let rows = app.sidebar_tree.rows(app.navigation.current());
+    let root_id = rows[0].id;
+    let drive_id = rows[1].id;
+    let TreeActivation::Folder {
+        load: Some(request),
+        ..
+    } = app.sidebar_tree.activate(drive_id).unwrap()
+    else {
+        panic!("an unopened drive should request its children");
+    };
+    assert_eq!(
+        app.sidebar_tree
+            .complete_load(&request, Ok(vec![PathBuf::from("/data/tmp")])),
+        TreeLoadOutcome::Installed
+    );
+    let child_id = app.sidebar_tree.rows(app.navigation.current())[2].id;
     app.presentation.set_focus(BrowserFocus::Sidebar);
-    app.sidebar_tree.focus(root_id);
+    app.sidebar_tree.focus(drive_id);
 
     press(&mut app, "j");
     assert_eq!(app.sidebar_tree.focused_id(), Some(child_id));

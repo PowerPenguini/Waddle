@@ -11,13 +11,16 @@ use super::{
     BrowserFocus, BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu,
     EntryIconKind, FileOperationView, InputMode, MONO_FONT, MONO_FONT_SEMIBOLD, Message,
     NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID, TransientPresentationKind,
-    compact_status_line, compact_text_button, context_button_style, context_menu_button_style,
-    format_transfer_snapshot, menu_style, open_with, status_background_style, status_input_style,
-    with_alpha,
+    compact_status_line, context_button_style, context_menu_button_style, format_transfer_snapshot,
+    menu_style, open_with, status_background_style, status_input_style, with_alpha,
 };
 
 pub(super) fn command_output_action_spacing() -> f32 {
     12.0
+}
+
+fn transfer_shortcut<'a>(label: &'a str, color: Color) -> Element<'a, Message> {
+    text(label).font(MONO_FONT).size(11).color(color).into()
 }
 
 impl<'a> View<'a> {
@@ -220,7 +223,7 @@ impl<'a> View<'a> {
                             text(status_model.text)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
-                                .color(if self.app().presentation.notice().is_some() {
+                                .color(if self.app().presentation.notice_is_danger() {
                                     self.app().iced_theme().palette().danger
                                 } else {
                                     self.secondary_text_color()
@@ -238,13 +241,11 @@ impl<'a> View<'a> {
                         )
                         .align_y(Alignment::Center);
                     if status_model.retry {
-                        line = line.push(compact_text_button("Retry", Message::RetryTransfer));
+                        line = line.push(transfer_shortcut("R retry", self.secondary_text_color()));
                     }
                     if status_model.history {
-                        line = line.push(compact_text_button(
-                            "History",
-                            Message::ToggleTransferHistory,
-                        ));
+                        line =
+                            line.push(transfer_shortcut("t history", self.secondary_text_color()));
                     }
                     line.into()
                 }
@@ -282,7 +283,7 @@ impl<'a> View<'a> {
                     .size(11)
                     .width(Fill),
                 )
-                .push(compact_text_button("Cancel", Message::CancelTransfer));
+                .push(transfer_shortcut("Esc cancel", self.secondary_text_color()));
         } else {
             line = line.push(
                 text("Transfer finished with retained entries")
@@ -292,13 +293,10 @@ impl<'a> View<'a> {
             );
         }
         if transfers.retry {
-            line = line.push(compact_text_button("Retry", Message::RetryTransfer));
+            line = line.push(transfer_shortcut("R retry", self.secondary_text_color()));
         }
-        line.push(compact_text_button(
-            "History",
-            Message::ToggleTransferHistory,
-        ))
-        .into()
+        line.push(transfer_shortcut("t history", self.secondary_text_color()))
+            .into()
     }
 
     fn transfer_history_bar(self) -> Element<'a, Message> {
@@ -314,17 +312,14 @@ impl<'a> View<'a> {
             .height(25)
             .align_y(Alignment::Center);
         if transfers.active {
-            header = header.push(compact_text_button("Cancel", Message::CancelTransfer));
+            header = header.push(transfer_shortcut("c cancel", self.secondary_text_color()));
         }
         if transfers.retry {
-            header = header.push(compact_text_button("Retry", Message::RetryTransfer));
+            header = header.push(transfer_shortcut("R retry", self.secondary_text_color()));
         }
         header = header
-            .push(compact_text_button(
-                "Copy report",
-                Message::CopyTransferReport,
-            ))
-            .push(compact_text_button("Close", Message::ToggleTransferHistory));
+            .push(transfer_shortcut("y copy", self.secondary_text_color()))
+            .push(transfer_shortcut("Esc close", self.secondary_text_color()));
         let active = transfers
             .snapshot
             .map(|snapshot| {
@@ -435,48 +430,62 @@ impl<'a> View<'a> {
                 })
                 .into()
             }
+            FileOperationView::Warning { message } => self.acknowledgement_bar(
+                "warning",
+                self.app().iced_theme().palette().warning,
+                message,
+            ),
             FileOperationView::Error { message } => {
-                let header = row![
-                    text("error")
-                        .font(MONO_FONT_SEMIBOLD)
-                        .size(11)
-                        .color(self.app().iced_theme().palette().danger),
-                    Space::new().width(Fill),
-                    text("Esc close")
-                        .font(MONO_FONT)
-                        .size(11)
-                        .color(self.secondary_text_color()),
-                ]
-                .height(25)
-                .align_y(Alignment::Center);
-                container(
-                    column![
-                        header,
-                        scrollable(
-                            text(message)
-                                .font(MONO_FONT)
-                                .size(11)
-                                .line_height(iced::Pixels(14.0))
-                                .color(self.secondary_text_color())
-                                .width(Fill),
-                        )
-                        .width(Fill)
-                        .height(Fill),
-                    ]
-                    .spacing(2),
-                )
-                .width(Fill)
-                .height(Fill)
-                .padding(Padding {
-                    top: 1.0,
-                    right: CONTENT_GUTTER,
-                    bottom: 7.0,
-                    left: CONTENT_GUTTER,
-                })
-                .into()
+                self.acknowledgement_bar("error", self.app().iced_theme().palette().danger, message)
             }
             FileOperationView::Idle | FileOperationView::Rename { .. } => Space::new().into(),
         }
+    }
+
+    fn acknowledgement_bar(
+        self,
+        label: &'static str,
+        label_color: Color,
+        message: &'a str,
+    ) -> Element<'a, Message> {
+        let header = row![
+            text(label)
+                .font(MONO_FONT_SEMIBOLD)
+                .size(11)
+                .color(label_color),
+            Space::new().width(Fill),
+            text("Esc close")
+                .font(MONO_FONT)
+                .size(11)
+                .color(self.secondary_text_color()),
+        ]
+        .height(25)
+        .align_y(Alignment::Center);
+        container(
+            column![
+                header,
+                scrollable(
+                    text(message)
+                        .font(MONO_FONT)
+                        .size(11)
+                        .line_height(iced::Pixels(14.0))
+                        .color(self.secondary_text_color())
+                        .width(Fill),
+                )
+                .width(Fill)
+                .height(Fill),
+            ]
+            .spacing(2),
+        )
+        .width(Fill)
+        .height(Fill)
+        .padding(Padding {
+            top: 1.0,
+            right: CONTENT_GUTTER,
+            bottom: 7.0,
+            left: CONTENT_GUTTER,
+        })
+        .into()
     }
 
     fn open_with_bar(self) -> Element<'a, Message> {

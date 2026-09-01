@@ -1,19 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{fs, fs::FileEntry, journal};
-
-pub(super) trait TrashAdapter {
-    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String>;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct GioTrashAdapter;
-
-impl TrashAdapter for GioTrashAdapter {
-    fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
-        journal::trash(path).map_err(|error| error.to_string())
-    }
-}
 
 #[derive(Clone, Debug)]
 enum NameOperation {
@@ -55,6 +42,9 @@ enum State {
     Error {
         message: String,
     },
+    Warning {
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +56,7 @@ pub(super) enum View<'a> {
     Trash { message: &'a str },
     PermanentDelete { message: &'a str, detail: &'a str },
     Error { message: &'a str },
+    Warning { message: &'a str },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -101,14 +92,13 @@ enum WorkKind {
         operation: NameOperation,
         value: String,
     },
-    Trash(Vec<FileEntry>),
     PermanentDelete(Vec<FileEntry>),
     TrashDelete(Vec<super::trash::Entry>),
 }
 
 impl Work {
-    pub(super) fn run<A: TrashAdapter>(self, trash: &A) -> Completion {
-        match self.0 {
+    pub(super) fn run(self) -> Completion {
+        let kind = match self.0 {
             WorkKind::Name {
                 current,
                 operation,
@@ -127,21 +117,24 @@ impl Work {
                     NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
                 }
                 .map_err(|error| error.to_string());
-                Completion(CompletionKind::Name { kind, result })
+                CompletionKind::Name { kind, result }
             }
-            WorkKind::Trash(entries) => {
-                Completion(CompletionKind::Trash(run_trash_entries(entries, trash)))
-            }
-            WorkKind::PermanentDelete(entries) => Completion(CompletionKind::PermanentDelete(
-                run_entries(entries, |entry| {
+            WorkKind::PermanentDelete(entries) => {
+                CompletionKind::PermanentDelete(run_entries(entries, |entry| {
                     fs::delete_permanently(&entry.path).map_err(|error| error.to_string())
-                }),
-            )),
-            WorkKind::TrashDelete(entries) => {
-                Completion(CompletionKind::TrashDelete(super::trash::delete(entries)))
+                }))
             }
-        }
+            WorkKind::TrashDelete(entries) => {
+                CompletionKind::TrashDelete(super::trash::delete(entries))
+            }
+        };
+        Completion::prepare(kind)
     }
+}
+
+pub(super) enum Confirmation {
+    Work(Work),
+    Trash(Vec<FileEntry>),
 }
 
 fn run_entries(
@@ -152,18 +145,6 @@ fn run_entries(
         .into_iter()
         .filter_map(|entry| operation(&entry).err().map(|error| (entry, error)))
         .collect()
-}
-
-fn run_trash_entries<A: TrashAdapter>(entries: Vec<FileEntry>, trash: &A) -> TrashCompletion {
-    let mut failures = Vec::new();
-    let mut receipts = Vec::new();
-    for entry in entries {
-        match trash.trash(&entry.path) {
-            Ok(receipt) => receipts.push(receipt),
-            Err(error) => failures.push((entry, error)),
-        }
-    }
-    TrashCompletion { failures, receipts }
 }
 
 #[derive(Clone, Debug)]
@@ -179,24 +160,30 @@ enum CompletionKind {
         kind: NameKind,
         result: Result<PathBuf, String>,
     },
-    Trash(TrashCompletion),
     PermanentDelete(Vec<(FileEntry, String)>),
     TrashDelete(super::trash::DeleteReport),
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Completion(CompletionKind);
+pub(super) struct Completion {
+    kind: CompletionKind,
+    journal_action: Result<Option<journal::Action>, String>,
+}
 
-#[derive(Clone, Debug, Default)]
-struct TrashCompletion {
-    failures: Vec<(FileEntry, String)>,
-    receipts: Vec<journal::TrashReceipt>,
+impl Completion {
+    fn prepare(kind: CompletionKind) -> Self {
+        let journal_action = journal_action(&kind).map_err(|error| error.to_string());
+        Self {
+            kind,
+            journal_action,
+        }
+    }
 }
 
 pub(super) struct CompletionEffects {
     pub(super) status: Option<String>,
     pub(super) detail: Option<String>,
-    pub(super) journal_action: Result<Option<journal::Action>, journal::Error>,
+    pub(super) journal_action: Result<Option<journal::Action>, String>,
     pub(super) refresh: bool,
     pub(super) select: Option<PathBuf>,
     pub(super) renamed: bool,
@@ -232,6 +219,7 @@ impl FileOperationSession {
                 message, detail, ..
             } => View::PermanentDelete { message, detail },
             State::Error { message } => View::Error { message },
+            State::Warning { message } => View::Warning { message },
         }
     }
 
@@ -249,7 +237,7 @@ impl FileOperationSession {
             State::Trash { .. } | State::PermanentDelete { .. } | State::TrashDelete { .. } => {
                 PromptInteraction::Confirmation
             }
-            State::Error { .. } => PromptInteraction::Acknowledgement,
+            State::Error { .. } | State::Warning { .. } => PromptInteraction::Acknowledgement,
             State::Idle | State::Rename { .. } => PromptInteraction::Inactive,
         }
     }
@@ -258,7 +246,8 @@ impl FileOperationSession {
         match &self.state {
             State::PermanentDelete { detail, .. }
             | State::TrashDelete { detail, .. }
-            | State::Error { message: detail } => Some(detail),
+            | State::Error { message: detail }
+            | State::Warning { message: detail } => Some(detail),
             _ => None,
         }
     }
@@ -380,26 +369,31 @@ impl FileOperationSession {
         }))
     }
 
-    pub(super) fn confirm(&mut self, current: PathBuf) -> Option<Work> {
+    pub(super) fn confirm(&mut self, current: PathBuf) -> Option<Confirmation> {
         if self.busy {
             return None;
         }
         match &self.state {
-            State::NewFolder { .. } => self.submit_name(current),
-            State::NewFile { .. } => self.submit_name(current),
+            State::NewFolder { .. } => self.submit_name(current).map(Confirmation::Work),
+            State::NewFile { .. } => self.submit_name(current).map(Confirmation::Work),
             State::Trash { entries, .. } => {
-                self.busy = true;
-                Some(Work(WorkKind::Trash(entries.clone())))
+                let entries = entries.clone();
+                self.state = State::Idle;
+                Some(Confirmation::Trash(entries))
             }
             State::PermanentDelete { entries, .. } => {
                 self.busy = true;
-                Some(Work(WorkKind::PermanentDelete(entries.clone())))
+                Some(Confirmation::Work(Work(WorkKind::PermanentDelete(
+                    entries.clone(),
+                ))))
             }
             State::TrashDelete { entries, .. } => {
                 self.busy = true;
-                Some(Work(WorkKind::TrashDelete(entries.clone())))
+                Some(Confirmation::Work(Work(WorkKind::TrashDelete(
+                    entries.clone(),
+                ))))
             }
-            State::Error { .. } => {
+            State::Error { .. } | State::Warning { .. } => {
                 self.state = State::Idle;
                 None
             }
@@ -420,11 +414,37 @@ impl FileOperationSession {
         self.state = State::Error { message };
     }
 
+    pub(super) fn show_warning(&mut self, message: String) {
+        self.busy = false;
+        self.state = State::Warning { message };
+    }
+
+    pub(super) fn finish_trash_transfer(&mut self, failures: Vec<(FileEntry, String)>) {
+        self.busy = false;
+        if failures.is_empty() {
+            self.state = State::Idle;
+            return;
+        }
+        let detail = failure_detail(&failures);
+        let entries = failures
+            .into_iter()
+            .map(|(entry, _)| entry)
+            .collect::<Vec<_>>();
+        self.state = State::PermanentDelete {
+            message: permanent_delete_confirmation(entries.len()),
+            detail: format!("{detail}\n\nThis cannot be undone."),
+            entries,
+        };
+    }
+
     pub(super) fn complete(&mut self, completion: Completion) -> CompletionEffects {
         self.busy = false;
-        let journal_action = journal_action(&completion.0);
-        let (status, detail) = completion_feedback(&completion.0);
-        let consequences = match completion.0 {
+        let Completion {
+            kind,
+            journal_action,
+        } = completion;
+        let (status, detail) = completion_feedback(&kind);
+        let consequences = match kind {
             CompletionKind::Name { kind, result } => match result {
                 Ok(path) => {
                     let renamed = matches!(kind, NameKind::Rename { .. });
@@ -445,24 +465,6 @@ impl FileOperationSession {
                     StateConsequences::default()
                 }
             },
-            CompletionKind::Trash(TrashCompletion { failures, .. }) => {
-                if failures.is_empty() {
-                    self.state = State::Idle;
-                    StateConsequences {
-                        refresh: true,
-                        ..StateConsequences::default()
-                    }
-                } else {
-                    let detail = failure_detail(&failures);
-                    let entries: Vec<_> = failures.into_iter().map(|(entry, _)| entry).collect();
-                    self.state = State::PermanentDelete {
-                        message: permanent_delete_confirmation(entries.len()),
-                        detail: format!("{detail}\n\nThis cannot be undone."),
-                        entries,
-                    };
-                    StateConsequences::default()
-                }
-            }
             CompletionKind::PermanentDelete(failures) => {
                 if failures.is_empty() {
                     self.state = State::Idle;
@@ -517,7 +519,6 @@ fn journal_action(completion: &CompletionKind) -> Result<Option<journal::Action>
             kind: NameKind::NewFile,
             result: Ok(path),
         } => journal::Action::new_file(path.clone()).map(Some),
-        CompletionKind::Trash(completion) => journal::Action::trash(&completion.receipts),
         CompletionKind::Name { .. }
         | CompletionKind::PermanentDelete(_)
         | CompletionKind::TrashDelete(_) => Ok(None),
@@ -570,30 +571,7 @@ fn failure_detail(failures: &[(FileEntry, String)]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, sync::Mutex};
-
     use super::*;
-
-    #[derive(Default)]
-    struct MemoryTrashAdapter {
-        failures: BTreeSet<PathBuf>,
-        calls: Mutex<Vec<PathBuf>>,
-    }
-
-    impl TrashAdapter for MemoryTrashAdapter {
-        fn trash(&self, path: &Path) -> Result<journal::TrashReceipt, String> {
-            self.calls.lock().unwrap().push(path.to_path_buf());
-            if self.failures.contains(path) {
-                Err("Trash unavailable".to_owned())
-            } else {
-                Ok(journal::TrashReceipt {
-                    original: path.to_path_buf(),
-                    trashed: PathBuf::from("/trash").join(path.file_name().unwrap_or_default()),
-                    info: PathBuf::from("/trash/info"),
-                })
-            }
-        }
-    }
 
     fn entry(name: &str) -> FileEntry {
         FileEntry {
@@ -619,7 +597,7 @@ mod tests {
 
         session.change_name("new.txt".to_owned());
         assert!(session.submit_name(PathBuf::from("/work")).is_some());
-        let effects = session.complete(Completion(CompletionKind::Name {
+        let effects = session.complete(Completion::prepare(CompletionKind::Name {
             kind: NameKind::Rename {
                 source: PathBuf::from("/work/old.txt"),
             },
@@ -643,9 +621,9 @@ mod tests {
         let completion = session
             .submit_name(temp.path().to_path_buf())
             .unwrap()
-            .run(&MemoryTrashAdapter::default());
+            .run();
         assert!(matches!(
-            &completion.0,
+            &completion.kind,
             CompletionKind::Name {
                 kind: NameKind::NewFile,
                 result: Ok(path),
@@ -665,7 +643,7 @@ mod tests {
         let completion = session
             .submit_name(temp.path().to_path_buf())
             .unwrap()
-            .run(&MemoryTrashAdapter::default());
+            .run();
         let effects = session.complete(completion);
         assert!(!effects.refresh);
         assert!(matches!(effects.journal_action, Ok(None)));
@@ -676,25 +654,18 @@ mod tests {
     }
 
     #[test]
-    fn trash_adapter_is_real_and_partial_failure_escalates() {
+    fn trash_confirmation_returns_a_transfer_and_partial_failure_escalates() {
         let one = entry("one.txt");
         let two = entry("two.txt");
-        let adapter = MemoryTrashAdapter {
-            failures: BTreeSet::from([two.path.clone()]),
-            ..MemoryTrashAdapter::default()
-        };
         let mut session = FileOperationSession::default();
         assert!(session.begin_trash(vec![one.clone(), two.clone()]));
-        let work = session.confirm(PathBuf::from("/work")).unwrap();
-        let completion = work.run(&adapter);
+        let Some(Confirmation::Trash(entries)) = session.confirm(PathBuf::from("/work")) else {
+            panic!("Trash confirmation must return a Transfer request");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(session.view(), View::Idle));
 
-        assert_eq!(
-            adapter.calls.lock().unwrap().as_slice(),
-            [one.path, two.path]
-        );
-        let effects = session.complete(completion);
-        assert!(!effects.refresh);
-        assert!(!matches!(effects.journal_action, Ok(None)));
+        session.finish_trash_transfer(vec![(two, "Trash unavailable".to_owned())]);
         assert!(matches!(
             session.view(),
             View::PermanentDelete { message, detail }
@@ -702,36 +673,18 @@ mod tests {
                     && detail.contains("Trash unavailable")
                     && detail.contains("cannot be undone")
         ));
-        let _: &dyn TrashAdapter = &GioTrashAdapter;
-    }
-
-    #[test]
-    fn successful_completion_returns_refresh_consequences() {
-        let mut session = FileOperationSession::default();
-        assert!(session.begin_trash(vec![entry("one.txt")]));
-        let _ = session.confirm(PathBuf::from("/work"));
-
-        assert!(
-            session
-                .complete(Completion(
-                    CompletionKind::Trash(TrashCompletion::default())
-                ))
-                .refresh
-        );
-        assert!(matches!(session.view(), View::Idle));
     }
 
     #[test]
     fn new_folder_runs_through_the_session_and_can_be_cancelled() {
         let temp = tempfile::tempdir().unwrap();
-        let adapter = MemoryTrashAdapter::default();
         let mut session = FileOperationSession::default();
         session.begin_new_folder();
         session.change_name("created".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
             .unwrap()
-            .run(&adapter);
+            .run();
         let effects = session.complete(completion);
 
         assert!(temp.path().join("created").is_dir());
@@ -750,24 +703,17 @@ mod tests {
         let mut session = FileOperationSession::default();
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion(CompletionKind::Trash(TrashCompletion {
-            failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
-            receipts: Vec::new(),
-        })));
+        session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));
 
         assert!(session.begin_trash(vec![failed.clone()]));
         let _ = session.confirm(PathBuf::from("/work"));
-        let _ = session.complete(Completion(CompletionKind::Trash(TrashCompletion {
-            failures: vec![(failed.clone(), "Trash unavailable".to_owned())],
-            receipts: Vec::new(),
-        })));
+        session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
         assert!(session.confirm(PathBuf::from("/work")).is_some());
-        let effects = session.complete(Completion(CompletionKind::PermanentDelete(vec![(
-            failed,
-            "Permission denied".to_owned(),
-        )])));
+        let effects = session.complete(Completion::prepare(CompletionKind::PermanentDelete(vec![
+            (failed, "Permission denied".to_owned()),
+        ])));
 
         assert!(!effects.refresh);
         assert!(matches!(
@@ -780,7 +726,7 @@ mod tests {
     fn trash_delete_feedback_is_interpreted_inside_the_session() {
         let failed = entry("failed.txt");
         let mut session = FileOperationSession::default();
-        let effects = session.complete(Completion(CompletionKind::TrashDelete(
+        let effects = session.complete(Completion::prepare(CompletionKind::TrashDelete(
             crate::app::trash::DeleteReport {
                 deleted: 2,
                 failures: vec![(failed, "Permission denied".to_owned())],

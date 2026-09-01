@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use gio::prelude::*;
 use iced::{
@@ -156,7 +159,6 @@ impl App {
                 self.pending_reveal_scroll = reveal_selection && !self.window_size_known;
                 match commit.location() {
                     DisplayedLocation::Folder => Task::batch([
-                        self.load_root_if_needed(),
                         self.schedule_details(),
                         self.load_visible_thumbnails(),
                         if reveal_selection {
@@ -183,7 +185,7 @@ impl App {
                         .complete_load(&tree_load, Err(error.clone()));
                     self.sync_location_monitoring();
                 }
-                self.presentation.set_status(error);
+                self.show_error(error);
                 Task::none()
             }
             NavigationOutcome::Ignored => {
@@ -500,12 +502,6 @@ impl App {
         )
     }
 
-    pub(super) fn load_root_if_needed(&mut self) -> Task<Message> {
-        self.sidebar_tree
-            .begin_root_load()
-            .map_or_else(Task::none, |request| self.load_tree_node(request))
-    }
-
     pub(super) fn load_tree_node(&self, request: TreeLoadRequest) -> Task<Message> {
         let worker_path = request.path.clone();
         let show_hidden = self
@@ -527,6 +523,40 @@ impl App {
         )
     }
 
+    pub(super) fn refresh_tree_storage_usage(&mut self) -> Task<Message> {
+        let requests = self.sidebar_tree.begin_storage_usage_refresh();
+        if requests.is_empty() {
+            return Task::none();
+        }
+        let fallback_requests = requests.clone();
+        Task::perform(
+            self.operations.run(OperationKind::Background, move |_| {
+                Ok(requests
+                    .into_iter()
+                    .map(|request| {
+                        let result = fs::storage_usage(&request.path);
+                        (request, result)
+                    })
+                    .collect::<Vec<_>>())
+            }),
+            move |completion| match completion {
+                Completion::Finished(Ok(results)) => Message::TreeStorageUsageLoaded(results),
+                Completion::Finished(Err(error)) => Message::TreeStorageUsageLoaded(
+                    fallback_requests
+                        .into_iter()
+                        .map(|request| (request, Err(error.clone())))
+                        .collect(),
+                ),
+                Completion::Cancelled => Message::TreeStorageUsageLoaded(
+                    fallback_requests
+                        .into_iter()
+                        .map(|request| (request, Err("Storage refresh was cancelled".to_owned())))
+                        .collect(),
+                ),
+            },
+        )
+    }
+
     pub(super) fn activate_tree_row(&mut self, id: u64) -> Task<Message> {
         if self.prompt_blocks_action() {
             return Task::none();
@@ -538,6 +568,23 @@ impl App {
         match activation {
             TreeActivation::Recent => self.open_recent(),
             TreeActivation::Trash => self.open_trash(),
+            TreeActivation::MountVolume { id, label } => {
+                self.presentation.set_status(format!("Mounting {label}…"));
+                let message_id = id.clone();
+                Task::perform(
+                    self.operations
+                        .run_foreground(OperationKind::Background, move |_| {
+                            super::places::mount_volume(&id)
+                        }),
+                    move |completion| match completion {
+                        Completion::Finished(result) => Message::TreeVolumeMounted {
+                            id: message_id,
+                            result,
+                        },
+                        Completion::Cancelled => Message::Noop,
+                    },
+                )
+            }
             TreeActivation::Folder { path, load } => {
                 let already_current = path == current;
                 if already_current {
@@ -560,6 +607,135 @@ impl App {
                 }
             }
         }
+    }
+
+    pub(super) fn finish_tree_volume_mount(
+        &mut self,
+        id: &str,
+        result: Result<super::places::MountedVolume, String>,
+    ) -> Task<Message> {
+        match result {
+            Ok(mounted) => {
+                if let Some(path) = self.sidebar_tree.volume_path(id) {
+                    return self.open_mounted_tree_volume(id, &mounted.label, path);
+                }
+                self.pending_volume_navigation = Some(super::PendingVolumeNavigation {
+                    id: id.to_owned(),
+                    label: mounted.label.clone(),
+                    deadline: iced::time::Instant::now() + Duration::from_secs(10),
+                });
+                self.presentation
+                    .set_status(format!("Mounted {}. Opening…", mounted.label));
+                Task::perform(
+                    async {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    },
+                    |_| Message::PollSystem,
+                )
+            }
+            Err(error) => {
+                self.pending_volume_navigation = None;
+                self.sidebar_tree.finish_volume_mount(id, None);
+                self.presentation.set_status(error);
+                Task::none()
+            }
+        }
+    }
+
+    pub(super) fn unmount_tree_volume(&mut self, id: String) -> Task<Message> {
+        if self.prompt_blocks_action() {
+            return Task::none();
+        }
+        let Some((label, path)) = self.sidebar_tree.begin_volume_unmount(&id) else {
+            return Task::none();
+        };
+        self.presentation.set_status(format!("Unmounting {label}…"));
+        let message_id = id.clone();
+        let message_label = label.clone();
+        let message_path = path.clone();
+        Task::perform(
+            self.operations
+                .run_foreground(OperationKind::Background, move |_| {
+                    super::places::unmount_volume(&id)
+                }),
+            move |completion| Message::TreeVolumeUnmounted {
+                id: message_id,
+                label: message_label,
+                path: message_path,
+                result: match completion {
+                    Completion::Finished(result) => result,
+                    Completion::Cancelled => Err("Unmounting was cancelled".to_owned()),
+                },
+            },
+        )
+    }
+
+    pub(super) fn finish_tree_volume_unmount(
+        &mut self,
+        id: &str,
+        label: &str,
+        path: &Path,
+        result: Result<(), String>,
+    ) -> Task<Message> {
+        self.sidebar_tree.finish_volume_unmount(id);
+        match result {
+            Ok(()) => {
+                self.sidebar_tree.refresh_volumes();
+                self.sync_location_monitoring();
+                if self.navigation.current().starts_with(path) {
+                    self.presentation
+                        .set_status_notice(format!("Unmounted {label}"));
+                    let fallback = std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_dir())
+                        .unwrap_or_else(|| PathBuf::from("/"));
+                    self.transition_navigation(NavigationTransition::Open {
+                        requested: fallback,
+                        remember: true,
+                        select: None,
+                    })
+                } else {
+                    self.presentation.set_status(format!("Unmounted {label}"));
+                    Task::none()
+                }
+            }
+            Err(error) => {
+                self.presentation
+                    .set_status(format!("Could not unmount {label}: {error}"));
+                Task::none()
+            }
+        }
+    }
+
+    pub(super) fn resume_tree_volume_navigation(&mut self) -> Task<Message> {
+        let Some(pending) = self.pending_volume_navigation.as_ref() else {
+            return Task::none();
+        };
+        let id = pending.id.clone();
+        let label = pending.label.clone();
+        if let Some(path) = self.sidebar_tree.volume_path(&id) {
+            self.pending_volume_navigation = None;
+            return self.open_mounted_tree_volume(&id, &label, path);
+        }
+        if iced::time::Instant::now() >= pending.deadline {
+            self.pending_volume_navigation = None;
+            self.sidebar_tree.finish_volume_mount(&id, None);
+            self.presentation
+                .set_status(format!("Mounted {label}, but its folder is unavailable"));
+            return Task::none();
+        }
+        Task::none()
+    }
+
+    fn open_mounted_tree_volume(&mut self, id: &str, label: &str, path: PathBuf) -> Task<Message> {
+        self.sidebar_tree
+            .finish_volume_mount(id, Some(path.clone()));
+        self.presentation.set_status(format!("Mounted {label}"));
+        self.transition_navigation(NavigationTransition::Open {
+            requested: path,
+            remember: true,
+            select: None,
+        })
     }
 
     pub(super) fn move_sidebar(&mut self, motion: Motion, count: usize) -> Task<Message> {

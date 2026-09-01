@@ -4,8 +4,8 @@ use iced::{
     Alignment, Element, Fill, Length, Padding,
     time::Instant,
     widget::{
-        self, Column, Grid, Id, Row, Space, button, column, container, mouse_area, pin, row, rule,
-        scrollable, stack, svg, text, text_input,
+        self, Column, Grid, Id, Row, Space, button, column, container, mouse_area, pin,
+        progress_bar, row, rule, scrollable, stack, svg, text, text_input,
     },
 };
 
@@ -22,10 +22,11 @@ use super::{
     ScrollTarget, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
     UI_FONT_SEMIBOLD, apply_opacity, browser_background_style, clip_file_name,
     entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg, flat_input_style,
-    focus_container_style, grid_background_style, list_row_style, marquee_style, native_dnd, rgba,
-    sidebar_style, solid_background_style, themed_svg, tile_label, tile_style, toolbar_button,
-    toolbar_button_style, transient_scrollbar_style, transient_vertical_scrollbar, tree,
-    tree_button_style, tree_icon_asset, with_alpha,
+    focus_container_style, format_storage_usage, grid_background_style, list_row_style,
+    marquee_style, native_dnd, rgba, sidebar_style, solid_background_style, themed_svg, tile_label,
+    tile_style, toolbar_button, toolbar_button_style, transient_scrollbar_style,
+    transient_vertical_scrollbar, tree, tree_button_style, tree_icon_asset,
+    tree_unmount_button_style, with_alpha,
 };
 
 const TREE_LABEL_ROOT_MAX_CHARACTERS: usize = 23;
@@ -199,7 +200,15 @@ impl<'a> View<'a> {
 
     fn sidebar(self) -> Element<'a, Message> {
         let mut rows = Column::new().spacing(0);
+        let mut previous_section = None;
         for tree_row in self.app.sidebar_tree.rows(self.app.navigation.current()) {
+            if tree_row.depth == 0 {
+                let section = tree::sidebar_section(tree_row.kind);
+                if previous_section.is_some_and(|previous| previous != section) {
+                    rows = rows.push(self.sidebar_separator());
+                }
+                previous_section = Some(section);
+            }
             rows = rows.push(self.tree_row(tree_row));
         }
         let scrollbar_opacity = self.app.grid.scrollbar_opacity(
@@ -242,9 +251,32 @@ impl<'a> View<'a> {
             .into()
     }
 
+    fn sidebar_separator(self) -> Element<'a, Message> {
+        container(
+            rule::horizontal(1).style(move |theme: &iced::Theme| rule::Style {
+                color: with_alpha(theme.palette().text, 0.12),
+                radius: Default::default(),
+                fill_mode: rule::FillMode::Padded(5),
+                snap: true,
+            }),
+        )
+        .width(Fill)
+        .height(13)
+        .center_y(13)
+        .into()
+    }
+
     fn tree_row(self, tree_row: TreeRow) -> Element<'a, Message> {
-        let drop_target =
-            self.app.drop_highlight_path().as_deref() == Some(tree_row.path.as_path());
+        let row_height = tree_row.height();
+        let shows_storage_usage = tree_row.shows_storage_usage();
+        let unmount = tree_row
+            .volume_id
+            .clone()
+            .filter(|_| tree_row.can_unmount && !tree_row.loading);
+        let drop_target = tree_row
+            .path
+            .as_deref()
+            .is_some_and(|path| self.app.drop_highlight_path().as_deref() == Some(path));
         let mut line = Row::new()
             .spacing(6)
             .height(Fill)
@@ -289,22 +321,125 @@ impl<'a> View<'a> {
             .align_y(Alignment::Center)
             .clip(true),
         );
-        let content = column![line.height(30), self.drag_activation_bar(&tree_row.path)].spacing(0);
-        let button = button(content)
+        if unmount.is_some() {
+            line = line.push(Space::new().width(28).height(1));
+        }
+        let activation_bar = tree_row.path.as_deref().map_or_else(
+            || Space::new().width(Fill).height(2).into(),
+            |path| self.drag_activation_bar(path),
+        );
+        let mut content = Column::new()
+            .spacing(0)
+            .push(line.height(if shows_storage_usage { 27 } else { 30 }));
+        if shows_storage_usage {
+            let muted_text = with_alpha(label_color, 0.62);
+            let track_color = with_alpha(label_color, 0.12);
+            let bar_color = if selected || focused {
+                with_alpha(label_color, 0.82)
+            } else {
+                self.accent_color()
+            };
+            let used_fraction = tree_row
+                .storage_usage
+                .map_or(0.0, fs::StorageUsage::used_fraction);
+            let bar = progress_bar(0.0..=1.0, used_fraction)
+                .girth(4)
+                .style(move |_| widget::progress_bar::Style {
+                    background: track_color.into(),
+                    bar: bar_color.into(),
+                    border: iced::Border {
+                        radius: 2.0.into(),
+                        ..iced::Border::default()
+                    },
+                });
+            let details = tree_row
+                .storage_usage
+                .map_or_else(|| "Reading storage…".to_owned(), format_storage_usage);
+            let metrics = column![
+                container(
+                    text(details)
+                        .size(10)
+                        .line_height(iced::Pixels(12.0))
+                        .color(muted_text)
+                        .wrapping(iced::advanced::text::Wrapping::None),
+                )
+                .width(Fill)
+                .height(12)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 5.0,
+                    bottom: 0.0,
+                    left: (tree_row.depth as f32 * 16.0) + 12.0,
+                })
+                .clip(true),
+                container(bar).width(Fill).height(4).padding(Padding {
+                    top: 0.0,
+                    right: 5.0,
+                    bottom: 0.0,
+                    left: (tree_row.depth as f32 * 16.0) + 12.0,
+                }),
+            ]
+            .spacing(4);
+            content = content.push(
+                container(metrics)
+                    .width(Fill)
+                    .height(27)
+                    .padding(Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 4.0,
+                        left: 0.0,
+                    })
+                    .clip(true),
+            );
+        }
+        let content = content.push(activation_bar);
+        let row_button = button(content)
             .on_press(Message::TreeRow(tree_row.id))
             .width(Fill)
-            .height(32)
+            .height(row_height)
             .padding(0)
             .style(move |theme, status| {
                 tree_button_style(theme, status, selected, focused, drop_target)
             });
+        let row: Element<'a, Message> = if let Some(volume_id) = unmount {
+            let unmount_button = button(themed_svg(
+                include_bytes!("../ui/icons/eject.svg"),
+                15.0,
+                label_color,
+            ))
+            .on_press(Message::TreeVolumeUnmount(volume_id))
+            .width(28)
+            .height(28)
+            .padding(6)
+            .style(tree_unmount_button_style);
+            let unmount_button = widget::tooltip(
+                unmount_button,
+                container(text(format!("Unmount {}", tree_row.label)).size(12))
+                    .padding([4, 7])
+                    .style(container::rounded_box),
+                widget::tooltip::Position::Bottom,
+            );
+            stack![
+                row_button,
+                container(unmount_button)
+                    .width(Fill)
+                    .height(row_height)
+                    .padding(2)
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::Start),
+            ]
+            .into()
+        } else {
+            row_button.into()
+        };
         if let Some(index) = tree_row.favorite_index {
-            mouse_area(button)
+            mouse_area(row)
                 .on_press(Message::FavoritePressed(index))
                 .on_release(Message::FavoriteReleased(index))
                 .into()
         } else {
-            button.into()
+            row
         }
     }
 
@@ -1000,6 +1135,29 @@ mod tests {
         assert_eq!(
             clip_tree_label("Waddle-LinkedIn-2026-08-28", 1),
             "Waddle-LinkedIn-2026…"
+        );
+    }
+
+    #[test]
+    fn sidebar_sections_separate_computer_places_utilities_and_devices() {
+        assert_eq!(
+            [
+                tree::NodeKind::Computer,
+                tree::NodeKind::Home,
+                tree::NodeKind::Favorite,
+                tree::NodeKind::Recent,
+                tree::NodeKind::Trash,
+                tree::NodeKind::Drive,
+            ]
+            .map(tree::sidebar_section),
+            [
+                tree::SidebarSection::Computer,
+                tree::SidebarSection::Places,
+                tree::SidebarSection::Places,
+                tree::SidebarSection::Utilities,
+                tree::SidebarSection::Utilities,
+                tree::SidebarSection::Devices,
+            ]
         );
     }
 

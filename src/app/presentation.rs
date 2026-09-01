@@ -5,15 +5,14 @@ use iced::{
     animation::Easing,
     gradient, keyboard, mouse,
     time::Instant,
-    widget::{self, Button, button, container, scrollable, svg, text, text_input},
+    widget::{self, Button, button, container, scrollable, svg, text_input},
 };
 
 use crate::fs::FileEntry;
 
 use super::{
-    CONTENT_GUTTER, EntryIconKind, MONO_FONT_SEMIBOLD, Message, Motion, SCROLLBAR_THUMB_WIDTH,
-    SCROLLBAR_TRACK_WIDTH, STATUS_HEIGHT, TOOLBAR_ICON_SIZE, command, duration_ratio,
-    transfer_session, tree,
+    CONTENT_GUTTER, EntryIconKind, Message, Motion, SCROLLBAR_THUMB_WIDTH, SCROLLBAR_TRACK_WIDTH,
+    STATUS_HEIGHT, TOOLBAR_ICON_SIZE, command, duration_ratio, transfer_session, tree,
 };
 
 const COPY_FEEDBACK_HOLD: Duration = Duration::from_millis(320);
@@ -177,6 +176,18 @@ struct CopyFeedback {
     started_at: Option<Instant>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NoticeTone {
+    Neutral,
+    Danger,
+}
+
+#[derive(Clone, Debug)]
+struct Notice {
+    text: String,
+    tone: NoticeTone,
+}
+
 impl CopyFeedback {
     fn trigger(&mut self, now: Instant) {
         self.started_at = Some(now);
@@ -225,7 +236,7 @@ pub(super) struct Presentation {
     now: Instant,
     spinner_started: Instant,
     status: String,
-    notice: Option<String>,
+    notice: Option<Notice>,
 }
 
 impl Presentation {
@@ -244,7 +255,10 @@ impl Presentation {
             now,
             spinner_started: now,
             status: String::new(),
-            notice,
+            notice: notice.map(|text| Notice {
+                text,
+                tone: NoticeTone::Danger,
+            }),
         }
     }
 
@@ -288,10 +302,6 @@ impl Presentation {
         self.bottom_cursor
     }
 
-    pub(super) fn reset_bottom_cursor(&mut self) {
-        self.bottom_cursor = 0;
-    }
-
     pub(super) fn move_bottom_cursor(
         &mut self,
         action_count: usize,
@@ -319,12 +329,29 @@ impl Presentation {
         self.status = status.into();
     }
 
+    #[cfg(test)]
     pub(super) fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        self.notice.as_ref().map(|notice| notice.text.as_str())
+    }
+
+    pub(super) fn notice_is_danger(&self) -> bool {
+        self.notice
+            .as_ref()
+            .is_some_and(|notice| notice.tone == NoticeTone::Danger)
     }
 
     pub(super) fn set_notice(&mut self, notice: impl Into<String>) {
-        self.notice = Some(notice.into());
+        self.notice = Some(Notice {
+            text: notice.into(),
+            tone: NoticeTone::Danger,
+        });
+    }
+
+    pub(super) fn set_status_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: notice.into(),
+            tone: NoticeTone::Neutral,
+        });
     }
 
     pub(super) fn clear_notice(&mut self) {
@@ -430,7 +457,10 @@ impl Presentation {
         } else {
             BrowserStatusModel {
                 presentation: BrowserStatusPresentation::General,
-                text: self.notice.as_deref().unwrap_or(&self.status),
+                text: self
+                    .notice
+                    .as_ref()
+                    .map_or(&self.status, |notice| &notice.text),
                 retry,
                 history: retry,
             }
@@ -943,6 +973,23 @@ pub(super) fn toolbar_button_style(theme: &Theme, status: button::Status) -> but
     }
 }
 
+pub(super) fn tree_unmount_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let opacity = match status {
+        button::Status::Hovered => 0.04,
+        button::Status::Pressed => 0.07,
+        button::Status::Active | button::Status::Disabled => 0.0,
+    };
+    button::Style {
+        background: (opacity > 0.0)
+            .then(|| Background::Color(with_alpha(theme.palette().text, opacity))),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
 pub(super) fn focusable_button_style(
     theme: &Theme,
     status: button::Status,
@@ -997,14 +1044,6 @@ pub(super) fn command_failure_report(
     }
 }
 
-pub(super) fn compact_text_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    button(text(label).font(MONO_FONT_SEMIBOLD).size(11))
-        .on_press(message)
-        .padding(Padding::from([1, 4]))
-        .style(toolbar_button_style)
-        .into()
-}
-
 pub(super) fn format_transfer_snapshot(
     action: &str,
     snapshot: &transfer_session::Snapshot,
@@ -1042,6 +1081,15 @@ pub(super) fn format_transfer_bytes(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
+}
+
+pub(super) fn format_storage_usage(usage: crate::fs::StorageUsage) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    format!(
+        "{:.1} GiB used · {:.1} GiB free",
+        usage.used_bytes() as f64 / GIB,
+        usage.available_bytes as f64 / GIB,
+    )
 }
 
 pub(super) fn solid_background_style(color: Color) -> container::Style {
@@ -1118,6 +1166,25 @@ mod tests {
                 .is_none()
         );
         assert!(context_menu_button_style(&theme, true).background.is_some());
+    }
+
+    #[test]
+    fn tree_unmount_hover_uses_a_quiet_translucent_background() {
+        let theme = Theme::Dark;
+
+        assert!(
+            tree_unmount_button_style(&theme, button::Status::Active)
+                .background
+                .is_none()
+        );
+        assert_eq!(
+            tree_unmount_button_style(&theme, button::Status::Hovered).background,
+            Some(Background::Color(with_alpha(theme.palette().text, 0.04)))
+        );
+        assert_eq!(
+            tree_unmount_button_style(&theme, button::Status::Pressed).background,
+            Some(Background::Color(with_alpha(theme.palette().text, 0.07)))
+        );
     }
 
     #[test]

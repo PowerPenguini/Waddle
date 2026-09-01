@@ -74,6 +74,10 @@ impl App {
         self.open_file_operation(move |session| session.show_error(message));
     }
 
+    pub(super) fn show_warning(&mut self, message: String) {
+        self.open_file_operation(move |session| session.show_warning(message));
+    }
+
     pub(super) fn refresh_status(&mut self) {
         if self.browser_input.pending_sequence().is_some() {
             return;

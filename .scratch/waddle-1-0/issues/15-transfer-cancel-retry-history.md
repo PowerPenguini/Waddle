@@ -22,3 +22,8 @@ destination. Retry is constructed only from failed and retained source paths. Su
 still enter the persistent Undo journal after a partial result. Transfer reports are stored under
 XDG state for 30 days and the expanded bar can copy them as text. Shell stdout and stderr readers
 now bound memory while the process is running, retaining a small tail for the final PWD marker.
+
+## Comments
+
+- 2026-09-01: Trash observes Transfer cancellation between selected roots. Failed and retained
+  entries become the retry set, while completed entries remain in history and safe Undo.

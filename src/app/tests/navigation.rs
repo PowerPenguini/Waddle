@@ -1,6 +1,104 @@
 use super::*;
 
 #[test]
+fn undo_is_not_ignored_while_the_current_folder_refreshes() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry(".Trash-1000")]);
+    let refresh = app.refresh(None);
+    app.refresh_status();
+
+    assert!(app.navigation.loading());
+    assert_eq!(
+        app.presentation.status(),
+        format!("1 items  •  {}", temp.path().display())
+    );
+
+    let key = keyboard::Key::Character("u".into());
+    let undo = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("u"));
+
+    assert!(app.foreground_operation_active(), "u was silently ignored");
+    assert_eq!(app.presentation.status(), "Undoing…");
+    drop(undo);
+    drop(refresh);
+}
+
+#[test]
+fn mounted_tree_volume_waits_for_its_path_then_opens_the_root() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+        id: "uuid:test".to_owned(),
+        path: None,
+        label: "USB Stick".to_owned(),
+        can_unmount: false,
+    }]);
+    let volume_row = app
+        .sidebar_tree
+        .rows(Path::new("/current"))
+        .into_iter()
+        .find(|row| row.label == "USB Stick")
+        .unwrap();
+    assert!(matches!(
+        app.sidebar_tree.activate(volume_row.id),
+        Some(TreeActivation::MountVolume { .. })
+    ));
+    let mounted_path = PathBuf::from("/run/media/user/USB Stick");
+
+    let _ = app.finish_tree_volume_mount(
+        "uuid:test",
+        Ok(places::MountedVolume {
+            label: "USB Stick".to_owned(),
+        }),
+    );
+    assert!(app.pending_volume_navigation.is_some());
+    assert!(app.navigation.pending_path().is_none());
+
+    assert!(app.sidebar_tree.reconcile_volumes(vec![VolumeRoot {
+        id: "uuid:test".to_owned(),
+        path: Some(mounted_path.clone()),
+        label: "USB Stick".to_owned(),
+        can_unmount: true,
+    }]));
+    let _ = app.resume_tree_volume_navigation();
+
+    assert_eq!(app.navigation.pending_path(), Some(mounted_path.as_path()));
+    assert!(app.pending_volume_navigation.is_none());
+    assert_eq!(
+        app.sidebar_tree
+            .rows(Path::new("/current"))
+            .into_iter()
+            .find(|row| row.id == volume_row.id)
+            .unwrap()
+            .path,
+        Some(mounted_path)
+    );
+    assert!(app.presentation.status().starts_with("Opening "));
+}
+
+#[test]
+fn successful_unmount_notice_is_neutral_when_leaving_the_volume() {
+    let mounted_path = PathBuf::from("/run/media/user/tmp");
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(mounted_path.join("folder"));
+    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+        id: "uuid:tmp".to_owned(),
+        path: Some(mounted_path.clone()),
+        label: "tmp".to_owned(),
+        can_unmount: true,
+    }]);
+
+    let task = app.finish_tree_volume_unmount("uuid:tmp", "tmp", &mounted_path, Ok(()));
+
+    assert_eq!(app.presentation.notice(), Some("Unmounted tmp"));
+    assert!(!app.presentation.notice_is_danger());
+    drop(task);
+}
+
+#[test]
 fn startup_reveal_waits_for_actual_window_geometry_before_final_scroll() {
     let (mut app, _) = App::new();
     app.navigation = NavigationSession::new(PathBuf::from("/start"));
@@ -32,6 +130,29 @@ fn startup_reveal_waits_for_actual_window_geometry_before_final_scroll() {
             .map(|index| &app.navigation.entries()[index].path),
         Some(&selected)
     );
+}
+
+#[test]
+fn failed_folder_navigation_opens_the_error_bar() {
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(PathBuf::from("/current"));
+    let request = app
+        .navigation
+        .transition(NavigationTransition::Open {
+            requested: PathBuf::from("/lost+found"),
+            remember: true,
+            select: None,
+        })
+        .unwrap();
+    let error = "Could not read /lost+found: Permission denied (os error 13)";
+
+    let _ = app.finish_navigation(request, NavigationCompletion::Folder(Err(error.to_owned())));
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Error { message } if message == error
+    ));
+    assert!(app.presentation.expansion().0);
 }
 
 #[test]
@@ -137,20 +258,39 @@ fn first_back_cancels_tree_navigation_and_second_back_uses_history() {
     app.navigation = NavigationSession::new(PathBuf::from("/current"));
     app.navigation
         .seed_history(vec![PathBuf::from("/back")], Vec::new());
-    let root = app.sidebar_tree.rows(Path::new("/current"))[0].id;
-    assert!(
+    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+        id: "uuid:data".to_owned(),
+        path: Some(PathBuf::from("/data")),
+        label: "Data".to_owned(),
+        can_unmount: true,
+    }]);
+    let drive = app
+        .sidebar_tree
+        .rows(Path::new("/current"))
+        .into_iter()
+        .find(|row| row.kind == NodeKind::Drive)
+        .unwrap();
+    let TreeActivation::Folder {
+        load: Some(request),
+        ..
+    } = app.sidebar_tree.activate(drive.id).unwrap()
+    else {
+        panic!("an unopened drive should request its children");
+    };
+    assert_eq!(
         app.sidebar_tree
-            .install_children(root, Path::new("/"), vec![PathBuf::from("/slow")],)
+            .complete_load(&request, Ok(vec![PathBuf::from("/data/slow")])),
+        TreeLoadOutcome::Installed
     );
     let slow = app
         .sidebar_tree
         .rows(Path::new("/current"))
         .into_iter()
-        .find(|row| row.path == Path::new("/slow"))
+        .find(|row| row.path.as_deref() == Some(Path::new("/data/slow")))
         .unwrap();
 
     let _ = app.activate_tree_row(slow.id);
-    assert_eq!(app.navigation.pending_path(), Some(Path::new("/slow")));
+    assert_eq!(app.navigation.pending_path(), Some(Path::new("/data/slow")));
     assert!(
         app.sidebar_tree
             .rows(Path::new("/current"))
@@ -378,10 +518,12 @@ fn drag_notice_survives_refresh_and_clears_on_the_next_interaction() {
 }
 
 #[test]
-fn mount_reconciliation_preserves_existing_nodes() {
-    let first = MountRoot {
-        path: PathBuf::from("/media/first"),
+fn volume_reconciliation_preserves_existing_nodes() {
+    let first = VolumeRoot {
+        id: "uuid:first".to_owned(),
+        path: Some(PathBuf::from("/media/first")),
         label: "First".to_owned(),
+        can_unmount: true,
     };
     let mut tree = SidebarTree::new(vec![first.clone()]);
     let original_id = tree
@@ -392,11 +534,13 @@ fn mount_reconciliation_preserves_existing_nodes() {
         .id;
     tree.activate(original_id);
 
-    let second = MountRoot {
-        path: PathBuf::from("/media/second"),
+    let second = VolumeRoot {
+        id: "uuid:second".to_owned(),
+        path: Some(PathBuf::from("/media/second")),
         label: "Second".to_owned(),
+        can_unmount: true,
     };
-    assert!(tree.reconcile_mounts(vec![first, second]));
+    assert!(tree.reconcile_volumes(vec![first, second]));
     let rows = tree.rows(Path::new("/"));
     assert_eq!(rows[1].id, original_id);
     assert!(tree.is_expanded(original_id));

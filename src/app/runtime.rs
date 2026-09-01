@@ -85,23 +85,15 @@ impl App {
                 self.finish_transfer_batch(id, *outcome)
             }
             Message::PollTransfer => Task::none(),
-            Message::CancelTransfer => {
-                self.presentation.set_focus(BrowserFocus::BottomBar);
-                self.presentation.reset_bottom_cursor();
-                self.cancel_transfer_conflict()
-            }
-            Message::RetryTransfer => {
-                self.presentation.set_focus(BrowserFocus::BottomBar);
-                match self.transfers.retry(&self.operations) {
-                    Ok(task) => task.map(transfer_integration::transfer_runtime_message),
-                    Err(error) => {
-                        self.show_error(error);
-                        Task::none()
-                    }
+            Message::CancelTransfer => self.cancel_transfer_conflict(),
+            Message::RetryTransfer => match self.transfers.retry(&self.operations) {
+                Ok(task) => task.map(transfer_integration::transfer_runtime_message),
+                Err(error) => {
+                    self.show_error(error);
+                    Task::none()
                 }
-            }
+            },
             Message::ToggleTransferHistory => {
-                self.presentation.set_focus(BrowserFocus::BottomBar);
                 self.transfers.toggle_expanded();
                 self.sync_transient_presentation();
                 Task::none()
@@ -136,7 +128,9 @@ impl App {
                     theme::icon_theme(settings.as_ref()),
                     self.view_preferences.uses_system_icons(),
                 );
-                self.sidebar_tree.refresh_mounts();
+                self.sidebar_tree.refresh_volumes();
+                let storage_usage = self.refresh_tree_storage_usage();
+                let volume_navigation = self.resume_tree_volume_navigation();
                 let search = if self.search.is_recursive() {
                     self.live_refresh()
                 } else {
@@ -154,7 +148,13 @@ impl App {
                 };
                 let fallback =
                     Task::batch([self.invalidate_tree(fallback.invalidate_tree), location]);
-                Task::batch([search, fallback, system_icon_task(system_icons)])
+                Task::batch([
+                    search,
+                    fallback,
+                    system_icon_task(system_icons),
+                    volume_navigation,
+                    storage_usage,
+                ])
             }
             Message::DirectoryChanged(event) => {
                 let change = match self.location_monitoring.as_mut() {
@@ -238,6 +238,14 @@ impl App {
                 self.sidebar_tree.focus(id);
                 self.activate_tree_row(id)
             }
+            Message::TreeVolumeMounted { id, result } => self.finish_tree_volume_mount(&id, result),
+            Message::TreeVolumeUnmount(id) => self.unmount_tree_volume(id),
+            Message::TreeVolumeUnmounted {
+                id,
+                label,
+                path,
+                result,
+            } => self.finish_tree_volume_unmount(&id, &label, &path, result),
             Message::Scrolled {
                 target,
                 offset,
@@ -288,6 +296,12 @@ impl App {
                 {
                     self.presentation.set_status(error);
                     self.sync_location_monitoring();
+                }
+                Task::none()
+            }
+            Message::TreeStorageUsageLoaded(results) => {
+                for (request, result) in results {
+                    self.sidebar_tree.complete_storage_usage(&request, result);
                 }
                 Task::none()
             }
@@ -436,7 +450,7 @@ impl App {
                 match result {
                     Ok(status) => {
                         self.presentation.set_status(status);
-                        self.sidebar_tree.refresh_mounts();
+                        self.sidebar_tree.refresh_volumes();
                     }
                     Err(error) => self.presentation.set_status(error),
                 }
@@ -834,6 +848,7 @@ impl App {
         if cancel_bottom_input {
             self.grid.close_context();
         }
+        let transfers = self.transfers.overview();
         let intent = self.browser_input.handle(
             InputPress {
                 text,
@@ -844,7 +859,13 @@ impl App {
                 logo: modifiers.logo(),
             },
             InputContext {
-                transfer_conflict: self.transfers.overview().conflict_prompt.is_some(),
+                transfer_conflict: transfers.conflict_prompt.is_some(),
+                transfer_active: transfers.active,
+                transfer_retry: transfers.retry,
+                transfer_history_open: transfers.expanded,
+                transfer_history_available: transfers.active
+                    || transfers.retry
+                    || !transfers.history.is_empty(),
                 prompt: self.file_operations.prompt_interaction(),
                 foreground_operation_active: self.foreground_operation_active(),
                 command_output: self.command.output().is_some(),
@@ -873,6 +894,10 @@ impl App {
             InputIntent::ConflictChoice { key, remaining } => {
                 self.resolve_transfer_conflict(key, remaining)
             }
+            InputIntent::CancelTransfer => self.update(Message::CancelTransfer),
+            InputIntent::RetryTransfer => self.update(Message::RetryTransfer),
+            InputIntent::ToggleTransferHistory => self.update(Message::ToggleTransferHistory),
+            InputIntent::CopyTransferReport => self.update(Message::CopyTransferReport),
             InputIntent::CancelSearch => self.cancel_search(),
             InputIntent::CancelCommand => {
                 self.command.cancel();
@@ -1111,20 +1136,7 @@ impl App {
         if self.command.output().is_some() {
             return vec![Message::CopyCommandReport];
         }
-        let mut actions = Vec::new();
-        if self.transfers.overview().active {
-            actions.push(Message::CancelTransfer);
-        }
-        if self.transfers.overview().retry {
-            actions.push(Message::RetryTransfer);
-        }
-        if self.transfers.overview().expanded {
-            actions.push(Message::CopyTransferReport);
-        }
-        if !actions.is_empty() || self.transfers.overview().expanded {
-            actions.push(Message::ToggleTransferHistory);
-        }
-        actions
+        Vec::new()
     }
 
     pub(super) fn open_background_context(&mut self) -> Task<Message> {
