@@ -15,7 +15,7 @@ use super::{
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
     NavigationTransition, ScrollTarget, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
     find_window_after_delay, location_monitoring, native_clipboard, scroll_motion,
-    transfer_integration, transfer_session,
+    system_icon_task, transfer_integration, transfer_session,
 };
 
 fn is_modifier_key(key: &keyboard::Key) -> bool {
@@ -120,14 +120,22 @@ impl App {
             }
             Message::SystemTheme(mode) => {
                 self.system_mode = mode;
+                self.refresh_theme();
+                Task::none()
+            }
+            Message::SystemIconsLoaded(loaded) => {
+                self.system_icons.complete(loaded);
                 Task::none()
             }
             Message::PollSystem => {
                 let settings = theme::interface_settings();
                 self.accent = theme::load(settings.as_ref());
                 self.system_accessibility = theme::accessibility(settings.as_ref());
-                self.system_icons
-                    .set_theme(theme::icon_theme(settings.as_ref()));
+                self.refresh_theme();
+                let system_icons = self.system_icons.configure(
+                    theme::icon_theme(settings.as_ref()),
+                    self.view_preferences.uses_system_icons(),
+                );
                 self.sidebar_tree.refresh_mounts();
                 let search = if self.search.is_recursive() {
                     self.live_refresh()
@@ -146,7 +154,7 @@ impl App {
                 };
                 let fallback =
                     Task::batch([self.invalidate_tree(fallback.invalidate_tree), location]);
-                Task::batch([search, fallback])
+                Task::batch([search, fallback, system_icon_task(system_icons)])
             }
             Message::DirectoryChanged(event) => {
                 let change = match self.location_monitoring.as_mut() {
@@ -383,15 +391,6 @@ impl App {
             }
             Message::MouseBackTick(now) => self.finish_single_mouse_back_click(now),
             Message::ScrollToSelected => self.scroll_to_selected(),
-            Message::GridPointerMoved(point) => {
-                if self
-                    .grid
-                    .move_pointer_in_grid(point, self.navigation.entries().len())
-                {
-                    self.refresh_status();
-                }
-                Task::none()
-            }
             Message::NavigationFinished { request, result } => {
                 self.finish_navigation(request, NavigationCompletion::Folder(result))
             }

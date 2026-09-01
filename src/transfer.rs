@@ -9,7 +9,7 @@ use iced::Point;
 
 use crate::fs::{FileEntry, TransferReport};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Preview {
     pub(crate) icon: &'static [u8],
     pub(crate) count: usize,

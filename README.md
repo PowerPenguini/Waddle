@@ -162,6 +162,14 @@ Run the automated checks before submitting a release-sized change:
 scripts/release-gate.sh
 ```
 
+Run the release-mode interaction benchmarks after changing rendering, scrolling, pointer, icon,
+or Sidebar code. The benchmark runner enforces p95 work budgets; the 10,000-entry grid and list
+paths must remain below 8 ms per input-and-render operation to preserve 60 FPS headroom:
+
+```sh
+scripts/benchmark-performance.sh
+```
+
 ## Project notes
 
 - [Product roadmap](ROADMAP.md)

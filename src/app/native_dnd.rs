@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::VecDeque,
     fs::File,
     hash::{Hash, Hasher},
@@ -17,6 +18,7 @@ use std::{
 use iced::{
     Point, Subscription,
     futures::{StreamExt, channel::mpsc},
+    widget::svg as iced_svg,
     window::{Window, raw_window_handle},
 };
 use resvg::{tiny_skia, usvg};
@@ -68,6 +70,35 @@ use crate::{
 
 pub(super) const ICON_SIZE: i32 = 64;
 static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+pub(super) struct PreviewCache {
+    cached: RefCell<Option<(Preview, iced_svg::Handle)>>,
+}
+
+impl PreviewCache {
+    pub(super) fn resolve(&self, preview: Preview) -> Result<iced_svg::Handle, String> {
+        self.resolve_with(preview, preview_svg)
+    }
+
+    fn resolve_with(
+        &self,
+        preview: Preview,
+        build: impl FnOnce(Preview) -> Result<Vec<u8>, String>,
+    ) -> Result<iced_svg::Handle, String> {
+        if let Some((_, handle)) = self
+            .cached
+            .borrow()
+            .as_ref()
+            .filter(|(cached, _)| *cached == preview)
+        {
+            return Ok(handle.clone());
+        }
+        let handle = iced_svg::Handle::from_memory(build(preview)?);
+        *self.cached.borrow_mut() = Some((preview, handle.clone()));
+        Ok(handle)
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Source(Arc<SourceInner>);
@@ -1527,7 +1558,11 @@ delegate_registry!(Worker);
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, ICON_SIZE, Preview, preferred_action, preview_svg, render_icon};
+    use std::cell::Cell;
+
+    use super::{
+        Action, ICON_SIZE, Preview, PreviewCache, preferred_action, preview_svg, render_icon,
+    };
     use smithay_client_toolkit::reexports::client::protocol::wl_data_device_manager::DndAction;
 
     #[test]
@@ -1560,5 +1595,31 @@ mod tests {
             render_icon(preview).expect("rendered preview").len(),
             (ICON_SIZE * ICON_SIZE * 4) as usize
         );
+    }
+
+    #[test]
+    fn repeated_internal_drag_preview_resolution_reuses_one_svg_handle() {
+        let preview = Preview {
+            icon: include_bytes!("../ui/icons/file-code.svg"),
+            count: 3,
+            copy: true,
+            background: [28, 28, 28, 235],
+            icon_color: [210, 210, 210, 255],
+            accent: [40, 120, 220, 255],
+            badge_text: [255, 255, 255, 255],
+        };
+        let calls = Cell::new(0);
+        let cache = PreviewCache::default();
+
+        for _ in 0..2 {
+            cache
+                .resolve_with(preview, |preview| {
+                    calls.set(calls.get() + 1);
+                    preview_svg(preview)
+                })
+                .unwrap();
+        }
+
+        assert_eq!(calls.get(), 1);
     }
 }

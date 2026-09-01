@@ -201,6 +201,7 @@ impl App {
     }
 
     pub(super) fn tick_drag_hover(&mut self, now: Instant) -> Task<Message> {
+        let effect = self.grid.tick(now);
         if !self.drag_in_progress() {
             self.grid.cancel_drag_hover();
             return Task::none();
@@ -227,7 +228,7 @@ impl App {
                 },
             ));
         }
-        match self.grid.tick(now) {
+        match effect {
             Some(DragHoverEffect::Expand(id)) => tasks.push(self.expand_tree_row(id)),
             Some(DragHoverEffect::Enter(path)) => tasks
                 .push(self.transition_navigation(NavigationTransition::Hover { requested: path })),

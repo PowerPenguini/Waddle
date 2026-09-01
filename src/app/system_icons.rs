@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
 };
@@ -8,7 +7,7 @@ use iced::widget::{image, svg};
 
 use super::{EntryIconKind, tree};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) enum Asset {
     Svg(svg::Handle),
     Raster(image::Handle),
@@ -36,53 +35,178 @@ struct Request {
     size: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum State {
+    Empty,
+    Loading,
+    Ready,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Load {
+    generation: u64,
+    theme: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Loaded {
+    generation: u64,
+    theme: String,
+    cache: HashMap<Request, Option<Asset>>,
+}
+
 pub(super) struct Resolver {
     theme: String,
-    cache: RefCell<HashMap<Request, Option<Asset>>>,
+    enabled: bool,
+    generation: u64,
+    state: State,
+    cache: HashMap<Request, Option<Asset>>,
 }
 
 impl Resolver {
-    pub(super) fn new(theme: Option<String>) -> Self {
-        Self {
+    pub(super) fn new(theme: Option<String>, enabled: bool) -> (Self, Option<Load>) {
+        let mut resolver = Self {
             theme: normalized_theme(theme),
-            cache: RefCell::new(HashMap::new()),
-        }
+            enabled,
+            generation: 0,
+            state: State::Empty,
+            cache: HashMap::new(),
+        };
+        let load = resolver.begin_load();
+        (resolver, load)
     }
 
-    pub(super) fn set_theme(&mut self, theme: Option<String>) {
+    pub(super) fn configure(&mut self, theme: Option<String>, enabled: bool) -> Option<Load> {
         let theme = normalized_theme(theme);
-        if self.theme != theme {
+        if self.theme != theme || self.enabled != enabled {
             self.theme = theme;
-            self.cache.get_mut().clear();
+            self.enabled = enabled;
+            self.generation = self.generation.wrapping_add(1);
+            self.state = State::Empty;
+            self.cache.clear();
         }
+        self.begin_load()
+    }
+
+    pub(super) fn set_enabled(&mut self, enabled: bool) -> Option<Load> {
+        self.configure(Some(self.theme.clone()), enabled)
+    }
+
+    pub(super) fn complete(&mut self, loaded: Loaded) -> bool {
+        if !self.enabled
+            || self.state != State::Loading
+            || self.generation != loaded.generation
+            || self.theme != loaded.theme
+        {
+            return false;
+        }
+        self.cache = loaded.cache;
+        self.state = State::Ready;
+        true
     }
 
     pub(super) fn resolve(&self, kind: Kind, size: u16) -> Option<Asset> {
-        self.resolve_with(kind, size, |name, theme, size| {
+        if !self.enabled || self.state != State::Ready {
+            return None;
+        }
+        self.cache.get(&Request { kind, size }).cloned().flatten()
+    }
+
+    fn begin_load(&mut self) -> Option<Load> {
+        if !self.enabled || self.state != State::Empty {
+            return None;
+        }
+        self.state = State::Loading;
+        Some(Load {
+            generation: self.generation,
+            theme: self.theme.clone(),
+        })
+    }
+}
+
+pub(super) async fn load(request: Load) -> Loaded {
+    let fallback = request.clone();
+    tokio::task::spawn_blocking(move || {
+        load_with(request, |name, theme, size| {
             freedesktop_icons::lookup(name)
                 .with_theme(theme)
                 .with_size(size)
+                .with_cache()
                 .find()
         })
-    }
+    })
+    .await
+    .unwrap_or_else(|_| Loaded {
+        generation: fallback.generation,
+        theme: fallback.theme,
+        cache: HashMap::new(),
+    })
+}
 
-    fn resolve_with(
-        &self,
-        kind: Kind,
-        size: u16,
-        mut lookup: impl FnMut(&str, &str, u16) -> Option<PathBuf>,
-    ) -> Option<Asset> {
-        let request = Request { kind, size };
-        if let Some(cached) = self.cache.borrow().get(&request) {
-            return cached.clone();
+fn load_with(load: Load, mut lookup: impl FnMut(&str, &str, u16) -> Option<PathBuf>) -> Loaded {
+    let cache = requests()
+        .into_iter()
+        .map(|request| {
+            let asset = names(request.kind).iter().find_map(|name| {
+                lookup(name, &load.theme, request.size).and_then(|path| Asset::from_path(&path))
+            });
+            (request, asset)
+        })
+        .collect();
+    Loaded {
+        generation: load.generation,
+        theme: load.theme,
+        cache,
+    }
+}
+
+fn requests() -> Vec<Request> {
+    let entry_kinds = [
+        EntryIconKind::Folder,
+        EntryIconKind::Generic,
+        EntryIconKind::Code,
+        EntryIconKind::Document,
+        EntryIconKind::Pdf,
+        EntryIconKind::Image,
+        EntryIconKind::Audio,
+        EntryIconKind::Video,
+        EntryIconKind::Archive,
+        EntryIconKind::Spreadsheet,
+        EntryIconKind::Presentation,
+    ];
+    let tree_kinds = [
+        tree::NodeKind::Computer,
+        tree::NodeKind::Drive,
+        tree::NodeKind::Folder,
+        tree::NodeKind::Home,
+        tree::NodeKind::Desktop,
+        tree::NodeKind::Documents,
+        tree::NodeKind::Downloads,
+        tree::NodeKind::Music,
+        tree::NodeKind::Pictures,
+        tree::NodeKind::Videos,
+        tree::NodeKind::Favorite,
+        tree::NodeKind::Recent,
+        tree::NodeKind::Trash,
+    ];
+    let mut requests = Vec::with_capacity(entry_kinds.len() * 2 + tree_kinds.len() + 1);
+    for kind in entry_kinds {
+        for size in [20, 48] {
+            requests.push(Request {
+                kind: Kind::Entry(kind),
+                size,
+            });
         }
-
-        let asset = names(kind).iter().find_map(|name| {
-            lookup(name, &self.theme, size).and_then(|path| Asset::from_path(&path))
-        });
-        self.cache.borrow_mut().insert(request, asset.clone());
-        asset
     }
+    requests.push(Request {
+        kind: Kind::Entry(EntryIconKind::Folder),
+        size: 44,
+    });
+    requests.extend(tree_kinds.map(|kind| Request {
+        kind: Kind::Tree(kind),
+        size: 17,
+    }));
+    requests
 }
 
 fn normalized_theme(theme: Option<String>) -> String {
@@ -127,66 +251,92 @@ mod tests {
 
     #[test]
     fn every_waddle_entry_and_tree_kind_has_a_system_name() {
-        let entry_kinds = [
-            EntryIconKind::Folder,
-            EntryIconKind::Generic,
-            EntryIconKind::Code,
-            EntryIconKind::Document,
-            EntryIconKind::Pdf,
-            EntryIconKind::Image,
-            EntryIconKind::Audio,
-            EntryIconKind::Video,
-            EntryIconKind::Archive,
-            EntryIconKind::Spreadsheet,
-            EntryIconKind::Presentation,
-        ];
-        let tree_kinds = [
-            tree::NodeKind::Computer,
-            tree::NodeKind::Drive,
-            tree::NodeKind::Folder,
-            tree::NodeKind::Home,
-            tree::NodeKind::Desktop,
-            tree::NodeKind::Documents,
-            tree::NodeKind::Downloads,
-            tree::NodeKind::Music,
-            tree::NodeKind::Pictures,
-            tree::NodeKind::Videos,
-            tree::NodeKind::Favorite,
-            tree::NodeKind::Recent,
-            tree::NodeKind::Trash,
-        ];
-
         assert!(
-            entry_kinds
+            requests()
                 .into_iter()
-                .all(|kind| !names(Kind::Entry(kind)).is_empty())
-        );
-        assert!(
-            tree_kinds
-                .into_iter()
-                .all(|kind| !names(Kind::Tree(kind)).is_empty())
+                .all(|request| !names(request.kind).is_empty())
         );
     }
 
     #[test]
-    fn repeated_resolution_uses_the_local_cache_and_theme_changes_clear_it() {
+    fn one_configuration_starts_one_background_load() {
+        let (mut resolver, first) = Resolver::new(Some("First".to_owned()), true);
+        assert!(first.is_some());
+        assert!(resolver.configure(Some("First".to_owned()), true).is_none());
+        assert!(resolver.set_enabled(true).is_none());
+    }
+
+    #[test]
+    fn completed_load_caches_every_request_and_stale_loads_are_ignored() {
         let temp = tempfile::tempdir().unwrap();
-        let icon = temp.path().join("folder.svg");
+        let icon = temp.path().join("icon.svg");
         std::fs::write(&icon, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
         let calls = Cell::new(0);
-        let mut resolver = Resolver::new(Some("First".to_owned()));
-        let kind = Kind::Entry(EntryIconKind::Folder);
-        let lookup = |_: &str, _: &str, _: u16| {
+        let (mut resolver, first) = Resolver::new(Some("First".to_owned()), true);
+        let loaded = load_with(first.unwrap(), |_, _, _| {
             calls.set(calls.get() + 1);
             Some(icon.clone())
-        };
+        });
+        assert_eq!(calls.get(), requests().len());
 
-        assert!(resolver.resolve_with(kind, 48, lookup).is_some());
-        assert!(resolver.resolve_with(kind, 48, lookup).is_some());
-        assert_eq!(calls.get(), 1);
+        let second = resolver.configure(Some("Second".to_owned()), true).unwrap();
+        assert!(!resolver.complete(loaded));
+        assert!(
+            resolver
+                .resolve(Kind::Entry(EntryIconKind::Folder), 48)
+                .is_none()
+        );
 
-        resolver.set_theme(Some("Second".to_owned()));
-        assert!(resolver.resolve_with(kind, 48, lookup).is_some());
-        assert_eq!(calls.get(), 2);
+        let loaded = load_with(second, |_, _, _| Some(icon.clone()));
+        assert!(resolver.complete(loaded));
+        for _ in 0..2 {
+            assert!(
+                resolver
+                    .resolve(Kind::Entry(EntryIconKind::Folder), 48)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_system_icons_wait_until_enabled_before_loading() {
+        let (mut resolver, load) = Resolver::new(Some("First".to_owned()), false);
+        assert!(load.is_none());
+        assert!(resolver.set_enabled(true).is_some());
+        assert!(resolver.set_enabled(true).is_none());
+    }
+
+    #[test]
+    #[ignore = "release-mode performance benchmark"]
+    fn benchmark_system_icon_cold_load_and_cached_resolution() {
+        let started = std::time::Instant::now();
+        let (mut resolver, load) = Resolver::new(Some("hicolor".to_owned()), true);
+        let loaded = load_with(load.unwrap(), |name, theme, size| {
+            freedesktop_icons::lookup(name)
+                .with_theme(theme)
+                .with_size(size)
+                .with_cache()
+                .find()
+        });
+        let cold = started.elapsed();
+        assert!(resolver.complete(loaded));
+
+        let started = std::time::Instant::now();
+        for _ in 0..100_000 {
+            std::hint::black_box(resolver.resolve(Kind::Entry(EntryIconKind::Folder), 48));
+        }
+        let warm = started.elapsed() / 100_000;
+        println!(
+            "benchmark system-icons: cold-load={cold:?} cached={warm:?}/op requests={}",
+            requests().len()
+        );
+        assert!(
+            cold <= std::time::Duration::from_secs(30),
+            "system icon discovery exceeded its 30s background-work budget"
+        );
+        assert!(
+            warm <= std::time::Duration::from_micros(2),
+            "cached system icon resolution exceeded its 2us UI-thread budget"
+        );
     }
 }

@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn scrollbar_animation_stops_after_fade_without_a_drag() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    let tree_load = app.sidebar_tree.begin_root_load().unwrap();
+    app.sidebar_tree.complete_load(&tree_load, Ok(Vec::new()));
+    assert!(!app.animation_active());
+
+    let _ = app.update(Message::Scrolled {
+        target: ScrollTarget::Entries,
+        offset: 120.0,
+        maximum: 1_000.0,
+    });
+    assert!(app.grid.scrollbar_visible());
+    assert!(app.animation_active());
+
+    let _ = app.update(Message::AnimationFrame(
+        Instant::now() + SCROLLBAR_HOLD + SCROLLBAR_FADE_OUT + Duration::from_millis(1),
+    ));
+
+    assert!(!app.grid.scrollbar_visible());
+    assert!(!app.animation_active());
+}
+
+#[test]
+fn repeated_theme_reads_reuse_the_cached_theme() {
+    let (app, _) = App::new();
+    let Theme::Custom(first) = app.iced_theme() else {
+        panic!("Waddle should use its custom theme");
+    };
+    let Theme::Custom(second) = app.iced_theme() else {
+        panic!("Waddle should use its custom theme");
+    };
+
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
 fn set_tree_from_the_bottom_bar_updates_layout_without_persisting() {
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("waddlerc");

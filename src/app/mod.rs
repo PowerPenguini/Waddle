@@ -42,6 +42,8 @@ mod x11_clipboard;
 mod x11_dnd;
 
 #[cfg(test)]
+mod performance;
+#[cfg(test)]
 mod tests;
 
 use std::{path::PathBuf, time::Duration};
@@ -70,8 +72,8 @@ use grid::{
 };
 use iced::time::Instant;
 use iced::{
-    Color, Element, Font, Point, Size, Subscription, Task, Theme, application, event, keyboard,
-    mouse, system, time, widget, window,
+    Color, Element, Font, Size, Subscription, Task, Theme, application, event, keyboard, mouse,
+    system, time, widget, window,
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
@@ -190,6 +192,7 @@ enum Message {
     CopyTransferReport,
     CopyCommandReport,
     SystemTheme(iced::theme::Mode),
+    SystemIconsLoaded(system_icons::Loaded),
     PollSystem,
     DirectoryChanged(directory_watch::Event),
     Refresh,
@@ -235,7 +238,6 @@ enum Message {
     CloseContext,
     MouseBackTick(Instant),
     ScrollToSelected,
-    GridPointerMoved(Point),
     NavigationFinished {
         request: NavigationRequest,
         result: Result<fs::OpenedDirectory, String>,
@@ -317,6 +319,7 @@ struct App {
     location_monitoring: Option<location_monitoring::Native>,
     view_preferences: view_preferences::Preferences,
     system_icons: system_icons::Resolver,
+    drag_preview: native_dnd::PreviewCache,
     thumbnails: thumbnail::Cache,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -331,6 +334,7 @@ struct App {
     system_mode: iced::theme::Mode,
     system_accessibility: theme::AccessibilityPreferences,
     accent: Option<theme::ThemeColors>,
+    theme: Theme,
 }
 
 fn duration_ratio(elapsed: Duration, total: Duration) -> f32 {
@@ -359,8 +363,18 @@ impl App {
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
-        let system_icons =
-            system_icons::Resolver::new(theme::icon_theme(interface_settings.as_ref()));
+        let system_mode = iced::theme::Mode::Dark;
+        let iced_theme = build_iced_theme(
+            system_mode,
+            accent.as_ref(),
+            view_preferences
+                .high_contrast()
+                .resolve(system_accessibility.high_contrast),
+        );
+        let (system_icons, system_icon_load) = system_icons::Resolver::new(
+            theme::icon_theme(interface_settings.as_ref()),
+            view_preferences.uses_system_icons(),
+        );
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
             Err(error) => (journal::Journal::empty_default(), Some(error.to_string())),
@@ -395,6 +409,7 @@ impl App {
             location_monitoring,
             view_preferences,
             system_icons,
+            drag_preview: native_dnd::PreviewCache::default(),
             thumbnails: thumbnail::Cache::default(),
             grid,
             browser_input: BrowserInput::default(),
@@ -406,9 +421,10 @@ impl App {
             pending_tree_navigation: None,
             window_size_known: false,
             pending_reveal_scroll: false,
-            system_mode: iced::theme::Mode::Dark,
+            system_mode,
             system_accessibility,
             accent,
+            theme: iced_theme,
         };
         let navigation = if initial_selection.is_empty() {
             app.navigation.refresh(None)
@@ -424,21 +440,14 @@ impl App {
             app.request_navigation(navigation),
             system::theme().map(Message::SystemTheme),
             find_window_after_delay(),
+            system_icon_task(system_icon_load),
         ]);
         (app, initial)
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let scrollbar_visible = self.grid.scrollbar_visible();
         let reduced_motion = self.reduced_motion();
-        let smooth_scroll_active = self.grid.scroll_animation_active();
-        let animation = if smooth_scroll_active
-            || self.presentation.animation_active(
-                reduced_motion,
-                self.spinner_active(),
-                self.drag_in_progress() || self.grid.marquee_drag_active(),
-                scrollbar_visible,
-            ) {
+        let animation = if self.animation_active() {
             time::every(if reduced_motion {
                 Duration::from_millis(100)
             } else {
@@ -475,41 +484,25 @@ impl App {
         Subscription::batch(subscriptions)
     }
 
+    fn animation_active(&self) -> bool {
+        self.grid.scroll_animation_active()
+            || self.presentation.animation_active(
+                self.reduced_motion(),
+                self.spinner_active(),
+                self.drag_in_progress() || self.grid.marquee_drag_active(),
+                self.grid.scrollbar_visible(),
+            )
+    }
+
     fn iced_theme(&self) -> Theme {
-        let dark = self.system_mode == iced::theme::Mode::Dark;
-        let accent = self
-            .accent
-            .as_ref()
-            .map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent);
-        let palette = if self.high_contrast() {
-            iced::theme::Palette {
-                background: Color::BLACK,
-                text: Color::WHITE,
-                primary: Color::from_rgb8(0, 220, 255),
-                success: Color::from_rgb8(80, 255, 120),
-                danger: Color::from_rgb8(255, 80, 80),
-                warning: Color::from_rgb8(255, 230, 0),
-            }
-        } else if dark {
-            iced::theme::Palette {
-                background: Color::from_rgb8(28, 28, 28),
-                text: Color::from_rgb8(242, 242, 242),
-                primary: accent,
-                success: Color::from_rgb8(45, 150, 90),
-                danger: Color::from_rgb8(196, 43, 28),
-                warning: Color::from_rgb8(214, 140, 28),
-            }
-        } else {
-            iced::theme::Palette {
-                background: Color::from_rgb8(250, 250, 250),
-                text: Color::from_rgb8(28, 28, 28),
-                primary: accent,
-                success: Color::from_rgb8(26, 128, 72),
-                danger: Color::from_rgb8(196, 43, 28),
-                warning: Color::from_rgb8(168, 104, 10),
-            }
-        };
-        Theme::custom("Waddle", palette)
+        self.theme.clone()
+    }
+
+    fn refresh_theme(&mut self) {
+        let palette = iced_palette(self.system_mode, self.accent.as_ref(), self.high_contrast());
+        if self.theme.palette() != palette {
+            self.theme = Theme::custom("Waddle", palette);
+        }
     }
 
     fn spinner_active(&self) -> bool {
@@ -517,11 +510,7 @@ impl App {
             || self.transfers.overview().active
             || self.navigation.loading()
             || self.search.is_loading()
-            || self
-                .sidebar_tree
-                .rows(self.navigation.current())
-                .iter()
-                .any(|row| row.loading)
+            || self.sidebar_tree.has_loading()
     }
 
     fn spinner(&self, size: f32) -> widget::Svg<'static> {
@@ -567,6 +556,57 @@ impl App {
         self.view_preferences
             .reduced_transparency()
             .resolve(self.system_accessibility.reduced_transparency)
+    }
+}
+
+fn build_iced_theme(
+    system_mode: iced::theme::Mode,
+    colors: Option<&theme::ThemeColors>,
+    high_contrast: bool,
+) -> Theme {
+    Theme::custom("Waddle", iced_palette(system_mode, colors, high_contrast))
+}
+
+fn system_icon_task(load: Option<system_icons::Load>) -> Task<Message> {
+    load.map_or_else(Task::none, |load| {
+        Task::perform(system_icons::load(load), Message::SystemIconsLoaded)
+    })
+}
+
+fn iced_palette(
+    system_mode: iced::theme::Mode,
+    colors: Option<&theme::ThemeColors>,
+    high_contrast: bool,
+) -> iced::theme::Palette {
+    let dark = system_mode == iced::theme::Mode::Dark;
+    let accent = colors.map_or(Color::from_rgb8(0, 120, 212), |colors| colors.accent);
+    if high_contrast {
+        iced::theme::Palette {
+            background: Color::BLACK,
+            text: Color::WHITE,
+            primary: Color::from_rgb8(0, 220, 255),
+            success: Color::from_rgb8(80, 255, 120),
+            danger: Color::from_rgb8(255, 80, 80),
+            warning: Color::from_rgb8(255, 230, 0),
+        }
+    } else if dark {
+        iced::theme::Palette {
+            background: Color::from_rgb8(28, 28, 28),
+            text: Color::from_rgb8(242, 242, 242),
+            primary: accent,
+            success: Color::from_rgb8(45, 150, 90),
+            danger: Color::from_rgb8(196, 43, 28),
+            warning: Color::from_rgb8(214, 140, 28),
+        }
+    } else {
+        iced::theme::Palette {
+            background: Color::from_rgb8(250, 250, 250),
+            text: Color::from_rgb8(28, 28, 28),
+            primary: accent,
+            success: Color::from_rgb8(26, 128, 72),
+            danger: Color::from_rgb8(196, 43, 28),
+            warning: Color::from_rgb8(168, 104, 10),
+        }
     }
 }
 

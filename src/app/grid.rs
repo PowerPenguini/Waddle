@@ -519,18 +519,6 @@ impl GridInteraction {
         }
     }
 
-    pub(super) fn move_pointer_in_grid(&mut self, point: Point, entry_count: usize) -> bool {
-        let Some(marquee) = &mut self.marquee else {
-            return false;
-        };
-        marquee.move_to(Point::new(
-            point.x + self.sidebar_width,
-            point.y + TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT,
-        ));
-        self.update_marquee_selection(entry_count);
-        true
-    }
-
     #[cfg(test)]
     pub(super) fn set_scroll(&mut self, y: f32) {
         self.scroll_y = y;
@@ -960,8 +948,10 @@ impl GridInteraction {
             - LIST_VIEW_TOP_INSET
             - LIST_HEADER_HEIGHT;
         let viewport_height = viewport_height.max(TILE_ROW_HEIGHT);
-        let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize).saturating_sub(1);
         let visible_rows = (viewport_height / TILE_ROW_HEIGHT).ceil() as usize + 2;
+        let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize)
+            .saturating_sub(1)
+            .min(total_rows.saturating_sub(visible_rows));
         let last_row = (first_row + visible_rows).min(total_rows);
         VisibleRange {
             columns,
@@ -980,8 +970,10 @@ impl GridInteraction {
     ) -> std::ops::Range<usize> {
         let viewport =
             (self.window_size.height - TOOLBAR_HEIGHT - status_height).max(LIST_ROW_HEIGHT);
-        let first = ((self.scroll_y / LIST_ROW_HEIGHT).floor() as usize).saturating_sub(1);
         let count = (viewport / LIST_ROW_HEIGHT).ceil() as usize + 2;
+        let first = ((self.scroll_y / LIST_ROW_HEIGHT).floor() as usize)
+            .saturating_sub(1)
+            .min(entry_count.saturating_sub(count));
         first..first.saturating_add(count).min(entry_count)
     }
 
@@ -1896,22 +1888,6 @@ mod tests {
     }
 
     #[test]
-    fn grid_local_pointer_coordinates_update_the_window_marquee() {
-        let mut grid = GridInteraction::default();
-        let start = Point::new(300.0, content_top() + TILE_HEIGHT + 2.0);
-        assert!(grid.start_marquee(start, 10, 25.0, true));
-
-        let pointer = Point::new(203.0, 53.0 + LIST_HEADER_HEIGHT);
-        assert!(grid.move_pointer_in_grid(pointer, 10));
-        let bounds = grid.marquee_bounds(25.0).unwrap();
-        assert_eq!(bounds.width, 123.0);
-        assert_eq!(
-            bounds.height,
-            start.y - pointer.y - TOOLBAR_HEIGHT - TOOLBAR_DIVIDER_HEIGHT
-        );
-    }
-
-    #[test]
     fn grid_sort_controls_do_not_start_a_marquee() {
         let mut grid = GridInteraction::default();
         let header = Point::new(
@@ -1932,6 +1908,20 @@ mod tests {
         assert!(visible.last_index < 100);
         assert_eq!(visible.top_space, 2.0 * TILE_ROW_HEIGHT);
         assert!(visible.bottom_space > 0.0);
+    }
+
+    #[test]
+    fn visible_ranges_clamp_stale_scroll_after_content_shrinks() {
+        let mut grid = GridInteraction::default();
+        grid.set_scroll(28.0 * TILE_ROW_HEIGHT);
+
+        let tiles = grid.visible_range(19, 25.0);
+        assert!(tiles.first_index <= tiles.last_index);
+        assert!(tiles.last_index <= 19);
+
+        let rows = grid.list_visible_range(19, 25.0);
+        assert!(rows.start <= rows.end);
+        assert!(rows.end <= 19);
     }
 
     #[test]

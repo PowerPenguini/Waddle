@@ -314,6 +314,10 @@ impl SidebarTree {
         rows
     }
 
+    pub(super) fn has_loading(&self) -> bool {
+        has_visible_loading(&self.roots)
+    }
+
     pub(super) fn focused_id(&self) -> Option<u64> {
         self.cursor
     }
@@ -634,6 +638,12 @@ fn flatten_nodes(
     }
 }
 
+fn has_visible_loading(nodes: &[FolderNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.loading || (node.expanded && has_visible_loading(&node.children)))
+}
+
 fn collect_expanded_paths(nodes: &[FolderNode], paths: &mut Vec<PathBuf>) {
     for node in nodes {
         if node.expanded && !matches!(node.kind, NodeKind::Recent | NodeKind::Trash) {
@@ -668,6 +678,20 @@ fn invalidate_folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_state_is_available_without_building_sidebar_rows() {
+        let mut tree = SidebarTree::new(Vec::new());
+        assert!(tree.has_loading());
+
+        let request = tree.begin_root_load().unwrap();
+        assert_eq!(
+            tree.complete_load(&request, Ok(Vec::new())),
+            LoadOutcome::Installed
+        );
+
+        assert!(!tree.has_loading());
+    }
 
     #[test]
     fn expanded_paths_include_only_visible_filesystem_branches() {

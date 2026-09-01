@@ -11,7 +11,8 @@ use super::{
     App, COMMAND_ID, Completion, DisplayedLocation, FileOperationSession, FileOperationWork,
     GioTrashAdapter, InputMode, Message, NEW_FOLDER_ID, NavigationTransition, OPEN_WITH_ID,
     OperationKind, RENAME_ID, TransientPresentation, command, file_operation, open_with, places,
-    presentation::command_failure_report, properties, recent, transfer_integration, trash,
+    presentation::command_failure_report, properties, recent, system_icon_task,
+    transfer_integration, trash,
 };
 
 impl App {
@@ -77,6 +78,10 @@ impl App {
                     &arguments,
                 ) {
                     Ok(applied) => {
+                        self.refresh_theme();
+                        let system_icons = self
+                            .system_icons
+                            .set_enabled(self.view_preferences.uses_system_icons());
                         if arguments.is_empty() || arguments == "all" {
                             self.show_command_detail(applied.status);
                             return Task::none();
@@ -85,13 +90,14 @@ impl App {
                         if applied.tree_changed {
                             self.sync_tree_visibility();
                         }
-                        if applied.browse_changed {
+                        let browse = if applied.browse_changed {
                             self.live_refresh()
                         } else if applied.tree_changed {
                             self.load_visible_thumbnails()
                         } else {
                             Task::none()
-                        }
+                        };
+                        Task::batch([browse, system_icon_task(system_icons)])
                     }
                     Err(error) => {
                         self.presentation.set_status(error);

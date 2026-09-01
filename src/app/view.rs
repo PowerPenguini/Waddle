@@ -153,8 +153,7 @@ impl<'a> View<'a> {
     fn drag_preview_view(self) -> Option<Element<'a, Message>> {
         let entries = self.app.transfers.overview().pointer_drag.entries();
         let preview = self.drag_preview(entries)?;
-        let preview_bytes = native_dnd::preview_svg(preview).ok()?;
-        let preview = svg(svg::Handle::from_memory(preview_bytes))
+        let preview = svg(self.app.drag_preview.resolve(preview).ok()?)
             .width(native_dnd::ICON_SIZE as f32)
             .height(native_dnd::ICON_SIZE as f32);
 
@@ -517,7 +516,6 @@ impl<'a> View<'a> {
             .width(Fill)
             .height(Fill),
         )
-        .on_move(Message::GridPointerMoved)
         .into();
         let content = self.with_marquee(area);
         let current_drop_target =
@@ -617,7 +615,6 @@ impl<'a> View<'a> {
                 )
             }),
         )
-        .on_move(Message::GridPointerMoved)
         .into();
         self.with_marquee(area)
     }
