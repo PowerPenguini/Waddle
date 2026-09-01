@@ -68,6 +68,49 @@ impl<'a> View<'a> {
         self.app
     }
 
+    fn entry_icon(self, kind: EntryIconKind, size: f32, opacity: f32) -> Element<'static, Message> {
+        self.system_icon(super::system_icons::Kind::Entry(kind), size, opacity)
+            .unwrap_or_else(|| {
+                entry_svg(kind, size, self.entry_icon_color(kind))
+                    .opacity(opacity)
+                    .into()
+            })
+    }
+
+    fn tree_icon(
+        self,
+        kind: tree::NodeKind,
+        size: f32,
+        color: iced::Color,
+    ) -> Element<'static, Message> {
+        self.system_icon(super::system_icons::Kind::Tree(kind), size, 1.0)
+            .unwrap_or_else(|| themed_svg(tree_icon_asset(kind), size, color).into())
+    }
+
+    fn system_icon(
+        self,
+        kind: super::system_icons::Kind,
+        size: f32,
+        opacity: f32,
+    ) -> Option<Element<'static, Message>> {
+        if !self.app.view_preferences.uses_system_icons() {
+            return None;
+        }
+        match self.app.system_icons.resolve(kind, size.round() as u16)? {
+            super::system_icons::Asset::Svg(handle) => {
+                Some(svg(handle).width(size).height(size).opacity(opacity).into())
+            }
+            super::system_icons::Asset::Raster(handle) => Some(
+                widget::image(handle)
+                    .width(size)
+                    .height(size)
+                    .content_fit(iced::ContentFit::Contain)
+                    .opacity(opacity)
+                    .into(),
+            ),
+        }
+    }
+
     pub(super) fn render(self) -> Element<'a, Message> {
         self.view()
     }
@@ -213,7 +256,6 @@ impl<'a> View<'a> {
                 .width((tree_row.depth as f32 * 16.0) + 5.0)
                 .height(1),
         );
-        let icon = tree_icon_asset(tree_row.kind);
         let icon_color = if matches!(
             tree_row.kind,
             tree::NodeKind::Computer | tree::NodeKind::Drive
@@ -233,7 +275,7 @@ impl<'a> View<'a> {
         if tree_row.loading {
             line = line.push(self.app.spinner(17.0));
         } else {
-            line = line.push(themed_svg(icon, 17.0, icon_color));
+            line = line.push(self.tree_icon(tree_row.kind, 17.0, icon_color));
         }
         line = line.push(
             container(
@@ -588,12 +630,7 @@ impl<'a> View<'a> {
     }
 
     fn empty_folder_state(self) -> Element<'a, Message> {
-        let icon = entry_svg(
-            EntryIconKind::Folder,
-            44.0,
-            self.entry_icon_color(EntryIconKind::Folder),
-        )
-        .opacity(0.38);
+        let icon = self.entry_icon(EntryIconKind::Folder, 44.0, 0.38);
         let label = text("This folder is empty")
             .font(UI_FONT)
             .size(13)
@@ -785,14 +822,7 @@ impl<'a> View<'a> {
             self.list_name_character_limit(),
         );
         let mut content = Row::new()
-            .push(
-                entry_svg(
-                    icon_kind,
-                    LIST_ENTRY_ICON_WIDTH,
-                    self.entry_icon_color(icon_kind),
-                )
-                .opacity(content_opacity),
-            )
+            .push(self.entry_icon(icon_kind, LIST_ENTRY_ICON_WIDTH, content_opacity))
             .push(
                 container(
                     text(name)
@@ -879,11 +909,7 @@ impl<'a> View<'a> {
         );
         let icon_kind = entry_icon_kind(entry);
         let icon: Element<'_, Message> = self.app.thumbnails.handle(&entry.path).map_or_else(
-            || {
-                entry_svg(icon_kind, 48.0, self.entry_icon_color(icon_kind))
-                    .opacity(content_opacity)
-                    .into()
-            },
+            || self.entry_icon(icon_kind, 48.0, content_opacity),
             |handle| {
                 widget::image(handle.clone())
                     .width(48)

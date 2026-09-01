@@ -18,6 +18,21 @@ fn set_tree_from_the_bottom_bar_updates_layout_without_persisting() {
 }
 
 #[test]
+fn set_icons_from_the_bottom_bar_updates_the_session_without_persisting() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("waddlerc");
+    let (mut app, _) = App::new();
+    app.view_preferences = super::view_preferences::Preferences::empty_at(config.clone());
+
+    let _ = app.begin_command(':');
+    app.command.change("set icons=system".to_owned());
+    let _ = app.submit_command();
+
+    assert!(app.view_preferences.uses_system_icons());
+    assert!(!config.exists());
+}
+
+#[test]
 fn list_headers_select_and_reverse_each_sort_property() {
     let temp = tempfile::tempdir().unwrap();
     let (mut app, _) = App::new();

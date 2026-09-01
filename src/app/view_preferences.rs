@@ -28,6 +28,13 @@ enum ClickActivation {
     Double,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum IconSource {
+    #[default]
+    Waddle,
+    System,
+}
+
 impl ClickActivation {
     fn is_single(self) -> bool {
         self == Self::Single
@@ -109,6 +116,7 @@ struct GlobalSettings {
     browse: BrowseOptions,
     file_click: ClickActivation,
     folder_click: ClickActivation,
+    icons: IconSource,
     high_contrast: PreferenceOverride,
     reduced_motion: PreferenceOverride,
     reduced_transparency: PreferenceOverride,
@@ -122,6 +130,7 @@ impl Default for GlobalSettings {
             browse: BrowseOptions::default(),
             file_click: ClickActivation::Double,
             folder_click: ClickActivation::Single,
+            icons: IconSource::Waddle,
             high_contrast: PreferenceOverride::Auto,
             reduced_motion: PreferenceOverride::Auto,
             reduced_transparency: PreferenceOverride::Auto,
@@ -272,6 +281,10 @@ impl Preferences {
         self.session.global.reduced_transparency
     }
 
+    pub(super) fn uses_system_icons(&self) -> bool {
+        self.session.global.icons == IconSource::System
+    }
+
     pub(super) fn remember_last_directory_on_startup(&self) -> bool {
         self.session.global.startup == StartupBehavior::Last
     }
@@ -360,13 +373,14 @@ impl Preferences {
             "session global"
         };
         format!(
-            "{scope}: view={} sort={} direction={} hidden={} file-click={} folder-click={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
+            "{scope}: view={} sort={} direction={} hidden={} file-click={} folder-click={} icons={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
             view_label(options.view),
             sort_label(options.sort),
             direction_label(options.descending),
             options.show_hidden,
             click_label(self.session.global.file_click),
             click_label(self.session.global.folder_click),
+            icon_source_label(self.session.global.icons),
             override_label(self.session.global.high_contrast),
             override_label(self.session.global.reduced_motion),
             override_label(self.session.global.reduced_transparency),
@@ -377,7 +391,7 @@ impl Preferences {
     }
 }
 
-const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nhidden: show dot-prefixed entries\nfile-click: single or double activation (global session)\nfolder-click: single or double activation (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
+const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nhidden: show dot-prefixed entries\nfile-click: single or double activation (global session)\nfolder-click: single or double activation (global session)\nicons: waddle or system (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
 
 fn load_config(path: &Path, home: Option<&Path>) -> Result<Config, String> {
     let source = match fs::read_to_string(path) {
@@ -475,6 +489,8 @@ fn apply_global_option(
         ("hidden", value) => settings.browse.show_hidden = parse_bool(name, value)?,
         ("file-click", value) => settings.file_click = parse_click_activation(name, value)?,
         ("folder-click", value) => settings.folder_click = parse_click_activation(name, value)?,
+        ("icons", "waddle") => settings.icons = IconSource::Waddle,
+        ("icons", "system") => settings.icons = IconSource::System,
         ("click", value) => {
             let activation = parse_click_activation(name, value)?;
             settings.file_click = activation;
@@ -491,7 +507,7 @@ fn apply_global_option(
         ("startup", _) if !from_config => {
             return Err("startup is config-only; edit waddlerc".to_owned());
         }
-        ("view" | "sort" | "direction" | "startup", _) => {
+        ("view" | "sort" | "direction" | "icons" | "startup", _) => {
             return Err(format!("invalid value for {name}: {value}"));
         }
         _ => return Err(format!("unknown setting: {name}")),
@@ -521,6 +537,7 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
             "click"
             | "file-click"
             | "folder-click"
+            | "icons"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -544,6 +561,7 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
             "click"
             | "file-click"
             | "folder-click"
+            | "icons"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -621,6 +639,13 @@ fn click_label(value: ClickActivation) -> &'static str {
     }
 }
 
+fn icon_source_label(value: IconSource) -> &'static str {
+    match value {
+        IconSource::Waddle => "waddle",
+        IconSource::System => "system",
+    }
+}
+
 fn override_label(value: PreferenceOverride) -> &'static str {
     match value {
         PreferenceOverride::Auto => "auto",
@@ -657,13 +682,14 @@ mod tests {
         let path = temp.path().join("waddlerc");
         fs::write(
             &path,
-            "\" Waddle config\nset view=list tree=false startup=cwd # inline\nsetlocal \"~/My Files\" sort=size hidden=false\n",
+            "\" Waddle config\nset view=list tree=false startup=cwd icons=system # inline\nsetlocal \"~/My Files\" sort=size hidden=false\n",
         )
         .unwrap();
 
         let preferences = Preferences::open_at(path, Some(&home));
         assert!(preferences.error().is_none());
         assert!(!preferences.tree_visible());
+        assert!(preferences.uses_system_icons());
         assert!(!preferences.remember_last_directory_on_startup());
         let options = preferences.for_directory(&home.join("My Files"));
         assert_eq!(options.view, ViewMode::List);
@@ -837,5 +863,29 @@ mod tests {
         assert!(!preferences.reduced_motion().resolve(true));
         assert!(preferences.reduced_transparency().resolve(true));
         assert!(!preferences.reduced_transparency().resolve(false));
+    }
+
+    #[test]
+    fn icon_source_is_a_global_runtime_and_config_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut preferences = Preferences::empty_at(temp.path().join("waddlerc"));
+
+        assert!(!preferences.uses_system_icons());
+        let applied = preferences
+            .apply_command(Path::new("/work"), false, "icons=system")
+            .unwrap();
+        assert!(preferences.uses_system_icons());
+        assert!(applied.status.contains("icons=system"));
+
+        let error = preferences
+            .apply_command(Path::new("/work"), true, "icons=waddle")
+            .unwrap_err();
+        assert_eq!(error, "icons is a global setting");
+
+        preferences
+            .apply_command(Path::new("/work"), false, "icons=waddle")
+            .unwrap();
+        assert!(!preferences.uses_system_icons());
+        assert!(!temp.path().join("waddlerc").exists());
     }
 }

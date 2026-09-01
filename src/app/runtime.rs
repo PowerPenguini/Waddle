@@ -126,6 +126,8 @@ impl App {
                 let settings = theme::interface_settings();
                 self.accent = theme::load(settings.as_ref());
                 self.system_accessibility = theme::accessibility(settings.as_ref());
+                self.system_icons
+                    .set_theme(theme::icon_theme(settings.as_ref()));
                 self.sidebar_tree.refresh_mounts();
                 let search = if self.search.is_recursive() {
                     self.live_refresh()

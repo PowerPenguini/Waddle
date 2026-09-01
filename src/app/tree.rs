@@ -10,7 +10,7 @@ pub(super) struct MountRoot {
     pub(super) label: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum NodeKind {
     Computer,
     Drive,

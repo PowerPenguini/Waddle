@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+freedesktop-icons = "0.4.0"
 gio = { version = "0.22.8", features = ["v2_76"] }
 iced = { version = "=0.14.0", features = ["advanced", "image", "svg", "tokio"] }
 image = { version = "0.25.8", default-features = false, features = ["gif", "jpeg", "png", "webp"] }

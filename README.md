@@ -115,7 +115,7 @@ To keep settings between launches, create
 ```vim
 " Waddle configuration
 set view=list sort=name
-set tree=true startup=last file-click=double folder-click=single
+set tree=true startup=last file-click=double folder-click=single icons=system
 setlocal "~/Downloads" view=grid hidden=false
 ```
 

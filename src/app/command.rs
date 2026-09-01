@@ -43,6 +43,7 @@ Settings
   hidden=true|false
   file-click=single|double
   folder-click=single|double
+  icons=waddle|system
   high-contrast=auto|true|false
   reduced-motion=auto|true|false
   reduced-transparency=auto|true|false
@@ -421,6 +422,7 @@ impl CommandSession {
             "set hidden=",
             "set file-click=",
             "set folder-click=",
+            "set icons=",
             "set high-contrast=",
             "set reduced-motion=",
             "set reduced-transparency=",
@@ -439,6 +441,8 @@ impl CommandSession {
             "set file-click=double",
             "set folder-click=single",
             "set folder-click=double",
+            "set icons=waddle",
+            "set icons=system",
             "set high-contrast=auto",
             "set high-contrast=true",
             "set high-contrast=false",
@@ -826,6 +830,9 @@ mod tests {
         session.change("set folder-click=d".to_owned());
         assert!(session.complete_setting());
         assert_eq!(session.text(), "set folder-click=double");
+        session.change("set icons=s".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set icons=system");
         session.change("set folders".to_owned());
         assert!(!session.complete_setting());
     }

@@ -22,6 +22,7 @@ mod search;
 mod shell;
 mod startup;
 mod status;
+mod system_icons;
 mod thumbnail;
 mod transfer_integration;
 mod transfer_queue;
@@ -146,7 +147,7 @@ const GRID_SCROLL_ID: &str = "grid-scroll";
 const SIDEBAR_SCROLL_ID: &str = "sidebar-scroll";
 const X11_INBOUND_ID: u64 = u64::MAX;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum EntryIconKind {
     Folder,
     Generic,
@@ -315,6 +316,7 @@ struct App {
     journal: journal::Journal,
     location_monitoring: Option<location_monitoring::Native>,
     view_preferences: view_preferences::Preferences,
+    system_icons: system_icons::Resolver,
     thumbnails: thumbnail::Cache,
     grid: GridInteraction,
     browser_input: BrowserInput,
@@ -357,6 +359,8 @@ impl App {
         let interface_settings = theme::interface_settings();
         let accent = theme::load(interface_settings.as_ref());
         let system_accessibility = theme::accessibility(interface_settings.as_ref());
+        let system_icons =
+            system_icons::Resolver::new(theme::icon_theme(interface_settings.as_ref()));
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
             Err(error) => (journal::Journal::empty_default(), Some(error.to_string())),
@@ -390,6 +394,7 @@ impl App {
             journal,
             location_monitoring,
             view_preferences,
+            system_icons,
             thumbnails: thumbnail::Cache::default(),
             grid,
             browser_input: BrowserInput::default(),

@@ -58,6 +58,16 @@ pub fn accessibility(settings: Option<&gio::Settings>) -> AccessibilityPreferenc
     }
 }
 
+pub fn icon_theme(settings: Option<&gio::Settings>) -> Option<String> {
+    let settings = settings?;
+    let schema = settings.settings_schema()?;
+    if !schema.has_key("icon-theme") {
+        return None;
+    }
+    let theme = settings.string("icon-theme");
+    (!theme.is_empty()).then(|| theme.to_string())
+}
+
 fn theme_css_candidates(settings: Option<&gio::Settings>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let home = env::var_os("HOME").map(PathBuf::from);
