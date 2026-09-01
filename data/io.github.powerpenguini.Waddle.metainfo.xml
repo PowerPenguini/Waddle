@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.6" date="2026-09-01">
+      <description>
+        <ul>
+          <li>Add smooth wheel and touchpad scrolling with momentum.</li>
+          <li>Add configurable system theme icons.</li>
+          <li>Stop idle redraws and load system icons outside the UI thread.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.5" date="2026-08-31">
       <description>
         <ul>
