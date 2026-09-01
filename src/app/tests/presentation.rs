@@ -1,11 +1,21 @@
 use super::*;
 
 #[test]
+fn storage_usage_is_presented_in_gib_with_used_and_free_values() {
+    let gib = 1024_u64.pow(3);
+    assert_eq!(
+        format_storage_usage(crate::fs::StorageUsage {
+            used_bytes: 16 * gib,
+            available_bytes: 8 * gib,
+        }),
+        "16.0 GiB used · 8.0 GiB free"
+    );
+}
+
+#[test]
 fn scrollbar_animation_stops_after_fade_without_a_drag() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
-    let tree_load = app.sidebar_tree.begin_root_load().unwrap();
-    app.sidebar_tree.complete_load(&tree_load, Ok(Vec::new()));
     assert!(!app.animation_active());
 
     let _ = app.update(Message::Scrolled {
@@ -356,15 +366,10 @@ fn list_hover_rounds_the_whole_row() {
 }
 
 #[test]
-fn spinner_animation_runs_for_tree_and_background_loading() {
+fn spinner_animation_runs_for_navigation_and_background_loading() {
     let (mut app, _) = App::new();
     assert!(app.spinner_active());
 
-    let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
-    assert!(
-        app.sidebar_tree
-            .install_children(root_id, Path::new("/"), Vec::new())
-    );
     app.navigation.settle_for_test();
     assert!(!app.spinner_active());
 

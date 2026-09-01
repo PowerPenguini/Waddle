@@ -21,3 +21,11 @@ file content and symlink targets. Undo validates every affected path before chan
 Copy results are removed only when the complete result tree is unchanged. Trash also records the
 actual freedesktop Trash data and `.trashinfo` paths before offering recovery. Redo is persisted
 and is truncated only by a newly recorded mutation. Permanent Delete has no journal path.
+
+## Comments
+
+- 2026-09-01: Trash tree fingerprinting is prepared in a follow-up Mutation task after the File
+  operation session closes and refreshes. Large removable-media trees can still be verified for
+  safe Undo without blocking the UI on their contents.
+- 2026-09-01: Trash now runs inside the Transfer worker. That worker prepares the same safe Undo
+  before reporting completion, so fingerprinting remains off the UI thread.

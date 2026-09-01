@@ -14,11 +14,13 @@ use crate::{
     },
 };
 
-pub(super) use super::transfer_queue::{HistoryEntry, Snapshot};
+pub(super) use super::transfer_queue::{HistoryEntry, Snapshot, WorkOutcome};
 use super::{
     native_clipboard,
     operations::{Completion, ForegroundActivity, Kind as OperationKind, Operations},
-    transfer_queue::{Finished as QueueFinished, Operation as QueueOperation, Queue, Work},
+    transfer_queue::{
+        Finished as QueueFinished, Operation as QueueOperation, Queue, Report as QueueReport, Work,
+    },
     trash,
 };
 
@@ -44,10 +46,7 @@ pub(super) enum BatchUpdate {
 
 #[derive(Debug)]
 pub(super) enum RuntimeEvent {
-    BatchFinished {
-        id: u64,
-        outcome: Box<TransferBatchOutcome>,
-    },
+    BatchFinished { id: u64, outcome: Box<WorkOutcome> },
     Noop,
 }
 
@@ -80,6 +79,7 @@ pub(super) struct TransferSession {
 
 pub(super) enum CompletionPresentation {
     Status(String),
+    Warning(String),
     Error(String),
     Refresh,
 }
@@ -104,6 +104,7 @@ pub(super) struct CompletionOutcome {
     pub(super) changed_folders: Vec<PathBuf>,
     pub(super) refresh: Refresh,
     pub(super) sync_location_monitoring: bool,
+    pub(super) trash_failures: Vec<(FileEntry, String)>,
 }
 
 pub(super) struct ClipboardChange {
@@ -270,10 +271,21 @@ impl TransferSession {
         task
     }
 
+    pub(super) fn trash(
+        &mut self,
+        entries: Vec<FileEntry>,
+        operations: &Operations,
+    ) -> Task<RuntimeEvent> {
+        let batch = trash::Batch::new(entries.clone());
+        self.queue
+            .enqueue_trash(entries, batch)
+            .map_or_else(Task::none, |work| launch(work, operations))
+    }
+
     pub(super) fn complete_batch(
         &mut self,
         id: u64,
-        outcome: TransferBatchOutcome,
+        outcome: WorkOutcome,
         current: &Path,
         operations: &Operations,
     ) -> BatchUpdate {
@@ -295,15 +307,17 @@ impl TransferSession {
     fn complete_batch_with(
         &mut self,
         id: u64,
-        outcome: TransferBatchOutcome,
+        outcome: WorkOutcome,
         adapter: Option<&dyn Adapter>,
         clipboard_adapter: Option<&dyn ClipboardAdapter>,
         current: &Path,
         operations: &Operations,
     ) -> BatchUpdate {
         match outcome {
-            TransferBatchOutcome::Complete(report) => {
-                let Some(QueueFinished { operation, next }) = self.queue.finish(id, &report) else {
+            WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report)) => {
+                let Some(QueueFinished { operation, next }) =
+                    self.queue.finish(id, QueueReport::Filesystem(&report))
+                else {
                     return BatchUpdate::Ignored;
                 };
                 let completed = match operation {
@@ -314,13 +328,14 @@ impl TransferSession {
                         self.restore_activity = None;
                         restore_completion(report, &entries)
                     }
+                    QueueOperation::Trash(_) => return BatchUpdate::Ignored,
                 };
                 BatchUpdate::Completed {
                     outcome: Box::new(completed),
                     next: next.map_or_else(Task::none, |work| launch(work, operations)),
                 }
             }
-            TransferBatchOutcome::Conflict { batch, conflict } => {
+            WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, conflict }) => {
                 let Some(operation) = self.queue.pause_for_conflict(id, *batch) else {
                     return BatchUpdate::Ignored;
                 };
@@ -336,6 +351,7 @@ impl TransferSession {
                 let prefix = match operation {
                     QueueOperation::Transfer(_) => source.into_owned(),
                     QueueOperation::Restore(_) => format!("Restore {source}"),
+                    QueueOperation::Trash(_) => return BatchUpdate::Ignored,
                 };
                 let prompt = format!(
                     "{prefix}: {kind}  •  r Replace  s Skip  k Keep Both  •  uppercase applies to remaining  •  Esc cancel"
@@ -344,6 +360,20 @@ impl TransferSession {
                     prompt: prompt.clone(),
                 });
                 BatchUpdate::Conflict(prompt)
+            }
+            WorkOutcome::Trash(report) => {
+                let Some(QueueFinished { operation, next }) =
+                    self.queue.finish(id, QueueReport::Trash(&report))
+                else {
+                    return BatchUpdate::Ignored;
+                };
+                let QueueOperation::Trash(entries) = operation else {
+                    return BatchUpdate::Ignored;
+                };
+                BatchUpdate::Completed {
+                    outcome: Box::new(trash_completion(report, &entries)),
+                    next: next.map_or_else(Task::none, |work| launch(work, operations)),
+                }
             }
         }
     }
@@ -405,7 +435,7 @@ impl TransferSession {
             };
             return CancelUpdate::Conflict(self.complete_batch_with(
                 id,
-                TransferBatchOutcome::Complete(report),
+                WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report)),
                 adapter,
                 clipboard_adapter,
                 current,
@@ -443,7 +473,7 @@ impl TransferSession {
                 .conflict
                 .as_ref()
                 .map(|conflict| conflict.prompt.as_str()),
-            active: self.queue.transfer_active(),
+            active: self.queue.active(),
             retry: self.queue.has_retry(),
             expanded: self.queue.expanded(),
             snapshot: self.queue.snapshot(),
@@ -772,6 +802,12 @@ impl TransferSession {
         self.queue.enqueue_restore(entries, batch)
     }
 
+    #[cfg(test)]
+    pub(super) fn enqueue_trash_work(&mut self, entries: Vec<FileEntry>) -> Option<Work> {
+        let batch = trash::Batch::new(entries.clone());
+        self.queue.enqueue_trash(entries, batch)
+    }
+
     fn write_clipboard(&self, adapter: Option<&dyn ClipboardAdapter>) -> Option<String> {
         let adapter = adapter?;
         self.state
@@ -808,7 +844,7 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
             let outcome = match completion {
                 Completion::Finished(Ok(outcome)) => outcome,
                 Completion::Finished(Err(error)) => {
-                    TransferBatchOutcome::Complete(TransferReport {
+                    WorkOutcome::Filesystem(TransferBatchOutcome::Complete(TransferReport {
                         completed: Vec::new(),
                         failures: vec![fs::TransferFailure {
                             source: PathBuf::new(),
@@ -818,7 +854,7 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
                         warnings: Vec::new(),
                         receipts: Vec::new(),
                         cancelled: false,
-                    })
+                    }))
                 }
                 Completion::Cancelled => return RuntimeEvent::Noop,
             };
@@ -828,6 +864,53 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
             }
         },
     )
+}
+
+fn trash_completion(report: trash::Report, entries: &[FileEntry]) -> CompletionOutcome {
+    let completed = report.receipts.len();
+    let failed = report.failures.len();
+    let retained = report.retained.len();
+    let status = if report.cancelled {
+        format!("Trash cancelled  •  {completed} moved  •  {failed} failed  •  {retained} retained")
+    } else {
+        format!("Moved {completed} to Trash  •  {failed} failed")
+    };
+    let changed_folders = report
+        .receipts
+        .iter()
+        .filter_map(|receipt| receipt.original.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    let refresh = if completed == 0 {
+        Refresh::None
+    } else {
+        Refresh::Entries(Vec::new())
+    };
+    let failed_paths = report
+        .failures
+        .iter()
+        .map(|(entry, _)| entry.path.as_path())
+        .collect::<BTreeSet<_>>();
+    let trash_failures = entries
+        .iter()
+        .filter(|entry| failed_paths.contains(entry.path.as_path()))
+        .filter_map(|entry| {
+            report
+                .failures
+                .iter()
+                .find(|(failed, _)| failed.path == entry.path)
+                .map(|(_, error)| (entry.clone(), error.clone()))
+        })
+        .collect();
+    CompletionOutcome {
+        presentation: CompletionPresentation::Status(status),
+        notice: None,
+        detail: None,
+        undo: undo_outcome(report.undo, "Trash"),
+        changed_folders,
+        refresh,
+        sync_location_monitoring: true,
+        trash_failures,
+    }
 }
 
 fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> CompletionOutcome {
@@ -861,6 +944,7 @@ fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> Compl
         changed_folders,
         refresh: Refresh::Trash,
         sync_location_monitoring: false,
+        trash_failures: Vec::new(),
     }
 }
 
@@ -871,10 +955,15 @@ fn completion_from_consequences(
     sync_location_monitoring: bool,
 ) -> CompletionOutcome {
     CompletionOutcome {
-        presentation: match (consequences.error, consequences.status) {
-            (Some(error), _) => CompletionPresentation::Error(error),
-            (None, Some(status)) => CompletionPresentation::Status(status),
-            (None, None) => CompletionPresentation::Refresh,
+        presentation: match (
+            consequences.error,
+            consequences.warning,
+            consequences.status,
+        ) {
+            (Some(error), _, _) => CompletionPresentation::Error(error),
+            (None, Some(warning), _) => CompletionPresentation::Warning(warning),
+            (None, None, Some(status)) => CompletionPresentation::Status(status),
+            (None, None, None) => CompletionPresentation::Refresh,
         },
         notice,
         detail: None,
@@ -886,11 +975,12 @@ fn completion_from_consequences(
             Refresh::None
         },
         sync_location_monitoring,
+        trash_failures: Vec::new(),
     }
 }
 
-fn undo_outcome(
-    action: Result<Option<journal::Action>, journal::Error>,
+fn undo_outcome<E: ToString>(
+    action: Result<Option<journal::Action>, E>,
     subject: &'static str,
 ) -> UndoOutcome {
     match action {
@@ -968,9 +1058,14 @@ mod tests {
     fn complete_batch(
         session: &mut TransferSession,
         id: u64,
-        outcome: TransferBatchOutcome,
+        outcome: impl Into<WorkOutcome>,
     ) -> BatchUpdate {
-        session.complete_batch(id, outcome, Path::new("/work"), &Operations::default())
+        session.complete_batch(
+            id,
+            outcome.into(),
+            Path::new("/work"),
+            &Operations::default(),
+        )
     }
 
     fn cancel(session: &mut TransferSession) -> CancelUpdate {
@@ -1111,6 +1206,48 @@ mod tests {
     }
 
     #[test]
+    fn trash_completion_uses_transfer_feedback_history_and_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = entry(PathBuf::from("/source/one"));
+        let second = entry(PathBuf::from("/source/two"));
+        let mut session = TransferSession::open(temp.path().join("transfers.json"));
+        let work = session
+            .enqueue_trash_work(vec![first.clone(), second.clone()])
+            .unwrap();
+        let id = work.id();
+        let report = trash::Report {
+            receipts: vec![journal::TrashReceipt {
+                original: first.path.clone(),
+                trashed: PathBuf::from("/trash/one"),
+                info: PathBuf::from("/trash/info/one.trashinfo"),
+            }],
+            failures: vec![(second.clone(), "Trash unavailable".to_owned())],
+            retained: Vec::new(),
+            cancelled: false,
+            undo: Ok(None),
+        };
+
+        let BatchUpdate::Completed { outcome, .. } =
+            complete_batch(&mut session, id, WorkOutcome::Trash(report))
+        else {
+            panic!("Trash should complete through the Transfer session");
+        };
+        let completed = *outcome;
+
+        assert!(matches!(
+            completed.presentation,
+            CompletionPresentation::Status(ref status)
+                if status == "Moved 1 to Trash  •  1 failed"
+        ));
+        assert_eq!(completed.trash_failures.len(), 1);
+        assert_eq!(completed.trash_failures[0].0.path, second.path);
+        assert!(matches!(completed.refresh, Refresh::Entries(_)));
+        assert!(!session.overview().active);
+        assert!(session.overview().retry);
+        assert_eq!(session.overview().history.len(), 1);
+    }
+
+    #[test]
     fn restore_uses_transfer_conflicts_without_entering_transfer_history() {
         let temp = tempfile::tempdir().unwrap();
         let restore = restore_entry(temp.path(), "notes.txt");
@@ -1130,7 +1267,7 @@ mod tests {
                 .unwrap()
                 .starts_with("Restore notes.txt:")
         );
-        assert!(!session.overview().active);
+        assert!(session.overview().active);
         assert!(session.overview().history.is_empty());
 
         let CancelUpdate::Conflict(BatchUpdate::Completed { outcome, .. }) = cancel(&mut session)

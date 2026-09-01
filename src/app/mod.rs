@@ -61,7 +61,8 @@ use browser_input::{
 };
 use command::{CommandSession, ProcessAdapter};
 use file_operation::{
-    FileOperationSession, GioTrashAdapter, View as FileOperationView, Work as FileOperationWork,
+    Confirmation as FileOperationConfirmation, FileOperationSession, View as FileOperationView,
+    Work as FileOperationWork,
 };
 use fs::FileEntry;
 use grid::{
@@ -83,14 +84,14 @@ use operations::{Completion, Kind as OperationKind, Operations};
 use presentation::{
     BrowserFocus, BrowserStatusModel, BrowserStatusPresentation, Presentation,
     TransientPresentation, TransientPresentationKind, apply_opacity, browser_background_style,
-    clears_status_notice, clip_file_name, compact_status_line, compact_text_button,
-    context_button_style, context_menu_button_style, entry_content_opacity, entry_icon_asset,
-    entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, focus_container_style,
+    clears_status_notice, clip_file_name, compact_status_line, context_button_style,
+    context_menu_button_style, entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg,
+    find_window_after_delay, flat_input_style, focus_container_style, format_storage_usage,
     format_transfer_snapshot, grid_background_style, list_row_style, marquee_style, menu_style,
     rgba, sidebar_style, solid_background_style, status_background_style, status_input_style,
     themed_svg, tile_label, tile_style, toolbar_button, toolbar_button_style,
     transient_scrollbar_style, transient_vertical_scrollbar, tree_button_style, tree_icon_asset,
-    with_alpha,
+    tree_unmount_button_style, with_alpha,
 };
 use search::{SearchSession, Update as SearchUpdate};
 use transfer_session::{
@@ -99,7 +100,8 @@ use transfer_session::{
 };
 use tree::{
     Activation as TreeActivation, LoadOutcome as TreeLoadOutcome, LoadRequest as TreeLoadRequest,
-    MoveOutcome as TreeMoveOutcome, SidebarTree, TreeRow,
+    MoveOutcome as TreeMoveOutcome, SidebarTree, StorageUsageRequest as TreeStorageUsageRequest,
+    TreeRow,
 };
 
 const STATUS_HEIGHT: f32 = 25.0;
@@ -183,7 +185,7 @@ enum Message {
     ExternalDragFinished(Result<TransferOutcome, String>),
     TransferBatchFinished {
         id: u64,
-        outcome: Box<fs::TransferBatchOutcome>,
+        outcome: Box<transfer_session::WorkOutcome>,
     },
     PollTransfer,
     CancelTransfer,
@@ -215,6 +217,18 @@ enum Message {
     TreeLoaded {
         request: TreeLoadRequest,
         result: Result<Vec<PathBuf>, String>,
+    },
+    TreeStorageUsageLoaded(Vec<(TreeStorageUsageRequest, Result<fs::StorageUsage, String>)>),
+    TreeVolumeMounted {
+        id: String,
+        result: Result<places::MountedVolume, String>,
+    },
+    TreeVolumeUnmount(String),
+    TreeVolumeUnmounted {
+        id: String,
+        label: String,
+        path: PathBuf,
+        result: Result<(), String>,
     },
     FavoritePressed(usize),
     FavoriteReleased(usize),
@@ -301,6 +315,12 @@ pub fn run() -> iced::Result {
         .run()
 }
 
+struct PendingVolumeNavigation {
+    id: String,
+    label: String,
+    deadline: Instant,
+}
+
 struct App {
     sidebar_tree: SidebarTree,
     navigation: NavigationSession,
@@ -329,6 +349,7 @@ struct App {
     modifiers: keyboard::Modifiers,
     mouse_back_gesture: Option<MouseBackGesture>,
     pending_tree_navigation: Option<(NavigationRequest, TreeLoadRequest)>,
+    pending_volume_navigation: Option<PendingVolumeNavigation>,
     window_size_known: bool,
     pending_reveal_scroll: bool,
     system_mode: iced::theme::Mode,
@@ -375,6 +396,9 @@ impl App {
             theme::icon_theme(interface_settings.as_ref()),
             view_preferences.uses_system_icons(),
         );
+        #[cfg(test)]
+        let (journal, journal_error) = (journal::Journal::in_memory(), None::<String>);
+        #[cfg(not(test))]
         let (journal, journal_error) = match journal::Journal::open_default() {
             Ok(journal) => (journal, None),
             Err(error) => (journal::Journal::empty_default(), Some(error.to_string())),
@@ -419,6 +443,7 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             mouse_back_gesture: None,
             pending_tree_navigation: None,
+            pending_volume_navigation: None,
             window_size_known: false,
             pending_reveal_scroll: false,
             system_mode,
@@ -438,6 +463,7 @@ impl App {
         };
         let initial = Task::batch([
             app.request_navigation(navigation),
+            app.refresh_tree_storage_usage(),
             system::theme().map(Message::SystemTheme),
             find_window_after_delay(),
             system_icon_task(system_icon_load),

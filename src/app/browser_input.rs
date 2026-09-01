@@ -55,7 +55,11 @@ Prompts and transfers
   Backspace  Cancel an empty bottom input
   r / s / k  Replace / skip / keep both for one conflict
   R / S / K  Apply the choice to remaining entries
-  Esc  Cancel an active mode, sequence, transfer, or output
+  Esc / c  Cancel an active transfer
+  R  Retry the last failed transfer
+  t  Open or close transfer history
+  y  Copy the open transfer report
+  Esc  Cancel mode/sequence; close history or output
 
 Pointer and list view
   Right click  Open file and folder actions
@@ -130,6 +134,10 @@ impl BottomInput {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Context {
     pub(super) transfer_conflict: bool,
+    pub(super) transfer_active: bool,
+    pub(super) transfer_retry: bool,
+    pub(super) transfer_history_open: bool,
+    pub(super) transfer_history_available: bool,
     pub(super) prompt: PromptInteraction,
     pub(super) foreground_operation_active: bool,
     pub(super) command_output: bool,
@@ -149,6 +157,10 @@ pub(super) enum Intent {
     PromptConfirm,
     ConflictCancel,
     ConflictChoice { key: char, remaining: bool },
+    CancelTransfer,
+    RetryTransfer,
+    ToggleTransferHistory,
+    CopyTransferReport,
     CancelSearch,
     CancelCommand,
     CancelRename,
@@ -371,6 +383,23 @@ impl BrowserInput {
             };
         }
 
+        if context.transfer_history_open {
+            if press.named == NamedKey::Escape
+                || !press.control && !press.alt && !press.logo && press.text.as_deref() == Some("t")
+            {
+                return Intent::ToggleTransferHistory;
+            }
+            if !press.control && !press.alt && !press.logo {
+                return match press.text.as_deref() {
+                    Some("c") if context.transfer_active => Intent::CancelTransfer,
+                    Some("R") if context.transfer_retry => Intent::RetryTransfer,
+                    Some("y") => Intent::CopyTransferReport,
+                    _ => Intent::None,
+                };
+            }
+            return Intent::None;
+        }
+
         if context.command_output
             && !press.control
             && !press.alt
@@ -397,6 +426,9 @@ impl BrowserInput {
             if self.pending_sequence().is_some() {
                 self.clear_sequence();
                 return Intent::Pending("Browser sequence cancelled".to_owned());
+            }
+            if context.transfer_active {
+                return Intent::CancelTransfer;
             }
             if context.navigation_pending {
                 return Intent::CancelNavigation;
@@ -568,6 +600,9 @@ impl BrowserInput {
             Some("n") => Intent::RepeatSearch(false),
             Some("N") => Intent::RepeatSearch(true),
             Some("u") => Intent::Undo,
+            Some("c") if context.transfer_active => Intent::CancelTransfer,
+            Some("R") if context.transfer_retry => Intent::RetryTransfer,
+            Some("t") if context.transfer_history_available => Intent::ToggleTransferHistory,
             Some("r") => Intent::Rename,
             Some("y") if context.file_operators_allowed => Intent::Copy,
             Some("p") => Intent::Paste,
@@ -894,6 +929,64 @@ mod tests {
                 context
             ),
             Intent::PromptCancel
+        );
+    }
+
+    #[test]
+    fn transfer_controls_use_direct_keyboard_intents() {
+        let active = Context {
+            transfer_active: true,
+            transfer_history_available: true,
+            ..Context::default()
+        };
+        let retry = Context {
+            transfer_retry: true,
+            transfer_history_available: true,
+            ..Context::default()
+        };
+        let mut input = BrowserInput::default();
+
+        assert_eq!(input.handle(text("c"), active), Intent::CancelTransfer);
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                active
+            ),
+            Intent::CancelTransfer
+        );
+        assert_eq!(input.handle(text("R"), retry), Intent::RetryTransfer);
+        assert_eq!(
+            input.handle(text("t"), active),
+            Intent::ToggleTransferHistory
+        );
+    }
+
+    #[test]
+    fn open_transfer_history_owns_its_keyboard_actions() {
+        let context = Context {
+            transfer_active: true,
+            transfer_retry: true,
+            transfer_history_open: true,
+            transfer_history_available: true,
+            ..Context::default()
+        };
+        let mut input = BrowserInput::default();
+
+        assert_eq!(input.handle(text("c"), context), Intent::CancelTransfer);
+        assert_eq!(input.handle(text("R"), context), Intent::RetryTransfer);
+        assert_eq!(input.handle(text("y"), context), Intent::CopyTransferReport);
+        assert_eq!(
+            input.handle(
+                Press {
+                    named: NamedKey::Escape,
+                    ..Press::default()
+                },
+                context
+            ),
+            Intent::ToggleTransferHistory
         );
     }
 

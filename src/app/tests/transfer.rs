@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn metadata_only_transfer_problem_opens_a_warning_acknowledgement() {
+    let (mut app, _) = App::new();
+    let message = "Copied 6 item(s), but some metadata could not be preserved".to_owned();
+    let completion = transfer_session::CompletionOutcome {
+        presentation: transfer_session::CompletionPresentation::Warning(message.clone()),
+        notice: None,
+        detail: None,
+        undo: transfer_session::UndoOutcome::None,
+        changed_folders: Vec::new(),
+        refresh: transfer_session::Refresh::None,
+        sync_location_monitoring: false,
+        trash_failures: Vec::new(),
+    };
+
+    let task = app.apply_transfer_completion(completion);
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Warning { message: shown } if shown == message
+    ));
+    assert_eq!(
+        app.file_operations.prompt_interaction(),
+        crate::app::file_operation::PromptInteraction::Acknowledgement
+    );
+    drop(task);
+}
+
+#[test]
 fn transfer_conflict_replaces_progress_with_keyboard_choices() {
     let temp = tempfile::tempdir().unwrap();
     let source_directory = temp.path().join("source");
@@ -178,6 +206,30 @@ fn black_hole_delete_trashes_without_replacing_the_clipboard() {
         FileOperationView::Trash { message } if message.contains("two")
     ));
     assert_eq!(app.transfers.clipboard_payload(), Some(copied));
+}
+
+#[test]
+fn confirmed_trash_enters_the_transfer_session() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid.select_click(0, false, false, 2);
+    app.grid.select_click(1, true, false, 2);
+    let _ = app.show_trash_prompt();
+
+    let task = app.update(Message::PromptConfirm);
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+    let overview = app.transfers.overview();
+    assert!(overview.active);
+    assert_eq!(overview.active_action, Some("Moving to Trash"));
+    assert!(overview.snapshot.is_some());
+    assert!(app.bottom_actions().is_empty());
+    drop(task);
 }
 
 #[test]

@@ -143,7 +143,8 @@ entry, discard metadata, claim an unsafe Undo, or leave a partial destination lo
 - Use the existing domain sessions as the main application boundaries. Extend the Browser key grammar, Transfer workflow, File operation session, Navigation session, Search session, Grid interaction, and Command session instead of moving their policy back into the UI adapter.
 - Keep the application adapter responsible for messages, subscriptions, rendering, and orchestration. It should translate domain consequences into UI tasks without owning filesystem policy.
 - Replace the private clipboard value with a multi-entry clipboard payload that contains paths, Copy or Move intent, and a generation identifier.
-- Keep clipboard paste, internal drag, and native drag as initiators of the same Transfer concept.
+- Keep clipboard paste, internal drag, native drag, confirmed Trash, and Restore as initiators of
+  the same Transfer concept.
 - Extend the Wayland native transfer worker to own clipboard offers and selection lifecycle as well as drag and drop.
 - Add a separate X11 native transfer adapter with multi-MIME selection support. X11 must also gain external drag and drop before 1.0.
 - Publish `text/uri-list`, `x-special/gnome-copied-files`, and `application/x-kde-cutselection` in one clipboard offer.

@@ -17,18 +17,28 @@ pub(crate) struct Effect {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Journal {
-    path: PathBuf,
+    path: Option<PathBuf>,
     pub(super) stored: StoredJournal,
 }
 
 impl Journal {
+    #[cfg(not(test))]
     pub(crate) fn open_default() -> Result<Self, Error> {
         Self::open(default_path())
     }
 
+    #[cfg(not(test))]
     pub(crate) fn empty_default() -> Self {
         Self {
-            path: default_path(),
+            path: Some(default_path()),
+            stored: StoredJournal::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory() -> Self {
+        Self {
+            path: None,
             stored: StoredJournal::default(),
         }
     }
@@ -47,9 +57,19 @@ impl Journal {
             )));
         }
         stored.cursor = stored.cursor.min(stored.entries.len());
-        let mut journal = Self { path, stored };
+        let mut journal = Self {
+            path: Some(path),
+            stored,
+        };
         journal.prune(now_seconds());
         Ok(journal)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_default_storage(&self) -> bool {
+        self.path
+            .as_ref()
+            .is_some_and(|path| *path == default_path())
     }
 
     pub(crate) fn record(&mut self, action: Action) -> Result<(), Error> {
@@ -105,17 +125,20 @@ impl Journal {
     }
 
     fn save(&self) -> Result<(), Error> {
-        let Some(directory) = self.path.parent() else {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let Some(directory) = path.parent() else {
             return Err(Error::message("operation journal path has no parent"));
         };
         fs::create_dir_all(directory)
             .map_err(|error| Error::io("could not create operation journal directory", error))?;
-        let temporary = self.path.with_extension("json.tmp");
+        let temporary = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&self.stored)
             .map_err(|error| Error::json("could not encode operation journal", error))?;
         fs::write(&temporary, bytes)
             .map_err(|error| Error::io("could not write operation journal", error))?;
-        fs::rename(&temporary, &self.path)
+        fs::rename(&temporary, path)
             .map_err(|error| Error::io("could not commit operation journal", error))
     }
 }

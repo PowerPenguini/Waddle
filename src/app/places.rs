@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gio::prelude::{MountExt, MountOperationExt, VolumeExt, VolumeMonitorExt};
+use gio::prelude::{FileExt, MountExt, MountOperationExt, VolumeExt, VolumeMonitorExt};
 use serde::{Deserialize, Serialize};
 
 use super::tree::NodeKind;
@@ -211,6 +211,89 @@ enum VolumeAction {
     Eject,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MountedVolume {
+    pub(super) label: String,
+}
+
+pub(super) fn volume_id(volume: &gio::Volume) -> String {
+    volume
+        .uuid()
+        .map(|uuid| format!("uuid:{uuid}"))
+        .or_else(|| {
+            volume
+                .identifier(gio::VOLUME_IDENTIFIER_KIND_UNIX_DEVICE)
+                .map(|device| format!("device:{device}"))
+        })
+        .unwrap_or_else(|| format!("name:{}", volume.name()))
+}
+
+pub(super) fn mount_id(mount: &gio::Mount) -> String {
+    format!("mount:{}", mount.root().uri())
+}
+
+async fn mount_volume_object(
+    volume: gio::Volume,
+    operation: &gio::MountOperation,
+) -> Result<MountedVolume, String> {
+    let label = volume.name().to_string();
+    volume
+        .mount_future(gio::MountMountFlags::NONE, Some(operation))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(MountedVolume { label })
+}
+
+pub(super) fn mount_volume(id: &str) -> Result<MountedVolume, String> {
+    let id = id.to_owned();
+    let context = gio::glib::MainContext::new();
+    context.block_on(async move {
+        let monitor = gio::VolumeMonitor::get();
+        let volume = monitor
+            .volumes()
+            .into_iter()
+            .find(|volume| volume_id(volume) == id)
+            .ok_or("volume is no longer available")?;
+        let operation = gio::MountOperation::new();
+        operation.set_password_save(gio::PasswordSave::ForSession);
+        mount_volume_object(volume, &operation).await
+    })
+}
+
+pub(super) fn unmount_volume(id: &str) -> Result<(), String> {
+    let id = id.to_owned();
+    let context = gio::glib::MainContext::new();
+    context.block_on(async move {
+        let monitor = gio::VolumeMonitor::get();
+        let mount = monitor
+            .volumes()
+            .into_iter()
+            .find(|volume| volume_id(volume) == id)
+            .and_then(|volume| volume.get_mount())
+            .or_else(|| {
+                monitor
+                    .mounts()
+                    .into_iter()
+                    .find(|mount| mount_id(mount) == id)
+            })
+            .ok_or("mounted volume is no longer available")?;
+        let operation = gio::MountOperation::new();
+        operation.set_password_save(gio::PasswordSave::ForSession);
+        if mount.can_unmount() {
+            mount
+                .unmount_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation))
+                .await
+        } else if mount.can_eject() {
+            mount
+                .eject_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation))
+                .await
+        } else {
+            return Err("this volume cannot be unmounted".to_owned());
+        }
+        .map_err(|error| error.to_string())
+    })
+}
+
 fn parse_volume_action(arguments: &str) -> Result<(VolumeAction, String), String> {
     let (action, name) = arguments
         .trim()
@@ -243,11 +326,9 @@ pub(super) fn run_volume_command(arguments: &str) -> Result<String, String> {
                     .into_iter()
                     .find(|volume| volume.name().eq_ignore_ascii_case(&name))
                     .ok_or_else(|| format!("volume not found: {name}"))?;
-                volume
-                    .mount_future(gio::MountMountFlags::NONE, Some(&operation))
+                mount_volume_object(volume, &operation)
                     .await
-                    .map_err(|error| error.to_string())?;
-                Ok(format!("Mounted {}", volume.name()))
+                    .map(|mounted| format!("Mounted {}", mounted.label))
             }
             VolumeAction::Unmount | VolumeAction::Eject => {
                 let mount = monitor

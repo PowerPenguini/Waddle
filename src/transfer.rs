@@ -152,6 +152,7 @@ pub(crate) enum NativeUpdate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Consequences {
     pub(crate) status: Option<String>,
+    pub(crate) warning: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) changed_folders: Vec<PathBuf>,
     pub(crate) refresh: bool,
@@ -468,6 +469,7 @@ impl TransferState {
         match result {
             Ok(Outcome::Dropped(action)) => Consequences {
                 status: Some(format!("{} by drag-and-drop", action.label())),
+                warning: None,
                 error: None,
                 changed_folders: Vec::new(),
                 refresh: true,
@@ -475,6 +477,7 @@ impl TransferState {
             },
             Ok(Outcome::Cancelled) => Consequences {
                 status: None,
+                warning: None,
                 error: None,
                 changed_folders: Vec::new(),
                 refresh: false,
@@ -482,6 +485,7 @@ impl TransferState {
             },
             Err(error) => Consequences {
                 status: Some(format!("External drag-and-drop failed: {error}")),
+                warning: None,
                 error: None,
                 changed_folders: Vec::new(),
                 refresh: false,
@@ -603,25 +607,31 @@ impl TransferState {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
-        let error = match (failure_details, warning_details) {
+        let (error, warning) = match (failure_details, warning_details) {
             (Some(details), warnings) => {
                 let warnings = warnings.map_or_else(String::new, |warnings| {
                     format!("\n\nMetadata warnings:\n{warnings}")
                 });
-                Some(if completed == 0 {
-                    format!("{details}{warnings}")
-                } else {
-                    format!(
-                        "{} {completed} item(s); some failed:\n{details}{warnings}",
-                        request.action.label()
-                    )
-                })
+                (
+                    Some(if completed == 0 {
+                        format!("{details}{warnings}")
+                    } else {
+                        format!(
+                            "{} {completed} item(s); some failed:\n{details}{warnings}",
+                            request.action.label()
+                        )
+                    }),
+                    None,
+                )
             }
-            (None, Some(warnings)) => Some(format!(
-                "{} {completed} item(s), but some metadata could not be preserved:\n{warnings}",
-                request.action.label()
-            )),
-            (None, None) => None,
+            (None, Some(warnings)) => (
+                None,
+                Some(format!(
+                    "{} {completed} item(s), but some metadata could not be preserved:\n{warnings}",
+                    request.action.label()
+                )),
+            ),
+            (None, None) => (None, None),
         };
         let clipboard = request.initiator == Initiator::Clipboard;
         if clipboard
@@ -642,15 +652,16 @@ impl TransferState {
             }
         }
         Consequences {
-            status: if !report.retained.is_empty() && error.is_none() {
+            status: if !report.retained.is_empty() && error.is_none() && warning.is_none() {
                 Some(format!(
                     "Transfer cancelled; {} pending item(s) were left unchanged",
                     report.retained.len()
                 ))
             } else {
-                (!clipboard && error.is_none())
+                (!clipboard && error.is_none() && warning.is_none())
                     .then(|| format!("{} {completed} item(s)", request.action.label()))
             },
+            warning,
             error,
             changed_folders: if completed > 0 {
                 vec![current.to_path_buf(), request.destination.clone()]
@@ -901,6 +912,41 @@ mod tests {
         );
         assert!(consequences.refresh);
         assert!(consequences.select.is_empty());
+    }
+
+    #[test]
+    fn metadata_only_transfer_problem_is_not_an_error() {
+        let mut state = TransferState::default();
+        let request = Request {
+            paths: vec![PathBuf::from("/source/do skopiowania")],
+            destination: PathBuf::from("/target"),
+            action: Action::Copy,
+            inbound_id: None,
+            clipboard_generation: None,
+            initiator: Initiator::Clipboard,
+        };
+        let report = TransferReport {
+            completed: vec![PathBuf::from("/target/do skopiowania")],
+            failures: Vec::new(),
+            retained: Vec::new(),
+            warnings: vec![crate::fs::TransferWarning {
+                source: PathBuf::from("/source/do skopiowania"),
+                destination: PathBuf::from("/target/do skopiowania"),
+                detail: "timestamps: Invalid argument (os error 22)".to_owned(),
+            }],
+            receipts: Vec::new(),
+            cancelled: false,
+        };
+
+        let consequences = state.finish_transfer(None, &request, &report, Path::new("/target"));
+
+        assert!(consequences.error.is_none());
+        assert!(
+            consequences
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.starts_with("Copied 1 item(s)"))
+        );
     }
 
     #[test]

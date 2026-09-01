@@ -8,11 +8,11 @@ use iced::{
 use crate::journal;
 
 use super::{
-    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationSession, FileOperationWork,
-    GioTrashAdapter, InputMode, Message, NEW_FOLDER_ID, NavigationTransition, OPEN_WITH_ID,
-    OperationKind, RENAME_ID, TransientPresentation, command, file_operation, open_with, places,
-    presentation::command_failure_report, properties, recent, system_icon_task,
-    transfer_integration, trash,
+    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationConfirmation,
+    FileOperationSession, FileOperationWork, InputMode, Message, NEW_FOLDER_ID,
+    NavigationTransition, OPEN_WITH_ID, OperationKind, RENAME_ID, TransientPresentation, command,
+    file_operation, open_with, places, presentation::command_failure_report, properties, recent,
+    system_icon_task, transfer_integration, trash,
 };
 
 impl App {
@@ -547,14 +547,17 @@ impl App {
     }
 
     pub(super) fn confirm_prompt(&mut self) -> Task<Message> {
-        if let Some(work) = self
+        let confirmation = self
             .file_operations
-            .confirm(self.navigation.current().to_path_buf())
-        {
-            self.start_file_operation(work)
-        } else {
-            self.sync_transient_presentation();
-            Task::none()
+            .confirm(self.navigation.current().to_path_buf());
+        self.sync_transient_presentation();
+        match confirmation {
+            Some(FileOperationConfirmation::Work(work)) => self.start_file_operation(work),
+            Some(FileOperationConfirmation::Trash(entries)) => self
+                .transfers
+                .trash(entries, &self.operations)
+                .map(transfer_integration::transfer_runtime_message),
+            None => Task::none(),
         }
     }
 
@@ -592,9 +595,7 @@ impl App {
     pub(super) fn start_file_operation(&mut self, work: FileOperationWork) -> Task<Message> {
         Task::perform(
             self.operations
-                .run_foreground(OperationKind::Mutation, move |_| {
-                    Ok(work.run(&GioTrashAdapter))
-                }),
+                .run_foreground(OperationKind::Mutation, move |_| Ok(work.run())),
             |completion| match completion {
                 Completion::Finished(Ok(completion)) => Message::FileOperationFinished(completion),
                 Completion::Finished(Err(error)) => Message::OperationError(error),
@@ -648,9 +649,17 @@ impl App {
     }
 
     pub(super) fn run_journal(&mut self, redo: bool) -> Task<Message> {
-        if !self.mutations_allowed() {
+        let transfers = self.transfers.overview();
+        if self.foreground_operation_active()
+            || transfers.active
+            || transfers.conflict_prompt.is_some()
+            || self.search.is_recursive()
+            || !self.navigation.folder_displayed()
+        {
             return Task::none();
         }
+        self.presentation
+            .set_status(if redo { "Redoing…" } else { "Undoing…" });
         let mut journal = self.journal.clone();
         Task::perform(
             self.operations

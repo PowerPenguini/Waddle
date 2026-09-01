@@ -20,3 +20,8 @@ active job has an atomic progress tracker with root-entry and byte totals; the U
 and ETA from the elapsed time and refreshes the compact bottom-bar line every 100 ms. The History
 control expands that same area with the active snapshot, queued count, and newest completed
 reports.
+
+## Comments
+
+- 2026-09-01: Confirmed Trash now enters the ordered Transfer queue. It exposes active progress,
+  queued work, and the `Moving to Trash` action in the same bottom bar as Copy, Move, and Restore.
