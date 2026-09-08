@@ -22,6 +22,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.9" date="2026-09-09">
+      <description>
+        <ul>
+          <li>Recover interrupted Copy, Move, Trash, and Restore Undo and Redo operations.</li>
+          <li>Detect source changes during copying and delayed storage errors before publishing copied files.</li>
+          <li>Preserve partial history and identify the correct Trash entry when original paths repeat.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.8" date="2026-09-08">
       <description>
         <ul>
