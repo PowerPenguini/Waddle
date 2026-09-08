@@ -22,6 +22,16 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.8" date="2026-09-08">
+      <description>
+        <ul>
+          <li>Improve Copy, Move, Trash, and Restore progress, cancellation, conflict handling, and retry safety.</li>
+          <li>Preserve hardlinks and recover partial Undo and Redo operations across restarts.</li>
+          <li>Fix local Wayland clipboard transfers, delayed Paste destinations, and marquee selection focus.</li>
+          <li>Add portable font and icon choices, adjustable icon and label sizes, and clearer sidebar icons and arrows.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.7" date="2026-09-02">
       <description>
         <ul>
