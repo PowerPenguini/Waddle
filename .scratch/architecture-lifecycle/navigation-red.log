@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.89s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::navigation::tests::navigation_session_first_back_cancels_then_second_back_uses_history ... FAILED
+
+failures:
+
+---- app::navigation::tests::navigation_session_first_back_cancels_then_second_back_uses_history stdout ----
+
+thread 'app::navigation::tests::navigation_session_first_back_cancels_then_second_back_uses_history' (938885) panicked at src/app/navigation.rs:562:9:
+first Back must cancel the pending request inside the Navigation session
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::navigation::tests::navigation_session_first_back_cancels_then_second_back_uses_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

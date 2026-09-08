@@ -1,0 +1,56 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.56s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 48 tests
+test app::browser_input::tests::plain_escape_cancels_pending_navigation_after_browser_state ... ok
+test app::command::tests::stateful_shell_completion_requests_navigation ... ok
+test app::navigation::tests::cancelling_pending_navigation_preserves_location_and_history ... ok
+test app::navigation::tests::back_is_available_from_recent_and_trash_without_folder_history ... ok
+test app::navigation::tests::committed_folder_keeps_child_folders_from_the_same_scan ... ok
+test app::navigation::tests::explicit_reveal_scrolls_every_selection_but_refresh_does_not ... ok
+test app::navigation::tests::commit_hides_cut_paths_before_restoring_grid_selection ... ok
+test app::navigation::tests::failed_overlay_keeps_one_coherent_display ... ok
+test app::navigation::tests::forward_back_and_history_forward_share_one_session ... ok
+test app::navigation::tests::hover_is_the_only_transition_that_preserves_pointer_interaction ... ok
+test app::navigation::tests::navigation_session_first_back_cancels_then_second_back_uses_history ... ok
+test app::navigation::tests::failed_refresh_redirects_to_the_nearest_existing_ancestor ... ok
+test app::navigation::tests::navigation_session_keeps_tree_loads_and_deferred_refresh_with_their_request ... ok
+test app::navigation::tests::navigation_session_reuses_only_the_displayed_idle_folder ... ok
+test app::navigation::tests::opening_the_current_folder_does_not_duplicate_history ... ok
+test app::navigation::tests::parent_selects_the_folder_that_was_left ... ok
+test app::navigation::tests::recent_and_trash_are_overlays_on_folder_history ... ok
+test app::navigation::tests::refresh_restores_every_requested_selection_in_display_order ... ok
+test app::navigation::tests::refresh_restores_requested_selection_without_changing_history ... ok
+test app::navigation::tests::same_path_refreshes_are_distinguished_by_request_identity ... ok
+test app::navigation::tests::stale_and_failed_completions_cannot_commit ... ok
+test app::tests::navigation::another_navigation_cancels_a_pending_single_mouse_back_click ... ok
+test app::tests::navigation::double_clicking_mouse_back_navigates_to_parent_without_using_history ... ok
+test app::tests::navigation::drag_notice_survives_refresh_and_clears_on_the_next_interaction ... ok
+test app::tests::navigation::first_back_cancels_tree_navigation_and_second_back_uses_history ... ok
+test app::tests::navigation::mouse_side_buttons_request_back_and_forward_navigation ... ok
+test app::tests::navigation::escape_cancels_pending_navigation_immediately ... ok
+test app::tests::navigation::displayed_locations_install_watches_from_the_newly_displayed_entries ... ok
+test app::tests::navigation::captured_escape_leaves_the_recursive_search_input ... ok
+test app::tests::navigation::mounted_tree_volume_waits_for_its_path_then_opens_the_root ... ok
+test app::tests::navigation::sidebar_current_folder_supersedes_a_pending_navigation ... ok
+test app::tests::navigation::failed_folder_navigation_opens_the_error_bar ... ok
+test app::tests::navigation::holding_mouse_back_no_longer_navigates_to_parent ... ok
+test app::tests::navigation::clipboard_ownership_loss_keeps_the_internal_cut_pending ... ok
+test app::tree::tests::cursor_movement_keeps_tree_navigation_rules_local ... ok
+test app::tree::tests::unmounted_volume_is_visible_and_activates_mount_before_navigation ... ok
+test transfer::tests::active_drag_keeps_its_sources_across_hover_navigation ... ok
+test app::tests::navigation::volume_reconciliation_preserves_existing_nodes ... ok
+test app::tests::navigation::deferred_refresh_cannot_undo_navigation_or_cancellation ... ok
+test app::tests::transfer::navigation_transition_owns_pointer_cleanup_except_for_drag_hover ... ok
+test app::tests::presentation::spinner_animation_runs_for_navigation_and_background_loading ... ok
+test app::tests::navigation::undo_is_not_ignored_while_the_current_folder_refreshes ... ok
+test app::tests::navigation::sort_change_during_a_folder_scan_reaches_the_displayed_entries ... ok
+test app::tests::transfer::mouse_navigation_cancels_an_interrupted_entry_drag ... ok
+test app::tests::navigation::startup_reveal_waits_for_actual_window_geometry_before_final_scroll ... ok
+test app::tests::navigation::sidebar_returns_from_recent_and_trash_to_the_previous_folder ... ok
+test app::tests::navigation::hunt_refresh_during_a_folder_scan_does_not_lose_new_entries ... ok
+test app::tests::navigation::successful_unmount_notice_is_neutral_when_leaving_the_volume ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 0.01s
+

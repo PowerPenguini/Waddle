@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::fs::{FileEntry, OpenedDirectory};
 
-use super::{grid::GridInteraction, trash};
+use super::{grid::GridInteraction, trash, tree::LoadRequest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Kind {
@@ -33,6 +33,10 @@ pub(super) enum Transition {
         requested: PathBuf,
         selected: Vec<PathBuf>,
     },
+    Sidebar {
+        requested: PathBuf,
+        load: Option<LoadRequest>,
+    },
     Parent,
     Back,
     HistoryForward,
@@ -56,9 +60,22 @@ pub(super) struct Request {
     id: u64,
     target: Target,
     select: Vec<PathBuf>,
+    tree_load: Option<LoadRequest>,
 }
 
 impl Request {
+    pub(super) fn tree_load(&self) -> Option<&LoadRequest> {
+        self.tree_load.as_ref()
+    }
+
+    pub(super) fn location(&self) -> DisplayedLocation {
+        match self.target {
+            Target::Folder { .. } => DisplayedLocation::Folder,
+            Target::Recent => DisplayedLocation::Recent,
+            Target::Trash => DisplayedLocation::Trash,
+        }
+    }
+
     pub(super) fn requested(&self) -> Option<&Path> {
         match &self.target {
             Target::Folder { requested, .. } => Some(requested),
@@ -69,6 +86,24 @@ impl Request {
     pub(super) fn selected_paths(&self) -> &[PathBuf] {
         &self.select
     }
+}
+
+/// Effects of a navigation decision; callers execute these without rechecking policy.
+#[must_use]
+#[derive(Clone, Debug, Default)]
+pub(super) struct Start {
+    pub(super) request: Option<Request>,
+    pub(super) cancelled: Option<Request>,
+    pub(super) reuse_tree: Option<LoadRequest>,
+    pub(super) reset_pointer: bool,
+    pub(super) cancel_search: bool,
+}
+
+#[must_use]
+pub(super) struct Completed {
+    pub(super) outcome: Outcome,
+    pub(super) tree_load: Option<LoadRequest>,
+    pub(super) refresh: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -117,7 +152,7 @@ impl Commit {
 pub(super) enum Outcome {
     Ignored,
     Failed(String),
-    Redirect { request: Request, notice: String },
+    Redirect { start: Box<Start>, notice: String },
     Committed(Commit),
 }
 
@@ -146,6 +181,7 @@ pub(super) struct NavigationSession {
     forward_history: Vec<PathBuf>,
     display: Display,
     pending: Option<Request>,
+    deferred_refresh: Option<PathBuf>,
     next_request_id: u64,
 }
 
@@ -162,6 +198,7 @@ impl NavigationSession {
                 trash_entries: Vec::new(),
             },
             pending: None,
+            deferred_refresh: None,
             next_request_id: 1,
         }
     }
@@ -203,6 +240,7 @@ impl NavigationSession {
     }
 
     pub(super) fn cancel_pending(&mut self) -> Option<Request> {
+        self.deferred_refresh = None;
         self.pending.take()
     }
 
@@ -214,40 +252,82 @@ impl NavigationSession {
         !self.forward_history.is_empty()
     }
 
-    pub(super) fn transition(&mut self, transition: Transition) -> Option<Request> {
-        match transition {
+    pub(super) fn transition(&mut self, transition: Transition) -> Start {
+        if self.loading() && matches!(transition, Transition::Back) {
+            return Start {
+                cancelled: self.cancel_pending(),
+                ..Start::default()
+            };
+        }
+        if let Transition::Sidebar { requested, load } = &transition
+            && requested == &self.current
+            && self.folder_displayed()
+            && !self.loading()
+        {
+            return Start {
+                reuse_tree: load.clone(),
+                ..Start::default()
+            };
+        }
+        // Even an unavailable destination supersedes the user's previous choice.
+        let cancelled = self.cancel_pending();
+        let reset_pointer = !transition.preserves_pointer_interaction();
+        let mut start = match transition {
             Transition::Open {
                 requested,
                 remember,
                 select,
-            } => Some(self.forward(requested, remember, select)),
-            Transition::Hover { requested } => Some(self.forward(requested, true, None)),
+            } => self.forward(requested, remember, select),
+            Transition::Hover { requested } => self.forward(requested, true, None),
             Transition::Reveal {
                 requested,
                 selected,
-            } => Some(self.begin(
+            } => self.begin(
                 Target::Folder {
                     requested,
                     kind: Kind::Forward { remember: false },
                 },
                 selected,
-            )),
+            ),
+            Transition::Sidebar { requested, load } => {
+                let mut start = self.forward(requested, true, None);
+                if let Some(request) = start.request.as_mut() {
+                    request.tree_load = load;
+                    self.pending = Some(request.clone());
+                }
+                start
+            }
             Transition::Parent => self.parent(),
             Transition::Back => self.back(),
             Transition::HistoryForward => self.history_forward(),
-        }
+        };
+        start.cancelled = cancelled;
+        start.reset_pointer = reset_pointer;
+        start.cancel_search = true;
+        start
     }
 
-    fn parent(&mut self) -> Option<Request> {
+    /// Coalesce a live refresh while the displayed folder has an in-flight request.
+    pub(super) fn defer_refresh(&mut self) -> bool {
+        if !self.loading() {
+            return false;
+        }
+        self.deferred_refresh = Some(self.current.clone());
+        true
+    }
+
+    fn parent(&mut self) -> Start {
         if !self.folder_displayed() {
-            return Some(self.forward(self.current.clone(), false, None));
+            return self.forward(self.current.clone(), false, None);
         }
-        let parent = self.current.parent()?.to_path_buf();
+        let Some(parent) = self.current.parent().map(PathBuf::from) else {
+            return Start::default();
+        };
         let current = self.current.clone();
-        Some(self.forward(parent, true, Some(current)))
+        self.forward(parent, true, Some(current))
     }
 
-    fn forward(&mut self, requested: PathBuf, remember: bool, select: Option<PathBuf>) -> Request {
+    fn forward(&mut self, requested: PathBuf, remember: bool, select: Option<PathBuf>) -> Start {
         self.begin(
             Target::Folder {
                 requested,
@@ -257,39 +337,43 @@ impl NavigationSession {
         )
     }
 
-    fn back(&mut self) -> Option<Request> {
+    fn back(&mut self) -> Start {
         if !self.folder_displayed() {
-            return Some(self.forward(self.current.clone(), false, None));
+            return self.forward(self.current.clone(), false, None);
         }
-        let target = self.history.last()?.clone();
-        Some(self.begin(
+        let Some(target) = self.history.last().cloned() else {
+            return Start::default();
+        };
+        self.begin(
             Target::Folder {
                 requested: target.clone(),
                 kind: Kind::Back { expected: target },
             },
             Vec::new(),
-        ))
+        )
     }
 
-    fn history_forward(&mut self) -> Option<Request> {
+    fn history_forward(&mut self) -> Start {
         if !self.folder_displayed() {
-            return Some(self.forward(self.current.clone(), false, None));
+            return self.forward(self.current.clone(), false, None);
         }
-        let target = self.forward_history.last()?.clone();
-        Some(self.begin(
+        let Some(target) = self.forward_history.last().cloned() else {
+            return Start::default();
+        };
+        self.begin(
             Target::Folder {
                 requested: target.clone(),
                 kind: Kind::HistoryForward { expected: target },
             },
             Vec::new(),
-        ))
+        )
     }
 
-    pub(super) fn refresh(&mut self, select: Option<PathBuf>) -> Request {
+    pub(super) fn refresh(&mut self, select: Option<PathBuf>) -> Start {
         self.refresh_selected(select.into_iter().collect())
     }
 
-    pub(super) fn refresh_selected(&mut self, select: Vec<PathBuf>) -> Request {
+    pub(super) fn refresh_selected(&mut self, select: Vec<PathBuf>) -> Start {
         self.begin(
             Target::Folder {
                 requested: self.current.clone(),
@@ -299,20 +383,34 @@ impl NavigationSession {
         )
     }
 
-    pub(super) fn recent(&mut self) -> Request {
-        self.begin(Target::Recent, Vec::new())
+    pub(super) fn recent(&mut self) -> Start {
+        let mut start = self.begin(Target::Recent, Vec::new());
+        start.cancel_search = true;
+        start
     }
 
-    pub(super) fn trash(&mut self) -> Request {
-        self.begin(Target::Trash, Vec::new())
+    pub(super) fn trash(&mut self) -> Start {
+        let mut start = self.begin(Target::Trash, Vec::new());
+        start.cancel_search = true;
+        start
     }
 
-    fn begin(&mut self, target: Target, select: Vec<PathBuf>) -> Request {
+    fn begin(&mut self, target: Target, select: Vec<PathBuf>) -> Start {
+        let cancelled = self.cancel_pending();
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);
-        let request = Request { id, target, select };
+        let request = Request {
+            id,
+            target,
+            select,
+            tree_load: None,
+        };
         self.pending = Some(request.clone());
-        request
+        Start {
+            request: Some(request),
+            cancelled,
+            ..Start::default()
+        }
     }
 
     pub(super) fn complete_with_hidden_paths(
@@ -320,27 +418,43 @@ impl NavigationSession {
         request: &Request,
         completion: Completion,
         hidden_paths: &[PathBuf],
-    ) -> Outcome {
+    ) -> Completed {
         if self.pending.as_ref().map(|pending| pending.id) != Some(request.id) {
-            return Outcome::Ignored;
+            return Completed {
+                outcome: Outcome::Ignored,
+                tree_load: None,
+                refresh: false,
+            };
         }
-        self.pending = None;
-        if matches!(completion, Completion::Cancelled) {
-            return Outcome::Ignored;
-        }
-        match (&request.target, completion) {
+        let accepted = self.pending.take().expect("matched navigation request");
+        let outcome = match (&request.target, completion) {
+            (_, Completion::Cancelled) => {
+                self.deferred_refresh = None;
+                Outcome::Ignored
+            }
             (Target::Folder { kind, .. }, Completion::Folder(result)) => {
                 self.complete_folder(kind, &request.select, result, hidden_paths)
             }
             (Target::Recent, Completion::Recent(result)) => self.complete_recent(result),
             (Target::Trash, Completion::Trash(result)) => self.complete_trash(result),
             _ => Outcome::Ignored,
+        };
+        let refresh = !self.loading()
+            && self
+                .deferred_refresh
+                .take()
+                .is_some_and(|path| self.folder_displayed() && path == self.current);
+        Completed {
+            outcome,
+            tree_load: accepted.tree_load,
+            refresh,
         }
     }
 
     #[cfg(test)]
     pub(super) fn complete(&mut self, request: &Request, completion: Completion) -> Outcome {
         self.complete_with_hidden_paths(request, completion, &[])
+            .outcome
     }
 
     fn complete_folder(
@@ -365,8 +479,11 @@ impl NavigationSession {
                         missing.display(),
                         ancestor.display()
                     );
-                    let request = self.forward(ancestor, false, None);
-                    return Outcome::Redirect { request, notice };
+                    let start = self.forward(ancestor, false, None);
+                    return Outcome::Redirect {
+                        start: Box::new(start),
+                        notice,
+                    };
                 }
                 return Outcome::Failed(error);
             }
@@ -518,7 +635,7 @@ impl NavigationSession {
 
     #[cfg(test)]
     pub(super) fn install_trash_entries(&mut self, entries: Vec<trash::Entry>) {
-        let request = self.trash();
+        let request = self.trash().request.unwrap();
         let _ = self.complete(&request, Completion::Trash(Ok(entries)));
     }
 
@@ -551,6 +668,152 @@ mod tests {
     use std::ffi::OsString;
 
     use super::*;
+
+    #[test]
+    fn navigation_session_first_back_cancels_then_second_back_uses_history() {
+        let mut session = NavigationSession::new(PathBuf::from("/current"));
+        session.seed_history(vec![PathBuf::from("/back")], Vec::new());
+        let pending = session
+            .transition(Transition::Open {
+                requested: PathBuf::from("/slow"),
+                remember: true,
+                select: None,
+            })
+            .request
+            .unwrap();
+        assert!(
+            session.transition(Transition::Back).request.is_none(),
+            "first Back must cancel the pending request inside the Navigation session"
+        );
+        assert!(!session.loading());
+        assert!(matches!(
+            session.complete(
+                &pending,
+                Completion::Folder(Ok(opened("/slow", Vec::new())))
+            ),
+            Outcome::Ignored
+        ));
+        let back = session.transition(Transition::Back).request.unwrap();
+        assert_eq!(back.requested(), Some(Path::new("/back")));
+    }
+
+    #[test]
+    fn unavailable_navigation_still_cancels_a_superseded_request() {
+        for transition in [Transition::Parent, Transition::HistoryForward] {
+            let mut session = NavigationSession::new(PathBuf::from("/"));
+            let pending = session
+                .transition(Transition::Open {
+                    requested: PathBuf::from("/slow"),
+                    remember: true,
+                    select: None,
+                })
+                .request
+                .unwrap();
+            let start = session.transition(transition);
+            assert!(start.request.is_none());
+            assert_eq!(
+                start.cancelled,
+                Some(pending.clone()),
+                "a navigation choice with no destination must still cancel the old choice"
+            );
+            assert!(!session.loading());
+            assert!(matches!(
+                session.complete(
+                    &pending,
+                    Completion::Folder(Ok(opened("/slow", Vec::new())))
+                ),
+                Outcome::Ignored
+            ));
+            assert_eq!(session.current(), Path::new("/"));
+        }
+    }
+
+    #[test]
+    fn navigation_session_keeps_tree_loads_and_deferred_refresh_with_their_request() {
+        let mut session = NavigationSession::new(PathBuf::from("/current"));
+        let load = LoadRequest {
+            id: 42,
+            path: PathBuf::from("/slow"),
+        };
+        let first = session
+            .transition(Transition::Sidebar {
+                requested: load.path.clone(),
+                load: Some(load.clone()),
+            })
+            .request
+            .unwrap();
+        assert!(session.defer_refresh());
+        let replacement = session.transition(Transition::Open {
+            requested: PathBuf::from("/current"),
+            remember: true,
+            select: None,
+        });
+        assert_eq!(replacement.cancelled.unwrap().tree_load(), Some(&load));
+        let latest = replacement.request.unwrap();
+        let stale = session.complete_with_hidden_paths(
+            &first,
+            Completion::Folder(Ok(opened("/slow", Vec::new()))),
+            &[],
+        );
+        assert!(matches!(stale.outcome, Outcome::Ignored));
+        assert!(stale.tree_load.is_none());
+        assert!(!stale.refresh);
+        let settled = session.complete_with_hidden_paths(
+            &latest,
+            Completion::Folder(Ok(opened("/current", Vec::new()))),
+            &[],
+        );
+        assert!(
+            !settled.refresh,
+            "superseded requests must discard their deferred refresh"
+        );
+
+        let refresh = session.refresh(None).request.unwrap();
+        assert!(session.defer_refresh());
+        assert!(session.defer_refresh());
+        let finished = session.complete_with_hidden_paths(
+            &refresh,
+            Completion::Folder(Ok(opened("/current", Vec::new()))),
+            &[],
+        );
+        assert!(finished.refresh, "changes during a scan require one rescan");
+        let duplicate = session.complete_with_hidden_paths(
+            &refresh,
+            Completion::Folder(Ok(opened("/current", Vec::new()))),
+            &[],
+        );
+        assert!(!duplicate.refresh);
+    }
+
+    #[test]
+    fn navigation_session_reuses_only_the_displayed_idle_folder() {
+        let mut session = NavigationSession::new(PathBuf::from("/current"));
+        let load = LoadRequest {
+            id: 42,
+            path: PathBuf::from("/current"),
+        };
+        let reuse = session.transition(Transition::Sidebar {
+            requested: load.path.clone(),
+            load: Some(load.clone()),
+        });
+        assert!(reuse.request.is_none());
+        assert_eq!(reuse.reuse_tree, Some(load.clone()));
+        let recent = session.recent().request.unwrap();
+        let _ = session.complete(&recent, Completion::Recent(Ok(Vec::new())));
+        let open = session.transition(Transition::Sidebar {
+            requested: load.path.clone(),
+            load: Some(load.clone()),
+        });
+        assert!(open.reuse_tree.is_none());
+        let request = open.request.unwrap();
+        let completed = session.complete_with_hidden_paths(
+            &request,
+            Completion::Folder(Ok(opened("/current", Vec::new()))),
+            &[],
+        );
+        assert_eq!(completed.tree_load, Some(load));
+        assert!(session.folder_displayed());
+    }
 
     fn entry(path: &str) -> FileEntry {
         FileEntry {
@@ -590,6 +853,7 @@ mod tests {
                 remember: true,
                 select: None,
             })
+            .request
             .unwrap();
         assert!(matches!(
             session.complete(&request, Completion::Folder(Ok(opened("/next", vec![])))),
@@ -598,7 +862,7 @@ mod tests {
         assert_eq!(session.current(), Path::new("/next"));
         assert!(session.can_go_back());
 
-        let request = session.transition(Transition::Back).unwrap();
+        let request = session.transition(Transition::Back).request.unwrap();
         assert!(matches!(
             session.complete(&request, Completion::Folder(Ok(opened("/start", vec![])))),
             Outcome::Committed(_)
@@ -606,7 +870,10 @@ mod tests {
         assert_eq!(session.current(), Path::new("/start"));
         assert!(session.can_go_forward());
 
-        let request = session.transition(Transition::HistoryForward).unwrap();
+        let request = session
+            .transition(Transition::HistoryForward)
+            .request
+            .unwrap();
         let _ = session.complete(&request, Completion::Folder(Ok(opened("/next", vec![]))));
         assert_eq!(session.current(), Path::new("/next"));
     }
@@ -620,6 +887,7 @@ mod tests {
                 remember: true,
                 select: None,
             })
+            .request
             .unwrap();
         let latest = session
             .transition(Transition::Open {
@@ -627,6 +895,7 @@ mod tests {
                 remember: true,
                 select: None,
             })
+            .request
             .unwrap();
 
         assert!(matches!(
@@ -654,6 +923,7 @@ mod tests {
                 remember: true,
                 select: None,
             })
+            .request
             .unwrap();
 
         assert_eq!(session.cancel_pending(), Some(pending.clone()));
@@ -677,8 +947,8 @@ mod tests {
     #[test]
     fn same_path_refreshes_are_distinguished_by_request_identity() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let stale = session.refresh(None);
-        let latest = session.refresh(None);
+        let stale = session.refresh(None).request.unwrap();
+        let latest = session.refresh(None).request.unwrap();
 
         assert!(matches!(
             session.complete(
@@ -702,7 +972,7 @@ mod tests {
     #[test]
     fn committed_folder_keeps_child_folders_from_the_same_scan() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let request = session.refresh(None);
+        let request = session.refresh(None).request.unwrap();
         let mut snapshot = opened("/start", vec![entry("/start/file")]);
         snapshot.child_folders = vec![PathBuf::from("/start/alpha"), PathBuf::from("/start/beta")];
 
@@ -722,9 +992,15 @@ mod tests {
             let mut session = NavigationSession::new(PathBuf::from("/start"));
             assert!(!session.can_go_back());
             let (request, completion) = if trash {
-                (session.trash(), Completion::Trash(Ok(Vec::new())))
+                (
+                    session.trash().request.unwrap(),
+                    Completion::Trash(Ok(Vec::new())),
+                )
             } else {
-                (session.recent(), Completion::Recent(Ok(Vec::new())))
+                (
+                    session.recent().request.unwrap(),
+                    Completion::Recent(Ok(Vec::new())),
+                )
             };
             assert!(matches!(
                 session.complete(&request, completion),
@@ -734,7 +1010,7 @@ mod tests {
                 session.can_go_back(),
                 "the Back button must let users leave Recent/Trash even on first launch"
             );
-            let back = session.transition(Transition::Back).unwrap();
+            let back = session.transition(Transition::Back).request.unwrap();
             assert_eq!(back.requested(), Some(Path::new("/start")));
             let _ = session.complete(&back, Completion::Folder(Ok(opened("/start", Vec::new()))));
             assert!(session.folder_displayed());
@@ -751,7 +1027,7 @@ mod tests {
         session.install_folder_entries(vec![entry("/start/one")]);
         session.seed_history(vec![PathBuf::from("/back")], Vec::new());
 
-        let recent = session.recent();
+        let recent = session.recent().request.unwrap();
         assert!(matches!(
             session.complete(
                 &recent,
@@ -759,7 +1035,7 @@ mod tests {
             ),
             Outcome::Committed(commit) if commit.location() == DisplayedLocation::Recent
         ));
-        let exit = session.transition(Transition::Back).unwrap();
+        let exit = session.transition(Transition::Back).request.unwrap();
         assert_eq!(exit.requested(), Some(Path::new("/start")));
         let _ = session.complete(
             &exit,
@@ -767,7 +1043,7 @@ mod tests {
         );
         assert!(session.can_go_back());
 
-        let trash = session.trash();
+        let trash = session.trash().request.unwrap();
         let _ = session.complete(
             &trash,
             Completion::Trash(Ok(vec![trash_entry("/trash/files/item", "/original/item")])),
@@ -780,7 +1056,7 @@ mod tests {
     fn failed_overlay_keeps_one_coherent_display() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
         session.install_trash_entries(vec![trash_entry("/trash/files/item", "/original/item")]);
-        let failed = session.recent();
+        let failed = session.recent().request.unwrap();
         assert!(matches!(
             session.complete(
                 &failed,
@@ -803,7 +1079,7 @@ mod tests {
     fn refresh_restores_requested_selection_without_changing_history() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
         let selected = PathBuf::from("/start/two");
-        let request = session.refresh(Some(selected.clone()));
+        let request = session.refresh(Some(selected.clone())).request.unwrap();
         let outcome = session.complete(
             &request,
             Completion::Folder(Ok(opened(
@@ -820,10 +1096,13 @@ mod tests {
     #[test]
     fn refresh_restores_every_requested_selection_in_display_order() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let request = session.refresh_selected(vec![
-            PathBuf::from("/start/three"),
-            PathBuf::from("/start/one"),
-        ]);
+        let request = session
+            .refresh_selected(vec![
+                PathBuf::from("/start/three"),
+                PathBuf::from("/start/one"),
+            ])
+            .request
+            .unwrap();
         let outcome = session.complete(
             &request,
             Completion::Folder(Ok(opened(
@@ -849,6 +1128,7 @@ mod tests {
                 requested: PathBuf::from("/start"),
                 selected: vec![second.clone(), first],
             })
+            .request
             .unwrap();
         let outcome = session.complete(
             &request,
@@ -862,7 +1142,7 @@ mod tests {
             matches!(outcome, Outcome::Committed(commit) if commit.reveal_selection() && commit.selected() == [0, 1])
         );
 
-        let request = session.refresh(Some(second));
+        let request = session.refresh(Some(second)).request.unwrap();
         let outcome = session.complete(
             &request,
             Completion::Folder(Ok(opened(
@@ -877,7 +1157,7 @@ mod tests {
     #[test]
     fn parent_selects_the_folder_that_was_left() {
         let mut session = NavigationSession::new(PathBuf::from("/start/child"));
-        let request = session.transition(Transition::Parent).unwrap();
+        let request = session.transition(Transition::Parent).request.unwrap();
         let outcome = session.complete(
             &request,
             Completion::Folder(Ok(opened(
@@ -893,10 +1173,13 @@ mod tests {
     #[test]
     fn commit_hides_cut_paths_before_restoring_grid_selection() {
         let mut session = NavigationSession::new(PathBuf::from("/start"));
-        let request = session.refresh_selected(vec![
-            PathBuf::from("/start/one"),
-            PathBuf::from("/start/two"),
-        ]);
+        let request = session
+            .refresh_selected(vec![
+                PathBuf::from("/start/one"),
+                PathBuf::from("/start/two"),
+            ])
+            .request
+            .unwrap();
         let outcome = session.complete_with_hidden_paths(
             &request,
             Completion::Folder(Ok(opened(
@@ -905,7 +1188,7 @@ mod tests {
             ))),
             &[PathBuf::from("/start/one")],
         );
-        let Outcome::Committed(commit) = outcome else {
+        let Outcome::Committed(commit) = outcome.outcome else {
             panic!("navigation did not commit");
         };
         let mut grid = GridInteraction::default();
@@ -927,17 +1210,17 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("gone/child");
         let mut session = NavigationSession::new(missing.clone());
-        let request = session.refresh(None);
+        let request = session.refresh(None).request.unwrap();
 
         let outcome = session.complete(
             &request,
             Completion::Folder(Err("directory disappeared".to_owned())),
         );
-        let Outcome::Redirect { request, notice } = outcome else {
+        let Outcome::Redirect { start, notice } = outcome else {
             panic!("missing refresh did not redirect");
         };
 
-        assert_eq!(request.requested(), Some(temp.path()));
+        assert_eq!(start.request.unwrap().requested(), Some(temp.path()));
         assert!(notice.contains(&missing.display().to_string()));
         assert!(notice.contains(&temp.path().display().to_string()));
     }
@@ -951,6 +1234,7 @@ mod tests {
                 remember: true,
                 select: None,
             })
+            .request
             .unwrap();
         let _ = session.complete(
             &request,

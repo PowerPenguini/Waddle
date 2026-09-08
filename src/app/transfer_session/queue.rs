@@ -17,7 +17,10 @@ use crate::{
     transfer::Request,
 };
 
-use super::trash;
+use crate::app::{
+    operations::{ForegroundActivity, Operations},
+    trash,
+};
 
 const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 
@@ -28,6 +31,7 @@ pub(super) struct Work {
     batch: Batch,
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
+    activity: Option<Arc<ForegroundActivity>>,
 }
 
 impl Work {
@@ -36,6 +40,7 @@ impl Work {
     }
 
     pub(super) fn run(self) -> WorkOutcome {
+        let _activity = self.activity;
         let cancelled = || self.cancellation.load(Ordering::Acquire);
         let progress = |update| self.progress.update(update);
         match self.batch {
@@ -61,7 +66,7 @@ enum Batch {
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum WorkOutcome {
+pub(in crate::app) enum WorkOutcome {
     Filesystem(crate::fs::TransferBatchOutcome, PreparedUndo),
     Trash(trash::Report),
 }
@@ -134,6 +139,7 @@ impl Operation {
 pub(super) struct Finished {
     pub(super) operation: Operation,
     pub(super) next: Option<Work>,
+    pub(super) activity: Option<Arc<ForegroundActivity>>,
 }
 
 #[derive(Debug, Default)]
@@ -167,16 +173,16 @@ impl ProgressTracker {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Snapshot {
-    pub(super) progress: TransferProgress,
-    pub(super) elapsed: Duration,
-    pub(super) bytes_per_second: u64,
-    pub(super) estimated_remaining: Option<Duration>,
-    pub(super) queued: usize,
+pub(in crate::app) struct Snapshot {
+    pub(in crate::app) progress: TransferProgress,
+    pub(in crate::app) elapsed: Duration,
+    pub(in crate::app) bytes_per_second: u64,
+    pub(in crate::app) estimated_remaining: Option<Duration>,
+    pub(in crate::app) queued: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct HistoryEntry {
+pub(in crate::app) struct HistoryEntry {
     recorded_at: u64,
     action: String,
     completed: usize,
@@ -196,13 +202,20 @@ struct Active {
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
     started: Instant,
+    activity: Option<Arc<ForegroundActivity>>,
+}
+
+struct Pending {
+    operation: Operation,
+    batch: Batch,
+    activity: Option<Arc<ForegroundActivity>>,
 }
 
 pub(super) struct Queue {
     path: PathBuf,
     next_id: u64,
     active: Option<Active>,
-    pending: VecDeque<(Operation, Batch)>,
+    pending: VecDeque<Pending>,
     history: Vec<HistoryEntry>,
     last_retry: Option<Retry>,
     expanded: bool,
@@ -257,6 +270,7 @@ impl Queue {
         self.enqueue(
             Operation::Transfer(request),
             Batch::Filesystem(Box::new(batch)),
+            None,
         )
     }
 
@@ -264,10 +278,12 @@ impl Queue {
         &mut self,
         entries: Vec<trash::Entry>,
         batch: TransferBatch,
+        operations: &Operations,
     ) -> Option<Work> {
         self.enqueue(
             Operation::Restore(entries),
             Batch::Filesystem(Box::new(batch)),
+            Some(Arc::new(operations.begin_foreground())),
         )
     }
 
@@ -276,15 +292,24 @@ impl Queue {
         entries: Vec<crate::fs::FileEntry>,
         batch: trash::Batch,
     ) -> Option<Work> {
-        self.enqueue(Operation::Trash(entries), Batch::Trash(batch))
+        self.enqueue(Operation::Trash(entries), Batch::Trash(batch), None)
     }
 
-    fn enqueue(&mut self, operation: Operation, batch: Batch) -> Option<Work> {
+    fn enqueue(
+        &mut self,
+        operation: Operation,
+        batch: Batch,
+        activity: Option<Arc<ForegroundActivity>>,
+    ) -> Option<Work> {
         if self.active.is_some() {
-            self.pending.push_back((operation, batch));
+            self.pending.push_back(Pending {
+                operation,
+                batch,
+                activity,
+            });
             None
         } else {
-            Some(self.activate(operation, batch))
+            Some(self.activate(operation, batch, activity))
         }
     }
 
@@ -378,17 +403,21 @@ impl Queue {
         }
         self.prune();
         let _ = self.save();
-        let next = self
-            .pending
-            .pop_front()
-            .map(|(operation, batch)| self.activate(operation, batch));
+        let next = self.pending.pop_front().map(
+            |Pending {
+                 operation,
+                 batch,
+                 activity,
+             }| self.activate(operation, batch, activity),
+        );
         Some(Finished {
             operation: active.operation,
             next,
+            activity: active.activity,
         })
     }
 
-    pub(super) fn retry(&mut self) -> Result<Option<Work>, String> {
+    pub(super) fn retry(&mut self, operations: &Operations) -> Result<Option<Work>, String> {
         let Some(retry) = self.last_retry.as_ref().cloned() else {
             return Ok(None);
         };
@@ -415,7 +444,9 @@ impl Queue {
             }
         };
         self.last_retry = None;
-        Ok(self.enqueue(operation, batch))
+        let activity = matches!(operation, Operation::Restore(_))
+            .then(|| Arc::new(operations.begin_foreground()));
+        Ok(self.enqueue(operation, batch, activity))
     }
 
     pub(super) fn cancel(&self) -> bool {
@@ -455,10 +486,6 @@ impl Queue {
         self.last_retry.is_some()
     }
 
-    pub(super) fn retry_is_restore(&self) -> bool {
-        matches!(self.last_retry, Some(Retry::Restore { .. }))
-    }
-
     pub(super) fn toggle_expanded(&mut self) {
         self.expanded = !self.expanded;
     }
@@ -480,7 +507,12 @@ impl Queue {
             .join("\n\n")
     }
 
-    fn activate(&mut self, operation: Operation, batch: Batch) -> Work {
+    fn activate(
+        &mut self,
+        operation: Operation,
+        batch: Batch,
+        activity: Option<Arc<ForegroundActivity>>,
+    ) -> Work {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let cancellation = Arc::new(AtomicBool::new(false));
@@ -492,6 +524,7 @@ impl Queue {
             cancellation: Arc::clone(&cancellation),
             progress: Arc::clone(&progress),
             started: Instant::now(),
+            activity: activity.clone(),
         });
         Work {
             id,
@@ -499,6 +532,7 @@ impl Queue {
             batch,
             cancellation,
             progress,
+            activity,
         }
     }
 
@@ -529,11 +563,12 @@ fn work(active: &Active, batch: TransferBatch) -> Work {
         batch: Batch::Filesystem(Box::new(batch)),
         cancellation: Arc::clone(&active.cancellation),
         progress: Arc::clone(&active.progress),
+        activity: active.activity.clone(),
     }
 }
 
 impl HistoryEntry {
-    pub(super) fn summary(&self) -> &str {
+    pub(in crate::app) fn summary(&self) -> &str {
         &self.detail
     }
 }
@@ -686,7 +721,11 @@ mod tests {
         };
         let entries = vec![entry];
         let work = queue
-            .enqueue_restore(entries.clone(), trash::restore_batch(&entries))
+            .enqueue_restore(
+                entries.clone(),
+                trash::restore_batch(&entries),
+                &Operations::default(),
+            )
             .unwrap();
         let id = work.id();
         let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
@@ -697,7 +736,7 @@ mod tests {
         fs::create_dir(original.parent().unwrap()).unwrap();
         fs::write(&old_source, "older unrelated copy").unwrap();
         let retry = queue
-            .retry()
+            .retry(&Operations::default())
             .unwrap()
             .expect("failed Restore must be retryable");
         assert!(
@@ -800,7 +839,7 @@ mod tests {
         fs::remove_file(source.join("b")).unwrap();
         fs::write(source.join("b"), "now readable").unwrap();
         fs::write(destination.join("folder/a"), "edited after Copy").unwrap();
-        let retried = queue.retry().unwrap().unwrap();
+        let retried = queue.retry(&Operations::default()).unwrap().unwrap();
         let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), undo) =
             retried.run()
         else {
@@ -1005,10 +1044,10 @@ mod tests {
         );
         assert!(queue.has_retry());
         fs::remove_dir(&destination).unwrap();
-        assert!(queue.retry().is_err());
+        assert!(queue.retry(&Operations::default()).is_err());
         assert!(queue.has_retry());
         fs::create_dir(&destination).unwrap();
-        assert!(queue.retry().unwrap().is_some());
+        assert!(queue.retry(&Operations::default()).unwrap().is_some());
     }
 
     #[test]
@@ -1048,7 +1087,7 @@ mod tests {
         assert_eq!(queue.history().len(), 1);
         assert!(queue.report_text().contains("Moved to Trash"));
 
-        assert!(queue.retry().unwrap().is_some());
+        assert!(queue.retry(&Operations::default()).unwrap().is_some());
         assert!(matches!(
             &queue.active.as_ref().unwrap().operation,
             Operation::Trash(entries)
@@ -1144,6 +1183,7 @@ mod regressions {
             .enqueue_restore(
                 vec![entry.clone()],
                 trash::restore_batch(std::slice::from_ref(&entry)),
+                &Operations::default(),
             )
             .unwrap();
         let id = work.id();

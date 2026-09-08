@@ -30,79 +30,92 @@ fn metadata_only_transfer_problem_opens_a_warning_acknowledgement() {
 
 #[test]
 fn transfer_conflict_replaces_progress_with_keyboard_choices() {
-    let temp = tempfile::tempdir().unwrap();
-    let source_directory = temp.path().join("source");
-    let destination = temp.path().join("destination");
-    std_fs::create_dir_all(&source_directory).unwrap();
-    std_fs::create_dir_all(&destination).unwrap();
-    let source = source_directory.join("notes.txt");
-    std_fs::write(&source, "source").unwrap();
-    std_fs::write(destination.join("notes.txt"), "existing").unwrap();
-
-    let mut state = TransferState::default();
-    state
-        .copy(&[FileEntry {
-            path: source.clone(),
-            name: "notes.txt".into(),
-            directory: false,
-            metadata: Default::default(),
-        }])
-        .unwrap();
-    let request = state.paste(destination.clone()).unwrap();
-    let (mut app, _) = App::new();
-    let work = app
-        .transfers
-        .enqueue_work(request.clone())
+    async fn finish_transfer_task(app: &mut App, task: Task<Message>) {
+        use iced::futures::StreamExt;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    let _ = app.update(message);
+                }
+            }
+        })
+        .await
+        .expect("Transfer should settle");
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
         .unwrap()
-        .unwrap();
-    let id = work.id();
-    let outcome = work.run();
-    let _ = app.finish_transfer_batch(id, outcome);
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std_fs::create_dir_all(&source_directory).unwrap();
+            std_fs::create_dir_all(&destination).unwrap();
+            let source = source_directory.join("notes.txt");
+            std_fs::write(&source, "source").unwrap();
+            std_fs::write(destination.join("notes.txt"), "existing").unwrap();
 
-    assert!(app.transfers.overview().conflict_prompt.is_some());
-    let trashed = FileEntry {
-        path: temp.path().join("trash/files/notes.txt"),
-        name: "notes.txt".into(),
-        directory: false,
-        metadata: Default::default(),
-    };
-    app.navigation
-        .install_trash_entries(vec![super::trash::Entry {
-            file: trashed,
-            receipt: crate::journal::TrashReceipt {
-                original: temp.path().join("restored/notes.txt"),
-                trashed: temp.path().join("trash/files/notes.txt"),
-                info: temp.path().join("trash/info/notes.txt.trashinfo"),
-            },
-        }]);
-    app.grid.select_only(Some(0), 1);
-    let _ = app.restore_selected_trash();
-    assert!(!app.foreground_operation_active());
-    assert!(app.transfers.overview().conflict_prompt.is_some());
+            let mut state = TransferState::default();
+            state
+                .copy(&[FileEntry {
+                    path: source.clone(),
+                    name: "notes.txt".into(),
+                    directory: false,
+                    metadata: Default::default(),
+                }])
+                .unwrap();
+            let request = state.paste(destination.clone()).unwrap();
+            let (mut app, _) = App::new();
+            let task = app.start_transfer(request);
+            finish_transfer_task(&mut app, task).await;
 
-    app.browser_input.enter(InputMode::Search);
-    app.transfers.toggle_expanded();
-    app.refresh_status();
-    let conflict = app.browser_status_model();
-    assert_eq!(conflict.presentation, BrowserStatusPresentation::Conflict);
-    assert!(conflict.text.contains("r Replace"));
-    assert!(conflict.text.contains("s Skip"));
-    assert!(conflict.text.contains("k Keep Both"));
-    assert!(conflict.text.contains("Esc cancel"));
-    assert!(!conflict.retry);
-    assert!(!conflict.history);
+            assert!(app.transfers.overview().conflict_prompt.is_some());
+            let trashed = FileEntry {
+                path: temp.path().join("trash/files/notes.txt"),
+                name: "notes.txt".into(),
+                directory: false,
+                metadata: Default::default(),
+            };
+            app.navigation
+                .install_trash_entries(vec![super::trash::Entry {
+                    file: trashed,
+                    receipt: crate::journal::TrashReceipt {
+                        original: temp.path().join("restored/notes.txt"),
+                        trashed: temp.path().join("trash/files/notes.txt"),
+                        info: temp.path().join("trash/info/notes.txt.trashinfo"),
+                    },
+                }]);
+            app.grid.select_only(Some(0), 1);
+            let _ = app.restore_selected_trash();
+            assert!(!app.foreground_operation_active());
+            assert!(app.transfers.overview().conflict_prompt.is_some());
 
-    let cancelled = app.transfers.cancel_conflict_work().unwrap();
-    assert!(app.transfers.overview().active);
-    let _ = app.finish_transfer_batch(id, cancelled.run());
-    assert!(app.transfers.overview().retry);
-    app.presentation
-        .set_notice("External move or removal confirmed".to_owned());
-    let notice = app.browser_status_model();
-    assert_eq!(notice.presentation, BrowserStatusPresentation::General);
-    assert_eq!(notice.text, "External move or removal confirmed");
-    assert!(notice.retry);
-    assert!(notice.history);
+            app.browser_input.enter(InputMode::Search);
+            app.transfers.toggle_expanded();
+            app.refresh_status();
+            let conflict = app.browser_status_model();
+            assert_eq!(conflict.presentation, BrowserStatusPresentation::Conflict);
+            assert!(conflict.text.contains("r Replace"));
+            assert!(conflict.text.contains("s Skip"));
+            assert!(conflict.text.contains("k Keep Both"));
+            assert!(conflict.text.contains("Esc cancel"));
+            assert!(!conflict.retry);
+            assert!(!conflict.history);
+
+            let cancelled = app.cancel_transfer_conflict();
+            assert!(app.transfers.overview().active);
+            finish_transfer_task(&mut app, cancelled).await;
+            assert!(app.transfers.overview().retry);
+            app.presentation
+                .set_notice("External move or removal confirmed".to_owned());
+            let notice = app.browser_status_model();
+            assert_eq!(notice.presentation, BrowserStatusPresentation::General);
+            assert_eq!(notice.text, "External move or removal confirmed");
+            assert!(notice.retry);
+            assert!(notice.history);
+        });
 }
 
 #[test]

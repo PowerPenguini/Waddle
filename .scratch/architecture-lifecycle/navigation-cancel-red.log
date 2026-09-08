@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.75s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::navigation::tests::unavailable_navigation_still_cancels_a_superseded_request ... FAILED
+
+failures:
+
+---- app::navigation::tests::unavailable_navigation_still_cancels_a_superseded_request stdout ----
+
+thread 'app::navigation::tests::unavailable_navigation_still_cancels_a_superseded_request' (949087) panicked at src/app/navigation.rs:706:13:
+assertion `left == right` failed: a navigation choice with no destination must still cancel the old choice
+  left: None
+ right: Some(Request { id: 1, target: Folder { requested: "/slow", kind: Forward { remember: true } }, select: [], tree_load: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::navigation::tests::unavailable_navigation_still_cancels_a_superseded_request
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 467 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

@@ -27,7 +27,6 @@ mod status;
 mod system_icons;
 mod thumbnail;
 mod transfer_integration;
-mod transfer_queue;
 mod transfer_session;
 mod trash;
 mod tree;
@@ -338,8 +337,6 @@ struct App {
     modifiers: keyboard::Modifiers,
     icon_zoom: icon_size::WheelZoom,
     mouse_back_gesture: Option<MouseBackGesture>,
-    pending_tree_navigation: Option<(NavigationRequest, TreeLoadRequest)>,
-    pending_refresh: Option<PathBuf>,
     pending_volume_navigation: Option<PendingVolumeNavigation>,
     window_size_known: bool,
     pending_reveal_scroll: bool,
@@ -435,8 +432,6 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             icon_zoom: icon_size::WheelZoom::default(),
             mouse_back_gesture: None,
-            pending_tree_navigation: None,
-            pending_refresh: None,
             pending_volume_navigation: None,
             window_size_known: false,
             pending_reveal_scroll: false,
@@ -448,12 +443,10 @@ impl App {
         let navigation = if initial_selection.is_empty() {
             app.navigation.refresh(None)
         } else {
-            app.navigation
-                .transition(NavigationTransition::Reveal {
-                    requested: current,
-                    selected: initial_selection,
-                })
-                .expect("reveal navigation always creates a request")
+            app.navigation.transition(NavigationTransition::Reveal {
+                requested: current,
+                selected: initial_selection,
+            })
         };
         let initial = Task::batch([
             app.request_navigation(navigation),

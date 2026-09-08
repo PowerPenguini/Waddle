@@ -15,105 +15,117 @@ use super::{
     App, Completion, DisplayedLocation, InputMode, LOCATION_ID, Message, Motion,
     NavigationCompletion, NavigationOutcome, NavigationRequest, NavigationTransition,
     OperationKind, SEARCH_ID, SEARCH_LIMIT, ScrollTarget, SearchUpdate, TransferAction,
-    TransferDragRelease, TreeActivation, TreeLoadRequest, TreeMoveOutcome, runtime::scroll_command,
+    TransferDragRelease, TreeActivation, TreeLoadRequest, TreeMoveOutcome,
+    navigation::{Completed as NavigationCompleted, Start as NavigationStart},
+    runtime::scroll_command,
     thumbnail,
 };
 
 impl App {
-    pub(super) fn request_navigation(&mut self, navigation: NavigationRequest) -> Task<Message> {
-        self.request_navigation_with_tree(navigation, None)
-    }
-
-    fn request_navigation_with_tree(
-        &mut self,
-        navigation: NavigationRequest,
-        tree_load: Option<TreeLoadRequest>,
-    ) -> Task<Message> {
-        if let Some((_, previous)) = self.pending_tree_navigation.take() {
-            self.sidebar_tree.cancel_load(&previous);
+    pub(super) fn request_navigation(&mut self, start: NavigationStart) -> Task<Message> {
+        if let Some(cancelled) = start.cancelled {
+            self.cancel_navigation_work(&cancelled);
+        }
+        if start.reset_pointer {
+            self.prepare_navigation_transition();
+        }
+        if start.cancel_search {
+            self.cancel_search_state();
+        }
+        if let Some(load) = start.reuse_tree {
+            self.sidebar_tree
+                .complete_load(&load, Ok(self.navigation.child_folders().to_vec()));
             self.sync_location_monitoring();
         }
-        self.pending_tree_navigation = tree_load.map(|load| (navigation.clone(), load));
-        let requested = navigation
-            .requested()
-            .expect("folder navigation request")
-            .to_path_buf();
-        let revealed = navigation.selected_paths().to_vec();
-        let options = self.view_preferences.for_directory(&requested);
-        self.presentation.set_status(format!(
-            "Opening {}…  •  Esc/Back cancel",
-            requested.display()
-        ));
-        Task::perform(
-            self.operations.run(OperationKind::Navigation, {
-                let path = requested.clone();
-                move |_| {
-                    fs::open_directory_revealing(&path, options, &revealed)
-                        .map_err(|error| error.to_string())
-                }
-            }),
-            move |completion| match completion {
-                Completion::Finished(result) => Message::NavigationFinished {
-                    request: navigation,
-                    result,
-                },
-                Completion::Cancelled => Message::NavigationCancelled(navigation),
-            },
-        )
+        let Some(navigation) = start.request else {
+            return Task::none();
+        };
+        match navigation.location() {
+            DisplayedLocation::Folder => {
+                let requested = navigation
+                    .requested()
+                    .expect("folder request")
+                    .to_path_buf();
+                let revealed = navigation.selected_paths().to_vec();
+                let options = self.view_preferences.for_directory(&requested);
+                self.presentation.set_status(format!(
+                    "Opening {}…  •  Esc/Back cancel",
+                    requested.display()
+                ));
+                Task::perform(
+                    self.operations.run(OperationKind::Navigation, move |_| {
+                        fs::open_directory_revealing(&requested, options, &revealed)
+                            .map_err(|error| error.to_string())
+                    }),
+                    move |completion| match completion {
+                        Completion::Finished(result) => Message::NavigationFinished {
+                            request: navigation,
+                            result,
+                        },
+                        Completion::Cancelled => Message::NavigationCancelled(navigation),
+                    },
+                )
+            }
+            DisplayedLocation::Recent => {
+                self.presentation
+                    .set_status("Reading shared Recent history…".to_owned());
+                let recent = self.recent.clone();
+                Task::perform(
+                    self.operations
+                        .run(OperationKind::Navigation, move |_| recent.entries()),
+                    move |completion| Message::RecentLoaded {
+                        request: navigation,
+                        result: match completion {
+                            Completion::Finished(result) => Some(result),
+                            Completion::Cancelled => None,
+                        },
+                    },
+                )
+            }
+            DisplayedLocation::Trash => {
+                self.presentation.set_status("Reading Trash…".to_owned());
+                let trash = self.trash.clone();
+                Task::perform(
+                    self.operations
+                        .run(OperationKind::Navigation, move |_| trash.entries()),
+                    move |completion| Message::TrashLoaded {
+                        request: navigation,
+                        result: match completion {
+                            Completion::Finished(result) => Some(result),
+                            Completion::Cancelled => None,
+                        },
+                    },
+                )
+            }
+        }
     }
 
     pub(super) fn transition_navigation(
         &mut self,
         transition: NavigationTransition,
     ) -> Task<Message> {
-        self.transition_navigation_with_tree(transition, None)
-    }
-
-    fn transition_navigation_with_tree(
-        &mut self,
-        transition: NavigationTransition,
-        tree_load: Option<TreeLoadRequest>,
-    ) -> Task<Message> {
         self.mouse_back_gesture = None;
         if self.prompt_blocks_action() {
             return Task::none();
         }
-        if self.navigation.loading() {
-            self.cancel_pending_navigation();
-            if matches!(transition, NavigationTransition::Back) {
-                return Task::none();
-            }
+        let start = self.navigation.transition(transition);
+        self.request_navigation(start)
+    }
+
+    fn cancel_navigation_work(&mut self, cancelled: &NavigationRequest) {
+        self.operations.cancel(OperationKind::Navigation);
+        if let Some(load) = cancelled.tree_load() {
+            self.sidebar_tree.cancel_load(load);
+            self.sync_location_monitoring();
         }
-        if !transition.preserves_pointer_interaction() {
-            self.prepare_navigation_transition();
-        }
-        self.cancel_search_state();
-        self.navigation
-            .transition(transition)
-            .map_or_else(Task::none, |request| {
-                self.request_navigation_with_tree(request, tree_load)
-            })
+        self.refresh_status();
     }
 
     pub(super) fn cancel_pending_navigation(&mut self) -> bool {
         let Some(cancelled) = self.navigation.cancel_pending() else {
             return false;
         };
-        self.pending_refresh = None;
-        self.operations.cancel(OperationKind::Navigation);
-        if self
-            .pending_tree_navigation
-            .as_ref()
-            .is_some_and(|(request, _)| request == &cancelled)
-        {
-            let (_, tree_load) = self
-                .pending_tree_navigation
-                .take()
-                .expect("matched pending tree navigation");
-            self.sidebar_tree.cancel_load(&tree_load);
-            self.sync_location_monitoring();
-        }
-        self.refresh_status();
+        self.cancel_navigation_work(&cancelled);
         true
     }
 
@@ -128,19 +140,13 @@ impl App {
         completion: NavigationCompletion,
     ) -> Task<Message> {
         let hidden_paths = self.transfers.pending_cut_paths().to_vec();
-        let tree_load = self
-            .pending_tree_navigation
-            .as_ref()
-            .is_some_and(|(pending, _)| pending == &request)
-            .then(|| {
-                self.pending_tree_navigation
-                    .take()
-                    .expect("matched pending tree navigation")
-                    .1
-            });
-        let outcome =
-            self.navigation
-                .complete_with_hidden_paths(&request, completion, &hidden_paths);
+        let NavigationCompleted {
+            outcome,
+            tree_load,
+            refresh,
+        } = self
+            .navigation
+            .complete_with_hidden_paths(&request, completion, &hidden_paths);
         let task = match outcome {
             NavigationOutcome::Committed(commit) => {
                 if let Some(tree_load) = tree_load {
@@ -172,13 +178,13 @@ impl App {
                     DisplayedLocation::Trash => Task::none(),
                 }
             }
-            NavigationOutcome::Redirect { request, notice } => {
+            NavigationOutcome::Redirect { start, notice } => {
                 if let Some(tree_load) = tree_load {
                     self.sidebar_tree.cancel_load(&tree_load);
                     self.sync_location_monitoring();
                 }
                 self.presentation.set_notice(notice);
-                self.request_navigation(request)
+                self.request_navigation(*start)
             }
             NavigationOutcome::Failed(error) => {
                 if let Some(tree_load) = tree_load {
@@ -197,10 +203,7 @@ impl App {
                 Task::none()
             }
         };
-        let refresh = if !self.navigation.loading()
-            && self.pending_refresh.take().is_some_and(|path| {
-                self.navigation.folder_displayed() && path == self.navigation.current()
-            }) {
+        let refresh = if refresh {
             self.live_refresh()
         } else {
             Task::none()
@@ -219,10 +222,7 @@ impl App {
     }
 
     pub(super) fn live_refresh(&mut self) -> Task<Message> {
-        if self.navigation.loading() {
-            // Coalesce changes that arrived after the in-flight scan's snapshot.
-            // Keep the path so a later navigation cannot refresh the wrong folder.
-            self.pending_refresh = Some(self.navigation.current().to_path_buf());
+        if self.navigation.defer_refresh() {
             return Task::none();
         }
         if !self.navigation.current().is_dir() {
@@ -256,25 +256,8 @@ impl App {
         {
             return Task::none();
         }
-        self.cancel_search_state();
-        let request = self.navigation.recent();
-        self.presentation
-            .set_status("Reading shared Recent history…".to_owned());
-        let recent = self.recent.clone();
-        Task::perform(
-            self.operations
-                .run(OperationKind::Navigation, move |_| recent.entries()),
-            move |completion| match completion {
-                Completion::Finished(result) => Message::RecentLoaded {
-                    request,
-                    result: Some(result),
-                },
-                Completion::Cancelled => Message::RecentLoaded {
-                    request,
-                    result: None,
-                },
-            },
-        )
+        let start = self.navigation.recent();
+        self.request_navigation(start)
     }
 
     pub(super) fn open_trash(&mut self) -> Task<Message> {
@@ -284,24 +267,8 @@ impl App {
         {
             return Task::none();
         }
-        self.cancel_search_state();
-        let request = self.navigation.trash();
-        self.presentation.set_status("Reading Trash…".to_owned());
-        let trash = self.trash.clone();
-        Task::perform(
-            self.operations
-                .run(OperationKind::Navigation, move |_| trash.entries()),
-            move |completion| match completion {
-                Completion::Finished(result) => Message::TrashLoaded {
-                    request,
-                    result: Some(result),
-                },
-                Completion::Cancelled => Message::TrashLoaded {
-                    request,
-                    result: None,
-                },
-            },
-        )
+        let start = self.navigation.trash();
+        self.request_navigation(start)
     }
 
     pub(super) fn install_locations(&mut self) {
@@ -574,7 +541,6 @@ impl App {
         if self.prompt_blocks_action() {
             return Task::none();
         }
-        let current = self.navigation.current().to_path_buf();
         let Some(activation) = self.sidebar_tree.activate(id) else {
             return Task::none();
         };
@@ -599,27 +565,11 @@ impl App {
                 )
             }
             TreeActivation::Folder { path, load } => {
-                let already_current = path == current
-                    && self.navigation.folder_displayed()
-                    && !self.navigation.loading();
-                if already_current {
-                    if let Some(request) = load {
-                        self.sidebar_tree
-                            .complete_load(&request, Ok(self.navigation.child_folders().to_vec()));
-                    }
-                    self.sync_location_monitoring();
-                    Task::none()
-                } else {
-                    self.sync_location_monitoring();
-                    self.transition_navigation_with_tree(
-                        NavigationTransition::Open {
-                            requested: path,
-                            remember: true,
-                            select: None,
-                        },
-                        load,
-                    )
-                }
+                self.sync_location_monitoring();
+                self.transition_navigation(NavigationTransition::Sidebar {
+                    requested: path,
+                    load,
+                })
             }
         }
     }

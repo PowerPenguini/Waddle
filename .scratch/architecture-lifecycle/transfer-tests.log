@@ -1,0 +1,83 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.55s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 75 tests
+test app::browser_input::tests::transfer_conflict_keys_take_precedence_and_preserve_uppercase_scope ... ok
+test app::browser_input::tests::open_transfer_history_owns_its_keyboard_actions ... ok
+test app::browser_input::tests::transfer_controls_use_direct_keyboard_intents ... ok
+test app::file_operation::tests::trash_confirmation_returns_a_transfer_and_partial_failure_escalates ... ok
+test app::tests::transfer::copy_message_uses_the_complete_visual_selection_in_display_order ... ok
+test app::tests::transfer::metadata_only_transfer_problem_opens_a_warning_acknowledgement ... ok
+test app::tests::transfer::entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item ... ok
+test app::tests::transfer::navigation_transition_owns_pointer_cleanup_except_for_drag_hover ... ok
+test app::tests::transfer::raw_mouse_drag_selects_only_intersected_grid_tiles_and_finishes_on_release ... ok
+test app::tests::transfer::confirmed_trash_enters_the_transfer_session ... ok
+test app::tests::transfer::internal_drag_preview_only_appears_after_the_drag_threshold ... ok
+test app::tests::transfer::system_clipboard_completion_enters_the_same_transfer_session ... ok
+test app::tests::transfer::mouse_navigation_cancels_an_interrupted_entry_drag ... ok
+test app::tests::transfer::incoming_drop_targets_folders_empty_grid_and_rejects_files_and_toolbar ... ok
+test app::tests::transfer::black_hole_delete_trashes_without_replacing_the_clipboard ... ok
+test app::tests::transfer::dd_cuts_only_the_active_item ... ok
+test app::tests::transfer::black_hole_d_trashes_a_multiple_selection_without_a_motion ... ok
+test app::tests::transfer::directory_events_confirm_only_observed_external_cut_moves ... ok
+test app::tests::transfer::raw_mouse_drag_selects_list_rows_and_finishes_on_release ... ok
+test app::transfer_session::queue::tests::queue_keeps_a_paused_batch_until_the_conflict_is_resolved ... ok
+test app::transfer_session::tests::drag_activation_captures_sources_and_release_consumes_the_drag ... ok
+test app::transfer_session::queue::regressions::undo_merged_restore_keeps_preexisting_destination_files ... ok
+test app::transfer_session::queue::tests::cancelling_a_conflict_prepares_undo_for_earlier_successes_in_the_worker ... ok
+test app::transfer_session::tests::invalid_drag_release_is_consumed_without_a_request ... ok
+test app::transfer_session::queue::tests::hunt_failed_restore_retries_itself_instead_of_an_older_copy ... ok
+test app::transfer_session::queue::tests::trash_uses_progress_cancel_retry_and_history ... ok
+test app::transfer_session::queue::tests::worker_captures_undo_before_returning_a_completed_transfer ... ok
+test app::transfer_session::queue::tests::retry_preserves_nested_destinations_and_does_not_repeat_successes ... ok
+test app::transfer_session::tests::restore_completion_cleans_metadata_and_prepares_undo ... ok
+test app::transfer_session::tests::transfer_session_owns_cut_reconciliation_and_native_clipboard_updates ... ok
+test app::transfer_session::tests::queued_restores_keep_foreground_activity_until_every_restore_completes ... ok
+test fs::tests::transfer_batch_pauses_before_a_conflict_and_escape_retains_pending_sources ... ok
+test app::transfer_session::tests::restore_work_retains_foreground_activity_after_session_is_dropped ... ok
+test app::tests::transfer::transfer_conflict_replaces_progress_with_keyboard_choices ... ok
+test app::transfer_session::tests::transfer_session_resolves_the_conflict_continuation_owned_by_the_queue ... ok
+test app::transfer_session::tests::restore_uses_transfer_conflicts_without_entering_transfer_history ... ok
+test app::transfer_session::tests::restore_queues_behind_an_active_transfer_in_submission_order ... ok
+test fs::tests::mapped_transfer_restores_each_source_to_its_exact_destination ... ok
+test app::transfer_session::tests::trash_completion_uses_transfer_feedback_history_and_retry ... ok
+test fs::tests::transfer_batch_supports_one_shot_and_batch_conflict_choices ... ok
+test fs::tests::transfer_preflight_preserves_symlinks_and_checks_destination_permissions ... ok
+test fs::tests::transfer_preflight_rejects_a_move_to_the_existing_parent ... ok
+test transfer::tests::active_drag_keeps_its_sources_across_hover_navigation ... ok
+test app::transfer_session::tests::restore_retry_stays_foreground_until_completion_and_keeps_undo ... ok
+test fs::tests::transfer_preflight_revalidates_sources_destination_and_descendants ... ok
+test transfer::tests::clipboard_completion_selects_every_pasted_result ... ok
+test transfer::tests::clipboard_generation_changes_when_copy_replaces_the_payload ... ok
+test transfer::tests::clipboard_preserves_single_entry_copy_and_selects_the_pasted_result ... ok
+test transfer::tests::imported_clipboard_reuses_only_an_identical_current_generation ... ok
+test journal::tests::legacy_transfer_entries_refuse_undo_conservatively ... ok
+test transfer::tests::memory_adapter_is_the_second_adapter_at_the_outgoing_seam ... ok
+test transfer::tests::filesystem_reconciliation_confirms_external_partial_and_complete_cut_moves ... ok
+test transfer::regressions::pasting_again_after_partial_cut_preserves_folder_structure ... ok
+test transfer::tests::cut_stays_pending_until_cancel ... ok
+test transfer::tests::cut_paste_into_the_source_directory_is_a_no_op ... ok
+test transfer::tests::memory_adapter_observes_hover_and_invalid_drop_completion ... ok
+test transfer::tests::clipboard_copies_selected_entries_in_display_order ... ok
+test transfer::tests::metadata_only_transfer_problem_is_not_an_error ... ok
+test transfer::tests::partial_cut_move_keeps_only_failed_sources_pending ... ok
+test transfer::tests::selected_drag_builds_one_validated_transfer_request ... ok
+test transfer::tests::transfer_completion_finishes_the_inbound_adapter_and_returns_refresh_work ... ok
+test transfer_formats::tests::contradictory_file_lists_are_rejected ... ok
+test transfer_formats::tests::contradictory_or_malformed_cut_markers_are_downgraded_to_copy ... ok
+test transfer_formats::tests::decoding_prefers_action_with_paths_and_falls_back_to_copy ... ok
+test transfer_formats::tests::one_generation_decodes_all_formats_and_keeps_consistent_move ... ok
+test transfer_formats::tests::one_offer_encodes_every_interoperable_clipboard_format ... ok
+test transfer_formats::tests::pcmanfm_wayland_copy_and_cut_markers_are_combined_safely ... ok
+test transfer_formats::tests::private_payload_round_trips_generation_and_rejects_contradictions ... ok
+test transfer_formats::tests::uri_list_round_trips_escaped_local_paths_and_comments ... ok
+test transfer_formats::tests::uri_list_preserves_symlink_names ... ok
+test app::tests::transfer::visual_cut_hides_the_complete_selection_and_escape_restores_it ... ok
+test app::transfer_session::queue::tests::cancellation_retry_and_progress_snapshot_are_explicit ... ok
+test app::transfer_session::queue::tests::queue_runs_one_transfer_at_a_time_and_persists_history ... ok
+test transfer_formats::tests::uri_list_rejects_relative_remote_empty_and_oversized_input ... ok
+test transfer_formats::tests::malformed_remote_oversized_and_excessive_payloads_are_rejected ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 392 filtered out; finished in 0.01s
+

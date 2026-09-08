@@ -234,7 +234,11 @@ fn live_refresh_preserves_scroll_selection_rename_and_pending_cut_by_path() {
     app.grid.set_scroll(173.0);
     app.browser_input.enter(InputMode::Rename);
     app.transfers.cut(std::slice::from_ref(&cut));
-    let request = app.navigation.refresh_selected(vec![first.path.clone()]);
+    let request = app
+        .navigation
+        .refresh_selected(vec![first.path.clone()])
+        .request
+        .unwrap();
 
     let _ = app.finish_navigation(
         request,

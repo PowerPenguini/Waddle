@@ -24,12 +24,12 @@ fn sidebar_returns_from_recent_and_trash_to_the_previous_folder() {
             }]);
             let message = if trash {
                 Message::TrashLoaded {
-                    request: app.navigation.trash(),
+                    request: app.navigation.trash().request.unwrap(),
                     result: Some(Ok(Vec::new())),
                 }
             } else {
                 Message::RecentLoaded {
-                    request: app.navigation.recent(),
+                    request: app.navigation.recent().request.unwrap(),
                     result: Some(Ok(Vec::new())),
                 }
             };
@@ -147,7 +147,7 @@ fn hunt_refresh_during_a_folder_scan_does_not_lose_new_entries() {
                 super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
             app.navigation.settle_for_test();
             app.sync_location_monitoring();
-            let request = app.navigation.refresh(None);
+            let request = app.navigation.refresh(None).request.unwrap();
             let scanned = fs::open_directory_revealing(
                 &folder,
                 app.view_preferences.for_directory(&folder),
@@ -205,7 +205,7 @@ fn sort_change_during_a_folder_scan_reaches_the_displayed_entries() {
         app.view_preferences =
             super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
         app.navigation.settle_for_test();
-        let request = app.navigation.refresh(None);
+        let request = app.navigation.refresh(None).request.unwrap();
         let scanned = fs::open_directory_revealing(
             temp.path(),
             app.view_preferences.for_directory(temp.path()),
@@ -257,6 +257,7 @@ fn deferred_refresh_cannot_undo_navigation_or_cancellation() {
                     remember: true,
                     select: None,
                 })
+                .request
                 .unwrap();
             let refresh = app.update(Message::Refresh);
             if cancel {
@@ -277,7 +278,6 @@ fn deferred_refresh_cannot_undo_navigation_or_cancellation() {
                 if cancel { &original } else { &next }
             );
             assert!(!app.navigation.loading());
-            assert!(app.pending_refresh.is_none());
         }
     });
 }
@@ -392,6 +392,7 @@ fn startup_reveal_waits_for_actual_window_geometry_before_final_scroll() {
             requested: PathBuf::from("/start"),
             selected: vec![selected.clone()],
         })
+        .request
         .unwrap();
 
     let _ = app.finish_navigation(
@@ -425,6 +426,7 @@ fn failed_folder_navigation_opens_the_error_bar() {
             remember: true,
             select: None,
         })
+        .request
         .unwrap();
     let error = "Could not read /lost+found: Permission denied (os error 13)";
 
@@ -747,7 +749,7 @@ fn displayed_locations_install_watches_from_the_newly_displayed_entries() {
     let (mut app, _) = App::new();
     let recent_file = recent_parent.join("recent.txt");
     std::fs::write(&recent_file, "x").unwrap();
-    let request = app.navigation.recent();
+    let request = app.navigation.recent().request.unwrap();
     let _ = app.update(Message::RecentLoaded {
         request,
         result: Some(Ok(vec![FileEntry {
@@ -763,7 +765,7 @@ fn displayed_locations_install_watches_from_the_newly_displayed_entries() {
     let info = trash_info.join("trashed.txt.trashinfo");
     std::fs::write(&trashed, "x").unwrap();
     std::fs::write(&info, "[Trash Info]").unwrap();
-    let request = app.navigation.trash();
+    let request = app.navigation.trash().request.unwrap();
     let _ = app.update(Message::TrashLoaded {
         request,
         result: Some(Ok(vec![super::trash::Entry {

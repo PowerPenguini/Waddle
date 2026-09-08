@@ -14,16 +14,18 @@ use crate::{
     },
 };
 
-pub(super) use super::transfer_queue::{HistoryEntry, Snapshot, WorkOutcome};
+mod queue;
+
 use super::{
     native_clipboard,
-    operations::{Completion, ForegroundActivity, Kind as OperationKind, Operations},
-    transfer_queue::{
-        Finished as QueueFinished, Operation as QueueOperation, PreparedUndo, Queue,
-        Report as QueueReport, Work,
-    },
+    operations::{Completion, Kind as OperationKind, Operations},
     trash,
 };
+use queue::{
+    Finished as QueueFinished, Operation as QueueOperation, PreparedUndo, Queue,
+    Report as QueueReport, Work,
+};
+pub(super) use queue::{HistoryEntry, Snapshot, WorkOutcome};
 
 #[derive(Clone, Debug)]
 struct ActiveConflict {
@@ -75,7 +77,6 @@ pub(super) struct TransferSession {
     queue: Queue,
     conflict: Option<ActiveConflict>,
     native: native_clipboard::Platform,
-    restore_activity: Option<ForegroundActivity>,
 }
 
 pub(super) enum CompletionPresentation {
@@ -189,7 +190,6 @@ impl TransferSession {
             queue: Queue::open_default(),
             conflict: None,
             native: native_clipboard::Platform::default(),
-            restore_activity: None,
         }
     }
 
@@ -200,7 +200,6 @@ impl TransferSession {
             queue: Queue::open(path),
             conflict: None,
             native: native_clipboard::Platform::default(),
-            restore_activity: None,
         }
     }
 
@@ -263,13 +262,9 @@ impl TransferSession {
         operations: &Operations,
     ) -> Task<RuntimeEvent> {
         let batch = trash::restore_batch(&entries);
-        let activity = operations.begin_foreground();
-        let task = self
-            .queue
-            .enqueue_restore(entries, batch)
-            .map_or_else(Task::none, |work| launch(work, operations));
-        self.restore_activity = Some(activity);
-        task
+        self.queue
+            .enqueue_restore(entries, batch, operations)
+            .map_or_else(Task::none, |work| launch(work, operations))
     }
 
     pub(super) fn trash(
@@ -316,8 +311,11 @@ impl TransferSession {
     ) -> BatchUpdate {
         match outcome {
             WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), undo) => {
-                let Some(QueueFinished { operation, next }) =
-                    self.queue.finish(id, QueueReport::Filesystem(&report))
+                let Some(QueueFinished {
+                    operation,
+                    next,
+                    activity: _activity,
+                }) = self.queue.finish(id, QueueReport::Filesystem(&report))
                 else {
                     return BatchUpdate::Ignored;
                 };
@@ -330,10 +328,7 @@ impl TransferSession {
                         current,
                         undo,
                     ),
-                    QueueOperation::Restore(entries) => {
-                        self.restore_activity = None;
-                        restore_completion(report, &entries, undo)
-                    }
+                    QueueOperation::Restore(entries) => restore_completion(report, &entries, undo),
                     QueueOperation::Trash(_) => return BatchUpdate::Ignored,
                 };
                 BatchUpdate::Completed {
@@ -368,8 +363,11 @@ impl TransferSession {
                 BatchUpdate::Conflict(prompt)
             }
             WorkOutcome::Trash(report) => {
-                let Some(QueueFinished { operation, next }) =
-                    self.queue.finish(id, QueueReport::Trash(&report))
+                let Some(QueueFinished {
+                    operation,
+                    next,
+                    activity: _activity,
+                }) = self.queue.finish(id, QueueReport::Trash(&report))
                 else {
                     return BatchUpdate::Ignored;
                 };
@@ -428,18 +426,14 @@ impl TransferSession {
         }
     }
 
-    pub(super) fn cancel_conflict_work(&mut self) -> Option<Work> {
+    fn cancel_conflict_work(&mut self) -> Option<Work> {
         let work = self.queue.cancel_conflict()?;
         self.conflict = None;
         Some(work)
     }
 
     pub(super) fn retry(&mut self, operations: &Operations) -> Result<Task<RuntimeEvent>, String> {
-        let restoring = self.queue.retry_is_restore();
-        let work = self.queue.retry()?;
-        if restoring {
-            self.restore_activity = Some(operations.begin_foreground());
-        }
+        let work = self.queue.retry(operations)?;
         Ok(work.map_or_else(Task::none, |work| launch(work, operations)))
     }
 
@@ -767,29 +761,6 @@ impl TransferSession {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn enqueue_work(&mut self, request: Request) -> Result<Option<Work>, String> {
-        let batch = fs::TransferBatch::try_new(
-            request.paths.clone(),
-            request.destination.clone(),
-            request.action,
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(self.queue.enqueue_transfer(request, batch))
-    }
-
-    #[cfg(test)]
-    pub(super) fn enqueue_restore_work(&mut self, entries: Vec<trash::Entry>) -> Option<Work> {
-        let batch = trash::restore_batch(&entries);
-        self.queue.enqueue_restore(entries, batch)
-    }
-
-    #[cfg(test)]
-    pub(super) fn enqueue_trash_work(&mut self, entries: Vec<FileEntry>) -> Option<Work> {
-        let batch = trash::Batch::new(entries.clone());
-        self.queue.enqueue_trash(entries, batch)
-    }
-
     fn write_clipboard(&self, adapter: Option<&dyn ClipboardAdapter>) -> Option<String> {
         let adapter = adapter?;
         self.state
@@ -1042,17 +1013,107 @@ mod tests {
         }
     }
 
-    fn complete_batch(
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+    }
+
+    async fn run_task(
         session: &mut TransferSession,
-        id: u64,
-        outcome: impl Into<WorkOutcome>,
+        task: Task<RuntimeEvent>,
+        current: &Path,
+        operations: &Operations,
     ) -> BatchUpdate {
-        session.complete_batch(
-            id,
-            outcome.into(),
-            Path::new("/work"),
-            &Operations::default(),
-        )
+        use iced::futures::StreamExt;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut stream =
+                iced_runtime::task::into_stream(task).expect("work should be scheduled");
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(RuntimeEvent::BatchFinished { id, outcome }) =
+                    action
+                {
+                    return session.complete_batch(id, *outcome, current, operations);
+                }
+            }
+            panic!("work should produce a completion");
+        })
+        .await
+        .expect("Transfer should settle")
+    }
+
+    #[test]
+    fn queued_restores_keep_foreground_activity_until_every_restore_completes() {
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let first = restore_entry(temp.path(), "first");
+            let second = restore_entry(temp.path(), "second");
+            let operations = Operations::default();
+            let mut session = TransferSession::open(temp.path().join("history.json"));
+            let task = session.restore(vec![first.clone()], &operations);
+            let queued = session.restore(vec![second.clone()], &operations);
+            assert!(iced_runtime::task::into_stream(queued).is_none());
+            assert!(operations.foreground_active());
+            let BatchUpdate::Completed { next, .. } =
+                run_task(&mut session, task, temp.path(), &operations).await
+            else {
+                panic!("first Restore should complete");
+            };
+            assert!(
+                operations.foreground_active(),
+                "the second Restore still owns foreground activity"
+            );
+            assert!(first.receipt.original.exists());
+            assert!(!second.receipt.original.exists());
+            assert!(matches!(
+                run_task(&mut session, next, temp.path(), &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert!(!operations.foreground_active());
+            assert!(second.receipt.original.exists());
+            assert!(session.overview().history.is_empty());
+        });
+    }
+
+    #[test]
+    fn restore_work_retains_foreground_activity_after_session_is_dropped() {
+        use iced::futures::StreamExt;
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let restore = restore_entry(temp.path(), "item");
+            let operations = Operations::default();
+            let mut session = TransferSession::open(temp.path().join("history.json"));
+            let task = session.restore(vec![restore.clone()], &operations);
+            drop(session);
+            assert!(
+                operations.foreground_active(),
+                "submitted work outlives its session"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                let mut completed = false;
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(RuntimeEvent::BatchFinished {
+                        outcome,
+                        ..
+                    }) = action
+                    {
+                        assert!(matches!(
+                            *outcome,
+                            WorkOutcome::Filesystem(TransferBatchOutcome::Complete(_), _)
+                        ));
+                        completed = true;
+                    }
+                }
+                assert!(completed);
+            })
+            .await
+            .expect("submitted Restore should finish");
+            assert!(!operations.foreground_active());
+            assert!(restore.receipt.original.exists());
+            assert!(!restore.receipt.trashed.exists());
+        });
     }
 
     #[test]
@@ -1148,156 +1209,173 @@ mod tests {
 
     #[test]
     fn transfer_session_resolves_the_conflict_continuation_owned_by_the_queue() {
-        let temp = tempfile::tempdir().unwrap();
-        let source_directory = temp.path().join("source");
-        let destination = temp.path().join("destination");
-        std::fs::create_dir_all(&source_directory).unwrap();
-        std::fs::create_dir_all(&destination).unwrap();
-        let source = source_directory.join("notes.txt");
-        std::fs::write(&source, "source").unwrap();
-        std::fs::write(destination.join("notes.txt"), "existing").unwrap();
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std::fs::create_dir_all(&source_directory).unwrap();
+            std::fs::create_dir_all(&destination).unwrap();
+            let source = source_directory.join("notes.txt");
+            std::fs::write(&source, "source").unwrap();
+            std::fs::write(destination.join("notes.txt"), "existing").unwrap();
 
-        let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        session.copy(&[entry(source)]).unwrap();
-        let request = session.paste(destination).unwrap();
-        let work = session.enqueue_work(request.clone()).unwrap().unwrap();
-        let id = work.id();
-        let outcome = work.run();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            session.copy(&[entry(source)]).unwrap();
+            let request = session.paste(destination).unwrap();
+            let task = session.start(request, &operations).unwrap();
 
-        assert!(matches!(
-            complete_batch(&mut session, id, outcome),
-            BatchUpdate::Conflict(_)
-        ));
-        assert!(session.overview().conflict_prompt.is_some());
-        assert!(
-            session
-                .overview()
-                .conflict_prompt
-                .unwrap()
-                .contains("r Replace")
-        );
+            assert!(matches!(
+                run_task(&mut session, task, temp.path(), &operations).await,
+                BatchUpdate::Conflict(_)
+            ));
+            assert!(session.overview().conflict_prompt.is_some());
+            assert!(
+                session
+                    .overview()
+                    .conflict_prompt
+                    .unwrap()
+                    .contains("r Replace")
+            );
 
-        let work = session.resolve_conflict_work('s', false).unwrap();
-        let id = work.id();
-        let outcome = work.run();
-        assert!(matches!(
-            complete_batch(&mut session, id, outcome),
-            BatchUpdate::Completed { .. }
-        ));
-        assert!(session.overview().conflict_prompt.is_none());
-        assert!(!session.overview().active);
+            let task = session.resolve_conflict('s', false, &operations);
+            assert!(matches!(
+                run_task(&mut session, task, temp.path(), &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert!(session.overview().conflict_prompt.is_none());
+            assert!(!session.overview().active);
+        });
     }
 
     #[test]
     fn trash_completion_uses_transfer_feedback_history_and_retry() {
-        let temp = tempfile::tempdir().unwrap();
-        let first = entry(PathBuf::from("/source/one"));
-        let second = entry(PathBuf::from("/source/two"));
-        let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        let work = session
-            .enqueue_trash_work(vec![first.clone(), second.clone()])
-            .unwrap();
-        let id = work.id();
-        let report = trash::Report {
-            receipts: vec![journal::TrashReceipt {
-                original: first.path.clone(),
-                trashed: PathBuf::from("/trash/one"),
-                info: PathBuf::from("/trash/info/one.trashinfo"),
-            }],
-            failures: vec![(second.clone(), "Trash unavailable".to_owned())],
-            retained: Vec::new(),
-            cancelled: false,
-            undo: Ok(None),
-        };
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let first = entry(temp.path().join("missing-one"));
+            let second = entry(temp.path().join("missing-two"));
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            let operations = Operations::default();
+            let task = session.trash(vec![first.clone(), second.clone()], &operations);
+            let report = trash::Report {
+                receipts: vec![journal::TrashReceipt {
+                    original: first.path.clone(),
+                    trashed: PathBuf::from("/trash/one"),
+                    info: PathBuf::from("/trash/info/one.trashinfo"),
+                }],
+                failures: vec![(second.clone(), "Trash unavailable".to_owned())],
+                retained: Vec::new(),
+                cancelled: false,
+                undo: Ok(None),
+            };
 
-        let BatchUpdate::Completed { outcome, .. } =
-            complete_batch(&mut session, id, WorkOutcome::Trash(report))
-        else {
-            panic!("Trash should complete through the Transfer session");
-        };
-        let completed = *outcome;
+            // Inject the mixed desktop result at the same completion input used by production.
+            // The real batch only examines missing fixture paths, so it cannot touch user Trash.
+            let task = task.map(move |event| match event {
+                RuntimeEvent::BatchFinished { id, .. } => RuntimeEvent::BatchFinished {
+                    id,
+                    outcome: Box::new(WorkOutcome::Trash(report.clone())),
+                },
+                RuntimeEvent::Noop => RuntimeEvent::Noop,
+            });
+            let BatchUpdate::Completed { outcome, .. } =
+                run_task(&mut session, task, temp.path(), &operations).await
+            else {
+                panic!("Trash should complete through the Transfer session");
+            };
+            let completed = *outcome;
 
-        assert!(matches!(
-            completed.presentation,
-            CompletionPresentation::Status(ref status)
-                if status == "Moved 1 to Trash  •  1 failed"
-        ));
-        assert_eq!(completed.trash_failures.len(), 1);
-        assert_eq!(completed.trash_failures[0].0.path, second.path);
-        assert!(matches!(completed.refresh, Refresh::Entries(_)));
-        assert!(!session.overview().active);
-        assert!(session.overview().retry);
-        assert_eq!(session.overview().history.len(), 1);
+            assert!(matches!(
+                completed.presentation,
+                CompletionPresentation::Status(ref status)
+                    if status == "Moved 1 to Trash  •  1 failed"
+            ));
+            assert_eq!(completed.trash_failures.len(), 1);
+            assert_eq!(completed.trash_failures[0].0.path, second.path);
+            assert!(matches!(completed.refresh, Refresh::Entries(_)));
+            assert!(!session.overview().active);
+            assert!(session.overview().retry);
+            assert_eq!(session.overview().history.len(), 1);
+        });
     }
 
     #[test]
     fn restore_uses_transfer_conflicts_without_entering_transfer_history() {
-        let temp = tempfile::tempdir().unwrap();
-        let restore = restore_entry(temp.path(), "notes.txt");
-        std::fs::write(&restore.receipt.original, "existing").unwrap();
-        let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        let work = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
-        let id = work.id();
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let temp = tempfile::tempdir().unwrap();
+            let restore = restore_entry(temp.path(), "notes.txt");
+            std::fs::write(&restore.receipt.original, "existing").unwrap();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            let task = session.restore(vec![restore.clone()], &operations);
 
-        assert!(matches!(
-            complete_batch(&mut session, id, work.run()),
-            BatchUpdate::Conflict(_)
-        ));
-        assert!(
-            session
-                .overview()
-                .conflict_prompt
-                .unwrap()
-                .starts_with("Restore notes.txt:")
-        );
-        assert!(session.overview().active);
-        assert!(session.overview().history.is_empty());
+            assert!(matches!(
+                run_task(&mut session, task, temp.path(), &operations).await,
+                BatchUpdate::Conflict(_)
+            ));
+            assert!(
+                session
+                    .overview()
+                    .conflict_prompt
+                    .unwrap()
+                    .starts_with("Restore notes.txt:")
+            );
+            assert!(session.overview().active);
+            assert!(operations.foreground_active());
+            assert!(session.overview().history.is_empty());
 
-        let cancelled = session.cancel_conflict_work().unwrap();
-        let BatchUpdate::Completed { outcome, .. } =
-            complete_batch(&mut session, id, cancelled.run())
-        else {
-            panic!("restore conflict should complete through Transfer session");
-        };
-        let completed = *outcome;
-        assert!(matches!(
-            completed.presentation,
-            CompletionPresentation::Status(ref status)
-                if status == "Restored 0  •  0 failed  •  1 kept"
-        ));
-        assert!(matches!(completed.refresh, Refresh::Trash));
-        assert!(restore.receipt.trashed.exists());
-        assert!(restore.receipt.info.exists());
-        assert!(session.overview().history.is_empty());
+            let CancelUpdate::Conflict(cancelled) = session.cancel(&operations) else {
+                panic!("cancel should resume the paused Restore");
+            };
+            let BatchUpdate::Completed { outcome, .. } =
+                run_task(&mut session, cancelled, temp.path(), &operations).await
+            else {
+                panic!("restore conflict should complete through Transfer session");
+            };
+            let completed = *outcome;
+            assert!(matches!(
+                completed.presentation,
+                CompletionPresentation::Status(ref status)
+                    if status == "Restored 0  •  0 failed  •  1 kept"
+            ));
+            assert!(matches!(completed.refresh, Refresh::Trash));
+            assert!(restore.receipt.trashed.exists());
+            assert!(restore.receipt.info.exists());
+            assert!(session.overview().history.is_empty());
+            assert!(!operations.foreground_active());
+        });
     }
 
     #[test]
     fn restore_completion_cleans_metadata_and_prepares_undo() {
-        let temp = tempfile::tempdir().unwrap();
-        let restore = restore_entry(temp.path(), "notes.txt");
-        let changed = restore.receipt.original.parent().unwrap().to_path_buf();
-        let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        let work = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
-        let id = work.id();
-        let BatchUpdate::Completed { outcome, .. } = complete_batch(&mut session, id, work.run())
-        else {
-            panic!("restore should complete");
-        };
-        let completed = *outcome;
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let temp = tempfile::tempdir().unwrap();
+            let restore = restore_entry(temp.path(), "notes.txt");
+            let changed = restore.receipt.original.parent().unwrap().to_path_buf();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            let task = session.restore(vec![restore.clone()], &operations);
+            let BatchUpdate::Completed { outcome, .. } =
+                run_task(&mut session, task, temp.path(), &operations).await
+            else {
+                panic!("restore should complete");
+            };
+            let completed = *outcome;
 
-        assert!(matches!(
-            completed.presentation,
-            CompletionPresentation::Status(ref status)
-                if status == "Restored 1  •  0 failed  •  0 kept"
-        ));
-        assert_eq!(completed.changed_folders, [changed]);
-        assert!(matches!(completed.undo, UndoOutcome::Record { .. }));
-        assert!(matches!(completed.refresh, Refresh::Trash));
-        assert!(!restore.receipt.trashed.exists());
-        assert!(!restore.receipt.info.exists());
-        assert!(restore.receipt.original.exists());
-        assert!(session.overview().history.is_empty());
-        assert!(!session.overview().retry);
+            assert!(matches!(
+                completed.presentation,
+                CompletionPresentation::Status(ref status)
+                    if status == "Restored 1  •  0 failed  •  0 kept"
+            ));
+            assert_eq!(completed.changed_folders, [changed]);
+            assert!(matches!(completed.undo, UndoOutcome::Record { .. }));
+            assert!(matches!(completed.refresh, Refresh::Trash));
+            assert!(!restore.receipt.trashed.exists());
+            assert!(!restore.receipt.info.exists());
+            assert!(restore.receipt.original.exists());
+            assert!(session.overview().history.is_empty());
+            assert!(!session.overview().retry);
+        });
     }
 
     #[test]
@@ -1313,14 +1391,14 @@ mod tests {
             let parent = restore.receipt.original.parent().unwrap();
             std::fs::remove_dir(parent).unwrap();
             let mut session = TransferSession::open(temp.path().join("history.json"));
-            let first = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
-            let id = first.id();
+            let operations = Operations::default();
+            let first = session.restore(vec![restore.clone()], &operations);
             assert!(matches!(
-                complete_batch(&mut session, id, first.run()),
+                run_task(&mut session, first, temp.path(), &operations).await,
                 BatchUpdate::Completed { .. }
             ));
             assert!(session.overview().retry);
-            let operations = Operations::default();
+            assert!(!operations.foreground_active());
             assert!(
                 session.retry(&operations).is_err(),
                 "an unrepaired destination must leave Retry available"
@@ -1363,26 +1441,39 @@ mod tests {
 
     #[test]
     fn restore_queues_behind_an_active_transfer_in_submission_order() {
-        let temp = tempfile::tempdir().unwrap();
-        let source_directory = temp.path().join("source");
-        let destination = temp.path().join("destination");
-        std::fs::create_dir_all(&source_directory).unwrap();
-        std::fs::create_dir_all(&destination).unwrap();
-        let source = source_directory.join("copied.txt");
-        std::fs::write(&source, "source").unwrap();
-        let restore = restore_entry(temp.path(), "restored.txt");
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std::fs::create_dir_all(&source_directory).unwrap();
+            std::fs::create_dir_all(&destination).unwrap();
+            let source = source_directory.join("copied.txt");
+            std::fs::write(&source, "source").unwrap();
+            let restore = restore_entry(temp.path(), "restored.txt");
 
-        let mut session = TransferSession::open(temp.path().join("transfers.json"));
-        session.copy(&[entry(source)]).unwrap();
-        let request = session.paste(destination).unwrap();
-        let transfer = session.enqueue_work(request).unwrap().unwrap();
-        assert!(session.enqueue_restore_work(vec![restore]).is_none());
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            session.copy(&[entry(source)]).unwrap();
+            let request = session.paste(destination).unwrap();
+            let transfer = session.start(request, &operations).unwrap();
+            let queued = session.restore(vec![restore.clone()], &operations);
+            assert!(iced_runtime::task::into_stream(queued).is_none());
 
-        let id = transfer.id();
-        let BatchUpdate::Completed { .. } = complete_batch(&mut session, id, transfer.run()) else {
-            panic!("Copy should complete");
-        };
-        assert!(session.queue.restore_active());
-        assert_eq!(session.overview().history.len(), 1);
+            let BatchUpdate::Completed { next, .. } =
+                run_task(&mut session, transfer, temp.path(), &operations).await
+            else {
+                panic!("Copy should complete");
+            };
+            assert_eq!(session.overview().active_action, Some("Restoring"));
+            assert_eq!(session.overview().history.len(), 1);
+            assert!(operations.foreground_active());
+            assert!(matches!(
+                run_task(&mut session, next, temp.path(), &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert!(restore.receipt.original.exists());
+            assert!(!operations.foreground_active());
+            assert_eq!(session.overview().history.len(), 1);
+        });
     }
 }
