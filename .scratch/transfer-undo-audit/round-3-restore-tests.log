@@ -1,0 +1,35 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.92s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 27 tests
+test app::navigation::tests::refresh_restores_every_requested_selection_in_display_order ... ok
+test app::navigation::tests::refresh_restores_requested_selection_without_changing_history ... ok
+test app::search::tests::recursive_cancel_restores_entries_and_origin ... ok
+test app::search::tests::recursive_submit_returns_match_then_restores_directory ... ok
+test app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry ... ok
+test app::transfer_session::queue::regressions::undo_merged_restore_keeps_preexisting_destination_files ... ok
+test app::transfer_session::queue::tests::hunt_failed_restore_retries_itself_instead_of_an_older_copy ... ok
+test app::transfer_session::queue::regressions::nested_restore_retries_keep_metadata_until_the_last_child ... ok
+test app::trash::tests::completed_restore_removes_metadata_and_keeps_an_undo_receipt ... ok
+test app::transfer_session::tests::restore_completion_cleans_metadata_and_prepares_undo ... ok
+test app::transfer_session::tests::queued_restores_keep_foreground_activity_until_every_restore_completes ... ok
+test app::transfer_session::tests::restore_work_retains_foreground_activity_after_session_is_dropped ... ok
+test fs::tests::hunt_failed_copy_replace_restores_the_destination ... ok
+test fs::tests::mapped_transfer_restores_each_source_to_its_exact_destination ... ok
+test journal::tests::restore_action_persists_the_restored_identity_for_later_undo ... ok
+test app::transfer_session::tests::restore_uses_transfer_conflicts_without_entering_transfer_history ... ok
+test app::transfer_session::tests::restore_retry_stays_foreground_until_completion_and_keeps_undo ... ok
+test app::transfer_session::tests::restore_queues_behind_an_active_transfer_in_submission_order ... ok
+test journal::tests::trash_undo_restores_only_the_verified_receipt ... ok
+test app::tests::input::hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it ... ok
+test app::tests::input::composite_focus_order_wraps_and_context_menu_traps_then_restores_it ... ok
+test app::tests::transient::replacing_output_with_a_prompt_restores_status_only_after_dismissal ... ok
+test app::tests::transfer::visual_cut_hides_the_complete_selection_and_escape_restores_it ... ok
+test app::tests::file_operation::closing_properties_restores_the_previous_browser_status ... ok
+test app::tests::transient::dismissing_output_refocuses_the_restored_iced_input ... ok
+test app::tests::transient::output_suspends_and_restores_history_and_editing_modes ... ok
+test fs::tests::copy_conflicts_and_cross_filesystem_moves_and_restores_report_live_bytes ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.03s
+

@@ -45,7 +45,12 @@ impl Work {
         let progress = |update| self.progress.update(update);
         match self.batch {
             Batch::Filesystem(batch) => {
-                let outcome = (*batch).run_with(cancelled, progress);
+                let mut outcome = (*batch).run_with(cancelled, progress);
+                if let Operation::Restore(entries) = &self.operation
+                    && let crate::fs::TransferBatchOutcome::Complete(report) = &mut outcome
+                {
+                    trash::cleanup_restore_sources(report, entries);
+                }
                 let undo = match &outcome {
                     crate::fs::TransferBatchOutcome::Complete(report) => {
                         self.operation.prepare_undo(report)
@@ -97,20 +102,7 @@ impl Operation {
                 &report.receipts,
             ),
             Self::Restore(entries) => {
-                let receipts = report
-                    .receipts
-                    .iter()
-                    .filter_map(|receipt| {
-                        let entry = entries
-                            .iter()
-                            .find(|entry| entry.receipt.trashed == receipt.source)?;
-                        Some(journal::TrashReceipt {
-                            original: receipt.destination.clone(),
-                            trashed: receipt.source.clone(),
-                            info: entry.receipt.info.clone(),
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                let receipts = trash::restored_receipts(report, entries);
                 journal::Action::restore(
                     &receipts,
                     report
@@ -1216,5 +1208,208 @@ mod regressions {
             original.join("preexisting.txt").exists(),
             "Undo removed preexisting files"
         );
+    }
+    #[test]
+    fn audit_retry_partial_restore_finishes_the_trash_entry() {
+        use crate::fs::{FileEntry, TransferBatchOutcome};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("Trash/files/tree");
+        let info = temp.path().join("Trash/info/tree.trashinfo");
+        let original = temp.path().join("restored/tree");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(info.parent().unwrap()).unwrap();
+        fs::create_dir_all(&original).unwrap();
+        fs::write(&info, "metadata").unwrap();
+        fs::write(source.join("a"), "incoming a").unwrap();
+        fs::write(source.join("b"), "incoming b").unwrap();
+        fs::write(original.join("a"), "existing a").unwrap();
+        let entries = vec![trash::Entry {
+            file: FileEntry {
+                path: source.clone(),
+                name: "tree".into(),
+                directory: true,
+                metadata: Default::default(),
+            },
+            receipt: journal::TrashReceipt {
+                original: original.clone(),
+                trashed: source.clone(),
+                info: info.clone(),
+            },
+        }];
+        let operations = Operations::default();
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let mut work = queue
+            .enqueue_restore(entries.clone(), trash::restore_batch(&entries), &operations)
+            .unwrap();
+        for choice in [ConflictChoice::Replace, ConflictChoice::Skip] {
+            let id = work.id();
+            let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) =
+                work.run()
+            else {
+                panic!("expected conflict")
+            };
+            queue.pause_for_conflict(id, *batch).unwrap();
+            work = queue.resolve_conflict(choice, false).unwrap();
+        }
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
+            panic!("expected partial completion")
+        };
+        assert!(report.failures.is_empty());
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        trash::finish_restore(report, &entries);
+        assert_eq!(fs::read(original.join("b")).unwrap(), b"incoming b");
+        let work = queue.retry(&operations).unwrap().unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) = work.run()
+        else {
+            panic!("expected retry conflict")
+        };
+        queue.pause_for_conflict(id, *batch).unwrap();
+        let work = queue
+            .resolve_conflict(ConflictChoice::KeepBoth, false)
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
+            panic!("expected completed retry")
+        };
+        assert!(report.failures.is_empty());
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        let restored = trash::finish_restore(report, &entries);
+        assert_eq!(fs::read(original.join("a copy")).unwrap(), b"incoming a");
+        assert_eq!(fs::read(original.join("a")).unwrap(), b"existing a");
+        assert!(!queue.has_retry());
+        assert!(
+            !source.exists() && !info.exists(),
+            "retry left an empty Trash entry and metadata; restored count = {}",
+            restored.restored.len()
+        );
+    }
+    fn run_restore_choices(
+        queue: &mut Queue,
+        mut work: Work,
+        choices: &[ConflictChoice],
+    ) -> (TransferReport, PreparedUndo) {
+        use crate::fs::TransferBatchOutcome;
+        for choice in choices {
+            let id = work.id();
+            let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) =
+                work.run()
+            else {
+                panic!("expected conflict")
+            };
+            queue.pause_for_conflict(id, *batch).unwrap();
+            work = queue.resolve_conflict(*choice, false).unwrap();
+        }
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), undo) = work.run()
+        else {
+            panic!("expected completion")
+        };
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        (report, undo)
+    }
+
+    #[test]
+    fn nested_restore_retries_keep_metadata_until_the_last_child() {
+        use crate::fs::FileEntry;
+        for split_retry in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("Trash/files/tree");
+            let info = temp.path().join("Trash/info/tree.trashinfo");
+            let original = temp.path().join("restored/tree");
+            fs::create_dir_all(source.join("nested")).unwrap();
+            fs::create_dir_all(original.join("nested")).unwrap();
+            fs::create_dir_all(info.parent().unwrap()).unwrap();
+            fs::write(&info, "metadata").unwrap();
+            for name in ["a", "c"] {
+                fs::write(source.join("nested").join(name), format!("incoming {name}")).unwrap();
+                fs::write(
+                    original.join("nested").join(name),
+                    format!("existing {name}"),
+                )
+                .unwrap();
+            }
+            fs::write(source.join("b"), "incoming b").unwrap();
+            let entries = vec![trash::Entry {
+                file: FileEntry {
+                    path: source.clone(),
+                    name: "tree".into(),
+                    directory: true,
+                    metadata: Default::default(),
+                },
+                receipt: journal::TrashReceipt {
+                    original: original.clone(),
+                    trashed: source.clone(),
+                    info: info.clone(),
+                },
+            }];
+            let operations = Operations::default();
+            let mut queue = Queue::open(temp.path().join("history.json"));
+            let work = queue
+                .enqueue_restore(entries.clone(), trash::restore_batch(&entries), &operations)
+                .unwrap();
+            let (report, _) = run_restore_choices(
+                &mut queue,
+                work,
+                &[
+                    ConflictChoice::Replace,
+                    ConflictChoice::Replace,
+                    ConflictChoice::Skip,
+                    ConflictChoice::Skip,
+                ],
+            );
+            trash::finish_restore(report, &entries);
+            assert!(
+                info.exists()
+                    && source.join("nested/a").exists()
+                    && source.join("nested/c").exists()
+            );
+            let work = queue.retry(&operations).unwrap().unwrap();
+            let (report, undo) = run_restore_choices(
+                &mut queue,
+                work,
+                &[
+                    ConflictChoice::KeepBoth,
+                    if split_retry {
+                        ConflictChoice::Skip
+                    } else {
+                        ConflictChoice::KeepBoth
+                    },
+                ],
+            );
+            assert!(report.failures.is_empty());
+            let count = if split_retry { 1 } else { 2 };
+            assert!(
+                matches!(undo.unwrap(), Some(journal::Action::Restore { items, replaced_existing: false }) if items.len() == count)
+            );
+            let restored = trash::finish_restore(report, &entries);
+            assert_eq!(restored.restored.len(), count);
+            assert!(restored.warnings.is_empty(), "{:?}", restored.warnings);
+            assert_eq!(info.exists(), split_retry);
+            assert_eq!(queue.has_retry(), split_retry);
+            if split_retry {
+                assert!(source.join("nested/c").exists());
+                let work = queue.retry(&operations).unwrap().unwrap();
+                let (report, undo) =
+                    run_restore_choices(&mut queue, work, &[ConflictChoice::KeepBoth]);
+                assert!(undo.unwrap().is_some());
+                let restored = trash::finish_restore(report, &entries);
+                assert_eq!(restored.restored.len(), 1);
+                assert!(restored.warnings.is_empty());
+            }
+            assert!(!source.exists() && !info.exists() && !queue.has_retry());
+            assert_eq!(fs::read(original.join("b")).unwrap(), b"incoming b");
+            for name in ["a", "c"] {
+                assert_eq!(
+                    fs::read(original.join("nested").join(name)).unwrap(),
+                    format!("existing {name}").as_bytes()
+                );
+                assert_eq!(
+                    fs::read(original.join("nested").join(format!("{name} copy"))).unwrap(),
+                    format!("incoming {name}").as_bytes()
+                );
+            }
+        }
     }
 }

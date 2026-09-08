@@ -355,34 +355,106 @@ pub(super) fn restore_batch(entries: &[Entry]) -> crate::fs::TransferBatch {
     )
 }
 
+fn restore_entry<'a>(entries: &'a [Entry], source: &Path) -> Option<&'a Entry> {
+    entries
+        .iter()
+        .filter(|entry| source.starts_with(&entry.receipt.trashed))
+        .max_by_key(|entry| entry.receipt.trashed.components().count())
+}
+
+pub(super) fn restored_receipts(
+    report: &crate::fs::TransferReport,
+    entries: &[Entry],
+) -> Vec<journal::TrashReceipt> {
+    report
+        .receipts
+        .iter()
+        .filter_map(|receipt| {
+            let entry = restore_entry(entries, &receipt.source)?;
+            Some(journal::TrashReceipt {
+                original: receipt.destination.clone(),
+                trashed: receipt.source.clone(),
+                info: entry.receipt.info.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Run in the Transfer worker, after child moves have completed. Skip removes
+/// ancestor cleanup from the first batch, so child retries must finish it here.
+pub(super) fn cleanup_restore_sources(report: &mut crate::fs::TransferReport, entries: &[Entry]) {
+    for receipt in &report.receipts {
+        let Some(entry) = restore_entry(entries, &receipt.source) else {
+            continue;
+        };
+        let root = &entry.receipt.trashed;
+        if receipt.source == *root {
+            continue;
+        }
+        let mut parent = receipt.source.parent();
+        while let Some(path) = parent.filter(|path| path.starts_with(root)) {
+            // Never traverse a newly substituted symbolic link while cleaning
+            // the directory chain, or remove anything outside this Trash entry.
+            if path
+                .ancestors()
+                .take_while(|ancestor| ancestor.starts_with(root))
+                .any(|ancestor| {
+                    fs::symlink_metadata(ancestor).is_ok_and(|m| m.file_type().is_symlink())
+                })
+            {
+                break;
+            }
+            match fs::remove_dir(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+                Err(error) => {
+                    report.warnings.push(crate::fs::TransferWarning {
+                        source: root.clone(), destination: receipt.destination.clone(),
+                        detail: format!("Restored files, but could not remove empty Trash directory {}: {error}", path.display()),
+                    });
+                    break;
+                }
+            }
+            if path == root {
+                break;
+            }
+            parent = path.parent();
+        }
+    }
+}
+
 pub(super) fn finish_restore(
     report: crate::fs::TransferReport,
     entries: &[Entry],
 ) -> RestoreReport {
-    let mut restored = Vec::new();
+    let restored = restored_receipts(&report, entries);
     let mut warnings = report
         .warnings
         .into_iter()
         .map(|warning| warning.detail)
         .collect::<Vec<_>>();
-    for receipt in report.receipts {
-        let Some(entry) = entries
-            .iter()
-            .find(|entry| entry.receipt.trashed == receipt.source)
-        else {
+    let mut cleaned = std::collections::BTreeSet::new();
+    for receipt in &restored {
+        let Some(entry) = restore_entry(entries, &receipt.trashed) else {
             continue;
         };
-        if let Err(error) = fs::remove_file(&entry.receipt.info) {
+        // A restored child does not imply that the entire Trash item is gone.
+        // Keep shared metadata until all siblings and empty parents are removed.
+        if !fs::symlink_metadata(&entry.receipt.trashed)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            || !cleaned.insert(entry.receipt.info.clone())
+        {
+            continue;
+        }
+        if let Err(error) = fs::remove_file(&entry.receipt.info)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
             warnings.push(format!(
                 "Restored {}, but could not remove Trash metadata: {error}",
-                receipt.destination.display()
+                receipt.original.display()
             ));
         }
-        restored.push(journal::TrashReceipt {
-            original: receipt.destination,
-            trashed: receipt.source,
-            info: entry.receipt.info.clone(),
-        });
     }
     RestoreReport {
         restored,
@@ -640,5 +712,64 @@ mod tests {
         assert_eq!(restored.restored[0].original, original);
         assert!(!info.exists());
         assert!(!trashed.exists());
+    }
+    #[test]
+    fn restore_child_cleanup_preserves_new_files_and_substituted_symlinks() {
+        for substitute in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("Trash/files/tree");
+            let info = temp.path().join("Trash/info/tree.trashinfo");
+            let original = temp.path().join("restored/tree");
+            fs::create_dir_all(root.join("nested/deep")).unwrap();
+            fs::create_dir_all(info.parent().unwrap()).unwrap();
+            fs::create_dir_all(&original).unwrap();
+            fs::write(&info, "metadata").unwrap();
+            let source = root.join("nested/deep/item");
+            let destination = original.join("item");
+            fs::write(&source, b"restored data").unwrap();
+            let entry = Entry {
+                file: FileEntry {
+                    path: root.clone(),
+                    name: "tree".into(),
+                    directory: true,
+                    metadata: Default::default(),
+                },
+                receipt: journal::TrashReceipt {
+                    original,
+                    trashed: root.clone(),
+                    info: info.clone(),
+                },
+            };
+            let crate::fs::TransferBatchOutcome::Complete(mut report) =
+                crate::fs::TransferBatch::try_new_mapped(
+                    vec![(source, destination.clone())],
+                    crate::transfer::Action::Move,
+                )
+                .unwrap()
+                .run()
+            else {
+                panic!("no conflict")
+            };
+            let external = temp.path().join("external");
+            if substitute {
+                fs::rename(root.join("nested"), &external).unwrap();
+                std::os::unix::fs::symlink(&external, root.join("nested")).unwrap();
+            } else {
+                fs::write(root.join("nested/deep/new"), b"new data").unwrap();
+            }
+            cleanup_restore_sources(&mut report, std::slice::from_ref(&entry));
+            let result = finish_restore(report, &[entry]);
+            assert_eq!(result.restored.len(), 1);
+            assert_eq!(fs::read(destination).unwrap(), b"restored data");
+            assert!(root.exists() && info.exists());
+            if substitute {
+                assert!(
+                    external.join("deep").is_dir(),
+                    "cleanup followed a replacement symlink"
+                );
+            } else {
+                assert_eq!(fs::read(root.join("nested/deep/new")).unwrap(), b"new data");
+            }
+        }
     }
 }

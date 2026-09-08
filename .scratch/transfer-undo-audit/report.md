@@ -24,6 +24,18 @@ The full release gate passed (`round-2-release-gate.log`): 496 tests passed, 8 i
 
 This round covers recovery after a reported deletion failure and journal save. Abrupt process/power loss during the mutation remains an audit area; no crash-durability claim is made. Still pending from the original audit: partial Restore Retry bookkeeping. The overall bug-hunting goal remains active.
 
+## Round 3 — completing partial Restore retries
+
+Restore completion and Undo preparation now associate successful child receipts with their originating Trash entry using component-aware ancestry. Retry keeps its exact source/destination mappings, including Keep Both names. Prepared Undo covers the actual restored child paths rather than an entire preexisting destination folder.
+
+After child moves, the Transfer worker removes only empty ancestor directories inside the originating Trash entry. It stops on nonempty directories and refuses to traverse substituted symbolic links. Completion removes shared `.trashinfo` only once and only after the entire physical entry is gone. Other retained children, newly added files, and their metadata remain intact. Filesystem cleanup stays in the worker; the existing metadata completion step remains in its established location.
+
+The original Queue/Work/Retry reproduction failed before the change (`round-3-red.log`) and passes afterward (`round-3-green.log`). Two additional tests cover nested directories, multiple child receipts sharing metadata, repeated Skip/Retry, exact Keep Both results, prepared Undo, new source files, and a substituted ancestor symlink. All fixtures use temporary physical Trash directories; desktop Trash was not touched.
+
+The complete release gate passed (`round-3-release-gate.log`): 499 tests passed, 8 ignored; 2 scrollbar tests; strict Clippy; release build; FileManager1 activation; 5 real X11 tests; metadata and packaged archive smoke tests. The debug executable was rebuilt separately. Focused Restore tests also passed (`round-3-restore-tests.log`).
+
+All three original audit findings now have fixes. The broader goal remains active: further rounds still need to investigate history retries after partial execution, crash/interruption handling, clipboard timing, and remaining Transfer edge cases rather than infer absence of bugs from these tests.
+
 The original audit and reproduction patch below describe revision 3dab5d9, before Round 1.
 
 ## P2 — Undo cannot resume partial deletion inside a copied folder
