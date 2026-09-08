@@ -215,6 +215,10 @@ enum Retry {
         entries: Vec<(PathBuf, PathBuf)>,
     },
     Trash(Vec<crate::fs::FileEntry>),
+    Restore {
+        entries: Vec<trash::Entry>,
+        transfers: Vec<(PathBuf, PathBuf)>,
+    },
 }
 
 pub(super) enum Report<'a> {
@@ -364,7 +368,12 @@ impl Queue {
                     (!retry_entries.is_empty()).then_some(Retry::Trash(retry_entries));
                 self.history.push(trash_history_entry(report, &snapshot));
             }
-            (Operation::Restore(_), Report::Filesystem(_)) => {}
+            (Operation::Restore(entries), Report::Filesystem(report)) => {
+                self.last_retry = (!report.retry.is_empty()).then(|| Retry::Restore {
+                    entries: entries.clone(),
+                    transfers: report.retry.clone(),
+                });
+            }
             _ => unreachable!("operation and report were checked before finishing"),
         }
         self.prune();
@@ -395,6 +404,14 @@ impl Queue {
             Retry::Trash(entries) => {
                 let batch = trash::Batch::new(entries.clone());
                 (Operation::Trash(entries), Batch::Trash(batch))
+            }
+            Retry::Restore { entries, transfers } => {
+                let batch = TransferBatch::try_new_mapped(transfers, crate::transfer::Action::Move)
+                    .map_err(|error| error.to_string())?;
+                (
+                    Operation::Restore(entries),
+                    Batch::Filesystem(Box::new(batch)),
+                )
             }
         };
         self.last_retry = None;
@@ -436,6 +453,10 @@ impl Queue {
 
     pub(super) fn has_retry(&self) -> bool {
         self.last_retry.is_some()
+    }
+
+    pub(super) fn retry_is_restore(&self) -> bool {
+        matches!(self.last_retry, Some(Retry::Restore { .. }))
     }
 
     pub(super) fn toggle_expanded(&mut self) {
@@ -619,6 +640,84 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn hunt_failed_restore_retries_itself_instead_of_an_older_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_source = temp.path().join("old-source");
+        let old_destination = temp.path().join("old-destination");
+        fs::create_dir(&old_destination).unwrap();
+        let mut copy = request(old_destination.to_str().unwrap());
+        copy.paths = vec![old_source.clone()];
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_transfer(
+                copy.clone(),
+                TransferBatch::new(copy.paths.clone(), copy.destination.clone(), copy.action),
+            )
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
+            panic!("missing copy source must fail");
+        };
+        assert_eq!(report.failures.len(), 1);
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        assert!(queue.has_retry());
+
+        let source = temp.path().join("Trash/files/item");
+        let info = temp.path().join("Trash/info/item.trashinfo");
+        let original = temp.path().join("restored/item");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(info.parent().unwrap()).unwrap();
+        fs::write(&source, "recover me").unwrap();
+        fs::write(&info, "metadata").unwrap();
+        let entry = trash::Entry {
+            file: FileEntry {
+                path: source.clone(),
+                name: "item".into(),
+                directory: false,
+                metadata: Default::default(),
+            },
+            receipt: journal::TrashReceipt {
+                original: original.clone(),
+                trashed: source.clone(),
+                info: info.clone(),
+            },
+        };
+        let entries = vec![entry];
+        let work = queue
+            .enqueue_restore(entries.clone(), trash::restore_batch(&entries))
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
+            panic!("missing restore parent must fail");
+        };
+        assert_eq!(report.failures.len(), 1);
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        fs::create_dir(original.parent().unwrap()).unwrap();
+        fs::write(&old_source, "older unrelated copy").unwrap();
+        let retry = queue
+            .retry()
+            .unwrap()
+            .expect("failed Restore must be retryable");
+        assert!(
+            queue.restore_active(),
+            "Retry selected the older Copy instead of the failed Restore"
+        );
+        let id = retry.id();
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = retry.run() else {
+            panic!("repaired Restore must complete");
+        };
+        assert!(report.failures.is_empty());
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        let restored = trash::finish_restore(report, &entries);
+        assert_eq!(restored.restored.len(), 1);
+        assert_eq!(fs::read_to_string(original).unwrap(), "recover me");
+        assert!(!source.exists());
+        assert!(!info.exists());
+        assert_eq!(fs::read_dir(old_destination).unwrap().count(), 0);
+        assert!(!queue.has_retry());
+    }
 
     fn request(destination: &str) -> Request {
         let mut state = TransferState::default();

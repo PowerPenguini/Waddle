@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.59s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+
+thread 'app::transfer_queue::tests::hunt_failed_restore_retries_itself_instead_of_an_older_copy' (923645) panicked at src/app/transfer_queue.rs:665:9:
+Retry selected the older Copy instead of the failed Restore
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::transfer_queue::tests::hunt_failed_restore_retries_itself_instead_of_an_older_copy ... FAILED
+
+failures:
+
+failures:
+    app::transfer_queue::tests::hunt_failed_restore_retries_itself_instead_of_an_older_copy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

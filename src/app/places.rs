@@ -127,6 +127,7 @@ impl Places {
         let mut parts = arguments.trim().splitn(2, char::is_whitespace);
         match parts.next().unwrap_or_default() {
             "add" => {
+                let _lock = self.lock_and_reload()?;
                 let label = parts
                     .next()
                     .map(str::trim)
@@ -163,8 +164,15 @@ impl Places {
                 if index == 0 || index > self.favorites.len() {
                     return Err("Favorite index is out of range".to_owned());
                 }
+                let target = self.favorites[index - 1].path.clone();
+                let _lock = self.lock_and_reload()?;
+                let index = self
+                    .favorites
+                    .iter()
+                    .position(|favorite| favorite.path == target)
+                    .ok_or("the Favorite was removed by another window")?;
                 let mut favorites = self.favorites.clone();
-                let removed = favorites.remove(index - 1);
+                let removed = favorites.remove(index);
                 self.commit(favorites)?;
                 Ok(format!("Removed Favorite: {}", removed.label))
             }
@@ -193,10 +201,46 @@ impl Places {
         if from >= self.favorites.len() || to >= self.favorites.len() || from == to {
             return Ok(());
         }
+        let source = self.favorites[from].path.clone();
+        let target = self.favorites[to].path.clone();
+        let _lock = self.lock_and_reload()?;
+        let from = self
+            .favorites
+            .iter()
+            .position(|favorite| favorite.path == source)
+            .ok_or("the dragged Favorite was removed by another window")?;
+        let to = self
+            .favorites
+            .iter()
+            .position(|favorite| favorite.path == target)
+            .ok_or("the target Favorite was removed by another window")?;
         let mut favorites = self.favorites.clone();
         let favorite = favorites.remove(from);
         favorites.insert(to, favorite);
         self.commit(favorites)
+    }
+
+    fn lock_and_reload(&mut self) -> Result<fs::File, String> {
+        let directory = self.path.parent().ok_or("Favorites path has no parent")?;
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        // A stable sidecar remains locked while the JSON file is atomically replaced.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path.with_extension("lock"))
+            .map_err(|error| error.to_string())?;
+        lock.lock()
+            .map_err(|error| format!("Could not lock Favorites: {error}"))?;
+        let favorites = match fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Could not read Favorites: {error}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(format!("Could not read Favorites: {error}")),
+        };
+        self.favorites = favorites;
+        Ok(lock)
     }
 
     fn commit(&mut self, favorites: Vec<Favorite>) -> Result<(), String> {
@@ -386,6 +430,100 @@ pub(super) fn run_volume_command(arguments: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunt_two_windows_keep_both_favorite_additions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("favorites.json");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let mut window_a = Places::empty_at(path.clone());
+        let mut window_b = Places::empty_at(path.clone());
+        window_a.command(&first, "add First").unwrap();
+        window_b.command(&second, "add Second").unwrap();
+        let saved: Vec<Favorite> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|favorite| &favorite.path)
+                .collect::<Vec<_>>(),
+            [&first, &second],
+            "the second window overwrote the first window's Favorite"
+        );
+    }
+
+    #[test]
+    fn stale_favorite_indices_keep_their_original_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("favorites.json");
+        let mut first = Places::empty_at(path.clone());
+        for label in ["A", "B", "C"] {
+            let directory = temp.path().join(label);
+            fs::create_dir(&directory).unwrap();
+            first.command(&directory, &format!("add {label}")).unwrap();
+        }
+        let mut second = Places {
+            path: path.clone(),
+            favorites: serde_json::from_slice(&fs::read(&path).unwrap()).unwrap(),
+        };
+        second.reorder(2, 0).unwrap(); // C A B on disk; first still displays A B C.
+        first.reorder(0, 1).unwrap(); // Move A after B, retaining C.
+        second.command(temp.path(), "remove 2").unwrap(); // Second still displays C A B: remove A.
+        let saved: Vec<Favorite> = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|favorite| favorite.label.as_str())
+                .collect::<Vec<_>>(),
+            ["C", "B"]
+        );
+        assert!(
+            first.reorder(1, 2).is_err(),
+            "a deleted drag target must not select another Favorite"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Vec<Favorite>>(&fs::read(&path).unwrap()).unwrap(),
+            saved
+        );
+    }
+
+    #[test]
+    fn simultaneous_windows_serialize_favorite_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("favorites.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers = (0..2)
+            .map(|window| {
+                let path = path.clone();
+                let root = temp.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut places = Places::empty_at(path);
+                    barrier.wait();
+                    for index in 0..10 {
+                        let folder = root.join(format!("{window}-{index}"));
+                        fs::create_dir(&folder).unwrap();
+                        places.command(&folder, "add").unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let saved: Vec<Favorite> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved.len(), 20);
+        assert_eq!(
+            saved
+                .iter()
+                .map(|favorite| &favorite.path)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            20
+        );
+    }
 
     #[test]
     fn hunt_favorites_preserve_non_utf8_folder_paths() {

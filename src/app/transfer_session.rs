@@ -435,9 +435,12 @@ impl TransferSession {
     }
 
     pub(super) fn retry(&mut self, operations: &Operations) -> Result<Task<RuntimeEvent>, String> {
-        self.queue
-            .retry()
-            .map(|work| work.map_or_else(Task::none, |work| launch(work, operations)))
+        let restoring = self.queue.retry_is_restore();
+        let work = self.queue.retry()?;
+        if restoring {
+            self.restore_activity = Some(operations.begin_foreground());
+        }
+        Ok(work.map_or_else(Task::none, |work| launch(work, operations)))
     }
 
     pub(super) fn overview(&self) -> Overview<'_> {
@@ -1295,6 +1298,67 @@ mod tests {
         assert!(restore.receipt.original.exists());
         assert!(session.overview().history.is_empty());
         assert!(!session.overview().retry);
+    }
+
+    #[test]
+    fn restore_retry_stays_foreground_until_completion_and_keeps_undo() {
+        use iced::futures::StreamExt;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let restore = restore_entry(temp.path(), "item");
+            let parent = restore.receipt.original.parent().unwrap();
+            std::fs::remove_dir(parent).unwrap();
+            let mut session = TransferSession::open(temp.path().join("history.json"));
+            let first = session.enqueue_restore_work(vec![restore.clone()]).unwrap();
+            let id = first.id();
+            assert!(matches!(
+                complete_batch(&mut session, id, first.run()),
+                BatchUpdate::Completed { .. }
+            ));
+            assert!(session.overview().retry);
+            let operations = Operations::default();
+            assert!(
+                session.retry(&operations).is_err(),
+                "an unrepaired destination must leave Retry available"
+            );
+            assert!(session.overview().retry);
+            assert!(!operations.foreground_active());
+            std::fs::create_dir(parent).unwrap();
+            let retry = session.retry(&operations).unwrap();
+            assert!(operations.foreground_active());
+            let mut stream = iced_runtime::task::into_stream(retry).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(RuntimeEvent::BatchFinished {
+                        id,
+                        outcome,
+                    }) = action
+                    {
+                        assert!(operations.foreground_active());
+                        let BatchUpdate::Completed { outcome, .. } =
+                            session.complete_batch(id, *outcome, temp.path(), &operations)
+                        else {
+                            panic!("repaired Restore must complete");
+                        };
+                        assert!(matches!(outcome.undo, UndoOutcome::Record { .. }));
+                    }
+                }
+            })
+            .await
+            .expect("Restore retry must settle");
+            assert!(!operations.foreground_active());
+            assert!(!session.overview().retry);
+            assert_eq!(
+                std::fs::read_to_string(&restore.receipt.original).unwrap(),
+                "content"
+            );
+            assert!(!restore.receipt.trashed.exists());
+            assert!(!restore.receipt.info.exists());
+        });
     }
 
     #[test]
