@@ -209,6 +209,32 @@ mod tests {
     }
 
     #[test]
+    fn hunt_keep_both_images_still_receive_thumbnails() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("photo.png");
+        image::RgbaImage::new(2, 2).save(&source).unwrap();
+        let crate::fs::TransferBatchOutcome::Complete(report) = crate::fs::TransferBatch::new(
+            vec![source],
+            temp.path().to_path_buf(),
+            crate::transfer::Action::Copy,
+        )
+        .run() else {
+            panic!("same-directory Copy should choose Keep Both")
+        };
+        assert!(report.failures.is_empty());
+        let destination = &report.receipts[0].destination;
+        let mut cache = Cache::default();
+        let mut requests = cache.requests([destination.as_path()]);
+        assert_eq!(
+            requests.len(),
+            1,
+            "Keep Both must preserve the image extension for thumbnails"
+        );
+        cache.complete(decode(requests.pop().unwrap()));
+        assert!(cache.handle(destination).is_some());
+    }
+
+    #[test]
     fn cache_is_lru_bounded_and_changed_files_are_requested_again() {
         let temp = tempfile::tempdir().unwrap();
         let paths = ["one.png", "two.jpg", "three.webp"].map(|name| temp.path().join(name));

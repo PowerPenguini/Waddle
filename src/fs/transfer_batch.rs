@@ -354,7 +354,11 @@ impl TransferBatch {
                     .destination
                     .parent()
                     .unwrap_or_else(|| Path::new("."));
-                let destination = available_copy_destination(directory, name);
+                let is_directory = fs::symlink_metadata(&blocked.source)
+                    .map_err(|error| (blocked.source.clone(), error))?
+                    .is_dir();
+                let destination = available_copy_destination(directory, name, is_directory)
+                    .map_err(|error| (blocked.source.clone(), error))?;
                 if self.roots[blocked.root].source == blocked.source {
                     self.roots[blocked.root].destination = destination.clone();
                 }

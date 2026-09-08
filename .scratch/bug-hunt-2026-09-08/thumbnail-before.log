@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.29s
+     Running unittests src/main.rs (target/debug/deps/waddle-a54e1eaa65e097ed)
+
+running 1 test
+
+thread 'app::thumbnail::tests::hunt_keep_both_images_still_receive_thumbnails' (892219) panicked at src/app/thumbnail.rs:223:9:
+assertion `left == right` failed: Keep Both must preserve the image extension for thumbnails
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::thumbnail::tests::hunt_keep_both_images_still_receive_thumbnails ... FAILED
+
+failures:
+
+failures:
+    app::thumbnail::tests::hunt_keep_both_images_still_receive_thumbnails
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 437 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

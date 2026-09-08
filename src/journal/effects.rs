@@ -125,26 +125,34 @@ fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, 
     match direction {
         Direction::Undo => {
             for item in items.iter() {
-                verify_tree(&item.trashed, &item.fingerprint)?;
-                ensure_absent(&item.original)?;
-            }
-            let mut moved: Vec<TrashItem> = Vec::new();
-            for item in items.iter() {
-                if let Err(error) = crate::fs::journal_move(&item.trashed, &item.original) {
-                    for previous in moved.iter().rev() {
-                        let _ = crate::fs::journal_move(&previous.original, &previous.trashed);
-                    }
-                    return Err(error.into());
+                if item.restore_pending {
+                    verify_tree(&item.original, &item.fingerprint)?;
+                } else {
+                    verify_tree(&item.trashed, &item.fingerprint)?;
+                    ensure_absent(&item.original)?;
                 }
-                moved.push(item.clone());
             }
-            for item in items.iter() {
-                fs::remove_file(&item.info).map_err(|error| {
-                    Error::io(
-                        "restored the item but could not remove Trash metadata",
-                        error,
-                    )
-                })?;
+            for item in items.iter_mut() {
+                if !item.restore_pending {
+                    crate::fs::journal_move(&item.trashed, &item.original)?;
+                    item.restore_pending = true;
+                    item.fingerprint = TreeFingerprint::read(&item.original)?;
+                }
+                match fs::remove_file(&item.info) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(Error::io(
+                            "restored the item but could not remove Trash metadata",
+                            error,
+                        ));
+                    }
+                }
+            }
+            // Journal::undo/redo persists these flags on failure. Clear them only
+            // once every restore and cleanup has completed and the cursor can advance.
+            for item in items.iter_mut() {
+                item.restore_pending = false;
             }
             Ok(trash_effect(items, Direction::Undo))
         }

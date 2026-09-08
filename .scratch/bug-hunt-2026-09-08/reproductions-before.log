@@ -1,0 +1,29 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.13s
+     Running unittests src/main.rs (target/debug/deps/waddle-a54e1eaa65e097ed)
+
+running 3 tests
+
+thread 'fs::tests::hunt_failed_move_replace_keeps_the_incoming_source_for_retry' (889376) panicked at src/fs/tests.rs:1383:44:
+called `Result::unwrap()` on an `Err` value: Os { code: 21, kind: IsADirectory, message: "Is a directory" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'fs::tests::hunt_keep_both_can_duplicate_a_maximum_length_name' (889377) panicked at src/fs/tests.rs:1397:9:
+[TransferFailure { source: "/tmp/.tmpP0exQ8/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", error: "File name too long (os error 36)" }]
+test fs::tests::hunt_keep_both_can_duplicate_a_maximum_length_name ... FAILED
+
+thread 'journal::tests::hunt_trash_undo_can_retry_after_metadata_cleanup_fails' (889378) panicked at src/journal/tests.rs:478:20:
+restoring Trash must remain retryable when metadata cleanup fails: Io { context: "could not fingerprint /tmp/.tmpaaOQWs/Trash/files/item", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }
+test fs::tests::hunt_failed_move_replace_keeps_the_incoming_source_for_retry ... FAILED
+test journal::tests::hunt_trash_undo_can_retry_after_metadata_cleanup_fails ... FAILED
+
+failures:
+
+failures:
+    fs::tests::hunt_failed_move_replace_keeps_the_incoming_source_for_retry
+    fs::tests::hunt_keep_both_can_duplicate_a_maximum_length_name
+    journal::tests::hunt_trash_undo_can_retry_after_metadata_cleanup_fails
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

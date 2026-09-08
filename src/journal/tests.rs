@@ -454,3 +454,60 @@ fn trash_info_paths_decode_spaces_and_non_utf8_bytes() {
     let decoded = percent_decode_path("/tmp/a%20name-%FF").unwrap();
     assert_eq!(decoded.as_bytes(), b"/tmp/a name-\xff");
 }
+
+#[test]
+fn hunt_trash_undo_can_retry_after_metadata_cleanup_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("Trash/files");
+    let info = temp.path().join("Trash/info");
+    fs::create_dir_all(&files).unwrap();
+    fs::create_dir_all(&info).unwrap();
+    let receipts = ["first", "second"].map(|name| TrashReceipt {
+        original: temp.path().join(name),
+        trashed: files.join(name),
+        info: if name == "second" {
+            info.join("second.trashinfo")
+        } else {
+            temp.path().join("first.trashinfo")
+        },
+    });
+    for receipt in &receipts {
+        fs::write(&receipt.trashed, "recover me").unwrap();
+        fs::write(&receipt.info, "metadata").unwrap();
+    }
+    let journal_path = temp.path().join("history.json");
+    let mut journal = Journal::open(journal_path.clone()).unwrap();
+    // Exercise compatibility with records saved before progress tracking existed.
+    let mut legacy = serde_json::to_value(Action::trash(&receipts).unwrap().unwrap()).unwrap();
+    for item in legacy["Trash"]["items"].as_array_mut().unwrap() {
+        item.as_object_mut().unwrap().remove("restore_pending");
+    }
+    journal
+        .record(serde_json::from_value(legacy).unwrap())
+        .unwrap();
+    fs::set_permissions(&info, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.undo();
+    fs::set_permissions(&info, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert!(
+        !receipts[0].info.exists(),
+        "first item's cleanup already completed"
+    );
+    assert!(
+        receipts[1].info.exists(),
+        "second item's cleanup remains pending"
+    );
+    let mut journal = Journal::open(journal_path).unwrap();
+    journal
+        .undo()
+        .expect("restoring Trash must remain retryable when metadata cleanup fails");
+    for receipt in &receipts {
+        assert_eq!(fs::read_to_string(&receipt.original).unwrap(), "recover me");
+        assert!(!receipt.info.exists());
+    }
+    assert_eq!(journal.undo().unwrap_err().to_string(), "Nothing to undo");
+}

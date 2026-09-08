@@ -886,7 +886,7 @@ fn copies_files_without_overwriting_existing_entries() {
         .unwrap();
 
     assert_eq!(first, destination.join("note.txt"));
-    assert_eq!(second, destination.join("note.txt copy"));
+    assert_eq!(second, destination.join("note copy.txt"));
     assert_eq!(fs::read_to_string(first).unwrap(), "hello");
     assert_eq!(fs::read_to_string(second).unwrap(), "hello");
     assert!(source.exists());
@@ -1138,7 +1138,7 @@ fn transfer_batch_supports_one_shot_and_batch_conflict_choices() {
 
     assert!(report.failures.is_empty());
     assert_eq!(
-        fs::read_to_string(destination.join("first.txt copy")).unwrap(),
+        fs::read_to_string(destination.join("first copy.txt")).unwrap(),
         "new first"
     );
     assert_eq!(
@@ -1357,4 +1357,135 @@ fn deleting_symlink_preserves_target() {
     delete_permanently(&link).unwrap();
     assert!(target.exists());
     assert!(!link.exists());
+}
+
+#[test]
+fn hunt_failed_move_replace_keeps_the_incoming_source_for_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("item");
+    let destination_parent = temp.path().join("destination");
+    fs::create_dir(&destination_parent).unwrap();
+    let destination = destination_parent.join("item");
+    fs::create_dir(&destination).unwrap();
+    fs::create_dir(destination.join("locked")).unwrap();
+    fs::write(destination.join("locked/old.txt"), "old contents").unwrap();
+    fs::write(&source, "incoming contents").unwrap();
+    fs::set_permissions(
+        destination.join("locked"),
+        fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::new(
+        vec![source.clone()],
+        destination_parent.clone(),
+        Action::Move,
+    )
+    .run() else {
+        panic!("expected conflict")
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    // Restore permissions at either location before asserting, even on the buggy implementation.
+    for path in [&source, &destination] {
+        if path.join("locked").is_dir() {
+            fs::set_permissions(path.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    assert!(
+        !report.failures.is_empty(),
+        "fixture must make old-destination cleanup fail"
+    );
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "incoming contents",
+        "failed Move must not substitute old destination data for its source"
+    );
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::new(vec![source.clone()], destination_parent, Action::Move).run()
+    else {
+        panic!("expected retry conflict")
+    };
+    let retry = complete(batch.resolve(ConflictChoice::Replace, false));
+    assert!(retry.failures.is_empty(), "{:?}", retry.failures);
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        "incoming contents"
+    );
+}
+
+#[test]
+fn hunt_keep_both_can_duplicate_a_maximum_length_name() {
+    for name in [
+        "a".repeat(255),
+        "é".repeat(127),
+        format!("{}.png", "a".repeat(251)),
+        format!("{}.png", "é".repeat(125)),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join(&name);
+        fs::write(&source, "data").unwrap();
+        for _ in 0..12 {
+            let report = complete(TransferBatch::new(
+                vec![source.clone()],
+                temp.path().to_path_buf(),
+                Action::Copy,
+            ));
+            assert!(report.failures.is_empty(), "{:?}", report.failures);
+            assert_eq!(report.receipts.len(), 1);
+            assert_ne!(report.receipts[0].destination, source);
+            assert_eq!(
+                report.receipts[0].destination.extension(),
+                source.extension()
+            );
+            assert_eq!(
+                fs::read_to_string(&report.receipts[0].destination).unwrap(),
+                "data"
+            );
+            assert!(
+                report.receipts[0]
+                    .destination
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .is_some()
+            );
+            assert_eq!(fs::read_to_string(&source).unwrap(), "data");
+        }
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 13);
+    }
+}
+
+#[test]
+fn hunt_keep_both_preserves_dotted_directory_names_and_non_utf8_file_extensions() {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("folder.v1");
+    fs::create_dir(&source).unwrap();
+    let report = complete(TransferBatch::new(
+        vec![source],
+        temp.path().to_path_buf(),
+        Action::Copy,
+    ));
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        report.receipts[0].destination,
+        temp.path().join("folder.v1 copy")
+    );
+    let mut name = vec![0xff; 251];
+    name.extend(b".png");
+    let source = temp.path().join(std::ffi::OsString::from_vec(name));
+    fs::write(&source, "data").unwrap();
+    let report = complete(TransferBatch::new(
+        vec![source],
+        temp.path().to_path_buf(),
+        Action::Copy,
+    ));
+    assert!(report.failures.is_empty());
+    let destination = &report.receipts[0].destination;
+    assert_eq!(destination.extension().unwrap(), "png");
+    assert!(destination.file_name().unwrap().as_bytes().len() <= 255);
+    assert_eq!(fs::read_to_string(destination).unwrap(), "data");
 }

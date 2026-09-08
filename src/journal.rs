@@ -177,6 +177,9 @@ pub(crate) struct TrashItem {
     trashed: PathBuf,
     info: PathBuf,
     fingerprint: TreeFingerprint,
+    // A completed physical restore awaiting the rest of the batch or metadata cleanup.
+    #[serde(default)]
+    restore_pending: bool,
 }
 
 impl Action {
@@ -242,6 +245,7 @@ impl Action {
                     trashed: receipt.trashed.clone(),
                     info: receipt.info.clone(),
                     fingerprint: TreeFingerprint::read(&receipt.trashed)?,
+                    restore_pending: false,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -263,6 +267,7 @@ impl Action {
                     trashed: receipt.trashed.clone(),
                     info: receipt.info.clone(),
                     fingerprint: TreeFingerprint::read(&receipt.original)?,
+                    restore_pending: false,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;

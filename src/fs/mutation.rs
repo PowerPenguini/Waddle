@@ -174,7 +174,18 @@ pub(super) fn replace_exact(
                         "the destination changed while Replace was running",
                     ));
                 }
-                remove_item(source).map(|()| Vec::new())
+                if let Err(error) = remove_item(source) {
+                    // A failed cleanup must not leave the old destination at the
+                    // source path: Retry would then move that old data over the
+                    // incoming item. Restore the incoming source before reporting failure.
+                    rename_exchange(source, destination).map_err(|rollback| {
+                        io::Error::new(error.kind(), format!(
+                            "could not clean up the replaced destination: {error}; could not restore the source: {rollback}"
+                        ))
+                    })?;
+                    return Err(error);
+                }
+                Ok(Vec::new())
             }
             Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
                 replace_by_staging(source, destination, observed, true)
@@ -298,21 +309,68 @@ pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
     remove_item(path).map_err(|error| format!("could not remove {}: {error}", path.display()))
 }
 
-pub(super) fn available_copy_destination(directory: &Path, name: &OsStr) -> PathBuf {
+pub(super) fn available_copy_destination(
+    directory: &Path,
+    name: &OsStr,
+    is_directory: bool,
+) -> io::Result<PathBuf> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
     let direct = directory.join(name);
-    if fs::symlink_metadata(&direct).is_err() {
-        return direct;
+    match fs::symlink_metadata(&direct) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(direct),
+        Err(error) => return Err(error),
+        Ok(_) => {}
     }
+    let directory_c = CString::new(directory.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
+    // SAFETY: directory_c is a valid NUL-terminated path for the duration of pathconf.
+    let limit = unsafe { libc::pathconf(directory_c.as_ptr(), libc::_PC_NAME_MAX) };
+    let limit = usize::try_from(limit)
+        .ok()
+        .filter(|limit| *limit > 0)
+        .unwrap_or(255);
     for number in 1_u64.. {
-        let mut candidate = OsString::from(name);
-        if number == 1 {
-            candidate.push(" copy");
+        let suffix = if number == 1 {
+            " copy".to_owned()
         } else {
-            candidate.push(format!(" copy {number}"));
+            format!(" copy {number}")
+        };
+        let extension = (!is_directory)
+            .then(|| Path::new(name).extension())
+            .flatten()
+            .filter(|extension| extension.as_bytes().len() + 1 + suffix.len() < limit);
+        let stem = extension
+            .and_then(|_| Path::new(name).file_stem())
+            .unwrap_or(name);
+        let ending = extension.map_or(0, |extension| extension.as_bytes().len() + 1);
+        let Some(available) = limit
+            .checked_sub(suffix.len() + ending)
+            .filter(|length| *length > 0)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy suffix exceeds the filesystem name limit",
+            ));
+        };
+        let bytes = stem.as_bytes();
+        let mut length = bytes.len().min(available);
+        if let Some(text) = stem.to_str() {
+            while !text.is_char_boundary(length) {
+                length -= 1;
+            }
+        }
+        let mut candidate = OsString::from(OsStr::from_bytes(&bytes[..length]));
+        candidate.push(suffix);
+        if let Some(extension) = extension {
+            candidate.push(".");
+            candidate.push(extension);
         }
         let path = directory.join(candidate);
-        if fs::symlink_metadata(&path).is_err() {
-            return path;
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
     }
     unreachable!()
