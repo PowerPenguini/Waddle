@@ -1,0 +1,50 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.94s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 42 tests
+test journal::store::regressions::two_windows_keep_both_recorded_operations ... ok
+test journal::tests::copy_undo_refuses_a_changed_result_tree ... ok
+test journal::effects::regressions::copy_undo_can_recover_after_partial_removal_failure ... ok
+test journal::effects::regressions::cross_filesystem_move_can_redo_after_undo ... ok
+test journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files ... ok
+test journal::tests::hunt_journal_round_trips_non_utf8_file_paths ... ok
+test journal::tests::malformed_journal_preserves_the_json_error_source ... ok
+test journal::tests::audit_undo_cross_device_move_preserves_hardlinks ... ok
+test journal::tests::hunt_new_folder_undo_works_after_undoing_its_child_creation ... ok
+test journal::tests::legacy_transfer_entries_refuse_undo_conservatively ... ok
+test journal::tests::fingerprint_rejects_a_fifo_without_opening_it ... ok
+test journal::tests::new_folder_undo_refuses_non_empty_directory ... ok
+test journal::tests::new_file_undo_and_redo_survive_restart_and_refuse_changed_content ... ok
+test journal::tests::hunt_trash_undo_can_retry_after_metadata_cleanup_fails ... ok
+test journal::tests::legacy_new_folder_records_still_undo_and_redo ... ok
+test journal::tests::copy_and_move_undo_redo_are_restart_safe ... ok
+test journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup ... ok
+test journal::tests::new_folder_undo_preserves_replacement_directories_and_symlinks ... ok
+test journal::tests::restore_action_persists_the_restored_identity_for_later_undo ... ok
+test journal::tests::non_utf8_copy_and_move_records_support_persistent_undo_and_redo ... ok
+test journal::tests::transfer_history_without_saved_link_context_still_supports_undo_and_redo ... ok
+test journal::tests::rename_and_new_folder_round_trip_across_a_reopened_journal ... ok
+test journal::tests::trash_info_paths_decode_spaces_and_non_utf8_bytes ... ok
+test journal::tests::non_utf8_rename_folder_and_trash_records_survive_restart ... ok
+test journal::tests::resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match ... ok
+test journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal ... ok
+test journal::store::regressions::concurrent_windows_serialize_records_and_share_the_cursor ... ok
+test journal::tests::trash_undo_restores_only_the_verified_receipt ... ok
+test journal::tests::partial_single_directory_undo_keeps_newer_history_blocked_until_cleanup_finishes ... ok
+test journal::tests::undo_copy_replace_refuses_without_removing_the_replacement ... ok
+test journal::tests::redo_does_not_cross_an_incomplete_undo_into_a_newer_operation ... ok
+test journal::tests::undo_directory_merge_refuses_without_removing_preexisting_entries ... ok
+test journal::tests::trash_undo_preserves_hardlinks_after_cleanup_failure_and_journal_reopen ... ok
+test journal::tests::unsafe_inverse_is_refused_and_redo_is_cleared_by_new_work ... ok
+test journal::tests::undo_trash_across_filesystems_preserves_selected_hardlinks ... ok
+test journal::tests::redo_copy_resumes_after_a_later_failure_and_failed_rollback ... ok
+test journal::tests::partial_redo_preserves_completed_entries_and_checks_them_before_resuming ... ok
+test journal::tests::undo_does_not_cross_an_incomplete_redo_into_an_older_operation ... ok
+test journal::tests::partial_retrashing_preserves_metadata_and_retries_after_reopen ... ok
+test journal::tests::new_operations_preserve_partial_redo_and_resume_after_their_undo ... ok
+test journal::tests::resumed_copy_undo_preserves_external_changes_to_remaining_entries ... ok
+test journal::tests::journal_keeps_only_one_hundred_operations_and_thirty_days ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 489 filtered out; finished in 0.01s
+

@@ -183,25 +183,26 @@ fn apply_trash(
         }
         Direction::Redo => {
             for item in items.iter() {
-                verify_tree(&item.original, &item.fingerprint)?;
-            }
-            let mut receipts = Vec::new();
-            for item in items.iter() {
-                match trash(&item.original) {
-                    Ok(receipt) => receipts.push(receipt),
-                    Err(error) => {
-                        for receipt in receipts.iter().rev() {
-                            let _ = crate::fs::journal_move(&receipt.trashed, &receipt.original);
-                            let _ = fs::remove_file(&receipt.info);
-                        }
-                        return Err(error);
-                    }
+                if item.trash_pending {
+                    verify_tree(&item.trashed, &item.fingerprint)?;
+                } else {
+                    verify_tree(&item.original, &item.fingerprint)?;
                 }
             }
-            for (item, receipt) in items.iter_mut().zip(receipts) {
+            for item in items.iter_mut() {
+                if item.trash_pending {
+                    continue;
+                }
+                let receipt = trash(&item.original)?;
                 item.trashed = receipt.trashed;
                 item.info = receipt.info;
+                item.trash_pending = true;
                 item.fingerprint = TreeFingerprint::read(&item.trashed)?;
+            }
+            // Keep each receipt and its metadata on failure. The saved progress
+            // lets a retry skip completed entries without a fallible rollback.
+            for item in items.iter_mut() {
+                item.trash_pending = false;
             }
             Ok(trash_effect(items, Direction::Redo))
         }

@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.12s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 1 test
+
+thread 'journal::tests::new_operations_preserve_partial_redo_and_resume_after_their_undo' (1129503) panicked at src/journal/tests.rs:1554:9:
+incomplete transfer was lost: Nothing to undo
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::new_operations_preserve_partial_redo_and_resume_after_their_undo ... FAILED
+
+failures:
+
+failures:
+    journal::tests::new_operations_preserve_partial_redo_and_resume_after_their_undo
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 529 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

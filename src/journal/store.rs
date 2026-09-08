@@ -78,10 +78,17 @@ impl Journal {
 
     pub(super) fn record_at(&mut self, action: Action, recorded_at: u64) -> Result<(), Error> {
         let _lock = self.lock_and_reload()?;
+        if let Some(entry) = self.stored.entries.get_mut(self.stored.cursor)
+            && entry.action.has_partial_effects()
+        {
+            entry.redo_pending = true;
+            self.stored.cursor += 1;
+        }
         self.stored.entries.truncate(self.stored.cursor);
         self.stored.entries.push(Entry {
             recorded_at,
             action,
+            redo_pending: false,
         });
         self.stored.cursor = self.stored.entries.len();
         self.prune(recorded_at);
@@ -104,6 +111,11 @@ impl Journal {
         let Some(index) = self.stored.cursor.checked_sub(1) else {
             return Err(Error::message("Nothing to undo"));
         };
+        if self.stored.entries[index].redo_pending {
+            return Err(Error::message(
+                "Redo partially completed; retry Redo before Undo",
+            ));
+        }
         let effect = apply(&mut self.stored.entries[index].action, Direction::Undo);
         if effect.is_ok() {
             self.stored.cursor = index;
@@ -115,6 +127,22 @@ impl Journal {
     pub(crate) fn redo(&mut self) -> Result<Effect, Error> {
         let _lock = self.lock_and_reload()?;
         self.prune(now_seconds());
+        if let Some(entry) = self
+            .stored
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| self.stored.entries.get_mut(index))
+            && entry.redo_pending
+        {
+            let effect = apply(&mut entry.action, Direction::Redo);
+            if effect.is_ok() {
+                entry.redo_pending = false;
+            }
+            // This entry is already below the cursor; resuming it does not redo
+            // the newer action at the cursor or consume its position.
+            self.save()?;
+            return effect;
+        }
         if self
             .stored
             .cursor

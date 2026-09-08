@@ -112,6 +112,9 @@ impl Default for StoredJournal {
 struct Entry {
     recorded_at: u64,
     action: Action,
+    // A started Redo retained below newer actions when their recording forks history.
+    #[serde(default)]
+    redo_pending: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -200,6 +203,9 @@ pub(crate) struct TrashItem {
     // A completed physical restore awaiting the rest of the batch or metadata cleanup.
     #[serde(default)]
     restore_pending: bool,
+    // A completed physical Trash awaiting the remaining entries in this batch.
+    #[serde(default)]
+    trash_pending: bool,
 }
 
 impl Action {
@@ -211,9 +217,9 @@ impl Action {
                         .first()
                         .is_some_and(|first| items.iter().any(|item| item.undone != first.undone))
             }
-            Self::Trash { items, .. } | Self::Restore { items, .. } => {
-                items.iter().any(|item| item.restore_pending)
-            }
+            Self::Trash { items, .. } | Self::Restore { items, .. } => items
+                .iter()
+                .any(|item| item.restore_pending || item.trash_pending),
             _ => false,
         }
     }
@@ -287,6 +293,7 @@ impl Action {
                     info: receipt.info.clone(),
                     fingerprint: TreeFingerprint::read(&receipt.trashed)?,
                     restore_pending: false,
+                    trash_pending: false,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -312,6 +319,7 @@ impl Action {
                     info: receipt.info.clone(),
                     fingerprint: TreeFingerprint::read(&receipt.original)?,
                     restore_pending: false,
+                    trash_pending: false,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;

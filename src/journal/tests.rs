@@ -1513,3 +1513,226 @@ fn partial_single_directory_undo_keeps_newer_history_blocked_until_cleanup_finis
     journal.undo().unwrap();
     assert!(!destination.exists());
 }
+
+#[test]
+fn new_operations_preserve_partial_redo_and_resume_after_their_undo() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        let receipts = ["one", "two"].map(|name| {
+            let source = temp.path().join(name);
+            let destination = temp.path().join(format!("target-{name}/{name}"));
+            fs::create_dir(destination.parent().unwrap()).unwrap();
+            fs::write(&source, name).unwrap();
+            match kind {
+                TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+                TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+            }
+            crate::fs::TransferReceipt {
+                source,
+                destination,
+                replaced_existing: false,
+            }
+        });
+        journal
+            .record(Action::transfer(kind, &receipts).unwrap().unwrap())
+            .unwrap();
+        journal.undo().unwrap();
+        let blocked = receipts[1].destination.parent().unwrap();
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = journal.redo();
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        let renamed = temp.path().join("renamed");
+        fs::rename(&receipts[0].destination, &renamed).unwrap();
+        journal
+            .record(Action::rename(receipts[0].destination.clone(), renamed.clone()).unwrap())
+            .unwrap();
+        let newer = temp.path().join("newer");
+        fs::write(&newer, "").unwrap();
+        journal
+            .record(Action::new_file(newer.clone()).unwrap())
+            .unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert_eq!(fs::read(&receipts[0].destination).unwrap(), b"one");
+        let error = journal.undo().unwrap_err().to_string();
+        assert!(
+            error.contains("retry Redo"),
+            "incomplete transfer was lost: {error}"
+        );
+        let mut journal = Journal::open(path.clone()).unwrap();
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed_again = journal.redo();
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed_again.is_err());
+        let mut journal = Journal::open(path).unwrap();
+        journal
+            .redo()
+            .expect("resume the retained partial transfer after another failure");
+        assert_eq!(fs::read(&receipts[1].destination).unwrap(), b"two");
+        assert!(
+            !renamed.exists(),
+            "resuming must not replay the newer rename"
+        );
+        journal.undo().unwrap();
+        for receipt in &receipts {
+            assert!(!receipt.destination.exists());
+            assert!(receipt.source.exists());
+        }
+        journal.redo().unwrap();
+        journal.redo().unwrap();
+        journal.redo().unwrap();
+        assert_eq!(fs::read(&renamed).unwrap(), b"one");
+        assert!(newer.exists());
+    }
+}
+
+#[test]
+fn partial_retrashing_preserves_metadata_and_retries_after_reopen() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for restore in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let files = temp.path().join("Trash/files");
+        let info = temp.path().join("Trash/info");
+        fs::create_dir_all(&files).unwrap();
+        fs::create_dir_all(&info).unwrap();
+        let receipts = ["one", "two"].map(|name| {
+            let original = temp.path().join(format!("source-{name}/{name}"));
+            fs::create_dir(original.parent().unwrap()).unwrap();
+            let receipt = TrashReceipt {
+                original,
+                trashed: files.join(name),
+                info: info.join(format!("{name}.trashinfo")),
+            };
+            fs::write(
+                if restore {
+                    &receipt.original
+                } else {
+                    &receipt.trashed
+                },
+                name,
+            )
+            .unwrap();
+            if !restore {
+                fs::write(&receipt.info, "original metadata").unwrap();
+            }
+            receipt
+        });
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        if restore {
+            journal
+                .record(Action::restore(&receipts, false).unwrap().unwrap())
+                .unwrap();
+        } else {
+            journal
+                .record(Action::trash(&receipts).unwrap().unwrap())
+                .unwrap();
+            journal.undo().unwrap();
+        }
+        let blocked = receipts[0].original.parent().unwrap().to_path_buf();
+        let blocked_backend = blocked.clone();
+        let expected_file = files.join("new-one");
+        let expected_info = info.join("new-one.trashinfo");
+        let mut fail_once = true;
+        trash_receipt::test_backend::with(
+            move |source| {
+                let name = source.file_name().unwrap().to_str().unwrap();
+                if name == "two" && fail_once {
+                    fail_once = false;
+                    // Model a mount/permission change after the first successful Trash.
+                    fs::set_permissions(&blocked_backend, fs::Permissions::from_mode(0o500))
+                        .unwrap();
+                    return Err(Error::message("desktop Trash failed for second entry"));
+                }
+                let receipt = TrashReceipt {
+                    original: source.to_path_buf(),
+                    trashed: files.join(format!("new-{name}")),
+                    info: info.join(format!("new-{name}.trashinfo")),
+                };
+                fs::rename(source, &receipt.trashed).unwrap();
+                fs::write(
+                    &receipt.info,
+                    format!("[Trash Info]\nPath={}\n", source.display()),
+                )
+                .unwrap();
+                Ok(receipt)
+            },
+            || {
+                let failed = if restore {
+                    journal.undo()
+                } else {
+                    journal.redo()
+                };
+                fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+                assert!(failed.is_err());
+                assert_eq!(fs::read(&expected_file).unwrap(), b"one");
+                assert!(
+                    expected_info.exists(),
+                    "failed rollback must not orphan the first Trash entry"
+                );
+                let newer = temp.path().join("newer");
+                fs::write(&newer, "").unwrap();
+                journal
+                    .record(Action::new_file(newer.clone()).unwrap())
+                    .unwrap();
+                let mut journal = Journal::open(path).unwrap();
+                journal.undo().unwrap();
+                assert!(!newer.exists());
+                // Refuse to resume if a completed Trash entry was edited.
+                let modified = fs::metadata(&expected_file).unwrap().modified().unwrap();
+                fs::write(&expected_file, "external edit").unwrap();
+                let changed = if restore {
+                    journal.undo()
+                } else {
+                    journal.redo()
+                };
+                assert!(changed.is_err());
+                assert_eq!(fs::read(&receipts[1].original).unwrap(), b"two");
+                assert_eq!(fs::read(&expected_file).unwrap(), b"external edit");
+                assert!(expected_info.exists());
+                fs::write(&expected_file, "one").unwrap();
+                fs::File::open(&expected_file)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+                let opposite = if restore {
+                    journal.redo()
+                } else {
+                    journal.undo()
+                };
+                assert!(
+                    opposite.is_err(),
+                    "partial Trash must block the opposite history direction"
+                );
+                if restore {
+                    journal.undo().unwrap();
+                } else {
+                    journal.redo().unwrap();
+                }
+                assert!(expected_info.exists());
+                for receipt in &receipts {
+                    assert!(!receipt.original.exists());
+                }
+                if restore {
+                    journal.redo().unwrap();
+                } else {
+                    journal.undo().unwrap();
+                }
+                assert!(!expected_info.exists());
+                for receipt in &receipts {
+                    assert_eq!(
+                        fs::read(&receipt.original).unwrap(),
+                        receipt.original.file_name().unwrap().as_encoded_bytes()
+                    );
+                }
+            },
+        );
+    }
+}

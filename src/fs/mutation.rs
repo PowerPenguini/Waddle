@@ -123,6 +123,7 @@ fn copy_revealed(
     Ok(warnings.publish(&staging, destination, links))
 }
 
+#[cfg(test)]
 pub(super) fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
     move_exact_with_progress(
         source,
@@ -406,6 +407,7 @@ pub(crate) fn tree_bytes(path: &Path) -> io::Result<u64> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn journal_move(source: &Path, destination: &Path) -> Result<(), String> {
     move_exact(source, destination)
         .map(drop)

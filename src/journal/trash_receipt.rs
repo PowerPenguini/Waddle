@@ -8,6 +8,10 @@ use gio::prelude::*;
 use super::{Error, TrashReceipt};
 
 pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, Error> {
+    #[cfg(test)]
+    if let Some(result) = test_backend::trash(path) {
+        return result;
+    }
     gio::File::for_path(path)
         .trash(None::<&gio::Cancellable>)
         .map_err(|error| {
@@ -147,5 +151,40 @@ fn hex(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
+    }
+}
+
+// Substitute only the desktop Trash service in tests; Journal persistence,
+// transfers, permissions, and recovery metadata still use the real filesystem.
+#[cfg(test)]
+pub(super) mod test_backend {
+    use super::*;
+    use std::cell::RefCell;
+
+    type Backend = Box<dyn FnMut(&Path) -> Result<TrashReceipt, Error>>;
+    thread_local! {
+        static BACKEND: RefCell<Option<Backend>> = RefCell::new(None);
+    }
+
+    pub(super) fn trash(path: &Path) -> Option<Result<TrashReceipt, Error>> {
+        BACKEND.with_borrow_mut(|backend| backend.as_mut().map(|backend| backend(path)))
+    }
+
+    pub(crate) fn with(
+        backend: impl FnMut(&Path) -> Result<TrashReceipt, Error> + 'static,
+        run: impl FnOnce(),
+    ) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                BACKEND.with_borrow_mut(|backend| *backend = None);
+            }
+        }
+        BACKEND.with_borrow_mut(|slot| {
+            assert!(slot.is_none());
+            *slot = Some(Box::new(backend));
+        });
+        let _reset = Reset;
+        run();
     }
 }
