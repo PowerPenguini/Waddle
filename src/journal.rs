@@ -203,6 +203,21 @@ pub(crate) struct TrashItem {
 }
 
 impl Action {
+    pub(super) fn has_partial_effects(&self) -> bool {
+        match self {
+            Self::Transfer { items, .. } => {
+                items.iter().any(|item| item.removal.is_some())
+                    || items
+                        .first()
+                        .is_some_and(|first| items.iter().any(|item| item.undone != first.undone))
+            }
+            Self::Trash { items, .. } | Self::Restore { items, .. } => {
+                items.iter().any(|item| item.restore_pending)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn rename(before: PathBuf, after: PathBuf) -> Result<Self, Error> {
         Ok(Self::Rename {
             fingerprint: Fingerprint::read(&after)?,

@@ -91,6 +91,16 @@ impl Journal {
     pub(crate) fn undo(&mut self) -> Result<Effect, Error> {
         let _lock = self.lock_and_reload()?;
         self.prune(now_seconds());
+        if self
+            .stored
+            .entries
+            .get(self.stored.cursor)
+            .is_some_and(|entry| entry.action.has_partial_effects())
+        {
+            return Err(Error::message(
+                "Redo partially completed; retry Redo before Undo",
+            ));
+        }
         let Some(index) = self.stored.cursor.checked_sub(1) else {
             return Err(Error::message("Nothing to undo"));
         };
@@ -105,6 +115,17 @@ impl Journal {
     pub(crate) fn redo(&mut self) -> Result<Effect, Error> {
         let _lock = self.lock_and_reload()?;
         self.prune(now_seconds());
+        if self
+            .stored
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| self.stored.entries.get(index))
+            .is_some_and(|entry| entry.action.has_partial_effects())
+        {
+            return Err(Error::message(
+                "Undo partially completed; retry Undo before Redo",
+            ));
+        }
         let Some(entry) = self.stored.entries.get_mut(self.stored.cursor) else {
             return Err(Error::message("Nothing to redo"));
         };

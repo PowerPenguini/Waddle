@@ -1270,6 +1270,12 @@ fn trash_undo_preserves_hardlinks_after_cleanup_failure_and_journal_reopen() {
     journal
         .record(Action::trash(&receipts).unwrap().unwrap())
         .unwrap();
+    let newer = temp.path().join("unrelated-newer.txt");
+    fs::write(&newer, "").unwrap();
+    journal
+        .record(Action::new_file(newer.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
     fs::set_permissions(&info, fs::Permissions::from_mode(0o500)).unwrap();
     let failed = journal.undo();
     fs::set_permissions(&info, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1277,6 +1283,14 @@ fn trash_undo_preserves_hardlinks_after_cleanup_failure_and_journal_reopen() {
     assert!(receipts[0].original.exists());
     assert!(receipts[1].trashed.exists());
     let mut journal = Journal::open(path).unwrap();
+    assert!(
+        journal
+            .redo()
+            .unwrap_err()
+            .to_string()
+            .contains("retry Undo")
+    );
+    assert!(!newer.exists());
     journal.undo().unwrap();
     for receipt in &receipts {
         assert_eq!(fs::read(&receipt.original).unwrap(), b"linked contents");
@@ -1325,4 +1339,177 @@ fn transfer_history_without_saved_link_context_still_supports_undo_and_redo() {
     journal.redo().unwrap();
     assert_eq!(fs::read(source).unwrap(), b"legacy history");
     assert_eq!(fs::read(destination).unwrap(), b"legacy history");
+}
+
+#[test]
+fn undo_does_not_cross_an_incomplete_redo_into_an_older_operation() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let previous = temp.path().join("previous.txt");
+    fs::write(&previous, "unrelated earlier operation").unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(Action::new_file(previous.clone()).unwrap())
+        .unwrap();
+    let receipts = ["one", "two"].map(|name| {
+        let source = temp.path().join(name);
+        let destination = temp.path().join(format!("target-{name}/{name}"));
+        fs::create_dir(destination.parent().unwrap()).unwrap();
+        fs::write(&source, name).unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        crate::fs::TransferReceipt {
+            source,
+            destination,
+            replaced_existing: false,
+        }
+    });
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    journal.undo().unwrap();
+    let blocked = receipts[1].destination.parent().unwrap();
+    fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.redo();
+    fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    let mut journal = Journal::open(path).unwrap();
+    let undo = journal.undo();
+    assert!(
+        undo.is_err(),
+        "Undo must not affect older history while Redo is incomplete"
+    );
+    assert!(undo.unwrap_err().to_string().contains("retry Redo"));
+    assert_eq!(fs::read(&previous).unwrap(), b"unrelated earlier operation");
+    assert!(receipts[0].destination.exists());
+    assert!(!receipts[1].destination.exists());
+    journal.redo().unwrap();
+    journal.undo().unwrap();
+    assert!(previous.exists());
+    journal.undo().unwrap();
+    assert!(!previous.exists());
+}
+
+#[test]
+fn redo_does_not_cross_an_incomplete_undo_into_a_newer_operation() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    let receipts = ["one", "two"].map(|name| {
+        let source = temp.path().join(name);
+        let destination = temp.path().join(format!("target-{name}/{name}"));
+        fs::create_dir(destination.parent().unwrap()).unwrap();
+        fs::write(&source, name).unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        crate::fs::TransferReceipt {
+            source,
+            destination,
+            replaced_existing: false,
+        }
+    });
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    let newer = temp.path().join("newer.txt");
+    fs::write(&newer, "").unwrap();
+    journal
+        .record(Action::new_file(newer.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
+    let blocked = receipts[0].destination.parent().unwrap();
+    fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.undo();
+    fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert!(!receipts[1].destination.exists());
+    let mut journal = Journal::open(path).unwrap();
+    let redo = journal.redo();
+    assert!(
+        !newer.exists(),
+        "Redo must not recreate unrelated newer history while Undo is incomplete"
+    );
+    assert!(redo.unwrap_err().to_string().contains("retry Undo"));
+    assert!(receipts[0].destination.exists());
+    journal.undo().unwrap();
+    journal.redo().unwrap();
+    for receipt in &receipts {
+        assert!(receipt.destination.exists());
+    }
+    assert!(!newer.exists());
+    journal.redo().unwrap();
+    assert!(newer.exists());
+}
+
+#[test]
+fn partial_single_directory_undo_keeps_newer_history_blocked_until_cleanup_finishes() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    for name in ["first", "second"] {
+        fs::create_dir(source.join(name)).unwrap();
+        fs::write(source.join(name).join("data"), "needs permission repair").unwrap();
+    }
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let locked = fs::read_dir(&destination)
+        .unwrap()
+        .last()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    let newer = temp.path().join("newer");
+    fs::write(&newer, "").unwrap();
+    journal
+        .record(Action::new_file(newer.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
+    let failed = journal.undo();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    let mut journal = Journal::open(path).unwrap();
+    assert!(
+        journal
+            .redo()
+            .unwrap_err()
+            .to_string()
+            .contains("retry Undo")
+    );
+    assert!(!newer.exists());
+    assert_eq!(
+        fs::read(locked.join("data")).unwrap(),
+        b"needs permission repair"
+    );
+    journal.undo().unwrap();
+    assert!(!destination.exists());
 }
