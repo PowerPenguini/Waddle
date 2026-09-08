@@ -3,6 +3,7 @@ use std::{io, path::PathBuf};
 
 mod effects;
 mod fingerprint;
+mod recovery;
 mod removal;
 mod store;
 mod trash_receipt;
@@ -115,6 +116,8 @@ struct Entry {
     // A started Redo retained below newer actions when their recording forks history.
     #[serde(default)]
     redo_pending: bool,
+    #[serde(default)]
+    running: Option<Direction>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -178,6 +181,8 @@ pub(crate) struct TransferItem {
     undone: bool,
     #[serde(default)]
     removal: Option<removal::RemovalPlan>,
+    #[serde(default)]
+    publication: Option<recovery::Publication>,
 }
 
 fn legacy_transfer_requires_refusal() -> bool {
@@ -212,7 +217,9 @@ impl Action {
     pub(super) fn has_partial_effects(&self) -> bool {
         match self {
             Self::Transfer { items, .. } => {
-                items.iter().any(|item| item.removal.is_some())
+                items
+                    .iter()
+                    .any(|item| item.removal.is_some() || item.publication.is_some())
                     || items
                         .first()
                         .is_some_and(|first| items.iter().any(|item| item.undone != first.undone))
@@ -270,6 +277,7 @@ impl Action {
                     replaced_existing: receipt.replaced_existing,
                     undone: false,
                     removal: None,
+                    publication: None,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;

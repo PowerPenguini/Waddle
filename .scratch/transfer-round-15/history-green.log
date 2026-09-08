@@ -1,0 +1,82 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+warning: unused import: `journal_remove`
+  --> src/fs/mod.rs:25:44
+   |
+25 | pub(crate) use mutation::{JournalTransfer, journal_remove, tree_bytes};
+   |                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary parentheses around closure body
+   --> src/journal/store.rs:106:34
+    |
+106 |             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+    |                                  ^                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+106 -             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+106 +             .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
+    |
+
+warning: unnecessary parentheses around closure body
+   --> src/journal/store.rs:148:34
+    |
+148 |             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+    |                                  ^                                                             ^
+    |
+help: remove these parentheses
+    |
+148 -             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+148 +             .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
+    |
+
+warning: function `journal_remove` is never used
+   --> src/fs/mutation.rs:462:15
+    |
+462 | pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `is_directory` is never used
+  --> src/journal/fingerprint.rs:47:19
+   |
+46 | impl TreeFingerprint {
+   | -------------------- method in this implementation
+47 |     pub(super) fn is_directory(&self) -> bool {
+   |                   ^^^^^^^^^^^^
+
+warning: `waddle` (bin "waddle" test) generated 5 warnings (run `cargo fix --bin "waddle" -p waddle --tests` to apply 3 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.74s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 10 tests
+test journal::tests::audit_copy_fingerprint_error_protects_older_history ... first failure: could not fingerprint /tmp/.tmpGizPMH/destination: Permission denied (os error 13)
+Undo after the Redo failure: Err(Message("Redo partially completed; retry Redo before Undo")); older file exists=true
+ok
+test journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpJKiTCn/destination: Permission denied (os error 13)
+kind=Copy, crash=false, undo=false, retry=Ok(Effect { status: "Redid Copy", changed_folders: ["/tmp/.tmpJKiTCn"], select: Some("/tmp/.tmpJKiTCn/destination") }); source exists=true, destination exists=true
+ok
+test journal::tests::audit_copy_redo_recovers_after_process_exit ... kind=Copy, crash=true, undo=false, retry=Ok(Effect { status: "Redid Copy", changed_folders: ["/tmp/.tmpcyfW9L"], select: Some("/tmp/.tmpcyfW9L/destination") }); source exists=true, destination exists=true
+ok
+test journal::tests::audit_copy_undo_recovers_after_process_exit ... kind=Copy, crash=true, undo=true, retry=Ok(Effect { status: "Undid Copy", changed_folders: ["/tmp/.tmpj9u39K"], select: Some("/tmp/.tmpj9u39K/source") }); source exists=true, destination exists=false
+ok
+test journal::tests::audit_history_fault_child ... ok
+test journal::tests::audit_move_fingerprint_error_protects_older_history ... first failure: could not fingerprint /tmp/.tmp57N0LS/destination: Permission denied (os error 13)
+Undo after the Redo failure: Err(Message("Redo partially completed; retry Redo before Undo")); older file exists=true
+ok
+test journal::tests::audit_move_redo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpVA0lOv/destination: Permission denied (os error 13)
+kind=Move, crash=false, undo=false, retry=Ok(Effect { status: "Redid Move", changed_folders: ["/tmp/.tmpVA0lOv"], select: Some("/tmp/.tmpVA0lOv/destination") }); source exists=false, destination exists=true
+ok
+test journal::tests::audit_move_redo_recovers_after_process_exit ... kind=Move, crash=true, undo=false, retry=Ok(Effect { status: "Redid Move", changed_folders: ["/tmp/.tmp6uVbSr"], select: Some("/tmp/.tmp6uVbSr/destination") }); source exists=false, destination exists=true
+ok
+test journal::tests::audit_move_undo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpJ3sr4C/source: Permission denied (os error 13)
+kind=Move, crash=false, undo=true, retry=Ok(Effect { status: "Undid Move", changed_folders: ["/tmp/.tmpJ3sr4C"], select: Some("/tmp/.tmpJ3sr4C/source") }); source exists=true, destination exists=false
+ok
+test journal::tests::audit_move_undo_recovers_after_process_exit ... kind=Move, crash=true, undo=true, retry=Ok(Effect { status: "Undid Move", changed_folders: ["/tmp/.tmpybgnVu"], select: Some("/tmp/.tmpybgnVu/source") }); source exists=true, destination exists=false
+ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.03s
+

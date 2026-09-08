@@ -22,7 +22,7 @@ pub(crate) use transfer_batch::TransferRetry;
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
 pub(crate) use browse::{format_size, watchable_directories_without_automount};
-pub(crate) use mutation::{JournalTransfer, journal_remove, tree_bytes};
+pub(crate) use mutation::{JournalTransfer, tree_bytes};
 
 #[cfg(test)]
 pub(crate) use mutation::journal_move;

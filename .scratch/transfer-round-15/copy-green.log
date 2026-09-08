@@ -1,0 +1,25 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.02s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 10 tests
+test fs::tests::audit_copy_rejects_mixed_source_versions ... Copy, replace=false, sparse=false: edit after 1048576 bytes; receipts=0, failures=1, warnings=0
+ok
+test fs::tests::audit_cross_device_move_rejects_mixed_source_versions ... Move, replace=false, sparse=false: edit after 1048576 bytes; receipts=0, failures=1, warnings=0
+ok
+test fs::tests::audit_cross_device_replace_move_rejects_mixed_source_versions ... Move, replace=true, sparse=false: edit after 1048576 bytes; receipts=0, failures=1, warnings=0
+destination old bytes: 0; new bytes: 0
+ok
+test fs::tests::audit_failed_copy_replace_preserves_all_old_children ... ok
+test fs::tests::audit_failed_move_replace_preserves_all_old_children ... ok
+test fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict ... ok
+test fs::tests::audit_replace_copy_rejects_mixed_source_versions ... Copy, replace=true, sparse=false: edit after 1048576 bytes; receipts=0, failures=1, warnings=0
+destination old bytes: 0; new bytes: 0
+ok
+test fs::tests::audit_skip_copy_child_still_transfers_sibling ... ok
+test fs::tests::audit_skip_move_child_still_transfers_sibling ... ok
+test fs::tests::audit_sparse_copy_rejects_mixed_source_versions ... Copy, replace=false, sparse=true: edit after 1048576 bytes; receipts=0, failures=1, warnings=0
+ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.02s
+

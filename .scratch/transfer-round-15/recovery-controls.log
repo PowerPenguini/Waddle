@@ -1,0 +1,39 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.00s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 15 tests
+test journal::tests::audit_history_fault_child ... ignored, Child process helper for isolated filesystem fault injection
+test journal::tests::audit_undo_cross_device_move_preserves_hardlinks ... ok
+test journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files ... ok
+test journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup ... ok
+kind=Move, crash=true, undo=true, retry=Ok(Effect { status: "Undid Move", changed_folders: ["/tmp/.tmpuHfPp1"], select: Some("/tmp/.tmpuHfPp1/source") }); source exists=true, destination exists=false
+test journal::tests::audit_move_undo_recovers_after_process_exit ... ok
+first failure: could not fingerprint /tmp/.tmpCqmUDL/destination: Permission denied (os error 13)
+Undo after the Redo failure: Err(Message("Redo partially completed; retry Redo before Undo")); older file exists=true
+test journal::tests::audit_move_fingerprint_error_protects_older_history ... ok
+first failure: could not fingerprint /tmp/.tmpv1YeBd/destination: Permission denied (os error 13)
+kind=Move, crash=false, undo=false, retry=Ok(Effect { status: "Redid Move", changed_folders: ["/tmp/.tmpv1YeBd"], select: Some("/tmp/.tmpv1YeBd/destination") }); source exists=false, destination exists=true
+test journal::tests::audit_move_redo_recovers_after_fingerprint_read_error ... ok
+first failure: could not fingerprint /tmp/.tmpbetiKm/destination: Permission denied (os error 13)
+kind=Copy, crash=false, undo=false, retry=Ok(Effect { status: "Redid Copy", changed_folders: ["/tmp/.tmpbetiKm"], select: Some("/tmp/.tmpbetiKm/destination") }); source exists=true, destination exists=true
+test journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error ... ok
+kind=Copy, crash=true, undo=true, retry=Ok(Effect { status: "Undid Copy", changed_folders: ["/tmp/.tmpJJ8Msn"], select: Some("/tmp/.tmpJJ8Msn/source") }); source exists=true, destination exists=false
+test journal::tests::audit_copy_undo_recovers_after_process_exit ... ok
+first failure: could not fingerprint /tmp/.tmpyhDP4J/destination: Permission denied (os error 13)
+kind=Copy, crash=true, undo=false, retry=Ok(Effect { status: "Redid Copy", changed_folders: ["/tmp/.tmpZ3x317"], select: Some("/tmp/.tmpZ3x317/destination") }); source exists=true, destination exists=true
+kind=Move, crash=true, undo=false, retry=Ok(Effect { status: "Redid Move", changed_folders: ["/tmp/.tmpifKa8P"], select: Some("/tmp/.tmpifKa8P/destination") }); source exists=false, destination exists=true
+kind=Copy, crash=true, undo=false, retry=Ok(Effect { status: "Redid Copy", changed_folders: ["/tmp/.tmpIQ0Hsu"], select: Some("/tmp/.tmpIQ0Hsu/destination") }); source exists=true, destination exists=true
+Undo after the Redo failure: Err(Message("Redo partially completed; retry Redo before Undo")); older file exists=true
+first failure: could not fingerprint /tmp/.tmp3KXFkD/source: Permission denied (os error 13)test journal::tests::audit_move_redo_recovers_after_process_exit ... 
+ok
+test journal::tests::audit_copy_fingerprint_error_protects_older_history ... ok
+test journal::tests::audit_copy_redo_recovers_after_process_exit ... ok
+kind=Move, crash=false, undo=true, retry=Ok(Effect { status: "Undid Move", changed_folders: ["/tmp/.tmp3KXFkD"], select: Some("/tmp/.tmp3KXFkD/source") }); source exists=true, destination exists=false
+test journal::tests::audit_move_undo_recovers_after_fingerprint_read_error ... ok
+test journal::tests::audit_cross_device_history_recovers_interrupted_source_cleanup ... ok
+kind=Move, crash=true, undo=false, retry=Ok(Effect { status: "Redid Move", changed_folders: ["/tmp/.tmpCnfZXu"], select: Some("/tmp/.tmpCnfZXu/destination") }); source exists=false, destination exists=true
+test journal::tests::audit_recovery_refuses_a_substituted_destination_with_identical_contents ... ok
+
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 533 filtered out; finished in 0.08s
+

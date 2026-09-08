@@ -44,10 +44,6 @@ pub(super) struct TreeFingerprint {
 }
 
 impl TreeFingerprint {
-    pub(super) fn is_directory(&self) -> bool {
-        self.root.kind == libc::S_IFDIR
-    }
-
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
         Self::read_with_permissions(path, true)
     }

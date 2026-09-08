@@ -65,6 +65,18 @@ impl RemovalPlan {
     }
 
     pub(super) fn remove(&mut self, root: &Path) -> Result<(), Error> {
+        // A process may have exited after unlinking an entry but before saving
+        // its progress. Absence needs no further deletion; retained entries are
+        // still checked by identity, contents, and exact directory membership.
+        let mut remaining = VecDeque::new();
+        for entry in &self.remaining {
+            match fs::symlink_metadata(entry.path(root)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io("could not reconcile Undo cleanup", error)),
+                Ok(_) => remaining.push_back(entry.clone()),
+            }
+        }
+        self.remaining = remaining;
         self.verify(root)?;
         while let Some(entry) = self.remaining.front() {
             let path = entry.path(root);

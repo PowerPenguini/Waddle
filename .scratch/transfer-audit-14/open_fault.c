@@ -14,6 +14,8 @@ static int inject(const char *path, int flags) {
     const char *armed = getenv("WADDLE_AUDIT_ARMED");
     int expected_access = getenv("WADDLE_AUDIT_WRITE") ? O_WRONLY : O_RDONLY;
     if (!target || !armed || (flags & O_ACCMODE) != expected_access || strcmp(path, target)) return 0;
+    const char *effect_missing = getenv("WADDLE_AUDIT_EFFECT_MISSING");
+    if (effect_missing && access(effect_missing, F_OK) == 0) return 0;
     if (unlink(armed)) return 0;
     const char *mode = getenv("WADDLE_AUDIT_FAULT");
     if (mode && !strcmp(mode, "crash")) _exit(86);
@@ -33,3 +35,24 @@ int name(const char *path, int flags, ...) { \
 }
 WRAP_OPEN(open)
 WRAP_OPEN(open64)
+
+/* Interrupt a cross-device Move after a specific source entry was unlinked. */
+int unlink(const char *path) {
+    int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+    int result = real_unlink(path);
+    const char *target = getenv("WADDLE_AUDIT_UNLINK");
+    const char *armed = getenv("WADDLE_AUDIT_ARMED");
+    if (!result && target && armed && !strcmp(path, target) && !real_unlink(armed)) _exit(86);
+    return result;
+}
+
+/* Stop after the write-ahead journal rename, before result publication. */
+int rename(const char *from, const char *to) {
+    int (*real_rename)(const char *, const char *) = dlsym(RTLD_NEXT, "rename");
+    int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+    int result = real_rename(from, to);
+    const char *commit = getenv("WADDLE_AUDIT_COMMIT");
+    const char *armed = getenv("WADDLE_AUDIT_ARMED");
+    if (!result && commit && armed && !strcmp(to, commit) && !real_unlink(armed)) _exit(86);
+    return result;
+}

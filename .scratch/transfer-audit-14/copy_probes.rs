@@ -1,4 +1,13 @@
 fn audit_source_edit(action: Action, replace: bool, sparse: bool) {
+    audit_source_edit_with_timestamp(action, replace, sparse, false);
+}
+
+fn audit_source_edit_with_timestamp(
+    action: Action,
+    replace: bool,
+    sparse: bool,
+    restore_mtime: bool,
+) {
     use std::io::{Seek, SeekFrom, Write};
     let temp = tempfile::tempdir().unwrap();
     let target = if matches!(action, Action::Move) {
@@ -34,6 +43,7 @@ fn audit_source_edit(action: Action, replace: bool, sparse: bool) {
     } else {
         batch
     };
+    let modified = fs::metadata(&source).unwrap().modified().unwrap();
     let mut edited_at = None;
     let outcome = batch.run_with(
         || false,
@@ -46,6 +56,9 @@ fn audit_source_edit(action: Action, replace: bool, sparse: bool) {
                 let mut file = fs::OpenOptions::new().write(true).open(&source).unwrap();
                 file.seek(SeekFrom::Start(0)).unwrap();
                 file.write_all(&vec![b'B'; size]).unwrap();
+                if restore_mtime {
+                    file.set_modified(modified).unwrap();
+                }
             }
         },
     );
@@ -86,17 +99,14 @@ fn audit_source_edit(action: Action, replace: bool, sparse: bool) {
 }
 
 #[test]
-#[ignore = "Known defect under audit: concurrent source edit publishes a mixed copy"]
 fn audit_copy_rejects_mixed_source_versions() {
     audit_source_edit(Action::Copy, false, false);
 }
 #[test]
-#[ignore = "Known defect under audit: concurrent source edit corrupts replacement copy"]
 fn audit_replace_copy_rejects_mixed_source_versions() {
     audit_source_edit(Action::Copy, true, false);
 }
 #[test]
-#[ignore = "Known defect under audit: concurrent source edit corrupts sparse copy"]
 fn audit_sparse_copy_rejects_mixed_source_versions() {
     audit_source_edit(Action::Copy, false, true);
 }
@@ -107,4 +117,38 @@ fn audit_cross_device_move_rejects_mixed_source_versions() {
 #[test]
 fn audit_cross_device_replace_move_rejects_mixed_source_versions() {
     audit_source_edit(Action::Move, true, false);
+}
+
+#[test]
+fn audit_copy_detects_edits_that_preserve_size_and_modification_time() {
+    audit_source_edit_with_timestamp(Action::Copy, true, false, true);
+}
+
+#[test]
+fn audit_copy_refuses_a_directory_changed_while_copying() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("large"), vec![b'A'; 4 * 1024 * 1024]).unwrap();
+    let mut changed = false;
+    let outcome = TransferBatch::try_new(vec![source.clone()], target.clone(), Action::Copy)
+        .unwrap()
+        .run_with(
+            || false,
+            |progress| {
+                if !changed && progress.completed_bytes > 0 {
+                    fs::write(source.join("new-child"), b"preserve").unwrap();
+                    changed = true;
+                }
+            },
+        );
+    let TransferBatchOutcome::Complete(report) = outcome else {
+        panic!("no conflict")
+    };
+    assert!(changed);
+    assert!(!report.failures.is_empty());
+    assert!(!target.join("source").exists());
+    assert_eq!(fs::read(source.join("new-child")).unwrap(), b"preserve");
 }

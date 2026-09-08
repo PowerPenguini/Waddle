@@ -8,13 +8,17 @@ use super::{
     TreeFingerprint, store::Effect, trash,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Direction {
     Undo,
     Redo,
 }
 
-pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect, Error> {
+pub(super) fn apply(
+    action: &mut Action,
+    direction: Direction,
+    checkpoint: &mut dyn FnMut(&Action) -> Result<(), Error>,
+) -> Result<Effect, Error> {
     match action {
         Action::Rename {
             before,
@@ -112,7 +116,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
             kind,
             items,
             transfer,
-        } => apply_transfer(*kind, items, direction, transfer),
+        } => apply_transfer(*kind, items, direction, transfer, checkpoint),
         Action::Trash { items, transfer } => apply_trash(items, direction, transfer),
         Action::Restore {
             items,
@@ -239,102 +243,121 @@ fn apply_transfer(
     items: &mut [TransferItem],
     direction: Direction,
     transfer: &mut crate::fs::JournalTransfer,
+    checkpoint: &mut dyn FnMut(&Action) -> Result<(), Error>,
 ) -> Result<Effect, Error> {
     if items.iter().any(|item| item.replaced_existing) {
         return Err(Error::message(
             "Refused Undo: this transfer replaced an existing destination that cannot be restored",
         ));
     }
-    let effect: Result<Effect, Error> = match direction {
-        Direction::Undo => {
-            for item in items.iter() {
-                if item.undone {
-                    if matches!(kind, TransferKind::Move) {
-                        verify_tree(&item.source, &item.source_fingerprint)?;
-                    }
-                    continue;
+    let save = |items: &[TransferItem],
+                transfer: &crate::fs::JournalTransfer,
+                checkpoint: &mut dyn FnMut(&Action) -> Result<(), Error>| {
+        checkpoint(&Action::Transfer {
+            kind,
+            items: items.to_vec(),
+            transfer: transfer.clone(),
+        })
+    };
+    // Validate all untouched entries before making new changes. Pending effects
+    // validate their recorded identities when they resume below.
+    for item in items.iter() {
+        if item.publication.is_some() || item.removal.is_some() {
+            continue;
+        }
+        match direction {
+            Direction::Undo if item.undone => {
+                if matches!(kind, TransferKind::Move) {
+                    verify_tree(&item.source, &item.source_fingerprint)?;
                 }
-                if let Some(removal) = &item.removal {
-                    removal.verify(&item.destination)?;
-                } else {
-                    verify_tree(&item.destination, &item.result_fingerprint)?;
-                }
+            }
+            Direction::Undo => {
+                verify_tree(&item.destination, &item.result_fingerprint)?;
                 if matches!(kind, TransferKind::Move) {
                     ensure_absent(&item.source)?;
                 }
             }
-            for item in items.iter_mut().rev().filter(|item| !item.undone) {
-                let result = match kind {
-                    // A single unlink cannot partially remove an item. Only
-                    // directories need the persisted per-entry removal plan.
-                    TransferKind::Copy if !item.result_fingerprint.is_directory() => {
-                        crate::fs::journal_remove(&item.destination)
-                    }
-                    TransferKind::Copy => {
-                        if item.removal.is_none() {
-                            let plan = super::removal::RemovalPlan::capture(&item.destination)?;
-                            verify_tree(&item.destination, &item.result_fingerprint)?;
-                            item.removal = Some(plan);
-                        }
-                        item.removal
-                            .as_mut()
-                            .unwrap()
-                            .remove(&item.destination)
-                            .map_err(|e| e.to_string())
-                    }
-                    TransferKind::Move => transfer.apply(
-                        crate::transfer::Action::Move,
-                        &item.destination,
-                        &item.source,
-                    ),
-                };
-                if let Err(error) = result {
-                    return Err(error.into());
-                }
-                item.undone = true;
-                item.removal = None;
-                if matches!(kind, TransferKind::Move) {
-                    item.source_fingerprint = TreeFingerprint::read(&item.source)?;
-                }
+            Direction::Redo if item.undone => {
+                verify_tree(&item.source, &item.source_fingerprint)?;
+                ensure_absent(&item.destination)?;
             }
-            Ok(transfer_effect(kind, items, Direction::Undo))
+            Direction::Redo => verify_tree(&item.destination, &item.result_fingerprint)?,
         }
-        Direction::Redo => {
-            for item in items.iter() {
-                if item.undone {
-                    verify_tree(&item.source, &item.source_fingerprint)?;
-                    ensure_absent(&item.destination)?;
-                } else {
-                    verify_tree(&item.destination, &item.result_fingerprint)?;
-                }
-            }
-            // As with Undo, retain completed entries when a later entry fails.
-            // Journal saves their state on error so a retry can resume safely.
-            for item in items.iter_mut().filter(|item| item.undone) {
-                let result = match kind {
-                    TransferKind::Copy => transfer.apply(
-                        crate::transfer::Action::Copy,
-                        &item.source,
-                        &item.destination,
-                    ),
-                    TransferKind::Move => transfer.apply(
-                        crate::transfer::Action::Move,
-                        &item.source,
-                        &item.destination,
-                    ),
-                };
-                if let Err(error) = result {
-                    return Err(error.into());
-                }
-                item.result_fingerprint = TreeFingerprint::read(&item.destination)?;
-                item.undone = false;
-            }
-            Ok(transfer_effect(kind, items, Direction::Redo))
-        }
+    }
+    let indices: Vec<_> = if direction == Direction::Undo {
+        (0..items.len()).rev().collect()
+    } else {
+        (0..items.len()).collect()
     };
-    let effect = effect?;
+    for index in indices {
+        if items[index].undone == (direction == Direction::Undo) {
+            continue;
+        }
+        let mut item = items[index].clone();
+        if matches!((kind, direction), (TransferKind::Copy, Direction::Undo)) {
+            if item.removal.is_none() {
+                item.removal = Some(super::removal::RemovalPlan::capture(&item.destination)?);
+                verify_tree(&item.destination, &item.result_fingerprint)?;
+                items[index] = item.clone();
+                save(items, transfer, checkpoint)?;
+            }
+            let result = item.removal.as_mut().unwrap().remove(&item.destination);
+            items[index] = item.clone();
+            result?;
+            item.removal = None;
+        } else {
+            let (source, destination) = if direction == Direction::Undo {
+                (item.destination.clone(), item.source.clone())
+            } else {
+                (item.source.clone(), item.destination.clone())
+            };
+            if item.publication.is_none() {
+                let action = if matches!(kind, TransferKind::Move) {
+                    crate::transfer::Action::Move
+                } else {
+                    crate::transfer::Action::Copy
+                };
+                let cleanup = if matches!(kind, TransferKind::Move) {
+                    Some(super::removal::RemovalPlan::capture(&source)?)
+                } else {
+                    None
+                };
+                let result = transfer.apply_checkpointed(
+                    action,
+                    &source,
+                    &destination,
+                    &mut |staging, context| {
+                        item.publication = Some(
+                            super::recovery::Publication::capture(staging, cleanup.clone())
+                                .map_err(|e| e.to_string())?,
+                        );
+                        items[index] = item.clone();
+                        save(items, context, checkpoint).map_err(|e| e.to_string())
+                    },
+                );
+                items[index] = item.clone();
+                result.map_err(Error::message)?;
+            }
+            let result = item
+                .publication
+                .as_mut()
+                .unwrap()
+                .finish(&source, &destination);
+            items[index] = item.clone();
+            let fingerprint = result?;
+            if direction == Direction::Undo {
+                item.source_fingerprint = fingerprint;
+            } else {
+                item.result_fingerprint = fingerprint;
+            }
+            item.publication = None;
+        }
+        item.undone = direction == Direction::Undo;
+        items[index] = item;
+        save(items, transfer, checkpoint)?;
+    }
     *transfer = Default::default();
-    Ok(effect)
+    Ok(transfer_effect(kind, items, direction))
 }
 
 fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direction) -> Effect {
@@ -366,7 +389,7 @@ fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direct
     }
 }
 
-fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), Error> {
+pub(super) fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), Error> {
     if &TreeFingerprint::read(path)? == expected {
         Ok(())
     } else {
@@ -388,7 +411,7 @@ fn verify(path: &Path, expected: &Fingerprint) -> Result<(), Error> {
     }
 }
 
-fn ensure_absent(path: &Path) -> Result<(), Error> {
+pub(super) fn ensure_absent(path: &Path) -> Result<(), Error> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(Error::message(format!(
@@ -403,7 +426,7 @@ fn ensure_absent(path: &Path) -> Result<(), Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
+pub(super) fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let source = CString::new(source.as_os_str().as_bytes())
@@ -432,7 +455,7 @@ fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
+pub(super) fn rename_noreplace(source: &Path, destination: &Path) -> Result<(), Error> {
     ensure_absent(destination)?;
     fs::rename(source, destination).map_err(|error| Error::io("could not move entry", error))
 }

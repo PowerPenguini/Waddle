@@ -114,8 +114,13 @@ fn copy_revealed(
     progress: &mut dyn FnMut(u64) -> io::Result<()>,
     links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
+    let snapshot = SourceTree::read(source)?;
     let staging = staging_path(destination)?;
     let warnings = copy_item_with_warnings(source, &staging, progress, links)?;
+    if let Err(error) = snapshot.verify(source) {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
     if let Err(error) = rename_noreplace(&staging, destination) {
         remove_incomplete_copy(&staging);
         return Err(error);
@@ -256,14 +261,10 @@ fn replace_by_staging(
     progress: &mut dyn FnMut(u64) -> io::Result<()>,
     links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
-    let snapshot = remove_source
-        .then(|| SourceTree::read(source))
-        .transpose()?;
+    let snapshot = SourceTree::read(source)?;
     let staging = staging_path(destination)?;
     let warnings = copy_item_with_warnings(source, &staging, progress, links)?;
-    if let Some(snapshot) = &snapshot
-        && let Err(error) = snapshot.verify(source)
-    {
+    if let Err(error) = snapshot.verify(source) {
         remove_incomplete_copy(&staging);
         return Err(error);
     }
@@ -286,7 +287,7 @@ fn replace_by_staging(
     // Publication is committed. Recursive deletion may fail after removing some
     // old entries, so exchanging it back would fabricate a destructive rollback.
     let cleanup_warning = cleanup_replaced(&staging);
-    if let Some(snapshot) = snapshot {
+    if remove_source {
         snapshot.remove_copied(source)?;
     }
     let mut warnings = warnings.publish(&staging, destination, links);
@@ -373,6 +374,49 @@ pub(crate) struct JournalTransfer {
 }
 
 impl JournalTransfer {
+    /// Persist the identity of the prepared result before its visible rename.
+    pub(crate) fn apply_checkpointed(
+        &mut self,
+        action: Action,
+        source: &Path,
+        destination: &Path,
+        checkpoint: &mut dyn FnMut(&Path, &Self) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use std::os::unix::fs::MetadataExt;
+        let mut run = |this: &mut Self| -> Result<(), String> {
+            if action == Action::Move
+                && fs::symlink_metadata(source)
+                    .map_err(|e| e.to_string())?
+                    .dev()
+                    == fs::metadata(destination.parent().unwrap_or(Path::new(".")))
+                        .map_err(|e| e.to_string())?
+                        .dev()
+            {
+                checkpoint(source, this)?;
+                return rename_noreplace(source, destination).map_err(|e| e.to_string());
+            }
+            let snapshot = SourceTree::read(source).map_err(|e| e.to_string())?;
+            let staging = staging_path(destination).map_err(|e| e.to_string())?;
+            let prepared = copy_item_with_warnings(source, &staging, &mut |_| Ok(()), &this.links)
+                .map_err(|e| e.to_string())?;
+            if let Err(error) = snapshot.verify(source) {
+                remove_incomplete_copy(&staging);
+                return Err(error.to_string());
+            }
+            // Cache paths name the final location. Their recorded inode still
+            // belongs to the prepared copy, so an unrelated destination cannot
+            // be reused. Save this context together with the publication intent.
+            prepared.publish(&staging, destination, &mut this.links);
+            checkpoint(&staging, this)?;
+            rename_noreplace(&staging, destination).map_err(|e| e.to_string())?;
+            if action == Action::Move {
+                snapshot.remove_copied(source).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        };
+        run(self)
+    }
+
     pub(crate) fn apply(
         &mut self,
         action: Action,
@@ -412,10 +456,6 @@ pub(crate) fn journal_move(source: &Path, destination: &Path) -> Result<(), Stri
     move_exact(source, destination)
         .map(drop)
         .map_err(|error| format!("could not move entry: {error}"))
-}
-
-pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
-    remove_item(path).map_err(|error| format!("could not remove {}: {error}", path.display()))
 }
 
 pub(super) fn available_copy_destination(

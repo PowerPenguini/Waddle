@@ -1,6 +1,6 @@
 # Refuse publication of a copy assembled from changing source data
 
-Status: ready-for-agent
+Status: resolved
 Type: bug
 Priority: P1
 
@@ -9,3 +9,7 @@ Priority: P1
 Evidence: `../copy-matrix.log`. Cross-device Move with and without Replace correctly refuses the same scheduled edit and preserves the source and previous destination.
 
 Acceptance: a changing source cannot be silently published as a successful mixed copy. Refuse conservatively with retry information; keep source data and any previous destination intact. Cover ordinary, Replace, sparse, directory/merge paths, and changes that preserve size or timestamps when designing the consistency guarantee.
+
+## Resolution
+
+Fixed in transfer round 15. The reproductions now run in the standard test suite. See `../../transfer-round-15/report.md` for implementation, additional safety cases, and validation limits.

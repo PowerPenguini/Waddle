@@ -79,7 +79,7 @@ impl Journal {
     pub(super) fn record_at(&mut self, action: Action, recorded_at: u64) -> Result<(), Error> {
         let _lock = self.lock_and_reload()?;
         if let Some(entry) = self.stored.entries.get_mut(self.stored.cursor)
-            && entry.action.has_partial_effects()
+            && (entry.running.is_some() || entry.action.has_partial_effects())
         {
             entry.redo_pending = true;
             self.stored.cursor += 1;
@@ -89,6 +89,7 @@ impl Journal {
             recorded_at,
             action,
             redo_pending: false,
+            running: None,
         });
         self.stored.cursor = self.stored.entries.len();
         self.prune(recorded_at);
@@ -102,7 +103,7 @@ impl Journal {
             .stored
             .entries
             .get(self.stored.cursor)
-            .is_some_and(|entry| entry.action.has_partial_effects())
+            .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
         {
             return Err(Error::message(
                 "Redo partially completed; retry Redo before Undo",
@@ -111,12 +112,14 @@ impl Journal {
         let Some(index) = self.stored.cursor.checked_sub(1) else {
             return Err(Error::message("Nothing to undo"));
         };
-        if self.stored.entries[index].redo_pending {
+        if self.stored.entries[index].redo_pending
+            || self.stored.entries[index].running == Some(Direction::Redo)
+        {
             return Err(Error::message(
                 "Redo partially completed; retry Redo before Undo",
             ));
         }
-        let effect = apply(&mut self.stored.entries[index].action, Direction::Undo);
+        let effect = self.apply_at(index, Direction::Undo);
         if effect.is_ok() {
             self.stored.cursor = index;
         }
@@ -127,19 +130,13 @@ impl Journal {
     pub(crate) fn redo(&mut self) -> Result<Effect, Error> {
         let _lock = self.lock_and_reload()?;
         self.prune(now_seconds());
-        if let Some(entry) = self
-            .stored
-            .cursor
-            .checked_sub(1)
-            .and_then(|index| self.stored.entries.get_mut(index))
-            && entry.redo_pending
+        if let Some(index) = self.stored.cursor.checked_sub(1)
+            && self.stored.entries[index].redo_pending
         {
-            let effect = apply(&mut entry.action, Direction::Redo);
+            let effect = self.apply_at(index, Direction::Redo);
             if effect.is_ok() {
-                entry.redo_pending = false;
+                self.stored.entries[index].redo_pending = false;
             }
-            // This entry is already below the cursor; resuming it does not redo
-            // the newer action at the cursor or consume its position.
             self.save()?;
             return effect;
         }
@@ -148,20 +145,42 @@ impl Journal {
             .cursor
             .checked_sub(1)
             .and_then(|index| self.stored.entries.get(index))
-            .is_some_and(|entry| entry.action.has_partial_effects())
+            .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
         {
             return Err(Error::message(
                 "Undo partially completed; retry Undo before Redo",
             ));
         }
-        let Some(entry) = self.stored.entries.get_mut(self.stored.cursor) else {
+        if self.stored.cursor >= self.stored.entries.len() {
             return Err(Error::message("Nothing to redo"));
-        };
-        let effect = apply(&mut entry.action, Direction::Redo);
+        }
+        let effect = self.apply_at(self.stored.cursor, Direction::Redo);
         if effect.is_ok() {
             self.stored.cursor += 1;
         }
         self.save()?;
+        effect
+    }
+
+    fn apply_at(&mut self, index: usize, direction: Direction) -> Result<Effect, Error> {
+        let mut checkpoint = self.clone();
+        let mut saved = false;
+        let effect = apply(
+            &mut self.stored.entries[index].action,
+            direction,
+            &mut |action| {
+                checkpoint.stored.entries[index].action = action.clone();
+                checkpoint.stored.entries[index].running = Some(direction);
+                checkpoint.save()?;
+                saved = true;
+                Ok(())
+            },
+        );
+        if effect.is_ok() {
+            self.stored.entries[index].running = None;
+        } else if saved {
+            self.stored.entries[index].running = Some(direction);
+        }
         effect
     }
 
@@ -204,16 +223,26 @@ impl Journal {
 
     fn prune(&mut self, now: u64) {
         let oldest = now.saturating_sub(MAX_AGE_SECONDS);
+        let protected = self
+            .stored
+            .entries
+            .iter()
+            .position(|entry| entry.running.is_some() || entry.action.has_partial_effects());
         let expired = self
             .stored
             .entries
-            .partition_point(|entry| entry.recorded_at < oldest);
+            .partition_point(|entry| entry.recorded_at < oldest)
+            .min(protected.unwrap_or(usize::MAX));
         if expired > 0 {
             self.stored.entries.drain(..expired);
             self.stored.cursor = self.stored.cursor.saturating_sub(expired);
         }
         if self.stored.entries.len() > MAX_OPERATIONS {
-            let excess = self.stored.entries.len() - MAX_OPERATIONS;
+            let excess = (self.stored.entries.len() - MAX_OPERATIONS).min(
+                protected
+                    .map(|index| index.saturating_sub(expired))
+                    .unwrap_or(usize::MAX),
+            );
             self.stored.entries.drain(..excess);
             self.stored.cursor = self.stored.cursor.saturating_sub(excess);
         }
@@ -231,10 +260,17 @@ impl Journal {
         let temporary = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&self.stored)
             .map_err(|error| Error::json("could not encode operation journal", error))?;
-        fs::write(&temporary, bytes)
+        use std::io::Write;
+        let mut file = fs::File::create(&temporary)
             .map_err(|error| Error::io("could not write operation journal", error))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| Error::io("could not flush operation journal", error))?;
         fs::rename(&temporary, path)
-            .map_err(|error| Error::io("could not commit operation journal", error))
+            .map_err(|error| Error::io("could not commit operation journal", error))?;
+        fs::File::open(directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| Error::io("could not flush operation journal directory", error))
     }
 }
 

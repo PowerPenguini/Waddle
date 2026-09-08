@@ -1,0 +1,53 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+warning: unused import: `journal_remove`
+  --> src/fs/mod.rs:25:44
+   |
+25 | pub(crate) use mutation::{JournalTransfer, journal_remove, tree_bytes};
+   |                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary parentheses around closure body
+   --> src/journal/store.rs:106:34
+    |
+106 |             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+    |                                  ^                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+106 -             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+106 +             .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
+    |
+
+warning: unnecessary parentheses around closure body
+   --> src/journal/store.rs:148:34
+    |
+148 |             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+    |                                  ^                                                             ^
+    |
+help: remove these parentheses
+    |
+148 -             .is_some_and(|entry| (entry.running.is_some() || entry.action.has_partial_effects()))
+148 +             .is_some_and(|entry| entry.running.is_some() || entry.action.has_partial_effects())
+    |
+
+warning: function `journal_remove` is never used
+   --> src/fs/mutation.rs:462:15
+    |
+462 | pub(crate) fn journal_remove(path: &Path) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `is_directory` is never used
+  --> src/journal/fingerprint.rs:47:19
+   |
+46 | impl TreeFingerprint {
+   | -------------------- method in this implementation
+47 |     pub(super) fn is_directory(&self) -> bool {
+   |                   ^^^^^^^^^^^^
+
+warning: `waddle` (bin "waddle" test) generated 5 warnings (run `cargo fix --bin "waddle" -p waddle --tests` to apply 3 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.48s
+  Executable unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)

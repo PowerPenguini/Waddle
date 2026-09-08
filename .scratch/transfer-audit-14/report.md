@@ -1,6 +1,8 @@
 # Transfer audit — source consistency, post-effect reads, interrupted history
 
-Status: ready-for-agent
+Status: resolved
+
+Follow-up: the defects below were subsequently fixed in round 15; see `../transfer-round-15/report.md`. The findings and red logs below describe the original audit, not the current behavior.
 
 Audited commit: `8009455` (after the two fixes following release 0.0.8).
 Date: 2026-09-09. Scope: diagnosis only; no production behavior changed.

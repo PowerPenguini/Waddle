@@ -1,7 +1,8 @@
 use std::{fs, io, os::unix::fs::MetadataExt, path::Path};
 
-/// The entries a cross-device Move is allowed to remove. Never discover new
-/// children during cleanup: they may contain data the copy did not include.
+/// Validate source consistency before publishing Copy or cross-device Move.
+/// Also restrict Move cleanup to the captured entries: never discover new
+/// children during deletion, since the copy did not include them.
 pub(super) struct SourceTree {
     metadata: fs::Metadata,
     children: Vec<(std::ffi::OsString, SourceTree)>,
@@ -40,7 +41,7 @@ impl SourceTree {
         let changed = old.ctime() != current.ctime() || old.ctime_nsec() != current.ctime_nsec();
         if !identity || (full && (!contents || changed)) || (!full && !old.is_dir() && !contents) {
             return Err(io::Error::other(format!(
-                "source changed during Move; retained {}",
+                "source changed during transfer; retained {}",
                 path.display()
             )));
         }
