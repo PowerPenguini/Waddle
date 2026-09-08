@@ -99,6 +99,7 @@ impl App {
         let Some(cancelled) = self.navigation.cancel_pending() else {
             return false;
         };
+        self.pending_refresh = None;
         self.operations.cancel(OperationKind::Navigation);
         if self
             .pending_tree_navigation
@@ -137,10 +138,10 @@ impl App {
                     .expect("matched pending tree navigation")
                     .1
             });
-        match self
-            .navigation
-            .complete_with_hidden_paths(&request, completion, &hidden_paths)
-        {
+        let outcome =
+            self.navigation
+                .complete_with_hidden_paths(&request, completion, &hidden_paths);
+        let task = match outcome {
             NavigationOutcome::Committed(commit) => {
                 if let Some(tree_load) = tree_load {
                     let folders = self.navigation.child_folders().to_vec();
@@ -195,7 +196,16 @@ impl App {
                 }
                 Task::none()
             }
-        }
+        };
+        let refresh = if !self.navigation.loading()
+            && self.pending_refresh.take().is_some_and(|path| {
+                self.navigation.folder_displayed() && path == self.navigation.current()
+            }) {
+            self.live_refresh()
+        } else {
+            Task::none()
+        };
+        Task::batch([task, refresh])
     }
 
     pub(super) fn refresh(&mut self, select: Option<PathBuf>) -> Task<Message> {
@@ -210,6 +220,9 @@ impl App {
 
     pub(super) fn live_refresh(&mut self) -> Task<Message> {
         if self.navigation.loading() {
+            // Coalesce changes that arrived after the in-flight scan's snapshot.
+            // Keep the path so a later navigation cannot refresh the wrong folder.
+            self.pending_refresh = Some(self.navigation.current().to_path_buf());
             return Task::none();
         }
         if !self.navigation.current().is_dir() {

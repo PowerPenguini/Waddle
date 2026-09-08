@@ -1,5 +1,172 @@
 use super::*;
 
+async fn finish_tasks(app: &mut App, task: Task<Message>) {
+    use iced::futures::StreamExt;
+    let mut pending = std::collections::VecDeque::from([task]);
+    while let Some(task) = pending.pop_front() {
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    pending.push_back(app.update(message));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn hunt_refresh_during_a_folder_scan_does_not_lose_new_entries() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for external_notification in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let folder = temp.path().join("folder");
+            std_fs::create_dir(&folder).unwrap();
+            std_fs::write(folder.join("before.txt"), "before").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(folder.clone());
+            app.view_preferences =
+                super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.navigation.settle_for_test();
+            app.sync_location_monitoring();
+            let request = app.navigation.refresh(None);
+            let scanned = fs::open_directory_revealing(
+                &folder,
+                app.view_preferences.for_directory(&folder),
+                &[],
+            )
+            .unwrap();
+            std_fs::write(folder.join("after.txt"), "after").unwrap();
+            let requested_refresh = app.update(if external_notification {
+                Message::DirectoryChanged(super::directory_watch::Event {
+                    path: folder.clone(),
+                    removed: Vec::new(),
+                    watch_failed: false,
+                })
+            } else {
+                Message::Refresh
+            });
+            let completion = app.update(Message::NavigationFinished {
+                request,
+                result: Ok(scanned),
+            });
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                finish_tasks(&mut app, Task::batch([requested_refresh, completion])),
+            )
+            .await
+            .expect("folder refresh tasks should settle");
+            let names = app
+                .navigation
+                .entries()
+                .iter()
+                .map(|entry| entry.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                ["after.txt", "before.txt"],
+                "Refresh must rescan when the pending result predates a change"
+            );
+            assert!(!app.navigation.loading());
+        }
+    });
+}
+
+#[test]
+fn sort_change_during_a_folder_scan_reaches_the_displayed_entries() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        std_fs::write(temp.path().join("a-large.txt"), "large contents").unwrap();
+        std_fs::write(temp.path().join("z-small.txt"), "x").unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.view_preferences =
+            super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        app.navigation.settle_for_test();
+        let request = app.navigation.refresh(None);
+        let scanned = fs::open_directory_revealing(
+            temp.path(),
+            app.view_preferences.for_directory(temp.path()),
+            &[],
+        )
+        .unwrap();
+        let sort = app.update(Message::SortBy(fs::SortKey::Size));
+        let completion = app.update(Message::NavigationFinished {
+            request,
+            result: Ok(scanned),
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            finish_tasks(&mut app, Task::batch([sort, completion])),
+        )
+        .await
+        .expect("sort refresh should settle");
+        let names = app
+            .navigation
+            .entries()
+            .iter()
+            .map(|entry| entry.name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["z-small.txt", "a-large.txt"]);
+        assert!(!app.navigation.loading());
+    });
+}
+
+#[test]
+fn deferred_refresh_cannot_undo_navigation_or_cancellation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for cancel in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let next = temp.path().join("next");
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir(&next).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            let request = app
+                .navigation
+                .transition(NavigationTransition::Open {
+                    requested: next.clone(),
+                    remember: true,
+                    select: None,
+                })
+                .unwrap();
+            let refresh = app.update(Message::Refresh);
+            if cancel {
+                assert!(app.cancel_pending_navigation());
+            }
+            let completion = app.update(Message::NavigationFinished {
+                request,
+                result: Ok(opened(next.clone(), Vec::new())),
+            });
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                finish_tasks(&mut app, Task::batch([refresh, completion])),
+            )
+            .await
+            .expect("navigation should settle");
+            assert_eq!(
+                app.navigation.current(),
+                if cancel { &original } else { &next }
+            );
+            assert!(!app.navigation.loading());
+            assert!(app.pending_refresh.is_none());
+        }
+    });
+}
+
 #[test]
 fn undo_is_not_ignored_while_the_current_folder_refreshes() {
     let temp = tempfile::tempdir().unwrap();

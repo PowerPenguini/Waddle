@@ -1,0 +1,27 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.86s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 19 tests
+test app::tests::navigation::drag_notice_survives_refresh_and_clears_on_the_next_interaction ... ok
+test app::tests::navigation::holding_mouse_back_no_longer_navigates_to_parent ... ok
+test app::tests::navigation::captured_escape_leaves_the_recursive_search_input ... ok
+test app::tests::navigation::another_navigation_cancels_a_pending_single_mouse_back_click ... ok
+test app::tests::navigation::mounted_tree_volume_waits_for_its_path_then_opens_the_root ... ok
+test app::tests::navigation::escape_cancels_pending_navigation_immediately ... ok
+test app::tests::navigation::first_back_cancels_tree_navigation_and_second_back_uses_history ... ok
+test app::tests::navigation::failed_folder_navigation_opens_the_error_bar ... ok
+test app::tests::navigation::displayed_locations_install_watches_from_the_newly_displayed_entries ... ok
+test app::tests::navigation::volume_reconciliation_preserves_existing_nodes ... ok
+test app::tests::navigation::mouse_side_buttons_request_back_and_forward_navigation ... ok
+test app::tests::navigation::clipboard_ownership_loss_keeps_the_internal_cut_pending ... ok
+test app::tests::navigation::double_clicking_mouse_back_navigates_to_parent_without_using_history ... ok
+test app::tests::navigation::startup_reveal_waits_for_actual_window_geometry_before_final_scroll ... ok
+test app::tests::navigation::sort_change_during_a_folder_scan_reaches_the_displayed_entries ... ok
+test app::tests::navigation::undo_is_not_ignored_while_the_current_folder_refreshes ... ok
+test app::tests::navigation::successful_unmount_notice_is_neutral_when_leaving_the_volume ... ok
+test app::tests::navigation::deferred_refresh_cannot_undo_navigation_or_cancellation ... ok
+test app::tests::navigation::hunt_refresh_during_a_folder_scan_does_not_lose_new_entries ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 429 filtered out; finished in 0.01s
+

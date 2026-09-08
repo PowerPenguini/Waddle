@@ -155,11 +155,16 @@ impl Operations {
                 return Completion::Cancelled;
             }
             let worker_cancellation = cancellation.clone();
-            let result = tokio::task::spawn_blocking(move || work(worker_cancellation))
-                .await
-                .map_err(|error| format!("background task failed: {error}"))
-                .and_then(std::convert::identity);
-            drop(permit);
+            let result = tokio::task::spawn_blocking(move || {
+                // The blocking worker outlives a dropped async waiter. Keep the
+                // queue slot and activity marker until the actual work ends.
+                let _permit = permit;
+                let _worker_activity = _foreground;
+                work(worker_cancellation)
+            })
+            .await
+            .map_err(|error| format!("background task failed: {error}"))
+            .and_then(std::convert::identity);
             if cancellation.is_cancelled() {
                 Completion::Cancelled
             } else {
@@ -278,6 +283,45 @@ mod tests {
         assert!(operations.foreground_active());
         drop(second);
         assert!(!operations.foreground_active());
+    }
+
+    #[test]
+    fn hunt_dropped_task_keeps_running_mutation_serial_and_foreground() {
+        runtime().block_on(async {
+            let operations = Operations::default();
+            let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+            let (release_sender, release_receiver) = mpsc::sync_channel(1);
+            let first = tokio::spawn(operations.run_foreground(Kind::Mutation, move |_| {
+                started_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+                Ok(())
+            }));
+            started_receiver.await.unwrap();
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            let still_foreground = operations.foreground_active();
+
+            let (second_sender, mut second_receiver) = tokio::sync::oneshot::channel();
+            let second = tokio::spawn(operations.run(Kind::Command, move |_| {
+                second_sender.send(()).unwrap();
+                Ok(())
+            }));
+            let overlapped = tokio::time::timeout(Duration::from_millis(50), &mut second_receiver)
+                .await
+                .is_ok();
+            // Always release the real blocking worker before making assertions.
+            release_sender.send(()).unwrap();
+            assert_eq!(second.await.unwrap(), Completion::Finished(Ok(())));
+            assert!(
+                still_foreground,
+                "dropping the waiter hid a still-running mutation"
+            );
+            assert!(
+                !overlapped,
+                "the next command overlapped a still-running mutation"
+            );
+            assert!(!operations.foreground_active());
+        });
     }
 
     #[test]

@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 13.10s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+
+thread 'app::tests::navigation::hunt_refresh_during_a_folder_scan_does_not_lose_new_entries' (907312) panicked at src/app/tests/navigation.rs:37:9:
+assertion `left == right` failed: Refresh must rescan when the pending result predates a change
+  left: ["before.txt"]
+ right: ["after.txt", "before.txt"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::tests::navigation::hunt_refresh_during_a_folder_scan_does_not_lose_new_entries ... FAILED
+
+failures:
+
+failures:
+    app::tests::navigation::hunt_refresh_during_a_folder_scan_does_not_lose_new_entries
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 445 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

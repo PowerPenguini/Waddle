@@ -4160,6 +4160,7 @@ dependencies = [
  "freedesktop-icons",
  "gio",
  "iced",
+ "iced_runtime",
  "image",
  "libc",
  "resvg",
