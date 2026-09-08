@@ -18,6 +18,7 @@ pub use browse::{
 };
 pub use mutation::{create_file, create_folder, delete_permanently, display_name, rename_entry};
 pub(crate) use storage_usage::{StorageUsage, storage_usage};
+pub(crate) use transfer_batch::TransferRetry;
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
 pub(crate) use browse::{format_size, watchable_directories_without_automount};
@@ -127,6 +128,7 @@ pub struct TransferReceipt {
 
 #[derive(Clone, Debug, Default)]
 pub struct TransferReport {
+    pub(crate) copied_links: tree_copy::CopyLinks,
     pub retry: Vec<(PathBuf, PathBuf)>,
     pub completed: Vec<PathBuf>,
     pub failures: Vec<TransferFailure>,

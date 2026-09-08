@@ -2518,3 +2518,48 @@ fn conflict_choices_preserve_replaced_source_files_and_existing_destinations() {
         }
     }
 }
+
+#[test]
+fn hardlink_retry_does_not_reuse_a_changed_source_or_completed_copy() {
+    for action in [Action::Copy, Action::Move] {
+        for change_source in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir_in("/dev/shm").unwrap();
+            let source = temp.path().join("source");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("a"), b"linked data").unwrap();
+            fs::hard_link(source.join("a"), source.join("b")).unwrap();
+            fs::write(target.path().join("b"), b"existing").unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::try_new(
+                vec![source.join("a"), source.join("b")],
+                target.path().to_path_buf(),
+                action,
+            )
+            .unwrap()
+            .run() else {
+                panic!("second file should conflict");
+            };
+            let report = batch.cancel();
+            fs::remove_file(target.path().join("b")).unwrap();
+            let changed = if change_source {
+                source.join("b")
+            } else {
+                target.path().join("a")
+            };
+            fs::write(changed, b"edited after the first attempt").unwrap();
+            let report = complete(report.retry_plan().into_batch(action).unwrap());
+            assert!(report.failures.is_empty());
+            let (expected_a, expected_b): (&[u8], &[u8]) = if change_source {
+                (b"linked data", b"edited after the first attempt")
+            } else {
+                (b"edited after the first attempt", b"linked data")
+            };
+            assert_eq!(fs::read(target.path().join("a")).unwrap(), expected_a);
+            assert_eq!(fs::read(target.path().join("b")).unwrap(), expected_b);
+            assert_ne!(
+                fs::metadata(target.path().join("a")).unwrap().ino(),
+                fs::metadata(target.path().join("b")).unwrap().ino()
+            );
+        }
+    }
+}

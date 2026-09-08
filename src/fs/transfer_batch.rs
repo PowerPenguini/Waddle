@@ -114,6 +114,30 @@ pub enum TransferBatchOutcome {
     Complete(TransferReport),
 }
 
+/// Retain the exact pending paths and filesystem relationships across Retry.
+#[derive(Clone, Debug)]
+pub(crate) struct TransferRetry {
+    entries: Vec<(PathBuf, PathBuf)>,
+    links: CopyLinks,
+}
+
+impl TransferRetry {
+    pub(crate) fn into_batch(self, action: Action) -> Result<TransferBatch, FsError> {
+        let mut batch = TransferBatch::try_new_mapped(self.entries, action)?;
+        batch.links = self.links;
+        Ok(batch)
+    }
+}
+
+impl TransferReport {
+    pub(crate) fn retry_plan(&self) -> TransferRetry {
+        TransferRetry {
+            entries: self.retry.clone(),
+            links: self.copied_links.clone(),
+        }
+    }
+}
+
 impl TransferBatch {
     pub fn try_new(
         sources: Vec<PathBuf>,
@@ -686,6 +710,7 @@ impl TransferBatch {
 
     fn report(self) -> TransferReport {
         TransferReport {
+            copied_links: self.links,
             retry: self.retry,
             completed: self
                 .roots

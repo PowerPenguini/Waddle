@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct CopyLinks(HashMap<(u64, u64), CopiedLink>);
+pub(crate) struct CopyLinks(HashMap<(u64, u64), CopiedLink>);
 
 #[derive(Clone, Debug)]
 struct CopiedLink {

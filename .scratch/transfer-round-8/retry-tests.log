@@ -1,0 +1,18 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.32s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 10 tests
+test app::transfer_session::queue::tests::trash_uses_progress_cancel_retry_and_history ... ok
+test app::transfer_session::queue::tests::restore_retry_preserves_hardlinks_to_already_restored_files ... ok
+test app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry ... ok
+test app::transfer_session::queue::tests::retry_preserves_hardlinks_to_files_completed_before_cancellation ... ok
+test app::transfer_session::queue::tests::retry_preserves_nested_destinations_and_does_not_repeat_successes ... ok
+test fs::tests::hardlink_retry_does_not_reuse_a_changed_source_or_completed_copy ... ok
+test app::transfer_session::tests::restore_retry_stays_foreground_until_completion_and_keeps_undo ... ok
+test fs::tests::nested_skip_preserves_only_skipped_sources_and_retry_targets ... ok
+test journal::tests::hunt_trash_undo_can_retry_after_metadata_cleanup_fails ... ok
+test app::transfer_session::queue::tests::cancellation_retry_and_progress_snapshot_are_explicit ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 508 filtered out; finished in 0.00s
+

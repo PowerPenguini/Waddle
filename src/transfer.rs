@@ -928,6 +928,7 @@ mod tests {
             initiator: Initiator::NativeDrag,
         };
         let report = TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
@@ -962,6 +963,7 @@ mod tests {
             initiator: Initiator::Clipboard,
         };
         let report = TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/do skopiowania")],
             failures: Vec::new(),
@@ -997,6 +999,7 @@ mod tests {
         assert_eq!(request.action, Action::Copy);
 
         let report = TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/two")],
             failures: Vec::new(),
@@ -1081,6 +1084,7 @@ mod tests {
         state.copy(&entries).unwrap();
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
@@ -1120,6 +1124,7 @@ mod tests {
         state.cut(&entries).unwrap();
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one")],
             failures: vec![crate::fs::TransferFailure {

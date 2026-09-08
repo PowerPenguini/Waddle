@@ -217,12 +217,12 @@ pub(super) struct Queue {
 enum Retry {
     Transfer {
         request: Request,
-        entries: Vec<(PathBuf, PathBuf)>,
+        plan: crate::fs::TransferRetry,
     },
     Trash(Vec<crate::fs::FileEntry>),
     Restore {
         entries: Vec<trash::Entry>,
-        transfers: Vec<(PathBuf, PathBuf)>,
+        plan: crate::fs::TransferRetry,
     },
 }
 
@@ -363,7 +363,7 @@ impl Queue {
                         .collect();
                     Retry::Transfer {
                         request,
-                        entries: report.retry.clone(),
+                        plan: report.retry_plan(),
                     }
                 });
                 self.history
@@ -388,7 +388,7 @@ impl Queue {
             (Operation::Restore(entries), Report::Filesystem(report)) => {
                 self.last_retry = (!report.retry.is_empty()).then(|| Retry::Restore {
                     entries: entries.clone(),
-                    transfers: report.retry.clone(),
+                    plan: report.retry_plan(),
                 });
             }
             _ => unreachable!("operation and report were checked before finishing"),
@@ -414,8 +414,9 @@ impl Queue {
             return Ok(None);
         };
         let (operation, batch) = match retry {
-            Retry::Transfer { request, entries } => {
-                let batch = TransferBatch::try_new_mapped(entries, request.action)
+            Retry::Transfer { request, plan } => {
+                let batch = plan
+                    .into_batch(request.action)
                     .map_err(|error| error.to_string())?;
                 (
                     Operation::Transfer(request),
@@ -426,8 +427,9 @@ impl Queue {
                 let batch = trash::Batch::new(entries.clone());
                 (Operation::Trash(entries), Batch::Trash(batch))
             }
-            Retry::Restore { entries, transfers } => {
-                let batch = TransferBatch::try_new_mapped(transfers, crate::transfer::Action::Move)
+            Retry::Restore { entries, plan } => {
+                let batch = plan
+                    .into_batch(crate::transfer::Action::Move)
                     .map_err(|error| error.to_string())?;
                 (
                     Operation::Restore(entries),
@@ -765,6 +767,7 @@ mod tests {
 
     fn report() -> TransferReport {
         TransferReport {
+            copied_links: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
@@ -783,6 +786,136 @@ mod tests {
             directory: false,
             metadata: Default::default(),
         }
+    }
+
+    #[test]
+    fn retry_preserves_hardlinks_to_files_completed_before_cancellation() {
+        use std::os::unix::fs::MetadataExt;
+        for action in [crate::transfer::Action::Copy, crate::transfer::Action::Move] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir_in("/dev/shm").unwrap();
+            assert_ne!(
+                fs::metadata(temp.path()).unwrap().dev(),
+                fs::metadata(target.path()).unwrap().dev()
+            );
+            let source = temp.path().join("source");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("a"), b"linked data").unwrap();
+            fs::hard_link(source.join("a"), source.join("b")).unwrap();
+            fs::write(target.path().join("b"), b"existing data").unwrap();
+            let mut request = request(target.path().to_str().unwrap());
+            request.paths = vec![source.join("a"), source.join("b")];
+            request.action = action;
+            let mut queue = Queue::open(temp.path().join("history.json"));
+            let work = queue
+                .enqueue_transfer(
+                    request.clone(),
+                    TransferBatch::new(request.paths.clone(), request.destination.clone(), action),
+                )
+                .unwrap();
+            let id = work.id();
+            let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict { batch, .. }, _) =
+                work.run()
+            else {
+                panic!("expected second file conflict");
+            };
+            queue.pause_for_conflict(id, *batch).unwrap();
+            let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), _) =
+                queue.cancel_conflict().unwrap().run()
+            else {
+                panic!("expected cancelled Transfer");
+            };
+            queue.finish(id, Report::Filesystem(&report)).unwrap();
+            assert_eq!(fs::read(target.path().join("a")).unwrap(), b"linked data");
+            fs::remove_file(target.path().join("b")).unwrap();
+            let retried = queue.retry(&Operations::default()).unwrap().unwrap();
+            let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), _) =
+                retried.run()
+            else {
+                panic!("retry should have no conflict");
+            };
+            assert!(report.failures.is_empty());
+            assert_eq!(fs::read(target.path().join("b")).unwrap(), b"linked data");
+            assert_eq!(
+                fs::metadata(target.path().join("a")).unwrap().ino(),
+                fs::metadata(target.path().join("b")).unwrap().ino(),
+                "Retry must retain the hardlink relationship with the previously completed file"
+            );
+            assert_eq!(
+                source.join("a").exists(),
+                action == crate::transfer::Action::Copy
+            );
+            assert_eq!(
+                source.join("b").exists(),
+                action == crate::transfer::Action::Copy
+            );
+        }
+    }
+
+    #[test]
+    fn restore_retry_preserves_hardlinks_to_already_restored_files() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        let files = temp.path().join("Trash/files");
+        let info = temp.path().join("Trash/info");
+        fs::create_dir_all(&files).unwrap();
+        fs::create_dir_all(&info).unwrap();
+        fs::write(files.join("a"), b"linked data").unwrap();
+        fs::hard_link(files.join("a"), files.join("b")).unwrap();
+        fs::write(target.path().join("b"), b"existing").unwrap();
+        let entries = ["a", "b"]
+            .map(|name| {
+                let metadata = info.join(format!("{name}.trashinfo"));
+                fs::write(&metadata, "fixture metadata").unwrap();
+                trash::Entry {
+                    file: FileEntry {
+                        path: files.join(name),
+                        name: name.into(),
+                        directory: false,
+                        metadata: Default::default(),
+                    },
+                    receipt: journal::TrashReceipt {
+                        original: target.path().join(name),
+                        trashed: files.join(name),
+                        info: metadata,
+                    },
+                }
+            })
+            .to_vec();
+        let operations = Operations::default();
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_restore(entries.clone(), trash::restore_batch(&entries), &operations)
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict { batch, .. }, _) =
+            work.run()
+        else {
+            panic!("expected second Restore conflict");
+        };
+        queue.pause_for_conflict(id, *batch).unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), _) =
+            queue.cancel_conflict().unwrap().run()
+        else {
+            panic!("expected cancelled Restore");
+        };
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+        fs::remove_file(target.path().join("b")).unwrap();
+        let retried = queue.retry(&operations).unwrap().unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), _) =
+            retried.run()
+        else {
+            panic!("expected completed Restore retry");
+        };
+        assert!(report.failures.is_empty());
+        assert_eq!(fs::read(target.path().join("b")).unwrap(), b"linked data");
+        assert_eq!(
+            fs::metadata(target.path().join("a")).unwrap().ino(),
+            fs::metadata(target.path().join("b")).unwrap().ino()
+        );
+        assert!(!files.join("a").exists());
+        assert!(!files.join("b").exists());
     }
 
     #[test]
@@ -1016,6 +1149,7 @@ mod tests {
         assert!(work.cancellation.load(Ordering::Acquire));
 
         let failed = TransferReport {
+            copied_links: Default::default(),
             retry: vec![(request.paths[0].clone(), destination.join("item"))],
             completed: Vec::new(),
             failures: vec![TransferFailure {
