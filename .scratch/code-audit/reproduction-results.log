@@ -1,0 +1,61 @@
+   Compiling waddle v0.0.7 (/tmp/waddle-deep-audit-6fw2lqlz)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.80s
+     Running unittests src/main.rs (target/debug/deps/waddle-2914f15492cb6aef)
+
+running 9 tests
+test app::search::deep_scan::enter_while_recursive_search_is_loading_does_not_submit_old_selection ...
+thread 'app::search::deep_scan::enter_while_recursive_search_is_loading_does_not_submit_old_selection' (843186) panicked at src/app/search.rs:359:9:
+submitted unrelated pre-search selection
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test app::shell::deep_scan::background_command_completes_when_shell_exits ...
+thread 'app::shell::deep_scan::background_command_completes_when_shell_exits' (843187) panicked at src/app/shell.rs:603:9:
+waited for background child to close inherited stdout
+FAILED
+test app::thumbnail::deep_scan::fifo_named_png_does_not_block_thumbnail_decoder ...
+thread 'app::thumbnail::deep_scan::fifo_named_png_does_not_block_thumbnail_decoder' (843193) panicked at src/app/thumbnail.rs:251:9:
+thumbnail decoder blocked opening a named pipe
+FAILED
+test app::transfer_queue::deep_scan::undo_merged_restore_keeps_preexisting_destination_files ...
+thread 'app::transfer_queue::deep_scan::undo_merged_restore_keeps_preexisting_destination_files' (843195) panicked at src/app/transfer_queue.rs:1040:9:
+Undo removed preexisting files; result = Ok(Effect { status: "Undid Restore", changed_folders: ["/home/powerpenguini/Projects/.tmpWyepB3/original"], select: None })
+FAILED
+test file_manager_service::deep_scan::service_reaps_closed_windows ...
+thread 'file_manager_service::deep_scan::service_reaps_closed_windows' (843196) panicked at src/file_manager_service.rs:207:9:
+closed window remained a zombie child of the service
+FAILED
+test journal::effects::deep_scan::copy_undo_can_recover_after_partial_removal_failure ...
+thread 'journal::effects::deep_scan::copy_undo_can_recover_after_partial_removal_failure' (843204) panicked at src/journal/effects.rs:433:24:
+retry Undo should handle already removed entries: Io { context: "could not fingerprint /tmp/.tmp8qRrJu/second/copy", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }
+FAILED
+test journal::effects::deep_scan::cross_filesystem_move_can_redo_after_undo ...
+thread 'journal::effects::deep_scan::cross_filesystem_move_can_redo_after_undo' (843205) panicked at src/journal/effects.rs:406:24:
+an unchanged directory should be redoable across filesystems: Message("Refused operation: /home/powerpenguini/Projects/.tmpSagNeC/folder or its contents changed after it was recorded")
+FAILED
+test journal::store::deep_scan::two_windows_keep_both_recorded_operations ...
+thread 'journal::store::deep_scan::two_windows_keep_both_recorded_operations' (843206) panicked at src/journal/store.rs:180:9:
+assertion `left == right` failed: second window overwrote the first window's operation
+  left: 1
+ right: 2
+FAILED
+test transfer::deep_scan::pasting_again_after_partial_cut_preserves_folder_structure ...
+thread 'transfer::deep_scan::pasting_again_after_partial_cut_preserves_folder_structure' (843207) panicked at src/transfer.rs:1177:9:
+pressing Paste again flattened the failed child into destination/b
+FAILED
+
+failures:
+
+failures:
+    app::search::deep_scan::enter_while_recursive_search_is_loading_does_not_submit_old_selection
+    app::shell::deep_scan::background_command_completes_when_shell_exits
+    app::thumbnail::deep_scan::fifo_named_png_does_not_block_thumbnail_decoder
+    app::transfer_queue::deep_scan::undo_merged_restore_keeps_preexisting_destination_files
+    file_manager_service::deep_scan::service_reaps_closed_windows
+    journal::effects::deep_scan::copy_undo_can_recover_after_partial_removal_failure
+    journal::effects::deep_scan::cross_filesystem_move_can_redo_after_undo
+    journal::store::deep_scan::two_windows_keep_both_recorded_operations
+    transfer::deep_scan::pasting_again_after_partial_cut_preserves_folder_structure
+
+test result: FAILED. 0 passed; 9 failed; 0 ignored; 0 measured; 409 filtered out; finished in 1.36s
+
+error: test failed, to rerun pass `--bin waddle`

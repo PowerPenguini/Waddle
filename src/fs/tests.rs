@@ -16,6 +16,194 @@ fn complete(batch: TransferBatch) -> TransferReport {
 }
 
 #[test]
+fn copying_a_fifo_fails_without_waiting_for_a_writer() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let fifo = CString::new(source.join("pipe").as_os_str().as_bytes()).unwrap();
+    // SAFETY: fifo is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = mpsc::channel();
+    let target = destination.clone();
+    let worker = std::thread::spawn(move || {
+        let report = complete(TransferBatch::new(vec![source], target, Action::Copy));
+        sender.send(report).unwrap();
+    });
+    let report = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Copy must reject a FIFO without blocking");
+    worker.join().unwrap();
+    assert!(report.completed.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0].error.contains("special files"));
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+}
+
+#[test]
+fn copy_and_replace_accept_maximum_length_filenames() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    for name in [
+        "a".repeat(255),
+        format!(".waddle-replace-{}-0", std::process::id()),
+    ] {
+        let source = temp.path().join(&name);
+        fs::write(&source, "first").unwrap();
+        let report = complete(TransferBatch::new(
+            vec![source.clone()],
+            destination.clone(),
+            Action::Copy,
+        ));
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(
+            fs::read_to_string(destination.join(&name)).unwrap(),
+            "first"
+        );
+
+        fs::write(&source, "replacement").unwrap();
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            TransferBatch::new(vec![source], destination.clone(), Action::Copy).run()
+        else {
+            panic!("expected conflict");
+        };
+        let report = complete(batch.resolve(ConflictChoice::Replace, false));
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(
+            fs::read_to_string(destination.join(&name)).unwrap(),
+            "replacement"
+        );
+    }
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 2);
+}
+
+#[test]
+fn resolving_a_conflict_defers_mutation_until_the_worker_runs() {
+    for action in [Action::Copy, Action::Move] {
+        for choice in [ConflictChoice::Replace, ConflictChoice::KeepBoth] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("item");
+            let destination = temp.path().join("destination");
+            fs::create_dir(&destination).unwrap();
+            fs::write(&source, "incoming").unwrap();
+            fs::write(destination.join("item"), "existing").unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                TransferBatch::new(vec![source.clone()], destination.clone(), action).run()
+            else {
+                panic!("expected conflict");
+            };
+            let resumed = batch.resolve(choice, false);
+            assert_eq!(fs::read_to_string(&source).unwrap(), "incoming");
+            assert_eq!(
+                fs::read_to_string(destination.join("item")).unwrap(),
+                "existing"
+            );
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+
+            let report = complete(resumed);
+            assert!(report.failures.is_empty());
+            let name = if choice == ConflictChoice::KeepBoth {
+                "item copy"
+            } else {
+                "item"
+            };
+            assert_eq!(
+                fs::read_to_string(destination.join(name)).unwrap(),
+                "incoming"
+            );
+            assert_eq!(source.exists(), action == Action::Copy);
+        }
+    }
+}
+
+#[test]
+fn cancellation_before_a_resolved_conflict_runs_keeps_both_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("item");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, "incoming").unwrap();
+    fs::write(destination.join("item"), "existing").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::new(vec![source.clone()], destination.clone(), Action::Move).run()
+    else {
+        panic!("expected conflict");
+    };
+    let TransferBatchOutcome::Complete(report) = batch
+        .resolve(ConflictChoice::Replace, false)
+        .run_with(|| true, |_| {})
+    else {
+        panic!("expected cancellation");
+    };
+    assert!(report.cancelled);
+    assert_eq!(report.retry, [(source.clone(), destination.join("item"))]);
+    assert_eq!(fs::read_to_string(source).unwrap(), "incoming");
+    assert_eq!(
+        fs::read_to_string(destination.join("item")).unwrap(),
+        "existing"
+    );
+}
+
+#[test]
+fn failed_move_cleanup_retries_the_remaining_tree_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root bypasses the directory permission failure used by this test.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source/folder");
+    let destination = temp.path().join("destination");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(destination.join("folder")).unwrap();
+    fs::write(source.join("a"), "moved once").unwrap();
+    fs::write(source.join("b"), "incoming").unwrap();
+    fs::write(destination.join("folder/b"), "existing").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::new(vec![source.clone()], destination.clone(), Action::Move).run()
+    else {
+        panic!("expected folder conflict");
+    };
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        batch.resolve(ConflictChoice::Replace, false).run()
+    else {
+        panic!("expected child conflict");
+    };
+    assert!(!source.join("a").exists());
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o500)).unwrap();
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report.failures.len(), 2);
+    assert_eq!(report.retry, [(source.clone(), destination.join("folder"))]);
+
+    fs::write(destination.join("folder/a"), "edited after Move").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new_mapped(report.retry, Action::Move)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected remaining folder conflict");
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, true));
+    assert!(report.failures.is_empty());
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(destination.join("folder/a")).unwrap(),
+        "edited after Move"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("folder/b")).unwrap(),
+        "incoming"
+    );
+    assert!(!destination.join("b").exists());
+}
+
+#[test]
 fn validates_names() {
     for bad in ["", ".", "..", "a/b", "a\0b"] {
         assert!(validate_name(bad).is_err());

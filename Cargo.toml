@@ -36,3 +36,6 @@ opt-level = 2
 
 [profile.release]
 strip = "debuginfo"
+
+[patch.crates-io]
+iced_widget = { path = "vendor/iced_widget" }

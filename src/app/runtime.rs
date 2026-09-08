@@ -270,6 +270,10 @@ impl App {
                     Task::none()
                 }
             }
+            Message::IconsZoomed(delta) => {
+                let steps = self.icon_zoom.steps(delta);
+                self.resize_icons(steps)
+            }
             Message::WheelScrolled(target, delta) => {
                 let now = Instant::now();
                 self.presentation.set_now(now);
@@ -618,6 +622,9 @@ impl App {
             },
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 self.modifiers = modifiers;
+                if !modifiers.control() {
+                    self.icon_zoom.reset();
+                }
                 Task::none()
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -688,6 +695,8 @@ impl App {
                 self.transition_navigation(NavigationTransition::HistoryForward)
             }
             iced::Event::Window(window::Event::Unfocused) => {
+                self.modifiers = keyboard::Modifiers::default();
+                self.icon_zoom.reset();
                 self.mouse_back_gesture = None;
                 if self.grid.finish_marquee() {
                     self.schedule_details()
@@ -708,6 +717,9 @@ impl App {
                 ..
             }) => {
                 self.modifiers = modifiers;
+                if !modifiers.control() {
+                    self.icon_zoom.reset();
+                }
                 if status == event::Status::Captured
                     && key == keyboard::Key::Named(keyboard::key::Named::Enter)
                 {
@@ -796,6 +808,32 @@ impl App {
         }
         self.mouse_back_gesture = None;
         self.transition_navigation(NavigationTransition::Back)
+    }
+
+    fn resize_icons(&mut self, steps: i32) -> Task<Message> {
+        if !self.view_preferences.resize_icons(steps) {
+            return Task::none();
+        }
+        self.presentation.set_status(format!(
+            "Icon size: {} px",
+            self.view_preferences.icon_size()
+        ));
+        self.sync_icon_size()
+    }
+
+    pub(super) fn sync_icon_size(&mut self) -> Task<Message> {
+        let y = self.grid.reflow_icons(
+            self.view_preferences.icon_size(),
+            self.navigation.entries().len(),
+            self.status_height(),
+        );
+        let scroll = self
+            .grid
+            .scroll_to(ScrollTarget::Entries, y, false, Instant::now())
+            .map_or_else(Task::none, |command| {
+                scroll_command(ScrollTarget::Entries, command)
+            });
+        Task::batch([scroll, self.load_visible_thumbnails()])
     }
 
     pub(super) fn handle_key(
@@ -888,6 +926,7 @@ impl App {
     pub(super) fn apply_input_intent(&mut self, intent: InputIntent) -> Task<Message> {
         match intent {
             InputIntent::None => Task::none(),
+            InputIntent::ResizeIcons(steps) => self.resize_icons(steps),
             InputIntent::PromptCancel => self.update(Message::PromptCancel),
             InputIntent::PromptConfirm => self.update(Message::PromptConfirm),
             InputIntent::ConflictCancel => self.cancel_transfer_conflict(),

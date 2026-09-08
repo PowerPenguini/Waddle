@@ -7,7 +7,7 @@ use std::{
 
 use iced::widget::image as widget_image;
 
-const THUMBNAIL_EDGE: u32 = 96;
+const THUMBNAIL_EDGE: u32 = super::icon_size::MAX as u32 * 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Fingerprint {
@@ -18,6 +18,9 @@ struct Fingerprint {
 impl Fingerprint {
     fn read(path: &Path) -> Option<Self> {
         let metadata = fs::metadata(path).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
         Some(Self {
             length: metadata.len(),
             modified_nanos: metadata
@@ -148,7 +151,18 @@ pub(super) async fn load(request: Request) -> Loaded {
 }
 
 fn decode(request: Request) -> Loaded {
-    let result = ::image::ImageReader::open(&request.path)
+    use std::{io::BufReader, os::unix::fs::OpenOptionsExt};
+
+    let result = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&request.path)
+        .and_then(|file| {
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("cannot thumbnail a special file"));
+            }
+            Ok(::image::ImageReader::new(BufReader::new(file)))
+        })
         .map_err(|error| error.to_string())
         .and_then(|reader| {
             reader
@@ -227,5 +241,30 @@ mod tests {
         let requests = cache.requests([image.as_path(), text.as_path()]);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, image);
+    }
+
+    #[test]
+    fn rejects_image_fifos_including_replacement_after_queuing() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("pipe.png");
+        fs::write(&path, "placeholder").unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        fs::remove_file(&path).unwrap();
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a live NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(Cache::new(1).requests([path.as_path()]).is_empty());
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(decode(request));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("thumbnail decoding must not wait for a FIFO writer");
+        worker.join().unwrap();
+        assert!(result.result.unwrap_err().contains("special file"));
     }
 }

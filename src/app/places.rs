@@ -85,6 +85,20 @@ impl Places {
         ] {
             if let Some(path) = gio::glib::user_special_dir(directory).filter(|path| path.is_dir())
             {
+                if kind == NodeKind::Desktop
+                    && entries.iter().any(|entry| {
+                        entry.kind == NodeKind::Home
+                            && (entry.path == path
+                                || entry
+                                    .path
+                                    .canonicalize()
+                                    .ok()
+                                    .zip(path.canonicalize().ok())
+                                    .is_some_and(|(home, desktop)| home == desktop))
+                    })
+                {
+                    continue;
+                }
                 entries.push(Entry {
                     path,
                     label: label.to_owned(),

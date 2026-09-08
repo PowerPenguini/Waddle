@@ -71,6 +71,8 @@ impl SearchSession {
                 grid.select_only(None, 0);
                 return Update::CancelPending;
             }
+            navigation.install_search_entries(Vec::new());
+            grid.select_only(None, 0);
             return Update::Search {
                 root: navigation.current().to_path_buf(),
                 query: self.query.clone(),
@@ -122,6 +124,9 @@ impl SearchSession {
         navigation: &mut NavigationSession,
         grid: &mut GridInteraction,
     ) -> Option<FileEntry> {
+        if self.is_loading() {
+            return None;
+        }
         let active = self.active.take()?;
         self.last_query = std::mem::take(&mut self.query);
         let selected = grid
@@ -338,5 +343,32 @@ mod tests {
         );
         assert_eq!(navigation.entries().len(), 3);
         assert_eq!(grid.selected_entry(), None);
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    #[test]
+    fn enter_while_recursive_search_is_loading_does_not_submit_old_selection() {
+        let mut nav = NavigationSession::new(PathBuf::from("/folder"));
+        nav.install_folder_entries(vec![FileEntry {
+            path: PathBuf::from("/folder/unrelated.txt"),
+            name: "unrelated.txt".into(),
+            directory: false,
+            metadata: Default::default(),
+        }]);
+        let mut grid = GridInteraction::default();
+        grid.select_only(Some(0), 1);
+        let mut search = SearchSession::default();
+        search.begin(&grid);
+        let update = search.update(&mut nav, &mut grid, "/needle".to_owned());
+        assert!(matches!(update, Update::Search { .. }));
+        assert!(search.is_loading());
+        assert!(
+            search.submit(&mut nav, &mut grid).is_none(),
+            "submitted unrelated pre-search selection"
+        );
     }
 }

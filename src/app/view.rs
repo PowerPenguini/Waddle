@@ -5,7 +5,7 @@ use iced::{
     time::Instant,
     widget::{
         self, Column, Grid, Id, Row, Space, button, column, container, mouse_area, pin,
-        progress_bar, row, rule, scrollable, stack, svg, text, text_input,
+        progress_bar, row, rule, scrollable, stack, svg, text_input,
     },
 };
 
@@ -14,13 +14,11 @@ use crate::{fs, fs::FileEntry, transfer::Preview as TransferPreview};
 use super::wheel_area::wheel_area;
 use super::{
     App, BrowserFocus, CONTENT_GUTTER, EntryIconKind, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID,
-    InputMode, LIST_COLUMN_SPACING, LIST_ENTRY_ICON_WIDTH, LIST_HEADER_HEIGHT,
-    LIST_HEADER_HORIZONTAL_PADDING, LIST_HEADER_ICON_SLOT_WIDTH, LIST_HORIZONTAL_PADDING,
-    LIST_MODIFIED_WIDTH, LIST_NAME_APPROX_CHARACTER_WIDTH, LIST_NAME_MIN_CHARACTERS,
-    LIST_ROW_HEIGHT, LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH, LIST_TYPE_WIDTH,
-    LIST_VIEW_TOP_INSET, LOCATION_ID, MONO_FONT, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
-    ScrollTarget, TILE_HEIGHT, TILE_ROW_HEIGHT, TILE_WIDTH, TOOLBAR_HEIGHT, TreeRow, UI_FONT,
-    UI_FONT_SEMIBOLD, apply_opacity, browser_background_style, clip_file_name,
+    InputMode, LIST_COLUMN_SPACING, LIST_HEADER_HEIGHT, LIST_HEADER_HORIZONTAL_PADDING,
+    LIST_HORIZONTAL_PADDING, LIST_MODIFIED_WIDTH, LIST_NAME_APPROX_CHARACTER_WIDTH,
+    LIST_NAME_MIN_CHARACTERS, LIST_SHOW_MODIFIED_AT, LIST_SHOW_SIZE_AT, LIST_SIZE_WIDTH,
+    LIST_TYPE_WIDTH, LIST_VIEW_TOP_INSET, LOCATION_ID, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
+    ScrollTarget, TOOLBAR_HEIGHT, TreeRow, apply_opacity, browser_background_style, clip_file_name,
     entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg, flat_input_style,
     focus_container_style, format_storage_usage, grid_background_style, list_row_style,
     marquee_style, native_dnd, rgba, sidebar_style, solid_background_style, themed_svg, tile_label,
@@ -65,17 +63,33 @@ impl<'a> View<'a> {
         Self { app }
     }
 
+    pub(super) fn fonts(self) -> super::fonts::Selection {
+        super::fonts::selected(self.app.view_preferences.uses_system_fonts())
+    }
+
+    pub(super) fn text<'b>(
+        self,
+        value: impl iced::advanced::text::IntoFragment<'b>,
+    ) -> iced::widget::Text<'b> {
+        iced::widget::text(value).font(self.fonts().ui)
+    }
+
     pub(super) fn app(self) -> &'a App {
         self.app
     }
 
     fn entry_icon(self, kind: EntryIconKind, size: f32, opacity: f32) -> Element<'static, Message> {
-        self.system_icon(super::system_icons::Kind::Entry(kind), size, opacity)
-            .unwrap_or_else(|| {
-                entry_svg(kind, size, self.entry_icon_color(kind))
-                    .opacity(opacity)
-                    .into()
-            })
+        self.system_icon(
+            super::system_icons::Kind::Entry(kind),
+            size,
+            opacity,
+            self.entry_icon_color(kind),
+        )
+        .unwrap_or_else(|| {
+            entry_svg(kind, size, self.entry_icon_color(kind))
+                .opacity(opacity)
+                .into()
+        })
     }
 
     fn tree_icon(
@@ -84,7 +98,7 @@ impl<'a> View<'a> {
         size: f32,
         color: iced::Color,
     ) -> Element<'static, Message> {
-        self.system_icon(super::system_icons::Kind::Tree(kind), size, 1.0)
+        self.system_icon(super::system_icons::Kind::Tree(kind), size, 1.0, color)
             .unwrap_or_else(|| themed_svg(tree_icon_asset(kind), size, color).into())
     }
 
@@ -93,11 +107,22 @@ impl<'a> View<'a> {
         kind: super::system_icons::Kind,
         size: f32,
         opacity: f32,
+        symbolic_color: iced::Color,
     ) -> Option<Element<'static, Message>> {
         if !self.app.view_preferences.uses_system_icons() {
             return None;
         }
         match self.app.system_icons.resolve(kind, size.round() as u16)? {
+            super::system_icons::Asset::Symbolic(handle) => Some(
+                svg(handle)
+                    .width(size)
+                    .height(size)
+                    .opacity(opacity)
+                    .style(move |_, _| svg::Style {
+                        color: Some(symbolic_color),
+                    })
+                    .into(),
+            ),
             super::system_icons::Asset::Svg(handle) => {
                 Some(svg(handle).width(size).height(size).opacity(opacity).into())
             }
@@ -225,11 +250,11 @@ impl<'a> View<'a> {
         .direction(transient_vertical_scrollbar())
         .style(move |theme, status| transient_scrollbar_style(theme, status, scrollbar_opacity))
         .height(Fill);
-        let scroll = wheel_area(scroll, ScrollTarget::Sidebar);
+        let scroll = wheel_area(scroll, ScrollTarget::Sidebar, false);
         let content = column![
             container(
-                text("Locations")
-                    .font(UI_FONT_SEMIBOLD)
+                self.text("Locations")
+                    .font(self.fonts().ui_semibold())
                     .size(12)
                     .line_height(iced::Pixels(14.0))
                     .color(with_alpha(self.app.iced_theme().palette().text, 0.68)),
@@ -306,11 +331,16 @@ impl<'a> View<'a> {
         if tree_row.loading {
             line = line.push(self.app.spinner(17.0));
         } else {
-            line = line.push(self.tree_icon(tree_row.kind, 17.0, icon_color));
+            let color = if self.app.view_preferences.uses_system_icons() {
+                label_color
+            } else {
+                icon_color
+            };
+            line = line.push(self.tree_icon(tree_row.kind, 17.0, color));
         }
         line = line.push(
             container(
-                text(label)
+                self.text(label)
                     .size(13)
                     .line_height(iced::Pixels(16.0))
                     .color(label_color)
@@ -357,7 +387,7 @@ impl<'a> View<'a> {
                 .map_or_else(|| "Reading storage…".to_owned(), format_storage_usage);
             let metrics = column![
                 container(
-                    text(details)
+                    self.text(details)
                         .size(10)
                         .line_height(iced::Pixels(12.0))
                         .color(muted_text)
@@ -415,7 +445,7 @@ impl<'a> View<'a> {
             .style(tree_unmount_button_style);
             let unmount_button = widget::tooltip(
                 unmount_button,
-                container(text(format!("Unmount {}", tree_row.label)).size(12))
+                container(self.text(format!("Unmount {}", tree_row.label)).size(12))
                     .padding([4, 7])
                     .style(container::rounded_box),
                 widget::tooltip::Position::Bottom,
@@ -504,7 +534,7 @@ impl<'a> View<'a> {
             .for_directory(self.app.navigation.current());
         let location: Element<'_, Message> = if !self.app.navigation.folder_displayed() {
             let label = self.app.navigation.location_label();
-            container(text(label).font(UI_FONT_SEMIBOLD).size(13))
+            container(self.text(label).font(self.fonts().ui_semibold()).size(13))
                 .width(Fill)
                 .height(34)
                 .padding(Padding::from([0, 7]))
@@ -516,7 +546,7 @@ impl<'a> View<'a> {
                 .on_input(Message::LocationChanged)
                 .on_submit(Message::LocationSubmitted)
                 .on_paste(Message::LocationChanged)
-                .font(UI_FONT)
+                .font(self.fonts().ui)
                 .padding(Padding::from([0, 10]))
                 .size(14)
                 .line_height(iced::Pixels(17.0))
@@ -596,7 +626,7 @@ impl<'a> View<'a> {
             .columns(visible.columns)
             .height(widget::grid::aspect_ratio(
                 visible.column_width,
-                TILE_ROW_HEIGHT,
+                self.app.grid.tile_row_height(),
             ))
             .spacing(0);
         for index in visible.first_index..visible.last_index {
@@ -623,6 +653,7 @@ impl<'a> View<'a> {
             wheel_area(
                 container(scroll).width(Fill).height(Fill),
                 ScrollTarget::Entries,
+                self.app.modifiers.control(),
             )
         };
         let sort_controls = GRID_SORT_CONTROLS.into_iter().fold(
@@ -675,7 +706,7 @@ impl<'a> View<'a> {
             self.app.status_height(),
         );
         let top = Space::new()
-            .height(visible.start as f32 * LIST_ROW_HEIGHT)
+            .height(visible.start as f32 * self.app.grid.list_row_height())
             .width(Fill);
         let bottom = Space::new()
             .height(
@@ -684,7 +715,7 @@ impl<'a> View<'a> {
                     .entries()
                     .len()
                     .saturating_sub(visible.end) as f32
-                    * LIST_ROW_HEIGHT,
+                    * self.app.grid.list_row_height(),
             )
             .width(Fill);
         let mut rows = Column::new().spacing(0).push(top);
@@ -694,20 +725,28 @@ impl<'a> View<'a> {
         rows = rows.push(bottom);
         let (show_size, show_modified) = self.list_column_visibility();
         let mut header = Row::new()
-            .push(Space::new().width(LIST_HEADER_ICON_SLOT_WIDTH))
+            .push(Space::new().width(self.app.grid.list_header_icon_slot_width()))
             .push(self.sort_header("Name", fs::SortKey::Name, Fill))
-            .push(self.sort_header("Type", fs::SortKey::Type, LIST_TYPE_WIDTH))
+            .push(self.sort_header(
+                "Type",
+                fs::SortKey::Type,
+                self.app.grid.label_scale() * LIST_TYPE_WIDTH,
+            ))
             .width(Fill)
             .spacing(LIST_COLUMN_SPACING)
             .align_y(Alignment::Center);
         if show_size {
-            header = header.push(self.sort_header("Size", fs::SortKey::Size, LIST_SIZE_WIDTH));
+            header = header.push(self.sort_header(
+                "Size",
+                fs::SortKey::Size,
+                self.app.grid.label_scale() * LIST_SIZE_WIDTH,
+            ));
         }
         if show_modified {
             header = header.push(self.sort_header(
                 "Modified",
                 fs::SortKey::Modified,
-                LIST_MODIFIED_WIDTH,
+                self.app.grid.label_scale() * LIST_MODIFIED_WIDTH,
             ));
         }
         let scrollbar_opacity = self.app.grid.scrollbar_opacity(
@@ -727,7 +766,7 @@ impl<'a> View<'a> {
                 })
                 .width(Fill)
                 .height(Fill);
-            wheel_area(scroll, ScrollTarget::Entries)
+            wheel_area(scroll, ScrollTarget::Entries, self.app.modifiers.control())
         };
         let area: Element<'_, Message> = mouse_area(
             container(column![
@@ -763,9 +802,10 @@ impl<'a> View<'a> {
 
     fn empty_folder_state(self) -> Element<'a, Message> {
         let icon = self.entry_icon(EntryIconKind::Folder, 44.0, 0.38);
-        let label = text("This folder is empty")
-            .font(UI_FONT)
-            .size(13)
+        let label = self
+            .text("This folder is empty")
+            .font(self.fonts().ui)
+            .size(self.app.grid.label_font_size())
             .color(apply_opacity(self.secondary_text_color(), 0.82));
         container(column![icon, label].spacing(12).align_x(Alignment::Center))
             .width(Fill)
@@ -855,27 +895,34 @@ impl<'a> View<'a> {
             .view_preferences
             .for_directory(self.app.navigation.current());
         let active = options.sort == sort;
-        let direction = if active {
-            if options.descending { " ↓" } else { " ↑" }
+        let color = if active {
+            self.app.iced_theme().palette().text
         } else {
-            ""
+            self.secondary_text_color()
         };
+        let mut label = row![
+            self.text(label.to_owned())
+                .font(self.fonts().mono)
+                .size(10)
+                .wrapping(iced::advanced::text::Wrapping::None)
+                .color(color)
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        if active {
+            let icon: &'static [u8] = if options.descending {
+                include_bytes!("../ui/icons/sort-descending.svg")
+            } else {
+                include_bytes!("../ui/icons/sort-ascending.svg")
+            };
+            label = label.push(themed_svg(icon, 14.0, color));
+        }
         container(
             button(
-                container(
-                    text(format!("{label}{direction}"))
-                        .font(MONO_FONT)
-                        .size(10)
-                        .wrapping(iced::advanced::text::Wrapping::None)
-                        .color(if active {
-                            self.app.iced_theme().palette().text
-                        } else {
-                            self.secondary_text_color()
-                        }),
-                )
-                .width(Fill)
-                .height(Fill)
-                .align_y(Alignment::Center),
+                container(label)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_y(Alignment::Center),
             )
             .on_press(Message::SortBy(sort))
             .padding(Padding::from([0, LIST_HEADER_HORIZONTAL_PADDING]))
@@ -891,7 +938,11 @@ impl<'a> View<'a> {
 
     fn list_column_visibility(self) -> (bool, bool) {
         let width = self.app.grid.window_width() + (SIDEBAR_WIDTH - self.app.grid.sidebar_width());
-        (width >= LIST_SHOW_SIZE_AT, width >= LIST_SHOW_MODIFIED_AT)
+        let scale = self.app.grid.label_scale();
+        (
+            width >= SIDEBAR_WIDTH + (LIST_SHOW_SIZE_AT - SIDEBAR_WIDTH) * scale,
+            width >= SIDEBAR_WIDTH + (LIST_SHOW_MODIFIED_AT - SIDEBAR_WIDTH) * scale,
+        )
     }
 
     fn list_name_character_limit(self) -> usize {
@@ -899,19 +950,24 @@ impl<'a> View<'a> {
         let fixed_width = self.app.grid.sidebar_width()
             + CONTENT_GUTTER * 2.0
             + f32::from(LIST_HORIZONTAL_PADDING) * 2.0
-            + LIST_ENTRY_ICON_WIDTH
-            + LIST_TYPE_WIDTH
-            + if show_size { LIST_SIZE_WIDTH } else { 0.0 }
+            + self.app.grid.list_icon_size()
+            + self.app.grid.label_scale() * LIST_TYPE_WIDTH
+            + if show_size {
+                self.app.grid.label_scale() * LIST_SIZE_WIDTH
+            } else {
+                0.0
+            }
             + if show_modified {
-                LIST_MODIFIED_WIDTH
+                self.app.grid.label_scale() * LIST_MODIFIED_WIDTH
             } else {
                 0.0
             };
         let column_count = 3 + usize::from(show_size) + usize::from(show_modified);
         let spacing = (column_count.saturating_sub(1)) as f32 * LIST_COLUMN_SPACING;
+        let character_width = LIST_NAME_APPROX_CHARACTER_WIDTH * self.app.grid.label_scale();
         let available = (self.app.grid.window_width() - fixed_width - spacing)
-            .max(LIST_NAME_MIN_CHARACTERS as f32 * LIST_NAME_APPROX_CHARACTER_WIDTH);
-        (available / LIST_NAME_APPROX_CHARACTER_WIDTH).floor() as usize
+            .max(LIST_NAME_MIN_CHARACTERS as f32 * character_width);
+        (available / character_width).floor() as usize
     }
 
     fn file_list_row(self, index: usize) -> Element<'a, Message> {
@@ -954,11 +1010,11 @@ impl<'a> View<'a> {
             self.list_name_character_limit(),
         );
         let mut content = Row::new()
-            .push(self.entry_icon(icon_kind, LIST_ENTRY_ICON_WIDTH, content_opacity))
+            .push(self.entry_icon(icon_kind, self.app.grid.list_icon_size(), content_opacity))
             .push(
                 container(
-                    text(name)
-                        .size(13)
+                    self.text(name)
+                        .size(self.app.grid.label_font_size())
                         .color(apply_opacity(
                             self.app.iced_theme().palette().text,
                             content_opacity,
@@ -969,40 +1025,40 @@ impl<'a> View<'a> {
                 .clip(true),
             )
             .push(
-                text(kind)
-                    .font(MONO_FONT)
-                    .size(11)
+                self.text(kind)
+                    .font(self.fonts().mono)
+                    .size(11.0 * self.app.grid.label_scale())
                     .color(apply_opacity(self.secondary_text_color(), content_opacity))
-                    .width(LIST_TYPE_WIDTH),
+                    .width(self.app.grid.label_scale() * LIST_TYPE_WIDTH),
             )
             .width(Fill)
             .spacing(LIST_COLUMN_SPACING)
             .align_y(Alignment::Center);
         if show_size {
             content = content.push(
-                text(size)
-                    .font(MONO_FONT)
-                    .size(11)
+                self.text(size)
+                    .font(self.fonts().mono)
+                    .size(11.0 * self.app.grid.label_scale())
                     .color(apply_opacity(self.secondary_text_color(), content_opacity))
-                    .width(LIST_SIZE_WIDTH),
+                    .width(self.app.grid.label_scale() * LIST_SIZE_WIDTH),
             );
         }
         if show_modified {
             content = content.push(
-                text(modified)
-                    .font(MONO_FONT)
-                    .size(11)
+                self.text(modified)
+                    .font(self.fonts().mono)
+                    .size(11.0 * self.app.grid.label_scale())
                     .color(apply_opacity(self.secondary_text_color(), content_opacity))
-                    .width(LIST_MODIFIED_WIDTH),
+                    .width(self.app.grid.label_scale() * LIST_MODIFIED_WIDTH),
             );
         }
         let content = column![
-            content.height(LIST_ROW_HEIGHT - 2.0),
+            content.height(self.app.grid.list_row_height() - 2.0),
             self.drag_activation_bar(&entry.path)
         ]
         .spacing(0);
         let row = container(content)
-            .height(LIST_ROW_HEIGHT)
+            .height(self.app.grid.list_row_height())
             .padding(Padding::from([0, LIST_HORIZONTAL_PADDING]))
             .style(move |theme| {
                 list_row_style(
@@ -1041,11 +1097,11 @@ impl<'a> View<'a> {
         );
         let icon_kind = entry_icon_kind(entry);
         let icon: Element<'_, Message> = self.app.thumbnails.handle(&entry.path).map_or_else(
-            || self.entry_icon(icon_kind, 48.0, content_opacity),
+            || self.entry_icon(icon_kind, self.app.grid.icon_size(), content_opacity),
             |handle| {
                 widget::image(handle.clone())
-                    .width(48)
-                    .height(48)
+                    .width(self.app.grid.icon_size())
+                    .height(self.app.grid.icon_size())
                     .content_fit(iced::ContentFit::Cover)
                     .border_radius(5)
                     .opacity(content_opacity)
@@ -1060,30 +1116,30 @@ impl<'a> View<'a> {
         let content = column![
             container(icon)
                 .width(Fill)
-                .height(48)
+                .height(self.app.grid.icon_size())
                 .center_x(Fill)
-                .center_y(48),
+                .center_y(self.app.grid.icon_size()),
             container(
-                text(label)
-                    .font(UI_FONT)
-                    .size(13)
-                    .line_height(iced::Pixels(16.0))
+                self.text(label)
+                    .font(self.fonts().ui)
+                    .size(self.app.grid.label_font_size())
+                    .line_height(iced::Pixels(16.0 * self.app.grid.label_scale()))
                     .color(apply_opacity(label_color, content_opacity))
                     .width(Fill)
-                    .height(34)
+                    .height(self.app.grid.label_height())
                     .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
                     .align_x(Alignment::Center),
             )
             .width(Fill)
-            .height(34)
+            .height(self.app.grid.label_height())
             .clip(true),
             self.drag_activation_bar(&entry.path),
         ]
         .spacing(4)
         .align_x(Alignment::Center);
         let tile = container(content)
-            .width(TILE_WIDTH)
-            .height(TILE_HEIGHT)
+            .width(self.app.grid.tile_width())
+            .height(self.app.grid.tile_height())
             .padding(Padding {
                 top: 10.0,
                 right: 7.0,

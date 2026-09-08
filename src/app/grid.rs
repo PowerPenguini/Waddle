@@ -19,7 +19,6 @@ pub(super) const LIST_VIEW_TOP_INSET: f32 = 6.0;
 pub(super) const LIST_HEADER_HEIGHT: f32 = 26.0;
 pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
-const TILE_PITCH: f32 = 112.0;
 const TREE_TOP: f32 = 44.0;
 const AUTOSCROLL_EDGE: f32 = 44.0;
 const AUTOSCROLL_STEP: f32 = 12.0;
@@ -188,6 +187,7 @@ pub(super) struct GridInteraction {
     selection_anchor: Option<usize>,
     details: Option<String>,
     list_mode: bool,
+    icon_size: u16,
     context_menu: Option<ContextMenu>,
     sidebar_scrollbar: ScrollbarVisibility,
     entry_scrollbar: ScrollbarVisibility,
@@ -218,6 +218,7 @@ impl GridInteraction {
             selection_anchor: None,
             details: None,
             list_mode: false,
+            icon_size: super::icon_size::DEFAULT,
             context_menu: None,
             sidebar_scrollbar: ScrollbarVisibility::default(),
             entry_scrollbar: ScrollbarVisibility::default(),
@@ -381,6 +382,65 @@ impl GridInteraction {
 
     pub(super) fn sidebar_width(&self) -> f32 {
         self.sidebar_width
+    }
+
+    pub(super) fn set_icon_size(&mut self, size: u16) {
+        self.icon_size = size.clamp(super::icon_size::MIN, super::icon_size::MAX);
+        self.marquee = None;
+        self.hovered = None;
+        self.context_menu = None;
+    }
+
+    pub(super) fn reflow_icons(&mut self, size: u16, count: usize, status_height: f32) -> f32 {
+        let anchor = self
+            .selected
+            .unwrap_or_else(|| {
+                (self.scroll_y / self.row_height()).floor() as usize * self.columns()
+            })
+            .min(count.saturating_sub(1));
+        self.set_icon_size(size);
+        let viewport = (self.window_size.height - self.entries_top() - status_height).max(0.0);
+        let maximum =
+            (count.div_ceil(self.columns()) as f32 * self.row_height() - viewport).max(0.0);
+        self.scroll_y = self.scroll_target(anchor).min(maximum);
+        self.entry_scroll = scroll_motion::Motion::default();
+        self.entry_scroll.observe(self.scroll_y, maximum);
+        self.scroll_y
+    }
+
+    pub(super) fn icon_size(&self) -> f32 {
+        f32::from(self.icon_size)
+    }
+    pub(super) fn label_font_size(&self) -> f32 {
+        13.0 + (self.icon_size() - 48.0) / 16.0
+    }
+
+    pub(super) fn label_scale(&self) -> f32 {
+        self.label_font_size() / 13.0
+    }
+
+    pub(super) fn label_height(&self) -> f32 {
+        34.0 * self.label_scale()
+    }
+
+    pub(super) fn tile_width(&self) -> f32 {
+        TILE_WIDTH + self.icon_size() - 48.0
+    }
+    pub(super) fn tile_height(&self) -> f32 {
+        self.icon_size() + self.label_height() + (TILE_HEIGHT - 48.0 - 34.0)
+    }
+    pub(super) fn tile_row_height(&self) -> f32 {
+        self.tile_height() + (TILE_ROW_HEIGHT - TILE_HEIGHT)
+    }
+    pub(super) fn list_icon_size(&self) -> f32 {
+        (self.icon_size() * 20.0 / 48.0).round().max(16.0)
+    }
+    pub(super) fn list_header_icon_slot_width(&self) -> f32 {
+        self.list_icon_size() - f32::from(super::LIST_HEADER_HORIZONTAL_PADDING)
+    }
+
+    pub(super) fn list_row_height(&self) -> f32 {
+        LIST_ROW_HEIGHT + self.list_icon_size() - 20.0
     }
 
     pub(super) fn set_list_mode(&mut self, list_mode: bool) {
@@ -884,7 +944,7 @@ impl GridInteraction {
             return 1;
         }
         let width = (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(1.0);
-        (width / TILE_PITCH).floor().max(1.0) as usize
+        (width / (self.tile_width() + 8.0)).floor().max(1.0) as usize
     }
 
     fn column_width(&self) -> f32 {
@@ -894,17 +954,17 @@ impl GridInteraction {
 
     pub(super) fn scroll_target(&self, index: usize) -> f32 {
         if self.list_mode {
-            index as f32 * LIST_ROW_HEIGHT
+            index as f32 * self.list_row_height()
         } else {
-            (index / self.columns()) as f32 * TILE_ROW_HEIGHT
+            (index / self.columns()) as f32 * self.tile_row_height()
         }
     }
 
     pub(super) fn directional_scroll_target(&self, index: usize, status_height: f32) -> f32 {
         let row_height = if self.list_mode {
-            LIST_ROW_HEIGHT
+            self.list_row_height()
         } else {
-            TILE_ROW_HEIGHT
+            self.tile_row_height()
         };
         let row = if self.list_mode {
             index
@@ -946,9 +1006,9 @@ impl GridInteraction {
             - status_height
             - LIST_VIEW_TOP_INSET
             - LIST_HEADER_HEIGHT;
-        let viewport_height = viewport_height.max(TILE_ROW_HEIGHT);
-        let visible_rows = (viewport_height / TILE_ROW_HEIGHT).ceil() as usize + 2;
-        let first_row = ((self.scroll_y / TILE_ROW_HEIGHT).floor() as usize)
+        let viewport_height = viewport_height.max(self.tile_row_height());
+        let visible_rows = (viewport_height / self.tile_row_height()).ceil() as usize + 2;
+        let first_row = ((self.scroll_y / self.tile_row_height()).floor() as usize)
             .saturating_sub(1)
             .min(total_rows.saturating_sub(visible_rows));
         let last_row = (first_row + visible_rows).min(total_rows);
@@ -957,8 +1017,8 @@ impl GridInteraction {
             column_width: self.column_width(),
             first_index: first_row * columns,
             last_index: (last_row * columns).min(entry_count),
-            top_space: first_row as f32 * TILE_ROW_HEIGHT,
-            bottom_space: total_rows.saturating_sub(last_row) as f32 * TILE_ROW_HEIGHT,
+            top_space: first_row as f32 * self.tile_row_height(),
+            bottom_space: total_rows.saturating_sub(last_row) as f32 * self.tile_row_height(),
         }
     }
 
@@ -968,9 +1028,9 @@ impl GridInteraction {
         status_height: f32,
     ) -> std::ops::Range<usize> {
         let viewport =
-            (self.window_size.height - TOOLBAR_HEIGHT - status_height).max(LIST_ROW_HEIGHT);
-        let count = (viewport / LIST_ROW_HEIGHT).ceil() as usize + 2;
-        let first = ((self.scroll_y / LIST_ROW_HEIGHT).floor() as usize)
+            (self.window_size.height - TOOLBAR_HEIGHT - status_height).max(self.list_row_height());
+        let count = (viewport / self.list_row_height()).ceil() as usize + 2;
+        let first = ((self.scroll_y / self.list_row_height()).floor() as usize)
             .saturating_sub(1)
             .min(entry_count.saturating_sub(count));
         first..first.saturating_add(count).min(entry_count)
@@ -1129,11 +1189,11 @@ impl GridInteraction {
             return Rectangle::new(
                 Point::new(
                     self.sidebar_width + CONTENT_GUTTER,
-                    self.entries_top() - self.scroll_y + index as f32 * LIST_ROW_HEIGHT,
+                    self.entries_top() - self.scroll_y + index as f32 * self.list_row_height(),
                 ),
                 Size::new(
                     (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(0.0),
-                    LIST_ROW_HEIGHT,
+                    self.list_row_height(),
                 ),
             );
         }
@@ -1143,10 +1203,10 @@ impl GridInteraction {
         let column_left = self.sidebar_width + CONTENT_GUTTER + column as f32 * self.column_width();
         Rectangle::new(
             Point::new(
-                column_left + (self.column_width() - TILE_WIDTH) / 2.0,
-                content_top() - self.scroll_y + row as f32 * TILE_ROW_HEIGHT,
+                column_left + (self.column_width() - self.tile_width()) / 2.0,
+                content_top() - self.scroll_y + row as f32 * self.tile_row_height(),
             ),
-            Size::new(TILE_WIDTH, TILE_HEIGHT),
+            Size::new(self.tile_width(), self.tile_height()),
         )
     }
 
@@ -1160,9 +1220,9 @@ impl GridInteraction {
 
     fn row_height(&self) -> f32 {
         if self.list_mode {
-            LIST_ROW_HEIGHT
+            self.list_row_height()
         } else {
-            TILE_ROW_HEIGHT
+            self.tile_row_height()
         }
     }
 
@@ -1286,6 +1346,58 @@ fn content_top() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_scales_labels_and_reserves_two_lines_without_overlapping_icons() {
+        let mut grid = GridInteraction::default();
+        let mut previous_font = 0.0;
+        for size in 24..=128 {
+            grid.set_icon_size(size);
+            assert!(grid.label_font_size() > previous_font);
+            previous_font = grid.label_font_size();
+            assert!(grid.label_height() >= 2.0 * 16.0 * grid.label_scale());
+            assert!(grid.tile_height() >= grid.icon_size() + grid.label_height() + 26.0);
+            assert!(grid.list_row_height() > grid.label_font_size() * 1.3 + 2.0);
+        }
+        grid.set_icon_size(48);
+        assert_eq!(grid.label_font_size(), 13.0);
+        assert_eq!(grid.tile_height(), TILE_HEIGHT);
+        assert_eq!(grid.tile_row_height(), TILE_ROW_HEIGHT);
+    }
+
+    #[test]
+    fn zoom_reflows_hit_testing_virtualization_and_selection_at_every_size() {
+        for list in [false, true] {
+            let mut grid = GridInteraction::default();
+            grid.set_list_mode(list);
+            grid.select_only(Some(500), 1000);
+            // A previous small extent must not clamp the resized selection's target.
+            grid.observe_scroll(ScrollTarget::Entries, 0.0, 100.0, Instant::now(), 1000);
+            for size in 24..=128 {
+                let offset = grid.reflow_icons(size, 1000, 30.0);
+                assert!(offset > 100.0);
+                assert_eq!(grid.selected_entry(), Some(500));
+                let bounds = grid.entry_bounds(500);
+                assert!(bounds.y >= grid.entries_top());
+                assert!(bounds.y + bounds.height < grid.window_size.height - 30.0);
+                let point = Point::new(
+                    bounds.x + bounds.width / 2.0,
+                    bounds.y + bounds.height / 2.0,
+                );
+                assert_eq!(grid.index_at(point, 1000), Some(500));
+                assert!(grid.point_over_entry(point, 500));
+                if list {
+                    assert!(grid.list_visible_range(1000, 30.0).contains(&500));
+                } else {
+                    let visible = grid.visible_range(1000, 30.0);
+                    assert!((visible.first_index..visible.last_index).contains(&500));
+                    assert_eq!(bounds.width, grid.tile_width());
+                }
+            }
+            grid.select_only(None, 0);
+            assert_eq!(grid.reflow_icons(24, 0, 30.0), 0.0);
+        }
+    }
 
     fn grid() -> GridInteraction {
         GridInteraction::new(Size::new(584.0, 560.0))

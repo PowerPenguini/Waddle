@@ -90,6 +90,11 @@ impl App {
                         if applied.tree_changed {
                             self.sync_tree_visibility();
                         }
+                        let icon_size = if applied.icon_size_changed {
+                            self.sync_icon_size()
+                        } else {
+                            Task::none()
+                        };
                         let browse = if applied.browse_changed {
                             self.live_refresh()
                         } else if applied.tree_changed {
@@ -97,7 +102,7 @@ impl App {
                         } else {
                             Task::none()
                         };
-                        Task::batch([browse, system_icon_task(system_icons)])
+                        Task::batch([browse, icon_size, system_icon_task(system_icons)])
                     }
                     Err(error) => {
                         self.presentation.set_status(error);

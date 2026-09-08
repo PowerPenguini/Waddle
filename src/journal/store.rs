@@ -77,6 +77,7 @@ impl Journal {
     }
 
     pub(super) fn record_at(&mut self, action: Action, recorded_at: u64) -> Result<(), Error> {
+        let _lock = self.lock_and_reload()?;
         self.stored.entries.truncate(self.stored.cursor);
         self.stored.entries.push(Entry {
             recorded_at,
@@ -88,23 +89,68 @@ impl Journal {
     }
 
     pub(crate) fn undo(&mut self) -> Result<Effect, Error> {
+        let _lock = self.lock_and_reload()?;
+        self.prune(now_seconds());
         let Some(index) = self.stored.cursor.checked_sub(1) else {
             return Err(Error::message("Nothing to undo"));
         };
-        let effect = apply(&mut self.stored.entries[index].action, Direction::Undo)?;
-        self.stored.cursor = index;
+        let effect = apply(&mut self.stored.entries[index].action, Direction::Undo);
+        if effect.is_ok() {
+            self.stored.cursor = index;
+        }
         self.save()?;
-        Ok(effect)
+        effect
     }
 
     pub(crate) fn redo(&mut self) -> Result<Effect, Error> {
+        let _lock = self.lock_and_reload()?;
+        self.prune(now_seconds());
         let Some(entry) = self.stored.entries.get_mut(self.stored.cursor) else {
             return Err(Error::message("Nothing to redo"));
         };
-        let effect = apply(&mut entry.action, Direction::Redo)?;
-        self.stored.cursor += 1;
+        let effect = apply(&mut entry.action, Direction::Redo);
+        if effect.is_ok() {
+            self.stored.cursor += 1;
+        }
         self.save()?;
-        Ok(effect)
+        effect
+    }
+
+    // Hold a stable sidecar lock across reload, filesystem effects and commit.
+    // Locking the journal itself would not survive its atomic replacement.
+    fn lock_and_reload(&mut self) -> Result<Option<fs::File>, Error> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(None);
+        };
+        let directory = path
+            .parent()
+            .ok_or_else(|| Error::message("operation journal path has no parent"))?;
+        fs::create_dir_all(directory)
+            .map_err(|error| Error::io("could not create operation journal directory", error))?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))
+            .map_err(|error| Error::io("could not open operation journal lock", error))?;
+        lock.lock()
+            .map_err(|error| Error::io("could not lock operation journal", error))?;
+        // Do not prune using the wall clock here: record_at supplies its own clock.
+        self.stored = match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| Error::json("could not decode operation journal", error))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => StoredJournal::default(),
+            Err(error) => return Err(Error::io("could not read operation journal", error)),
+        };
+        if self.stored.version != VERSION {
+            return Err(Error::message(format!(
+                "operation journal version {} is unsupported",
+                self.stored.version
+            )));
+        }
+        self.stored.cursor = self.stored.cursor.min(self.stored.entries.len());
+        Ok(Some(lock))
     }
 
     fn prune(&mut self, now: u64) {
@@ -124,7 +170,7 @@ impl Journal {
         }
     }
 
-    fn save(&self) -> Result<(), Error> {
+    pub(super) fn save(&self) -> Result<(), Error> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
@@ -158,4 +204,62 @@ fn now_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    #[test]
+    fn two_windows_keep_both_recorded_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.json");
+        let mut window_a = Journal::open(path.clone()).unwrap();
+        let mut window_b = Journal::open(path.clone()).unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        fs::write(&a, "").unwrap();
+        fs::write(&b, "").unwrap();
+        window_a.record(Action::new_file(a).unwrap()).unwrap();
+        window_b.record(Action::new_file(b).unwrap()).unwrap();
+        let reopened = Journal::open(path).unwrap();
+        assert_eq!(
+            reopened.stored.entries.len(),
+            2,
+            "second window overwrote the first window's operation"
+        );
+    }
+
+    #[test]
+    fn concurrent_windows_serialize_records_and_share_the_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers = (0..2)
+            .map(|window| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                let directory = temp.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let mut journal = Journal::open(path).unwrap();
+                    barrier.wait();
+                    for index in 0..10 {
+                        let file = directory.join(format!("{window}-{index}"));
+                        fs::write(&file, "").unwrap();
+                        journal.record(Action::new_file(file).unwrap()).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let mut first = Journal::open(path.clone()).unwrap();
+        let mut second = Journal::open(path.clone()).unwrap();
+        assert_eq!(first.stored.entries.len(), 20);
+        first.undo().unwrap();
+        second.undo().unwrap();
+        first.redo().unwrap();
+        assert_eq!(Journal::open(path).unwrap().stored.cursor, 19);
+    }
 }

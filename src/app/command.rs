@@ -43,7 +43,10 @@ Settings
   hidden=true|false
   file-click=single|double
   folder-click=single|double
+  icon-size=24..128 (default 48; scales icons and labels)
+    Ctrl+= / Ctrl+- / Ctrl+scroll also change this size
   icons=waddle|system
+  fonts=system|waddle
   high-contrast=auto|true|false
   reduced-motion=auto|true|false
   reduced-transparency=auto|true|false
@@ -422,7 +425,9 @@ impl CommandSession {
             "set hidden=",
             "set file-click=",
             "set folder-click=",
+            "set icon-size=",
             "set icons=",
+            "set fonts=",
             "set high-contrast=",
             "set reduced-motion=",
             "set reduced-transparency=",
@@ -441,8 +446,16 @@ impl CommandSession {
             "set file-click=double",
             "set folder-click=single",
             "set folder-click=double",
+            "set icon-size=24",
+            "set icon-size=32",
+            "set icon-size=48",
+            "set icon-size=64",
+            "set icon-size=96",
+            "set icon-size=128",
             "set icons=waddle",
             "set icons=system",
+            "set fonts=waddle",
+            "set fonts=system",
             "set high-contrast=auto",
             "set high-contrast=true",
             "set high-contrast=false",
@@ -830,9 +843,15 @@ mod tests {
         session.change("set folder-click=d".to_owned());
         assert!(session.complete_setting());
         assert_eq!(session.text(), "set folder-click=double");
+        session.change("set icon-size=6".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set icon-size=64");
         session.change("set icons=s".to_owned());
         assert!(session.complete_setting());
         assert_eq!(session.text(), "set icons=system");
+        session.change("set fonts=w".to_owned());
+        assert!(session.complete_setting());
+        assert_eq!(session.text(), "set fonts=waddle");
         session.change("set folders".to_owned());
         assert!(!session.complete_setting());
     }

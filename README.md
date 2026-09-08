@@ -96,6 +96,7 @@ controls.
 | `/query`, `//query` | Search here or search recursively |
 | `Ctrl+L`, `Ctrl+H` | Edit the location or show hidden files |
 | `Ctrl+O`, `Ctrl+I` | Go Back or Forward |
+| `Ctrl+=`, `Ctrl+-`, `Ctrl+scroll` | Enlarge or shrink file icons and labels |
 | `Ctrl+W e` | Show or hide the Sidebar |
 | `:`, `!` | Open a Waddle command or run a Bash command |
 | `Esc` | Cancel the current action |
@@ -115,11 +116,22 @@ To keep settings between launches, create
 ```vim
 " Waddle configuration
 set view=list sort=name
-set tree=true startup=last file-click=double folder-click=single icons=system
+set tree=true startup=last file-click=double folder-click=single icons=system fonts=system
 setlocal "~/Downloads" view=grid hidden=false
 ```
 
 Waddle only reads this file. It never creates or rewrites it.
+Use `Ctrl+=` (or `Ctrl++`), `Ctrl+-`, or hold Ctrl while scrolling over the file area
+to resize icons, thumbnails, and file labels together in 8-pixel icon steps. Set an exact size with
+`:set icon-size=64` (24–128 pixels; default 48). Label fonts grow with the icons, and List rows and columns adjust to fit.
+Add `set icon-size=64` to `waddlerc` to keep your preferred size across launches.
+
+Use `:set fonts=system` to use your desktop font families (the default), or
+`:set fonts=waddle` for the bundled Adwaita Sans and Adwaita Mono. The change applies
+immediately; add `set fonts=system` or `set fonts=waddle` to `waddlerc` to keep it.
+System fonts are detected from GTK/GSettings or KDE preferences, with Fontconfig
+and the bundled fonts as fallbacks. No separate font installation is required.
+Font sizes and emphasis remain controlled by Waddle's layout.
 The legacy `click=single|double` option remains accepted and applies the same behavior to files and
 folders.
 
@@ -180,3 +192,5 @@ scripts/benchmark-performance.sh
 ## License
 
 Waddle is licensed under the [MIT License](LICENSE).
+The embedded fallback fonts are licensed under the
+[SIL Open Font License 1.1](data/fonts/LICENSE).

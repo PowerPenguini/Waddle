@@ -2,6 +2,26 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn fingerprint_rejects_a_fifo_without_opening_it() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("pipe");
+    let fifo = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: fifo is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        sender.send(TreeFingerprint::read(&path)).unwrap();
+    });
+    let result = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fingerprinting must not wait for a FIFO writer");
+    worker.join().unwrap();
+    assert!(result.unwrap_err().to_string().contains("special file"));
+}
+
+#[test]
 fn malformed_journal_preserves_the_json_error_source() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("operations.json");
@@ -64,6 +84,7 @@ fn unsafe_inverse_is_refused_and_redo_is_cleared_by_new_work() {
     fs::remove_file(&after).unwrap();
     fs::write(&after, "original").unwrap();
     journal.stored.entries[0].action = Action::rename(before, after).unwrap();
+    journal.save().unwrap();
     journal.undo().unwrap();
     let folder = temp.path().join("new");
     fs::create_dir(&folder).unwrap();
@@ -134,6 +155,7 @@ fn new_file_undo_and_redo_survive_restart_and_refuse_changed_content() {
     assert!(journal.undo().unwrap_err().to_string().contains("changed"));
     fs::write(&file, "").unwrap();
     journal.stored.entries[0].action = Action::new_file(file.clone()).unwrap();
+    journal.save().unwrap();
     journal.undo().unwrap();
     assert!(!file.exists());
     journal.redo().unwrap();
@@ -389,6 +411,7 @@ fn trash_undo_restores_only_the_verified_receipt() {
     journal.stored.entries[0].action = Action::trash(std::slice::from_ref(&receipt))
         .unwrap()
         .unwrap();
+    journal.save().unwrap();
     journal.undo().unwrap();
     assert_eq!(fs::read_to_string(original).unwrap(), "content");
     assert!(!trashed.exists());
@@ -409,7 +432,7 @@ fn restore_action_persists_the_restored_identity_for_later_undo() {
     let mut journal = Journal::open(path.clone()).unwrap();
     journal
         .record(
-            Action::restore(std::slice::from_ref(&receipt))
+            Action::restore(std::slice::from_ref(&receipt), false)
                 .unwrap()
                 .unwrap(),
         )

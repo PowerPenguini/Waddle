@@ -244,19 +244,16 @@ fn replace_by_staging(
 
 fn staging_path(destination: &Path) -> io::Result<PathBuf> {
     let directory = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_else(|| OsStr::new("item"));
     for nonce in 0_u64..10_000 {
-        let mut candidate = OsString::from(".waddle-replace-");
-        candidate.push(std::process::id().to_string());
-        candidate.push("-");
-        candidate.push(nonce.to_string());
-        candidate.push("-");
-        candidate.push(name);
+        let candidate = format!(".waddle-replace-{}-{nonce}", std::process::id());
         let path = directory.join(candidate);
-        if fs::symlink_metadata(&path).is_err() {
-            return Ok(path);
+        if path == destination {
+            continue;
+        }
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
     }
     Err(io::Error::new(

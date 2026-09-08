@@ -19,7 +19,8 @@ use super::{
     native_clipboard,
     operations::{Completion, ForegroundActivity, Kind as OperationKind, Operations},
     transfer_queue::{
-        Finished as QueueFinished, Operation as QueueOperation, Queue, Report as QueueReport, Work,
+        Finished as QueueFinished, Operation as QueueOperation, PreparedUndo, Queue,
+        Report as QueueReport, Work,
     },
     trash,
 };
@@ -64,7 +65,7 @@ pub(super) enum WindowFileUpdate {
 }
 
 pub(super) enum CancelUpdate {
-    Conflict(BatchUpdate),
+    Conflict(Task<RuntimeEvent>),
     Active,
     None,
 }
@@ -314,19 +315,24 @@ impl TransferSession {
         operations: &Operations,
     ) -> BatchUpdate {
         match outcome {
-            WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report)) => {
+            WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), undo) => {
                 let Some(QueueFinished { operation, next }) =
                     self.queue.finish(id, QueueReport::Filesystem(&report))
                 else {
                     return BatchUpdate::Ignored;
                 };
                 let completed = match operation {
-                    QueueOperation::Transfer(request) => {
-                        self.finish_transfer(adapter, clipboard_adapter, &request, &report, current)
-                    }
+                    QueueOperation::Transfer(request) => self.finish_transfer(
+                        adapter,
+                        clipboard_adapter,
+                        &request,
+                        &report,
+                        current,
+                        undo,
+                    ),
                     QueueOperation::Restore(entries) => {
                         self.restore_activity = None;
-                        restore_completion(report, &entries)
+                        restore_completion(report, &entries, undo)
                     }
                     QueueOperation::Trash(_) => return BatchUpdate::Ignored,
                 };
@@ -335,7 +341,7 @@ impl TransferSession {
                     next: next.map_or_else(Task::none, |work| launch(work, operations)),
                 }
             }
-            WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, conflict }) => {
+            WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, conflict }, _) => {
                 let Some(operation) = self.queue.pause_for_conflict(id, *batch) else {
                     return BatchUpdate::Ignored;
                 };
@@ -408,45 +414,24 @@ impl TransferSession {
         }
     }
 
-    pub(super) fn cancel(&mut self, current: &Path, operations: &Operations) -> CancelUpdate {
-        let native = std::mem::take(&mut self.native);
-        let update = self.cancel_with(
-            native.dnd().map(|source| source as &dyn Adapter),
-            native
-                .clipboard()
-                .map(|source| source as &dyn ClipboardAdapter),
-            current,
-            operations,
-        );
-        self.native = native;
-        update
-    }
-
-    fn cancel_with(
-        &mut self,
-        adapter: Option<&dyn Adapter>,
-        clipboard_adapter: Option<&dyn ClipboardAdapter>,
-        current: &Path,
-        operations: &Operations,
-    ) -> CancelUpdate {
-        if self.conflict.take().is_some() {
-            let Some((id, report)) = self.queue.cancel_conflict() else {
+    pub(super) fn cancel(&mut self, operations: &Operations) -> CancelUpdate {
+        if self.conflict.is_some() {
+            let Some(work) = self.cancel_conflict_work() else {
                 return CancelUpdate::None;
             };
-            return CancelUpdate::Conflict(self.complete_batch_with(
-                id,
-                WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report)),
-                adapter,
-                clipboard_adapter,
-                current,
-                operations,
-            ));
+            return CancelUpdate::Conflict(launch(work, operations));
         }
         if self.queue.cancel() {
             CancelUpdate::Active
         } else {
             CancelUpdate::None
         }
+    }
+
+    pub(super) fn cancel_conflict_work(&mut self) -> Option<Work> {
+        let work = self.queue.cancel_conflict()?;
+        self.conflict = None;
+        Some(work)
     }
 
     pub(super) fn retry(&mut self, operations: &Operations) -> Result<Task<RuntimeEvent>, String> {
@@ -755,14 +740,8 @@ impl TransferSession {
         request: &Request,
         report: &TransferReport,
         current: &Path,
+        journal_action: PreparedUndo,
     ) -> CompletionOutcome {
-        let journal_action = journal::Action::transfer(
-            match request.action {
-                Action::Copy => journal::TransferKind::Copy,
-                Action::Move => journal::TransferKind::Move,
-            },
-            &report.receipts,
-        );
         let clipboard_generation = request
             .clipboard_generation
             .filter(|_| request.action == Action::Move);
@@ -843,8 +822,9 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
         move |completion| {
             let outcome = match completion {
                 Completion::Finished(Ok(outcome)) => outcome,
-                Completion::Finished(Err(error)) => {
-                    WorkOutcome::Filesystem(TransferBatchOutcome::Complete(TransferReport {
+                Completion::Finished(Err(error)) => WorkOutcome::Filesystem(
+                    TransferBatchOutcome::Complete(TransferReport {
+                        retry: Vec::new(),
                         completed: Vec::new(),
                         failures: vec![fs::TransferFailure {
                             source: PathBuf::new(),
@@ -854,8 +834,9 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
                         warnings: Vec::new(),
                         receipts: Vec::new(),
                         cancelled: false,
-                    }))
-                }
+                    }),
+                    Err("Transfer worker failed before preparing Undo".to_owned()),
+                ),
                 Completion::Cancelled => return RuntimeEvent::Noop,
             };
             RuntimeEvent::BatchFinished {
@@ -913,9 +894,12 @@ fn trash_completion(report: trash::Report, entries: &[FileEntry]) -> CompletionO
     }
 }
 
-fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> CompletionOutcome {
+fn restore_completion(
+    report: TransferReport,
+    entries: &[trash::Entry],
+    journal_action: PreparedUndo,
+) -> CompletionOutcome {
     let report = trash::finish_restore(report, entries);
-    let journal_action = journal::Action::restore(&report.restored);
     let mut detail = report
         .failures
         .iter()
@@ -950,7 +934,7 @@ fn restore_completion(report: TransferReport, entries: &[trash::Entry]) -> Compl
 
 fn completion_from_consequences(
     consequences: Consequences,
-    journal_action: Result<Option<journal::Action>, journal::Error>,
+    journal_action: PreparedUndo,
     notice: Option<String>,
     sync_location_monitoring: bool,
 ) -> CompletionOutcome {
@@ -1066,10 +1050,6 @@ mod tests {
             Path::new("/work"),
             &Operations::default(),
         )
-    }
-
-    fn cancel(session: &mut TransferSession) -> CancelUpdate {
-        session.cancel(Path::new("/work"), &Operations::default())
     }
 
     #[test]
@@ -1270,7 +1250,9 @@ mod tests {
         assert!(session.overview().active);
         assert!(session.overview().history.is_empty());
 
-        let CancelUpdate::Conflict(BatchUpdate::Completed { outcome, .. }) = cancel(&mut session)
+        let cancelled = session.cancel_conflict_work().unwrap();
+        let BatchUpdate::Completed { outcome, .. } =
+            complete_batch(&mut session, id, cancelled.run())
         else {
             panic!("restore conflict should complete through Transfer session");
         };

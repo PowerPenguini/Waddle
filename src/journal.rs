@@ -137,6 +137,8 @@ pub(crate) enum Action {
     },
     Restore {
         items: Vec<TrashItem>,
+        #[serde(default = "legacy_transfer_requires_refusal")]
+        replaced_existing: bool,
     },
 }
 
@@ -154,6 +156,8 @@ pub(crate) struct TransferItem {
     result_fingerprint: TreeFingerprint,
     #[serde(default = "legacy_transfer_requires_refusal")]
     replaced_existing: bool,
+    #[serde(default)]
+    undone: bool,
 }
 
 fn legacy_transfer_requires_refusal() -> bool {
@@ -219,6 +223,7 @@ impl Action {
                     source_fingerprint,
                     result_fingerprint,
                     replaced_existing: receipt.replaced_existing,
+                    undone: false,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -243,7 +248,10 @@ impl Action {
         Ok(Some(Self::Trash { items }))
     }
 
-    pub(crate) fn restore(receipts: &[TrashReceipt]) -> Result<Option<Self>, Error> {
+    pub(crate) fn restore(
+        receipts: &[TrashReceipt],
+        replaced_existing: bool,
+    ) -> Result<Option<Self>, Error> {
         if receipts.is_empty() {
             return Ok(None);
         }
@@ -258,6 +266,9 @@ impl Action {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok(Some(Self::Restore { items }))
+        Ok(Some(Self::Restore {
+            items,
+            replaced_existing,
+        }))
     }
 }

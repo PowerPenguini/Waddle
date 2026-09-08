@@ -10,13 +10,21 @@ use super::{EntryIconKind, tree};
 #[derive(Clone, Debug)]
 pub(super) enum Asset {
     Svg(svg::Handle),
+    Symbolic(svg::Handle),
     Raster(image::Handle),
 }
 
 impl Asset {
     fn from_path(path: &Path) -> Option<Self> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-            "svg" => Some(Self::Svg(svg::Handle::from_path(path))),
+            "svg" => {
+                let handle = svg::Handle::from_path(path);
+                if path.file_stem()?.to_str()?.ends_with("-symbolic") {
+                    Some(Self::Symbolic(handle))
+                } else {
+                    Some(Self::Svg(handle))
+                }
+            }
             "png" => Some(Self::Raster(image::Handle::from_path(path))),
             _ => None,
         }
@@ -109,6 +117,13 @@ impl Resolver {
         if !self.enabled || self.state != State::Ready {
             return None;
         }
+        let size = match kind {
+            Kind::Entry(_) => [16, 20, 24, 32, 44, 48, 64, 96, 128]
+                .into_iter()
+                .find(|cached| *cached >= size)
+                .unwrap_or(128),
+            Kind::Tree(_) => size,
+        };
         self.cache.get(&Request { kind, size }).cloned().flatten()
     }
 
@@ -148,7 +163,15 @@ fn load_with(load: Load, mut lookup: impl FnMut(&str, &str, u16) -> Option<PathB
         .into_iter()
         .map(|request| {
             let asset = names(request.kind).iter().find_map(|name| {
-                lookup(name, &load.theme, request.size).and_then(|path| Asset::from_path(&path))
+                // Small color variants may share generic folder artwork. When
+                // symbolic icons are unavailable, downscale the richer 24 px variant.
+                let size = if matches!(request.kind, Kind::Tree(_)) && !name.ends_with("-symbolic")
+                {
+                    request.size.max(24)
+                } else {
+                    request.size
+                };
+                lookup(name, &load.theme, size).and_then(|path| Asset::from_path(&path))
             });
             (request, asset)
         })
@@ -189,19 +212,15 @@ fn requests() -> Vec<Request> {
         tree::NodeKind::Recent,
         tree::NodeKind::Trash,
     ];
-    let mut requests = Vec::with_capacity(entry_kinds.len() * 2 + tree_kinds.len() + 1);
+    let mut requests = Vec::with_capacity(entry_kinds.len() * 9 + tree_kinds.len() + 1);
     for kind in entry_kinds {
-        for size in [20, 48] {
+        for size in [16, 20, 24, 32, 44, 48, 64, 96, 128] {
             requests.push(Request {
                 kind: Kind::Entry(kind),
                 size,
             });
         }
     }
-    requests.push(Request {
-        kind: Kind::Entry(EntryIconKind::Folder),
-        size: 44,
-    });
     requests.extend(tree_kinds.map(|kind| Request {
         kind: Kind::Tree(kind),
         size: 17,
@@ -228,18 +247,47 @@ fn names(kind: Kind) -> &'static [&'static str] {
         Kind::Entry(EntryIconKind::Archive) => &["package-x-generic", "application-x-archive"],
         Kind::Entry(EntryIconKind::Spreadsheet) => &["x-office-spreadsheet"],
         Kind::Entry(EntryIconKind::Presentation) => &["x-office-presentation"],
-        Kind::Tree(tree::NodeKind::Computer) => &["computer"],
-        Kind::Tree(tree::NodeKind::Drive) => &["drive-harddisk"],
-        Kind::Tree(tree::NodeKind::Folder | tree::NodeKind::Favorite) => &["folder"],
-        Kind::Tree(tree::NodeKind::Home) => &["user-home"],
-        Kind::Tree(tree::NodeKind::Desktop) => &["user-desktop"],
-        Kind::Tree(tree::NodeKind::Documents) => &["folder-documents", "folder"],
-        Kind::Tree(tree::NodeKind::Downloads) => &["folder-download", "folder"],
-        Kind::Tree(tree::NodeKind::Music) => &["folder-music", "folder"],
-        Kind::Tree(tree::NodeKind::Pictures) => &["folder-pictures", "folder"],
-        Kind::Tree(tree::NodeKind::Videos) => &["folder-videos", "folder"],
-        Kind::Tree(tree::NodeKind::Recent) => &["document-open-recent"],
-        Kind::Tree(tree::NodeKind::Trash) => &["user-trash"],
+        Kind::Tree(tree::NodeKind::Computer) => &["computer-symbolic", "computer"],
+        Kind::Tree(tree::NodeKind::Drive) => &["drive-harddisk-symbolic", "drive-harddisk"],
+        Kind::Tree(tree::NodeKind::Folder | tree::NodeKind::Favorite) => {
+            &["folder-symbolic", "folder"]
+        }
+        Kind::Tree(tree::NodeKind::Home) => &["user-home-symbolic", "user-home"],
+        Kind::Tree(tree::NodeKind::Desktop) => &["user-desktop-symbolic", "user-desktop"],
+        Kind::Tree(tree::NodeKind::Documents) => &[
+            "folder-documents-symbolic",
+            "folder-documents",
+            "folder-symbolic",
+            "folder",
+        ],
+        Kind::Tree(tree::NodeKind::Downloads) => &[
+            "folder-download-symbolic",
+            "folder-download",
+            "folder-symbolic",
+            "folder",
+        ],
+        Kind::Tree(tree::NodeKind::Music) => &[
+            "folder-music-symbolic",
+            "folder-music",
+            "folder-symbolic",
+            "folder",
+        ],
+        Kind::Tree(tree::NodeKind::Pictures) => &[
+            "folder-pictures-symbolic",
+            "folder-pictures",
+            "folder-symbolic",
+            "folder",
+        ],
+        Kind::Tree(tree::NodeKind::Videos) => &[
+            "folder-videos-symbolic",
+            "folder-videos",
+            "folder-symbolic",
+            "folder",
+        ],
+        Kind::Tree(tree::NodeKind::Recent) => {
+            &["document-open-recent-symbolic", "document-open-recent"]
+        }
+        Kind::Tree(tree::NodeKind::Trash) => &["user-trash-symbolic", "user-trash"],
     }
 }
 
@@ -256,6 +304,56 @@ mod tests {
                 .into_iter()
                 .all(|request| !names(request.kind).is_empty())
         );
+    }
+
+    #[test]
+    fn sidebar_prefers_distinct_symbolic_places_over_small_generic_folders() {
+        let (_, request) = Resolver::new(Some("TestTheme".to_owned()), true);
+        let mut lookups = Vec::new();
+        let _ = load_with(request.unwrap(), |name, _, size| {
+            lookups.push((name.to_owned(), size));
+            Some(PathBuf::from(format!("/theme/{name}.svg")))
+        });
+        for name in [
+            "user-home",
+            "user-desktop",
+            "folder-documents",
+            "folder-download",
+            "folder-music",
+            "folder-pictures",
+            "folder-videos",
+        ] {
+            assert!(
+                lookups.contains(&(format!("{name}-symbolic"), 17)),
+                "sidebar did not request the specific symbolic {name} icon"
+            );
+            assert!(
+                !lookups.contains(&(name.to_owned(), 17)),
+                "color fallback must not win over an available symbolic icon"
+            );
+        }
+        assert!(lookups.contains(&("folder".to_owned(), 48)));
+    }
+
+    #[test]
+    fn sidebar_color_fallback_uses_detailed_size_and_preserves_color() {
+        let (mut resolver, request) = Resolver::new(Some("TestTheme".to_owned()), true);
+        let mut calls = Vec::new();
+        let loaded = load_with(request.unwrap(), |name, _, size| {
+            calls.push((name.to_owned(), size));
+            (!name.ends_with("-symbolic")).then(|| PathBuf::from(format!("/theme/{name}.svg")))
+        });
+        resolver.complete(loaded);
+        assert!(calls.contains(&("folder-documents-symbolic".to_owned(), 17)));
+        assert!(calls.contains(&("folder-documents".to_owned(), 24)));
+        assert!(matches!(
+            resolver.resolve(Kind::Tree(tree::NodeKind::Documents), 17),
+            Some(Asset::Svg(_))
+        ));
+        assert!(matches!(
+            Asset::from_path(Path::new("/theme/folder-documents-symbolic.svg")),
+            Some(Asset::Symbolic(_))
+        ));
     }
 
     #[test]
@@ -294,6 +392,29 @@ mod tests {
                 resolver
                     .resolve(Kind::Entry(EntryIconKind::Folder), 48)
                     .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn every_zoom_size_uses_a_cached_system_icon() {
+        let (mut resolver, load) = Resolver::new(Some("Test".to_owned()), true);
+        let loaded = load_with(load.unwrap(), |name, _, size| {
+            Some(PathBuf::from(format!("/theme/{size}/{name}.svg")))
+        });
+        resolver.complete(loaded);
+        for size in 16..=128 {
+            assert!(
+                resolver
+                    .resolve(Kind::Entry(EntryIconKind::Folder), size)
+                    .is_some(),
+                "missing size {size}"
+            );
+            assert!(
+                resolver
+                    .resolve(Kind::Entry(EntryIconKind::Image), size)
+                    .is_some(),
+                "missing size {size}"
             );
         }
     }

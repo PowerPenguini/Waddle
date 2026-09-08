@@ -126,6 +126,7 @@ pub struct TransferReceipt {
 
 #[derive(Clone, Debug, Default)]
 pub struct TransferReport {
+    pub retry: Vec<(PathBuf, PathBuf)>,
     pub completed: Vec<PathBuf>,
     pub failures: Vec<TransferFailure>,
     pub retained: Vec<PathBuf>,

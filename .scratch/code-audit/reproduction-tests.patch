@@ -1,0 +1,285 @@
+--- a/src/app/search.rs
++++ b/src/app/search.rs
+@@ -340,3 +340,23 @@
+         assert_eq!(grid.selected_entry(), None);
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++
++    #[test]
++    fn enter_while_recursive_search_is_loading_does_not_submit_old_selection() {
++        let mut nav = NavigationSession::new(PathBuf::from("/folder"));
++        nav.install_folder_entries(vec![FileEntry {path: PathBuf::from("/folder/unrelated.txt"),name:"unrelated.txt".into(),directory:false,metadata:Default::default()}]);
++        let mut grid = GridInteraction::default();
++        grid.select_only(Some(0), 1);
++        let mut search = SearchSession::default();
++        search.begin(&grid);
++        let update=search.update(&mut nav,&mut grid,"/needle".to_owned());
++        assert!(matches!(update, Update::Search {..}));
++        assert!(search.is_loading());
++        assert!(search.submit(&mut nav,&mut grid).is_none(), "submitted unrelated pre-search selection");
++    }
++
++}
+--- a/src/app/shell.rs
++++ b/src/app/shell.rs
+@@ -590,3 +590,17 @@
+         );
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++
++    #[test]
++    fn background_command_completes_when_shell_exits() {
++        let start=std::time::Instant::now();
++        let report=execute(Path::new("/tmp"),'!',"sleep 1 &",&[]).unwrap();
++        assert!(report.successful);
++        assert!(start.elapsed()<Duration::from_millis(500), "waited for background child to close inherited stdout");
++    }
++
++}
+--- a/src/app/thumbnail.rs
++++ b/src/app/thumbnail.rs
+@@ -229,3 +229,26 @@
+         assert_eq!(requests[0].path, image);
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++
++    #[test]
++    fn fifo_named_png_does_not_block_thumbnail_decoder() {
++        use std::{ffi::CString,os::unix::ffi::OsStrExt,sync::mpsc,time::Duration};
++        let temp=tempfile::tempdir().unwrap();
++        let path=temp.path().join("pipe.png");
++        let name=CString::new(path.as_os_str().as_bytes()).unwrap();
++        assert_eq!(unsafe {libc::mkfifo(name.as_ptr(),0o600)},0);
++        let mut cache=Cache::new(1);
++        let request=cache.requests([path.as_path()]).pop().expect("FIFO entered thumbnail queue");
++        let (tx,rx)=mpsc::channel();
++        std::thread::spawn(move || { let _=tx.send(decode(request)); });
++        let finished=rx.recv_timeout(Duration::from_millis(250));
++        // Unblock the worker even when the regression assertion fails.
++        std::fs::OpenOptions::new().write(true).open(path).unwrap();
++        assert!(finished.is_ok(),"thumbnail decoder blocked opening a named pipe");
++    }
++
++}
+--- a/src/app/transfer_queue.rs
++++ b/src/app/transfer_queue.rs
+@@ -1005,3 +1005,38 @@
+         assert!(queue.finish(id, Report::Filesystem(&report)).is_some());
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++    #[test]
++    fn undo_merged_restore_keeps_preexisting_destination_files() {
++        assert_eq!(std::env::var("GIO_USE_VFS").as_deref(), Ok("local"));
++        assert!(std::env::var("XDG_DATA_HOME").unwrap().starts_with("/home/powerpenguini/.cache/waddle-deep-audit-"));
++        let temp = tempfile::tempdir_in("/home/powerpenguini/Projects").unwrap();
++        let source=temp.path().join("trash/files/folder");
++        let original=temp.path().join("original/folder");
++        let info=temp.path().join("trash/info/folder.trashinfo");
++        fs::create_dir_all(&source).unwrap();
++        fs::create_dir_all(&original).unwrap();
++        fs::create_dir_all(info.parent().unwrap()).unwrap();
++        fs::write(&info,"metadata").unwrap();
++        fs::write(source.join("restored.txt"),"restored").unwrap();
++        fs::write(original.join("preexisting.txt"),"must remain").unwrap();
++        let entry=trash::Entry { file: crate::fs::FileEntry {path:source.clone(),name:"folder".into(),directory:true,metadata:Default::default()},receipt:journal::TrashReceipt {original:original.clone(),trashed:source,info}};
++        let mut queue=Queue::open(temp.path().join("history.json"));
++        let work=queue.enqueue_restore(vec![entry.clone()],trash::restore_batch(std::slice::from_ref(&entry))).unwrap();
++        let id=work.id();
++        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict{batch,..},_)=work.run() else {panic!("expected folder conflict")};
++        queue.pause_for_conflict(id,*batch).unwrap();
++        let resumed=queue.resolve_conflict(ConflictChoice::Replace,false).unwrap();
++        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report),undo)=resumed.run() else {panic!("expected completion")};
++        assert!(report.receipts[0].replaced_existing);
++        let _=trash::finish_restore(report,&[entry]);
++        let mut journal=journal::Journal::in_memory();
++        journal.record(undo.unwrap().expect("merged Restore is offered as undoable")).unwrap();
++        let result=journal.undo();
++        assert!(result.is_ok(), "could not exercise Undo: {result:?}");
++        assert!(original.join("preexisting.txt").exists(),"Undo removed preexisting files; result = {result:?}");
++    }
++}
+--- a/src/file_manager_service.rs
++++ b/src/file_manager_service.rs
+@@ -185,3 +185,25 @@
+         assert!(launched.lock().unwrap().is_empty());
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++    #[test]
++    fn service_reaps_closed_windows() {
++        use std::{fs,os::unix::fs::PermissionsExt,time::Duration};
++        let temp=tempfile::tempdir().unwrap();
++        let executable=temp.path().join("window");
++        let pid_file=temp.path().join("pid");
++        fs::write(&executable,format!("#!/bin/sh\necho $$ > '{}'\n",pid_file.display())).unwrap();
++        fs::set_permissions(&executable,fs::Permissions::from_mode(0o700)).unwrap();
++        ProcessLauncher::new(executable).launch(&Target{directory:temp.path().to_path_buf(),selected:Vec::new()},"").unwrap();
++        for _ in 0..100 { if pid_file.exists(){break;} std::thread::sleep(Duration::from_millis(5)); }
++        let pid:i32=fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
++        std::thread::sleep(Duration::from_millis(100));
++        let status=fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
++        let zombie=status.lines().any(|line|line.starts_with("State:")&&line.contains('Z'));
++        unsafe {libc::waitpid(pid,std::ptr::null_mut(),0)};
++        assert!(!zombie,"closed window remained a zombie child of the service");
++    }
++}
+--- a/src/journal/effects.rs
++++ b/src/journal/effects.rs
+@@ -383,3 +383,54 @@
+     }
+     folders
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++
++    #[test]
++    fn cross_filesystem_move_can_redo_after_undo() {
++        let original_fs = tempfile::tempdir_in("/home/powerpenguini/Projects").unwrap();
++        let other_fs = tempfile::tempdir_in("/dev/shm").unwrap();
++        let source = original_fs.path().join("folder");
++        let destination = other_fs.path().join("folder");
++        fs::create_dir(&source).unwrap();
++        fs::write(source.join("item"), "data").unwrap();
++        crate::fs::journal_move(&source, &destination).unwrap();
++        let receipt = crate::fs::TransferReceipt { source: source.clone(), destination: destination.clone(), replaced_existing: false };
++        let action = Action::transfer(TransferKind::Move, &[receipt]).unwrap().unwrap();
++        let mut journal = super::super::Journal::in_memory();
++        journal.record(action).unwrap();
++        journal.undo().unwrap();
++        assert!(source.exists());
++        journal.redo().expect("an unchanged directory should be redoable across filesystems");
++    }
++    #[test]
++    fn copy_undo_can_recover_after_partial_removal_failure() {
++        use std::os::unix::fs::PermissionsExt;
++        assert_ne!(unsafe { libc::geteuid() }, 0);
++        let temp = tempfile::tempdir().unwrap();
++        let first_parent = temp.path().join("first");
++        let second_parent = temp.path().join("second");
++        fs::create_dir(&first_parent).unwrap();
++        fs::create_dir(&second_parent).unwrap();
++        let mut receipts = Vec::new();
++        for (i, parent) in [first_parent.clone(), second_parent.clone()].into_iter().enumerate() {
++            let source = temp.path().join(format!("source{i}"));
++            let destination = parent.join("copy");
++            fs::write(&source, "data").unwrap();
++            crate::fs::journal_copy(&source, &destination).unwrap();
++            receipts.push(crate::fs::TransferReceipt { source, destination, replaced_existing: false });
++        }
++        let action = Action::transfer(TransferKind::Copy, &receipts).unwrap().unwrap();
++        let mut journal = super::super::Journal::in_memory();
++        journal.record(action).unwrap();
++        fs::set_permissions(&first_parent, fs::Permissions::from_mode(0o500)).unwrap();
++        let failed = journal.undo();
++        fs::set_permissions(&first_parent, fs::Permissions::from_mode(0o700)).unwrap();
++        assert!(failed.is_err());
++        assert!(!receipts[1].destination.exists(), "second copy was already removed");
++        journal.undo().expect("retry Undo should handle already removed entries");
++    }
++
++}
+--- a/src/journal/store.rs
++++ b/src/journal/store.rs
+@@ -159,3 +159,25 @@
+         .unwrap_or_default()
+         .as_secs()
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++
++    #[test]
++    fn two_windows_keep_both_recorded_operations() {
++        let temp = tempfile::tempdir().unwrap();
++        let path = temp.path().join("history.json");
++        let mut window_a = Journal::open(path.clone()).unwrap();
++        let mut window_b = Journal::open(path.clone()).unwrap();
++        let a = temp.path().join("a");
++        let b = temp.path().join("b");
++        fs::write(&a, "").unwrap();
++        fs::write(&b, "").unwrap();
++        window_a.record(Action::new_file(a).unwrap()).unwrap();
++        window_b.record(Action::new_file(b).unwrap()).unwrap();
++        let reopened = Journal::open(path).unwrap();
++        assert_eq!(reopened.stored.entries.len(), 2, "second window overwrote the first window's operation");
++    }
++
++}
+--- a/src/transfer.rs
++++ b/src/transfer.rs
+@@ -1146,3 +1146,34 @@
+         assert_eq!(state.pending_cut_paths(), [PathBuf::from("/start/one")]);
+     }
+ }
++
++#[cfg(test)]
++mod deep_scan {
++    use super::*;
++    #[test]
++    fn pasting_again_after_partial_cut_preserves_folder_structure() {
++        use std::os::unix::fs::PermissionsExt;
++        let temp=tempfile::tempdir().unwrap();
++        let source=temp.path().join("source/folder");
++        let destination=temp.path().join("destination");
++        std::fs::create_dir_all(&source).unwrap();
++        std::fs::create_dir_all(destination.join("folder")).unwrap();
++        std::fs::write(source.join("a"),"first").unwrap();
++        std::fs::write(source.join("b"),"second").unwrap();
++        std::fs::write(destination.join("folder/b"),"existing").unwrap();
++        let entry=FileEntry {path:source.clone(),name:"folder".into(),directory:true,metadata:Default::default()};
++        let mut state=TransferState::default();
++        state.cut(&[entry]).unwrap();
++        let request=state.paste(destination.clone()).unwrap();
++        let crate::fs::TransferBatchOutcome::Conflict{batch,..}=crate::fs::TransferBatch::try_new(request.paths.clone(),destination.clone(),Action::Move).unwrap().run() else {panic!()};
++        let crate::fs::TransferBatchOutcome::Conflict{batch,..}=batch.resolve(crate::fs::ConflictChoice::Replace,false).run() else {panic!()};
++        std::fs::set_permissions(&source,std::fs::Permissions::from_mode(0o500)).unwrap();
++        let crate::fs::TransferBatchOutcome::Complete(report)=batch.resolve(crate::fs::ConflictChoice::Replace,false).run() else {panic!()};
++        std::fs::set_permissions(&source,std::fs::Permissions::from_mode(0o700)).unwrap();
++        assert_eq!(report.failures.len(),2);
++        state.finish_transfer(None,&request,&report,&destination);
++        let repeated=state.paste(destination.clone()).unwrap();
++        let _=crate::fs::TransferBatch::try_new(repeated.paths,destination.clone(),Action::Move).unwrap().run();
++        assert!(!destination.join("b").exists(),"pressing Paste again flattened the failed child into destination/b");
++    }
++}
+--- a/src/app/places.rs
++++ b/src/app/places.rs
+@@ -409,3 +409,16 @@
+         assert!(parse_volume_action("mount").is_err());
+     }
+ }
++
++#[cfg(test)]
++mod sidebar_probe {
++    use super::*;
++    #[test]
++    fn configured_desktop_visibility() {
++        let temp=tempfile::tempdir().unwrap();
++        let entries=Places::empty_at(temp.path().join("favorites.json")).entries();
++        assert_eq!(entries.iter().filter(|entry|entry.kind==NodeKind::Home).count(),1);
++        let expected=std::env::var("WADDLE_AUDIT_DESKTOP_VISIBLE").unwrap()=="1";
++        assert_eq!(entries.iter().any(|entry|entry.kind==NodeKind::Desktop),expected);
++    }
++}

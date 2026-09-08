@@ -72,10 +72,23 @@ fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Error
         for entry in entries {
             hash_tree(&entry.path(), &relative.join(entry.file_name()), digest)?;
         }
-    } else {
-        let mut file = fs::File::open(path).map_err(|error| {
-            Error::io(format!("could not fingerprint {}", path.display()), error)
-        })?;
+    } else if metadata.is_file() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| {
+                Error::io(format!("could not fingerprint {}", path.display()), error)
+            })?;
+        if !file
+            .metadata()
+            .map_err(|error| Error::io("could not inspect file", error))?
+            .is_file()
+        {
+            return Err(Error::message("cannot fingerprint a special file"));
+        }
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let read = file
@@ -86,6 +99,11 @@ fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Error
             }
             digest.write(&buffer[..read]);
         }
+    } else {
+        return Err(Error::message(format!(
+            "cannot fingerprint special file {}",
+            path.display()
+        )));
     }
     Ok(())
 }

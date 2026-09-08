@@ -171,10 +171,14 @@ fn list_columns_preserve_name_space_as_the_window_narrows() {
 
 #[test]
 fn list_header_name_aligns_with_entry_names() {
-    assert_eq!(
-        LIST_HEADER_ICON_SLOT_WIDTH + f32::from(LIST_HEADER_HORIZONTAL_PADDING),
-        LIST_ENTRY_ICON_WIDTH
-    );
+    let mut grid = GridInteraction::default();
+    for size in [24, 48, 64, 128] {
+        grid.set_icon_size(size);
+        assert_eq!(
+            grid.list_header_icon_slot_width() + f32::from(LIST_HEADER_HORIZONTAL_PADDING),
+            grid.list_icon_size()
+        );
+    }
 }
 
 #[test]
@@ -393,4 +397,24 @@ fn spinner_uses_stable_frames_and_stops_for_reduced_motion() {
     presentation.set_now(started + Duration::from_millis(800));
     assert_eq!(presentation.spinner_frame(false), 0);
     assert_eq!(presentation.spinner_frame(true), 0);
+}
+
+#[test]
+fn font_commands_change_rendered_families_without_restarting() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("waddlerc");
+    let (mut app, _) = App::new();
+    app.view_preferences = super::view_preferences::Preferences::empty_at(config.clone());
+    for (source, system) in [("waddle", false), ("system", true), ("waddle", false)] {
+        let _ = app.begin_command(':');
+        app.command.change(format!("set fonts={source}"));
+        let _ = app.submit_command();
+        assert_eq!(app.view_preferences.uses_system_fonts(), system);
+        assert_eq!(
+            super::view::View::new(&app).fonts(),
+            super::fonts::selected(system)
+        );
+        let _ = app.view();
+    }
+    assert!(!config.exists());
 }

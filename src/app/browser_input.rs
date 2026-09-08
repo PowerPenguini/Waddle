@@ -6,6 +6,7 @@ use super::{
 
 pub(super) const HELP: &str = "\
 Keyboard navigation
+  Ctrl+= / Ctrl+- / Ctrl+scroll  Resize file icons and labels
   Arrow keys  Move the active entry or focused control
   Shift+Arrow  Extend the conventional selection
   Home / End  Jump to the first / last entry
@@ -152,6 +153,7 @@ pub(super) struct Context {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Intent {
+    ResizeIcons(i32),
     None,
     PromptCancel,
     PromptConfirm,
@@ -475,6 +477,8 @@ impl BrowserInput {
             self.delete_pending = None;
             self.black_hole_stage = 0;
             return match text.map(str::to_ascii_lowercase).as_deref() {
+                Some("=" | "+") => Intent::ResizeIcons(1),
+                Some("-") => Intent::ResizeIcons(-1),
                 Some("c") => Intent::Copy,
                 Some("a") => Intent::SelectAll,
                 Some("l") => Intent::BeginLocation,

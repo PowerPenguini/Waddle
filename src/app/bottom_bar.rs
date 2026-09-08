@@ -3,34 +3,37 @@ use iced::{
     Alignment, Color, Element, Fill, Length, Padding,
     widget::{
         Column, Id, Row, Space, button, column, container, mouse_area, pin, row, scrollable, stack,
-        text, text_input,
+        text_input,
     },
 };
 
 use super::{
     BrowserFocus, BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu,
-    EntryIconKind, FileOperationView, InputMode, MONO_FONT, MONO_FONT_SEMIBOLD, Message,
-    NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID, TransientPresentationKind,
-    compact_status_line, context_button_style, context_menu_button_style, format_transfer_snapshot,
-    menu_style, open_with, status_background_style, status_input_style, with_alpha,
+    EntryIconKind, FileOperationView, InputMode, Message, NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID,
+    SEARCH_ID, TransientPresentationKind, compact_status_line, context_button_style,
+    context_menu_button_style, format_transfer_snapshot, menu_style, open_with,
+    status_background_style, status_input_style, with_alpha,
 };
 
 pub(super) fn command_output_action_spacing() -> f32 {
     12.0
 }
 
-fn transfer_shortcut<'a>(label: &'a str, color: Color) -> Element<'a, Message> {
-    text(label).font(MONO_FONT).size(11).color(color).into()
-}
-
 impl<'a> View<'a> {
+    fn transfer_shortcut<'b>(self, label: &'b str, color: Color) -> Element<'b, Message> {
+        self.text(label)
+            .font(self.fonts().mono)
+            .size(11)
+            .color(color)
+            .into()
+    }
     pub(super) fn status_bar(self) -> Element<'a, Message> {
         let height = self.app().status_height();
         let status_model = self.app().browser_status_model();
         let transient = self.app().transient_presentation().kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
-                text(status_model.text)
+                self.text(status_model.text)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .color(self.accent_color())
@@ -45,17 +48,17 @@ impl<'a> View<'a> {
                 .output()
                 .expect("command output transient must have output");
             let header = row![
-                text(&output.summary)
-                    .font(MONO_FONT_SEMIBOLD)
+                self.text(&output.summary)
+                    .font(self.fonts().mono_semibold())
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .width(Fill),
-                text("y copy")
-                    .font(MONO_FONT)
+                self.text("y copy")
+                    .font(self.fonts().mono)
                     .size(11)
                     .color(self.secondary_text_color()),
-                text("Esc close")
-                    .font(MONO_FONT)
+                self.text("Esc close")
+                    .font(self.fonts().mono)
                     .size(11)
                     .color(self.secondary_text_color()),
             ]
@@ -65,8 +68,8 @@ impl<'a> View<'a> {
             let output = column![
                 header,
                 scrollable(
-                    text(&output.detail)
-                        .font(MONO_FONT)
+                    self.text(&output.detail)
+                        .font(self.fonts().mono)
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(with_alpha(self.app().iced_theme().palette().text, 0.84))
@@ -102,7 +105,7 @@ impl<'a> View<'a> {
                         "/"
                     };
                     row![
-                        text(prefix)
+                        self.text(prefix)
                             .size(12)
                             .line_height(iced::Pixels(15.0))
                             .color(self.accent_color()),
@@ -110,7 +113,7 @@ impl<'a> View<'a> {
                             .id(Id::new(SEARCH_ID))
                             .on_input(Message::SearchChanged)
                             .on_submit(Message::SearchSubmitted)
-                            .font(MONO_FONT)
+                            .font(self.fonts().mono)
                             .size(12)
                             .line_height(iced::Pixels(15.0))
                             .padding(0)
@@ -123,7 +126,7 @@ impl<'a> View<'a> {
                     .into()
                 }
                 InputMode::Command => row![
-                    text(self.app().command.prefix().unwrap_or(':').to_string())
+                    self.text(self.app().command.prefix().unwrap_or(':').to_string())
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(self.accent_color()),
@@ -131,7 +134,7 @@ impl<'a> View<'a> {
                         .id(Id::new(COMMAND_ID))
                         .on_input(Message::CommandChanged)
                         .on_submit(Message::CommandSubmitted)
-                        .font(MONO_FONT)
+                        .font(self.fonts().mono)
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .padding(0)
@@ -149,21 +152,21 @@ impl<'a> View<'a> {
                             if self.app().foreground_operation_active() {
                                 self.app().spinner(13.0).into()
                             } else if error.is_empty() {
-                                text("Enter save  ·  Esc cancel")
+                                self.text("Enter save  ·  Esc cancel")
                                     .size(11)
                                     .line_height(iced::Pixels(13.0))
                                     .color(self.secondary_text_color())
                                     .into()
                             } else {
-                                text(error)
+                                self.text(error)
                                     .size(11)
                                     .line_height(iced::Pixels(13.0))
                                     .color(self.app().iced_theme().palette().danger)
                                     .into()
                             };
                         row![
-                            text("rename")
-                                .font(MONO_FONT)
+                            self.text("rename")
+                                .font(self.fonts().mono)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
                                 .color(self.accent_color()),
@@ -177,7 +180,7 @@ impl<'a> View<'a> {
                                     (!self.app().foreground_operation_active())
                                         .then_some(Message::RenameSubmitted),
                                 )
-                                .font(MONO_FONT)
+                                .font(self.fonts().mono)
                                 .size(12)
                                 .line_height(iced::Pixels(15.0))
                                 .padding(0)
@@ -220,7 +223,7 @@ impl<'a> View<'a> {
                     let mut line = Row::new()
                         .push(indicator)
                         .push(
-                            text(status_model.text)
+                            self.text(status_model.text)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
                                 .color(if self.app().presentation.notice_is_danger() {
@@ -241,11 +244,12 @@ impl<'a> View<'a> {
                         )
                         .align_y(Alignment::Center);
                     if status_model.retry {
-                        line = line.push(transfer_shortcut("R retry", self.secondary_text_color()));
+                        line = line
+                            .push(self.transfer_shortcut("R retry", self.secondary_text_color()));
                     }
                     if status_model.history {
-                        line =
-                            line.push(transfer_shortcut("t history", self.secondary_text_color()));
+                        line = line
+                            .push(self.transfer_shortcut("t history", self.secondary_text_color()));
                     }
                     line.into()
                 }
@@ -275,27 +279,27 @@ impl<'a> View<'a> {
             line = line
                 .push(self.app().spinner(13.0))
                 .push(
-                    text(format_transfer_snapshot(
+                    self.text(format_transfer_snapshot(
                         transfers.active_action.unwrap_or("Transfer"),
                         &snapshot,
                     ))
-                    .font(MONO_FONT)
+                    .font(self.fonts().mono)
                     .size(11)
                     .width(Fill),
                 )
-                .push(transfer_shortcut("Esc cancel", self.secondary_text_color()));
+                .push(self.transfer_shortcut("Esc cancel", self.secondary_text_color()));
         } else {
             line = line.push(
-                text("Transfer finished with retained entries")
-                    .font(MONO_FONT)
+                self.text("Transfer finished with retained entries")
+                    .font(self.fonts().mono)
                     .size(11)
                     .width(Fill),
             );
         }
         if transfers.retry {
-            line = line.push(transfer_shortcut("R retry", self.secondary_text_color()));
+            line = line.push(self.transfer_shortcut("R retry", self.secondary_text_color()));
         }
-        line.push(transfer_shortcut("t history", self.secondary_text_color()))
+        line.push(self.transfer_shortcut("t history", self.secondary_text_color()))
             .into()
     }
 
@@ -303,8 +307,8 @@ impl<'a> View<'a> {
         let transfers = self.app().transfers.overview();
         let mut header = Row::new()
             .push(
-                text("transfers")
-                    .font(MONO_FONT_SEMIBOLD)
+                self.text("transfers")
+                    .font(self.fonts().mono_semibold())
                     .size(11)
                     .width(Fill),
             )
@@ -312,14 +316,14 @@ impl<'a> View<'a> {
             .height(25)
             .align_y(Alignment::Center);
         if transfers.active {
-            header = header.push(transfer_shortcut("c cancel", self.secondary_text_color()));
+            header = header.push(self.transfer_shortcut("c cancel", self.secondary_text_color()));
         }
         if transfers.retry {
-            header = header.push(transfer_shortcut("R retry", self.secondary_text_color()));
+            header = header.push(self.transfer_shortcut("R retry", self.secondary_text_color()));
         }
         header = header
-            .push(transfer_shortcut("y copy", self.secondary_text_color()))
-            .push(transfer_shortcut("Esc close", self.secondary_text_color()));
+            .push(self.transfer_shortcut("y copy", self.secondary_text_color()))
+            .push(self.transfer_shortcut("Esc close", self.secondary_text_color()));
         let active = transfers
             .snapshot
             .map(|snapshot| {
@@ -341,8 +345,8 @@ impl<'a> View<'a> {
             column![
                 header,
                 scrollable(
-                    text(detail)
-                        .font(MONO_FONT)
+                    self.text(detail)
+                        .font(self.fonts().mono)
                         .size(11)
                         .line_height(iced::Pixels(14.0))
                         .width(Fill),
@@ -373,16 +377,16 @@ impl<'a> View<'a> {
             }
             FileOperationView::Trash { message } => compact_status_line(
                 row![
-                    text("trash")
-                        .font(MONO_FONT)
+                    self.text("trash")
+                        .font(self.fonts().mono)
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
-                    text(message)
+                    self.text(message)
                         .size(11)
                         .line_height(iced::Pixels(13.0))
                         .width(Fill),
-                    text("Y/n")
-                        .font(MONO_FONT_SEMIBOLD)
+                    self.text("Y/n")
+                        .font(self.fonts().mono_semibold())
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
                 ]
@@ -391,13 +395,13 @@ impl<'a> View<'a> {
             ),
             FileOperationView::PermanentDelete { message, detail } => {
                 let header = row![
-                    text("delete permanently")
-                        .font(MONO_FONT_SEMIBOLD)
+                    self.text("delete permanently")
+                        .font(self.fonts().mono_semibold())
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
-                    text(message).size(11).width(Fill),
-                    text("Y/n")
-                        .font(MONO_FONT_SEMIBOLD)
+                    self.text(message).size(11).width(Fill),
+                    self.text("Y/n")
+                        .font(self.fonts().mono_semibold())
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
                 ]
@@ -408,8 +412,8 @@ impl<'a> View<'a> {
                     column![
                         header,
                         scrollable(
-                            text(detail)
-                                .font(MONO_FONT)
+                            self.text(detail)
+                                .font(self.fonts().mono)
                                 .size(11)
                                 .line_height(iced::Pixels(14.0))
                                 .color(self.secondary_text_color())
@@ -449,13 +453,13 @@ impl<'a> View<'a> {
         message: &'a str,
     ) -> Element<'a, Message> {
         let header = row![
-            text(label)
-                .font(MONO_FONT_SEMIBOLD)
+            self.text(label)
+                .font(self.fonts().mono_semibold())
                 .size(11)
                 .color(label_color),
             Space::new().width(Fill),
-            text("Esc close")
-                .font(MONO_FONT)
+            self.text("Esc close")
+                .font(self.fonts().mono)
                 .size(11)
                 .color(self.secondary_text_color()),
         ]
@@ -465,8 +469,8 @@ impl<'a> View<'a> {
             column![
                 header,
                 scrollable(
-                    text(message)
-                        .font(MONO_FONT)
+                    self.text(message)
+                        .font(self.fonts().mono)
                         .size(11)
                         .line_height(iced::Pixels(14.0))
                         .color(self.secondary_text_color())
@@ -500,16 +504,16 @@ impl<'a> View<'a> {
         };
 
         let header = row![
-            text("open with")
-                .font(MONO_FONT_SEMIBOLD)
+            self.text("open with")
+                .font(self.fonts().mono_semibold())
                 .size(11)
                 .color(self.accent_color()),
-            text(target_name)
+            self.text(target_name)
                 .size(11)
                 .line_height(iced::Pixels(13.0))
                 .width(Fill),
-            text("Esc cancel")
-                .font(MONO_FONT)
+            self.text("Esc cancel")
+                .font(self.fonts().mono)
                 .size(11)
                 .color(self.secondary_text_color()),
         ]
@@ -519,7 +523,7 @@ impl<'a> View<'a> {
 
         let options: Element<'_, Message> = if applications.is_empty() {
             container(
-                text("No compatible applications found — enter one below")
+                self.text("No compatible applications found — enter one below")
                     .size(11)
                     .color(self.secondary_text_color()),
             )
@@ -530,8 +534,8 @@ impl<'a> View<'a> {
             let mut rows = Column::new().spacing(1);
             for application in applications {
                 let default: Element<'_, Message> = if application.default {
-                    text("default")
-                        .font(MONO_FONT)
+                    self.text("default")
+                        .font(self.fonts().mono)
                         .size(10)
                         .color(self.accent_color())
                         .into()
@@ -539,12 +543,12 @@ impl<'a> View<'a> {
                     Space::new().width(0).into()
                 };
                 let content = row![
-                    text(&application.name)
+                    self.text(&application.name)
                         .size(12)
                         .line_height(iced::Pixels(14.0))
                         .width(Length::FillPortion(2)),
-                    text(&application.id)
-                        .font(MONO_FONT)
+                    self.text(&application.id)
+                        .font(self.fonts().mono)
                         .size(10)
                         .color(self.secondary_text_color())
                         .wrapping(iced::advanced::text::Wrapping::None)
@@ -565,27 +569,27 @@ impl<'a> View<'a> {
         };
 
         let feedback: Element<'_, Message> = if error.is_empty() {
-            text("Enter open")
-                .font(MONO_FONT)
+            self.text("Enter open")
+                .font(self.fonts().mono)
                 .size(11)
                 .color(self.secondary_text_color())
                 .into()
         } else {
-            text(error)
+            self.text(error)
                 .size(11)
                 .color(self.app().iced_theme().palette().danger)
                 .into()
         };
         let custom = row![
-            text("custom")
-                .font(MONO_FONT)
+            self.text("custom")
+                .font(self.fonts().mono)
                 .size(11)
                 .color(self.accent_color()),
             text_input("Application name or desktop ID", custom)
                 .id(Id::new(OPEN_WITH_ID))
                 .on_input(Message::OpenWithChanged)
                 .on_submit(Message::OpenWithSubmitted)
-                .font(MONO_FONT)
+                .font(self.fonts().mono)
                 .size(12)
                 .line_height(iced::Pixels(15.0))
                 .padding(0)
@@ -618,13 +622,13 @@ impl<'a> View<'a> {
         let feedback: Element<'_, Message> = if self.app().foreground_operation_active() {
             self.app().spinner(13.0).into()
         } else if error.is_empty() {
-            text("Enter create  ·  Esc cancel")
-                .font(MONO_FONT)
+            self.text("Enter create  ·  Esc cancel")
+                .font(self.fonts().mono)
                 .size(11)
                 .color(self.secondary_text_color())
                 .into()
         } else {
-            text(error)
+            self.text(error)
                 .size(11)
                 .line_height(iced::Pixels(13.0))
                 .color(self.app().iced_theme().palette().danger)
@@ -632,8 +636,8 @@ impl<'a> View<'a> {
         };
         compact_status_line(
             row![
-                text(label)
-                    .font(MONO_FONT)
+                self.text(label)
+                    .font(self.fonts().mono)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .color(self.accent_color()),
@@ -647,7 +651,7 @@ impl<'a> View<'a> {
                         (!self.app().foreground_operation_active())
                             .then_some(Message::PromptSubmit),
                     )
-                    .font(MONO_FONT)
+                    .font(self.fonts().mono)
                     .size(12)
                     .line_height(iced::Pixels(15.0))
                     .padding(0)
@@ -675,7 +679,7 @@ impl<'a> View<'a> {
         } else {
             format!("{} matches", self.app().navigation.entries().len())
         };
-        text(label)
+        self.text(label)
             .size(11)
             .line_height(iced::Pixels(13.0))
             .color(self.secondary_text_color())
@@ -693,7 +697,7 @@ impl<'a> View<'a> {
             let focused = index == menu.focused;
             actions = actions.push(
                 mouse_area(
-                    button(text(label).size(13))
+                    button(self.text(label).size(13))
                         .on_press(message)
                         .style(move |theme, _| context_menu_button_style(theme, focused))
                         .width(Fill),

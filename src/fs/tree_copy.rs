@@ -39,6 +39,12 @@ impl CopyContext {
             self.metadata(source, destination, &metadata, false);
             return Ok(());
         }
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "copying special files is unsupported",
+            ));
+        }
 
         let hardlink_key = (metadata.dev(), metadata.ino());
         if metadata.nlink() > 1
@@ -53,7 +59,19 @@ impl CopyContext {
             }
         }
 
-        let mut input = fs::File::open(source)?;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Do not block if the source was replaced by a FIFO after inspection.
+        let mut input = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(source)?;
+        if !input.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "copying special files is unsupported",
+            ));
+        }
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

@@ -6,6 +6,7 @@ cd "$project_root"
 
 cargo fmt --all -- --check
 cargo test --all-targets
+cargo test --locked -p iced_widget --lib waddle_scrollbar_tests
 cargo clippy --all-targets -- -D warnings
 cargo build --release --locked
 scripts/smoke-file-manager-service.sh target/release/waddle

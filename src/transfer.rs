@@ -645,10 +645,14 @@ impl TransferState {
                 .map(|failure| failure.source.clone())
                 .chain(report.retained.iter().cloned())
                 .collect::<Vec<_>>();
-            if failed.is_empty() {
-                self.clipboard = None;
-            } else if let Some(payload) = self.clipboard.as_mut() {
-                payload.paths = failed;
+            if let Some(payload) = self.clipboard.as_mut() {
+                // Keep the original Cut roots so another Paste preserves nested paths.
+                payload
+                    .paths
+                    .retain(|root| failed.iter().any(|path| path.starts_with(root)));
+                if payload.paths.is_empty() {
+                    self.clipboard = None;
+                }
             }
         }
         Consequences {
@@ -893,6 +897,7 @@ mod tests {
             initiator: Initiator::NativeDrag,
         };
         let report = TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
             retained: Vec::new(),
@@ -926,6 +931,7 @@ mod tests {
             initiator: Initiator::Clipboard,
         };
         let report = TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/do skopiowania")],
             failures: Vec::new(),
             retained: Vec::new(),
@@ -960,6 +966,7 @@ mod tests {
         assert_eq!(request.action, Action::Copy);
 
         let report = TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/two")],
             failures: Vec::new(),
             retained: Vec::new(),
@@ -1043,6 +1050,7 @@ mod tests {
         state.copy(&entries).unwrap();
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
             retained: Vec::new(),
@@ -1081,6 +1089,7 @@ mod tests {
         state.cut(&entries).unwrap();
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one")],
             failures: vec![crate::fs::TransferFailure {
                 source: PathBuf::from("/start/two"),
@@ -1139,5 +1148,86 @@ mod tests {
 
         assert!(state.paste(PathBuf::from("/start")).is_none());
         assert_eq!(state.pending_cut_paths(), [PathBuf::from("/start/one")]);
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    #[test]
+    fn pasting_again_after_partial_cut_preserves_folder_structure() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source/folder");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(destination.join("folder")).unwrap();
+        std::fs::write(source.join("a"), "first").unwrap();
+        std::fs::write(source.join("b"), "second").unwrap();
+        std::fs::write(destination.join("folder/b"), "existing").unwrap();
+        let entry = FileEntry {
+            path: source.clone(),
+            name: "folder".into(),
+            directory: true,
+            metadata: Default::default(),
+        };
+        let mut state = TransferState::default();
+        state.cut(&[entry]).unwrap();
+        let request = state.paste(destination.clone()).unwrap();
+        let crate::fs::TransferBatchOutcome::Conflict { batch, .. } =
+            crate::fs::TransferBatch::try_new(
+                request.paths.clone(),
+                destination.clone(),
+                Action::Move,
+            )
+            .unwrap()
+            .run()
+        else {
+            panic!()
+        };
+        let crate::fs::TransferBatchOutcome::Conflict { batch, .. } = batch
+            .resolve(crate::fs::ConflictChoice::Replace, false)
+            .run()
+        else {
+            panic!()
+        };
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let crate::fs::TransferBatchOutcome::Complete(report) = batch
+            .resolve(crate::fs::ConflictChoice::Replace, false)
+            .run()
+        else {
+            panic!()
+        };
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(report.failures.len(), 2);
+        state.finish_transfer(None, &request, &report, &destination);
+        let repeated = state.paste(destination.clone()).unwrap();
+        let mut outcome =
+            crate::fs::TransferBatch::try_new(repeated.paths, destination.clone(), Action::Move)
+                .unwrap()
+                .run();
+        let report = loop {
+            match outcome {
+                crate::fs::TransferBatchOutcome::Conflict { batch, .. } => {
+                    outcome = batch
+                        .resolve(crate::fs::ConflictChoice::Replace, false)
+                        .run()
+                }
+                crate::fs::TransferBatchOutcome::Complete(report) => break report,
+            }
+        };
+        assert!(report.failures.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("folder/b")).unwrap(),
+            "second"
+        );
+        assert!(!source.exists());
+        assert!(
+            !destination.join("b").exists(),
+            "pressing Paste again flattened the failed child into destination/b"
+        );
     }
 }

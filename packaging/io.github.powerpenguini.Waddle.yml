@@ -26,6 +26,8 @@ modules:
     build-commands:
       - cargo build --offline --locked --release
       - install -Dm0755 target/release/waddle /app/bin/waddle
+      - install -Dm0644 data/fonts/LICENSE /app/share/licenses/waddle/fonts-LICENSE
+      - install -Dm0644 vendor/iced_widget/LICENSE /app/share/licenses/waddle/iced-widget-LICENSE
       - install -Dm0644 data/io.github.powerpenguini.Waddle.desktop /app/share/applications/io.github.powerpenguini.Waddle.desktop
       - install -Dm0644 data/io.github.powerpenguini.Waddle.metainfo.xml /app/share/metainfo/io.github.powerpenguini.Waddle.metainfo.xml
       - install -Dm0644 data/icons/hicolor/scalable/apps/io.github.powerpenguini.Waddle.svg /app/share/icons/hicolor/scalable/apps/io.github.powerpenguini.Waddle.svg

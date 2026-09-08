@@ -92,7 +92,9 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
     assert!(!conflict.retry);
     assert!(!conflict.history);
 
-    let _ = app.cancel_transfer_conflict();
+    let cancelled = app.transfers.cancel_conflict_work().unwrap();
+    assert!(app.transfers.overview().active);
+    let _ = app.finish_transfer_batch(id, cancelled.run());
     assert!(app.transfers.overview().retry);
     app.presentation
         .set_notice("External move or removal confirmed".to_owned());

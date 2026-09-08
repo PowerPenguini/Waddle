@@ -28,6 +28,8 @@ check:
 
 install: check
 	$(INSTALL) -Dm0755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/waddle"
+	$(INSTALL) -Dm0644 data/fonts/LICENSE "$(DESTDIR)$(DATADIR)/licenses/waddle/fonts-LICENSE"
+	$(INSTALL) -Dm0644 vendor/iced_widget/LICENSE "$(DESTDIR)$(DATADIR)/licenses/waddle/iced-widget-LICENSE"
 	$(INSTALL) -Dm0644 "data/$(APP_ID).desktop" \
 		"$(DESTDIR)$(APPLICATIONSDIR)/$(APP_ID).desktop"
 	$(INSTALL) -Dm0644 "data/$(APP_ID).metainfo.xml" \
@@ -38,6 +40,8 @@ install: check
 
 uninstall:
 	rm -f -- "$(DESTDIR)$(BINDIR)/waddle"
+	rm -f -- "$(DESTDIR)$(DATADIR)/licenses/waddle/fonts-LICENSE"
+	rm -f -- "$(DESTDIR)$(DATADIR)/licenses/waddle/iced-widget-LICENSE"
 	rm -f -- "$(DESTDIR)$(APPLICATIONSDIR)/$(APP_ID).desktop"
 	rm -f -- "$(DESTDIR)$(METAINFODIR)/$(APP_ID).metainfo.xml"
 	rm -f -- "$(DESTDIR)$(ICONDIR)/$(APP_ID).svg"

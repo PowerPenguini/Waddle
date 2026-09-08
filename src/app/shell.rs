@@ -2,7 +2,10 @@ use std::{
     ffi::OsString,
     fmt,
     io::{self, Read},
-    os::unix::{ffi::OsStringExt, process::CommandExt},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStringExt, process::CommandExt},
+    },
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
@@ -10,7 +13,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const PWD_MARKER: &[u8] = b"\0WADDLE_PWD\0";
@@ -177,17 +180,22 @@ exit "$status""#,
     let mut child = process.spawn()?;
 
     let screen_detected = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
     let stdout_reader = spawn_output_reader(
         child.stdout.take().expect("piped stdout must be available"),
         Arc::clone(&screen_detected),
+        Arc::clone(&finished),
     );
     let stderr_reader = spawn_output_reader(
         child.stderr.take().expect("piped stderr must be available"),
         Arc::clone(&screen_detected),
+        Arc::clone(&finished),
     );
-    let status = wait_for_command(&mut child, &screen_detected)?;
+    let status = wait_for_command(&mut child, &screen_detected);
+    finished.store(true, Ordering::Release);
     let mut stdout = join_output_reader(stdout_reader)?;
     let stderr = join_output_reader(stderr_reader)?;
+    let status = status?;
     if screen_detected.load(Ordering::Acquire) {
         return Err(ShellError::RequiresTerminal);
     }
@@ -325,21 +333,54 @@ fn wait_for_command(
 fn spawn_output_reader<R>(
     reader: R,
     screen_detected: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
 ) -> thread::JoinHandle<io::Result<Vec<u8>>>
 where
-    R: Read + Send + 'static,
+    R: Read + AsRawFd + Send + 'static,
 {
-    thread::spawn(move || read_output(reader, &screen_detected))
+    thread::spawn(move || {
+        let fd = reader.as_raw_fd();
+        // SAFETY: reader owns this live pipe descriptor throughout the calls.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        read_output(reader, &screen_detected, &finished)
+    })
 }
 
-fn read_output<R: Read>(mut reader: R, screen_detected: &AtomicBool) -> io::Result<Vec<u8>> {
+fn read_output<R: Read>(
+    mut reader: R,
+    screen_detected: &AtomicBool,
+    finished: &AtomicBool,
+) -> io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut tail = Vec::new();
     let mut truncated = false;
     let mut chunk = [0_u8; 4096];
     let mut detector = ScreenControlDetector::default();
+    let mut drain_deadline = None;
     loop {
-        let read = reader.read(&mut chunk)?;
+        if finished.load(Ordering::Acquire) {
+            let deadline =
+                drain_deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(50));
+            if Instant::now() >= *deadline {
+                break;
+            }
+        }
+        let read = match reader.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if finished.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }
@@ -576,7 +617,12 @@ mod tests {
     #[test]
     fn output_is_bounded_while_the_reader_is_still_running() {
         let input = vec![b'x'; OUTPUT_LIMIT * 8];
-        let output = read_output(input.as_slice(), &AtomicBool::new(false)).unwrap();
+        let output = read_output(
+            input.as_slice(),
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert!(output.len() <= OUTPUT_LIMIT + OUTPUT_TAIL + STREAM_TRUNCATED.len());
         assert!(
@@ -587,6 +633,22 @@ mod tests {
         assert_eq!(
             &output[output.len() - OUTPUT_TAIL..],
             vec![b'x'; OUTPUT_TAIL]
+        );
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    #[test]
+    fn background_command_completes_when_shell_exits() {
+        let start = std::time::Instant::now();
+        let report = execute(Path::new("/tmp"), '!', "sleep 1 &", &[]).unwrap();
+        assert!(report.successful);
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "waited for background child to close inherited stdout"
         );
     }
 }

@@ -800,6 +800,9 @@ impl App {
     }
 
     pub(super) fn submit_search(&mut self) -> Task<Message> {
+        if self.search.is_loading() {
+            return Task::none();
+        }
         self.browser_input.leave_mode();
         self.operations.cancel(OperationKind::Search);
         if let Some(entry) = self.search.submit(&mut self.navigation, &mut self.grid) {

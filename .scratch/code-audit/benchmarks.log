@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `release` profile [optimized] target(s) in 9.11s
+     Running unittests src/main.rs (target/release/deps/waddle-127e2c39f2188b96)
+
+running 7 tests
+test app::performance::benchmark_cached_theme_and_sidebar_loading_work ... benchmark cached-theme: median=10ns/op p95=10ns/op budget=2µs/op samples=21 iterations=100000
+benchmark sidebar-loading: median=11ns/op p95=14ns/op budget=2µs/op samples=21 iterations=100000
+ok
+test app::performance::benchmark_grid_cursor_and_view_work ... benchmark grid-cursor-view: median=145.783µs/op p95=147.675µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_internal_drag_preview_work ... benchmark internal-drag-preview: median=1.089µs/op p95=1.147µs/op budget=100µs/op samples=21 iterations=2000
+ok
+test app::performance::benchmark_large_marquee_selection_work ... benchmark large-marquee-selection: median=3.07µs/op p95=3.177µs/op budget=250µs/op samples=21 iterations=500
+ok
+test app::performance::benchmark_list_cursor_and_view_work ... benchmark list-cursor-view: median=51.749µs/op p95=52.121µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_scroll_frame_work ... benchmark scroll-frame: median=106ns/op p95=107ns/op budget=20µs/op samples=21 iterations=10000
+ok
+test app::system_icons::tests::benchmark_system_icon_cold_load_and_cached_resolution ... benchmark system-icons: cold-load=196.445712ms cached=13ns/op requests=36
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 411 filtered out; finished in 2.47s

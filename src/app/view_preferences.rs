@@ -35,6 +35,13 @@ enum IconSource {
     System,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum FontSource {
+    Waddle,
+    #[default]
+    System,
+}
+
 impl ClickActivation {
     fn is_single(self) -> bool {
         self == Self::Single
@@ -117,6 +124,8 @@ struct GlobalSettings {
     file_click: ClickActivation,
     folder_click: ClickActivation,
     icons: IconSource,
+    fonts: FontSource,
+    icon_size: u16,
     high_contrast: PreferenceOverride,
     reduced_motion: PreferenceOverride,
     reduced_transparency: PreferenceOverride,
@@ -131,6 +140,8 @@ impl Default for GlobalSettings {
             file_click: ClickActivation::Double,
             folder_click: ClickActivation::Single,
             icons: IconSource::Waddle,
+            fonts: FontSource::System,
+            icon_size: super::icon_size::DEFAULT,
             high_contrast: PreferenceOverride::Auto,
             reduced_motion: PreferenceOverride::Auto,
             reduced_transparency: PreferenceOverride::Auto,
@@ -157,6 +168,7 @@ pub(super) struct Applied {
     pub(super) status: String,
     pub(super) browse_changed: bool,
     pub(super) tree_changed: bool,
+    pub(super) icon_size_changed: bool,
 }
 
 pub(super) struct Preferences {
@@ -281,6 +293,21 @@ impl Preferences {
         self.session.global.reduced_transparency
     }
 
+    pub(super) fn icon_size(&self) -> u16 {
+        self.session.global.icon_size
+    }
+
+    pub(super) fn resize_icons(&mut self, steps: i32) -> bool {
+        let size = super::icon_size::stepped(self.icon_size(), steps);
+        let changed = size != self.icon_size();
+        self.session.global.icon_size = size;
+        changed
+    }
+
+    pub(super) fn uses_system_fonts(&self) -> bool {
+        self.session.global.fonts == FontSource::System
+    }
+
     pub(super) fn uses_system_icons(&self) -> bool {
         self.session.global.icons == IconSource::System
     }
@@ -314,11 +341,13 @@ impl Preferences {
                 status,
                 browse_changed: false,
                 tree_changed: false,
+                icon_size_changed: false,
             });
         }
 
         let before_browse = self.for_directory(directory);
         let before_tree = self.tree_visible();
+        let before_icon_size = self.icon_size();
         let mut global = self.session.global;
         let mut local_patch = self
             .session
@@ -358,6 +387,7 @@ impl Preferences {
             status: self.describe(directory, local),
             browse_changed: before_browse != self.for_directory(directory),
             tree_changed: before_tree != self.tree_visible(),
+            icon_size_changed: before_icon_size != self.icon_size(),
         })
     }
 
@@ -373,7 +403,7 @@ impl Preferences {
             "session global"
         };
         format!(
-            "{scope}: view={} sort={} direction={} hidden={} file-click={} folder-click={} icons={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
+            "{scope}: view={} sort={} direction={} hidden={} file-click={} folder-click={} icons={} icon-size={} fonts={} high-contrast={} reduced-motion={} reduced-transparency={} tree={} startup={} (config-only)  •  config={}",
             view_label(options.view),
             sort_label(options.sort),
             direction_label(options.descending),
@@ -381,6 +411,12 @@ impl Preferences {
             click_label(self.session.global.file_click),
             click_label(self.session.global.folder_click),
             icon_source_label(self.session.global.icons),
+            self.icon_size(),
+            if self.uses_system_fonts() {
+                "system"
+            } else {
+                "waddle"
+            },
             override_label(self.session.global.high_contrast),
             override_label(self.session.global.reduced_motion),
             override_label(self.session.global.reduced_transparency),
@@ -391,7 +427,7 @@ impl Preferences {
     }
 }
 
-const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nhidden: show dot-prefixed entries\nfile-click: single or double activation (global session)\nfolder-click: single or double activation (global session)\nicons: waddle or system (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
+const SETTING_REFERENCE: &str = "\n\nview: grid or list\nsort: name, modified, size, or type\ndirection: ascending or descending\nhidden: show dot-prefixed entries\nfile-click: single or double activation (global session)\nfolder-click: single or double activation (global session)\nicons: waddle or system (global session)\nicon-size: 24 to 128 pixels, default 48; also scales file labels (global session)\nfonts: system or waddle (global session)\nhigh-contrast: auto, true, or false (global session)\nreduced-motion: auto, true, or false (global session)\nreduced-transparency: auto, true, or false (global session)\ntree: show the sidebar tree (global session)\nstartup: last or cwd (waddlerc only)";
 
 fn load_config(path: &Path, home: Option<&Path>) -> Result<Config, String> {
     let source = match fs::read_to_string(path) {
@@ -489,6 +525,15 @@ fn apply_global_option(
         ("hidden", value) => settings.browse.show_hidden = parse_bool(name, value)?,
         ("file-click", value) => settings.file_click = parse_click_activation(name, value)?,
         ("folder-click", value) => settings.folder_click = parse_click_activation(name, value)?,
+        ("icon-size", value) => {
+            settings.icon_size = value
+                .parse::<u16>()
+                .ok()
+                .filter(|size| (super::icon_size::MIN..=super::icon_size::MAX).contains(size))
+                .ok_or_else(|| "icon-size must be an integer from 24 to 128".to_owned())?;
+        }
+        ("fonts", "waddle") => settings.fonts = FontSource::Waddle,
+        ("fonts", "system") => settings.fonts = FontSource::System,
         ("icons", "waddle") => settings.icons = IconSource::Waddle,
         ("icons", "system") => settings.icons = IconSource::System,
         ("click", value) => {
@@ -507,7 +552,7 @@ fn apply_global_option(
         ("startup", _) if !from_config => {
             return Err("startup is config-only; edit waddlerc".to_owned());
         }
-        ("view" | "sort" | "direction" | "icons" | "startup", _) => {
+        ("view" | "sort" | "direction" | "icons" | "fonts" | "startup", _) => {
             return Err(format!("invalid value for {name}: {value}"));
         }
         _ => return Err(format!("unknown setting: {name}")),
@@ -538,6 +583,8 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
             | "file-click"
             | "folder-click"
             | "icons"
+            | "fonts"
+            | "icon-size"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -562,6 +609,8 @@ fn apply_local_option(patch: &mut BrowsePatch, argument: &str) -> Result<(), Str
             | "file-click"
             | "folder-click"
             | "icons"
+            | "fonts"
+            | "icon-size"
             | "high-contrast"
             | "reduced-motion"
             | "reduced-transparency"
@@ -674,6 +723,47 @@ fn settings_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_size_validates_atomically_and_loads_from_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("waddlerc");
+        let directory = Path::new("/work");
+        let mut preferences = Preferences::empty_at(path.clone());
+        assert_eq!(preferences.icon_size(), 48);
+        for size in [24, 57, 128] {
+            let applied = preferences
+                .apply_command(directory, false, &format!("icon-size={size}"))
+                .unwrap();
+            assert!(applied.icon_size_changed);
+            assert!(!applied.browse_changed);
+            assert_eq!(preferences.icon_size(), size);
+        }
+        for invalid in ["23", "129", "-1", "NaN", "48.5", "65536"] {
+            assert!(
+                preferences
+                    .apply_command(
+                        directory,
+                        false,
+                        &format!("fonts=waddle icon-size={invalid}")
+                    )
+                    .is_err()
+            );
+            assert_eq!(preferences.icon_size(), 128);
+            assert!(preferences.uses_system_fonts());
+        }
+        assert!(
+            preferences
+                .apply_command(directory, true, "icon-size=64")
+                .unwrap_err()
+                .contains("global")
+        );
+        assert!(!path.exists());
+        fs::write(&path, "set icon-size=64\n").unwrap();
+        let loaded = Preferences::open_at(path, None);
+        assert!(loaded.error().is_none());
+        assert_eq!(loaded.icon_size(), 64);
+    }
 
     #[test]
     fn waddlerc_parses_global_local_comments_quotes_and_tilde() {
@@ -887,5 +977,45 @@ mod tests {
             .unwrap();
         assert!(!preferences.uses_system_icons());
         assert!(!temp.path().join("waddlerc").exists());
+    }
+    #[test]
+    fn font_source_switches_live_and_loads_from_waddlerc() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("waddlerc");
+        let mut preferences = Preferences::empty_at(path.clone());
+        assert!(preferences.uses_system_fonts());
+        let applied = preferences
+            .apply_command(Path::new("/work"), false, "fonts=waddle")
+            .unwrap();
+        assert!(!preferences.uses_system_fonts());
+        assert!(applied.status.contains("fonts=waddle"));
+        assert!(!applied.browse_changed);
+        assert!(!path.exists());
+        assert_eq!(
+            preferences
+                .apply_command(Path::new("/work"), true, "fonts=system")
+                .unwrap_err(),
+            "fonts is a global setting"
+        );
+        assert!(
+            preferences
+                .apply_command(Path::new("/work"), false, "fonts=system icons=invalid")
+                .is_err()
+        );
+        assert!(!preferences.uses_system_fonts());
+        assert!(
+            preferences
+                .apply_command(Path::new("/work"), false, "fonts=invalid")
+                .is_err()
+        );
+        preferences
+            .apply_command(Path::new("/work"), false, "fonts=system")
+            .unwrap();
+        assert!(preferences.uses_system_fonts());
+        fs::write(&path, "set fonts=waddle icons=system\n").unwrap();
+        let preferences = Preferences::open_at(path, None);
+        assert!(preferences.error().is_none());
+        assert!(!preferences.uses_system_fonts());
+        assert!(preferences.uses_system_icons());
     }
 }

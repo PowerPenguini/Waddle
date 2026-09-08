@@ -2251,19 +2251,6 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
-        "url": "https://static.crates.io/crates/iced_widget/iced_widget-0.14.2.crate",
-        "sha256": "b1596afa0d3109c2618e8bc12bae6c11d3064df8f95c42dfce570397dbe957ab",
-        "dest": "cargo/vendor/iced_widget-0.14.2"
-    },
-    {
-        "type": "inline",
-        "contents": "{\"package\": \"b1596afa0d3109c2618e8bc12bae6c11d3064df8f95c42dfce570397dbe957ab\", \"files\": {}}",
-        "dest": "cargo/vendor/iced_widget-0.14.2",
-        "dest-filename": ".cargo-checksum.json"
-    },
-    {
-        "type": "archive",
-        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/iced_winit/iced_winit-0.14.0.crate",
         "sha256": "8b7dbedc47562d1de3b9707d939f678b88c382004b7ab5a18f7a7dd723162d75",
         "dest": "cargo/vendor/iced_winit-0.14.0"

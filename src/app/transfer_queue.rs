@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::{ConflictChoice, TransferBatch, TransferProgress, TransferReport},
+    journal,
     transfer::Request,
 };
 
@@ -23,6 +24,7 @@ const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 #[derive(Clone, Debug)]
 pub(super) struct Work {
     id: u64,
+    operation: Operation,
     batch: Batch,
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
@@ -38,7 +40,14 @@ impl Work {
         let progress = |update| self.progress.update(update);
         match self.batch {
             Batch::Filesystem(batch) => {
-                WorkOutcome::Filesystem((*batch).run_with(cancelled, progress))
+                let outcome = (*batch).run_with(cancelled, progress);
+                let undo = match &outcome {
+                    crate::fs::TransferBatchOutcome::Complete(report) => {
+                        self.operation.prepare_undo(report)
+                    }
+                    crate::fs::TransferBatchOutcome::Conflict { .. } => Ok(None),
+                };
+                WorkOutcome::Filesystem(outcome, undo)
             }
             Batch::Trash(batch) => WorkOutcome::Trash(batch.run(cancelled, progress)),
         }
@@ -53,13 +62,15 @@ enum Batch {
 
 #[derive(Clone, Debug)]
 pub(super) enum WorkOutcome {
-    Filesystem(crate::fs::TransferBatchOutcome),
+    Filesystem(crate::fs::TransferBatchOutcome, PreparedUndo),
     Trash(trash::Report),
 }
 
+pub(super) type PreparedUndo = Result<Option<journal::Action>, String>;
+
 impl From<crate::fs::TransferBatchOutcome> for WorkOutcome {
     fn from(outcome: crate::fs::TransferBatchOutcome) -> Self {
-        Self::Filesystem(outcome)
+        Self::Filesystem(outcome, Ok(None))
     }
 }
 
@@ -71,6 +82,43 @@ pub(super) enum Operation {
 }
 
 impl Operation {
+    fn prepare_undo(&self, report: &TransferReport) -> PreparedUndo {
+        match self {
+            Self::Transfer(request) => journal::Action::transfer(
+                match request.action {
+                    crate::transfer::Action::Copy => journal::TransferKind::Copy,
+                    crate::transfer::Action::Move => journal::TransferKind::Move,
+                },
+                &report.receipts,
+            ),
+            Self::Restore(entries) => {
+                let receipts = report
+                    .receipts
+                    .iter()
+                    .filter_map(|receipt| {
+                        let entry = entries
+                            .iter()
+                            .find(|entry| entry.receipt.trashed == receipt.source)?;
+                        Some(journal::TrashReceipt {
+                            original: receipt.destination.clone(),
+                            trashed: receipt.source.clone(),
+                            info: entry.receipt.info.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                journal::Action::restore(
+                    &receipts,
+                    report
+                        .receipts
+                        .iter()
+                        .any(|receipt| receipt.replaced_existing),
+                )
+            }
+            Self::Trash(_) => Ok(None),
+        }
+        .map_err(|error| error.to_string())
+    }
+
     fn active_action(&self) -> &'static str {
         match self {
             Self::Transfer(request) => match request.action {
@@ -162,7 +210,10 @@ pub(super) struct Queue {
 
 #[derive(Clone, Debug)]
 enum Retry {
-    Transfer(Request),
+    Transfer {
+        request: Request,
+        entries: Vec<(PathBuf, PathBuf)>,
+    },
     Trash(Vec<crate::fs::FileEntry>),
 }
 
@@ -256,10 +307,11 @@ impl Queue {
         Some(work(active, batch))
     }
 
-    pub(super) fn cancel_conflict(&mut self) -> Option<(u64, TransferReport)> {
+    pub(super) fn cancel_conflict(&mut self) -> Option<Work> {
         let active = self.active.as_mut()?;
         let batch = active.paused.take()?;
-        Some((active.id, batch.cancel()))
+        active.cancellation.store(true, Ordering::Release);
+        Some(work(active, batch))
     }
 
     pub(super) fn finish(&mut self, id: u64, report: Report<'_>) -> Option<Finished> {
@@ -281,16 +333,17 @@ impl Queue {
         let snapshot = snapshot(&active, self.pending.len());
         match (&active.operation, report) {
             (Operation::Transfer(request), Report::Filesystem(report)) => {
-                let retry_paths = report
-                    .failures
-                    .iter()
-                    .map(|failure| failure.source.clone())
-                    .chain(report.retained.iter().cloned())
-                    .collect::<Vec<_>>();
-                self.last_retry = (!retry_paths.is_empty()).then(|| {
+                self.last_retry = (!report.retry.is_empty()).then(|| {
                     let mut request = request.clone();
-                    request.paths = retry_paths;
-                    Retry::Transfer(request)
+                    request.paths = report
+                        .retry
+                        .iter()
+                        .map(|(source, _)| source.clone())
+                        .collect();
+                    Retry::Transfer {
+                        request,
+                        entries: report.retry.clone(),
+                    }
                 });
                 self.history
                     .push(transfer_history_entry(request, report, &snapshot));
@@ -331,13 +384,9 @@ impl Queue {
             return Ok(None);
         };
         let (operation, batch) = match retry {
-            Retry::Transfer(request) => {
-                let batch = TransferBatch::try_new(
-                    request.paths.clone(),
-                    request.destination.clone(),
-                    request.action,
-                )
-                .map_err(|error| error.to_string())?;
+            Retry::Transfer { request, entries } => {
+                let batch = TransferBatch::try_new_mapped(entries, request.action)
+                    .map_err(|error| error.to_string())?;
                 (
                     Operation::Transfer(request),
                     Batch::Filesystem(Box::new(batch)),
@@ -425,6 +474,7 @@ impl Queue {
         });
         Work {
             id,
+            operation,
             batch,
             cancellation,
             progress,
@@ -454,6 +504,7 @@ impl Queue {
 fn work(active: &Active, batch: TransferBatch) -> Work {
     Work {
         id: active.id,
+        operation: active.operation.clone(),
         batch: Batch::Filesystem(Box::new(batch)),
         cancellation: Arc::clone(&active.cancellation),
         progress: Arc::clone(&active.progress),
@@ -584,6 +635,7 @@ mod tests {
 
     fn report() -> TransferReport {
         TransferReport {
+            retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
             retained: Vec::new(),
@@ -601,6 +653,153 @@ mod tests {
             directory: false,
             metadata: Default::default(),
         }
+    }
+
+    #[test]
+    fn retry_preserves_nested_destinations_and_does_not_repeat_successes() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source/folder");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(destination.join("folder")).unwrap();
+        fs::write(source.join("a"), "copied once").unwrap();
+        let special = UnixListener::bind(source.join("b")).unwrap();
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source.clone()];
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(request.paths.clone(), destination.clone(), request.action),
+            )
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict { batch, .. }, _) =
+            work.run()
+        else {
+            panic!("expected folder conflict");
+        };
+        queue.pause_for_conflict(id, *batch).unwrap();
+        let work = queue
+            .resolve_conflict(ConflictChoice::Replace, false)
+            .unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), _) =
+            work.run()
+        else {
+            panic!("expected partial completion");
+        };
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(
+            report.retry,
+            [(source.join("b"), destination.join("folder/b"))]
+        );
+        queue.finish(id, Report::Filesystem(&report)).unwrap();
+
+        drop(special);
+        fs::remove_file(source.join("b")).unwrap();
+        fs::write(source.join("b"), "now readable").unwrap();
+        fs::write(destination.join("folder/a"), "edited after Copy").unwrap();
+        let retried = queue.retry().unwrap().unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), undo) =
+            retried.run()
+        else {
+            panic!("Retry should only copy the failed child");
+        };
+        assert!(report.failures.is_empty());
+        assert!(matches!(undo, Ok(Some(_))));
+        assert!(!destination.join("b").exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("folder/b")).unwrap(),
+            "now readable"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("folder/a")).unwrap(),
+            "edited after Copy"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_conflict_prepares_undo_for_earlier_successes_in_the_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("a"), "first").unwrap();
+        fs::write(source.join("b"), "second").unwrap();
+        fs::write(destination.join("b"), "existing").unwrap();
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source.join("a"), source.join("b")];
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(request.paths.clone(), destination.clone(), request.action),
+            )
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict { batch, .. }, _) =
+            work.run()
+        else {
+            panic!("expected second item conflict");
+        };
+        queue.pause_for_conflict(id, *batch).unwrap();
+        let work = queue.cancel_conflict().unwrap();
+        assert!(queue.active());
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), undo) =
+            work.run()
+        else {
+            panic!("expected cancelled completion");
+        };
+        assert!(report.cancelled);
+        assert_eq!(report.completed, [destination.join("a")]);
+        assert_eq!(report.retry, [(source.join("b"), destination.join("b"))]);
+        let mut journal = journal::Journal::in_memory();
+        journal.record(undo.unwrap().unwrap()).unwrap();
+        journal.undo().unwrap();
+        assert!(!destination.join("a").exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("b")).unwrap(),
+            "existing"
+        );
+    }
+
+    #[test]
+    fn worker_captures_undo_before_returning_a_completed_transfer() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("item");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, "original").unwrap();
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source];
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(request.paths.clone(), destination.clone(), request.action),
+            )
+            .unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(_), undo) =
+            work.run()
+        else {
+            panic!("expected completion");
+        };
+        let action = undo.unwrap().expect("worker must prepare Undo");
+        fs::write(
+            destination.join("item"),
+            "changed before UI handles completion",
+        )
+        .unwrap();
+        let mut journal = journal::Journal::in_memory();
+        journal.record(action).unwrap();
+        assert!(
+            journal.undo().is_err(),
+            "Undo must retain the worker's original fingerprint"
+        );
+        assert!(destination.join("item").exists());
     }
 
     #[test]
@@ -687,6 +886,7 @@ mod tests {
         assert!(work.cancellation.load(Ordering::Acquire));
 
         let failed = TransferReport {
+            retry: vec![(request.paths[0].clone(), destination.join("item"))],
             completed: Vec::new(),
             failures: vec![TransferFailure {
                 source: request.paths[0].clone(),
@@ -783,7 +983,7 @@ mod tests {
             )
             .unwrap();
         let id = work.id();
-        let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }) = work.run()
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) = work.run()
         else {
             panic!("existing destination must pause the Transfer");
         };
@@ -803,10 +1003,79 @@ mod tests {
 
         let resumed = queue.resolve_conflict(ConflictChoice::Skip, false).unwrap();
         assert_eq!(resumed.id(), id);
-        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report)) = resumed.run() else {
+        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = resumed.run()
+        else {
             panic!("Skip must complete the paused Transfer");
         };
         assert_eq!(report.retained, [source]);
         assert!(queue.finish(id, Report::Filesystem(&report)).is_some());
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    #[test]
+    fn undo_merged_restore_keeps_preexisting_destination_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("trash/files/folder");
+        let original = temp.path().join("original/folder");
+        let info = temp.path().join("trash/info/folder.trashinfo");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&original).unwrap();
+        fs::create_dir_all(info.parent().unwrap()).unwrap();
+        fs::write(&info, "metadata").unwrap();
+        fs::write(source.join("restored.txt"), "restored").unwrap();
+        fs::write(original.join("preexisting.txt"), "must remain").unwrap();
+        let entry = trash::Entry {
+            file: crate::fs::FileEntry {
+                path: source.clone(),
+                name: "folder".into(),
+                directory: true,
+                metadata: Default::default(),
+            },
+            receipt: journal::TrashReceipt {
+                original: original.clone(),
+                trashed: source,
+                info,
+            },
+        };
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_restore(
+                vec![entry.clone()],
+                trash::restore_batch(std::slice::from_ref(&entry)),
+            )
+            .unwrap();
+        let id = work.id();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Conflict { batch, .. }, _) =
+            work.run()
+        else {
+            panic!("expected folder conflict")
+        };
+        queue.pause_for_conflict(id, *batch).unwrap();
+        let resumed = queue
+            .resolve_conflict(ConflictChoice::Replace, false)
+            .unwrap();
+        let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), undo) =
+            resumed.run()
+        else {
+            panic!("expected completion")
+        };
+        assert!(report.receipts[0].replaced_existing);
+        let _ = trash::finish_restore(report, &[entry]);
+        let mut journal = journal::Journal::in_memory();
+        journal
+            .record(
+                undo.unwrap()
+                    .expect("merged Restore is offered as undoable"),
+            )
+            .unwrap();
+        let result = journal.undo();
+        assert!(result.unwrap_err().to_string().contains("Refused Undo"));
+        assert!(
+            original.join("preexisting.txt").exists(),
+            "Undo removed preexisting files"
+        );
     }
 }

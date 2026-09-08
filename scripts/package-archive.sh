@@ -13,6 +13,8 @@ cargo build --manifest-path "$project_root/Cargo.toml" --release --locked
 install -Dm0755 "$project_root/target/release/waddle" "$stage_dir/$archive_name/bin/waddle"
 install -Dm0644 "$project_root/README.md" "$stage_dir/$archive_name/README.md"
 install -Dm0644 "$project_root/LICENSE" "$stage_dir/$archive_name/LICENSE"
+install -Dm0644 "$project_root/data/fonts/LICENSE" "$stage_dir/$archive_name/share/licenses/waddle/fonts-LICENSE"
+install -Dm0644 "$project_root/vendor/iced_widget/LICENSE" "$stage_dir/$archive_name/share/licenses/waddle/iced-widget-LICENSE"
 install -Dm0644 "$project_root/data/io.github.powerpenguini.Waddle.desktop" \
   "$stage_dir/$archive_name/share/applications/io.github.powerpenguini.Waddle.desktop"
 install -Dm0644 "$project_root/data/org.freedesktop.FileManager1.service" \

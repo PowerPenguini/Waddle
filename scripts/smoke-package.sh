@@ -13,6 +13,8 @@ tar --extract --gzip --file "$archive" --directory "$smoke_dir"
 package_root=$(find "$smoke_dir" -mindepth 1 -maxdepth 1 -type d -name 'waddle-*-linux' -print -quit)
 test -n "$package_root"
 test -x "$package_root/bin/waddle"
+test -s "$package_root/share/licenses/waddle/fonts-LICENSE"
+test -s "$package_root/share/licenses/waddle/iced-widget-LICENSE"
 desktop-file-validate "$package_root/share/applications/io.github.powerpenguini.Waddle.desktop"
 service_file="$package_root/share/dbus-1/services/org.freedesktop.FileManager1.service"
 test -f "$service_file"

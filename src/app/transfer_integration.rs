@@ -444,11 +444,10 @@ impl App {
     }
 
     pub(super) fn cancel_transfer_conflict(&mut self) -> Task<Message> {
-        let current = self.navigation.current().to_path_buf();
-        let update = self.transfers.cancel(&current, &self.operations);
+        let update = self.transfers.cancel(&self.operations);
         self.sync_transient_presentation();
         match update {
-            TransferCancelUpdate::Conflict(update) => self.apply_transfer_batch_update(update),
+            TransferCancelUpdate::Conflict(task) => task.map(transfer_runtime_message),
             TransferCancelUpdate::Active => {
                 self.presentation
                     .set_status("Cancelling active transfer…".to_owned());

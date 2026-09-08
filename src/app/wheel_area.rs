@@ -4,7 +4,7 @@ use iced::{
         Clipboard, Layout, Shell, Widget, layout, overlay, renderer,
         widget::{Operation, Tree, tree},
     },
-    mouse,
+    keyboard, mouse,
 };
 
 use super::{Message, ScrollTarget};
@@ -12,6 +12,7 @@ use super::{Message, ScrollTarget};
 pub(super) fn wheel_area<'a, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     target: ScrollTarget,
+    control_zoom: bool,
 ) -> Element<'a, Message, Theme, Renderer>
 where
     Theme: 'a,
@@ -20,6 +21,7 @@ where
     Element::new(WheelArea {
         content: content.into(),
         target,
+        control_zoom,
     })
 }
 
@@ -29,6 +31,7 @@ where
 {
     content: Element<'a, Message, Theme, Renderer>,
     target: ScrollTarget,
+    control_zoom: bool,
 }
 
 impl<Theme, Renderer> Widget<Message, Theme, Renderer> for WheelArea<'_, Theme, Renderer>
@@ -87,11 +90,21 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if let Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers))
+        | Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. })
+        | Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) = event
+        {
+            self.control_zoom = self.target == ScrollTarget::Entries && modifiers.control();
+        }
         if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
             && cursor.is_over(layout.bounds())
         {
-            if captures(*delta) {
-                shell.publish(Message::WheelScrolled(self.target, *delta));
+            if captures(*delta, self.control_zoom) {
+                shell.publish(if self.control_zoom {
+                    Message::IconsZoomed(*delta)
+                } else {
+                    Message::WheelScrolled(self.target, *delta)
+                });
                 shell.capture_event();
                 return;
             }
@@ -145,8 +158,8 @@ where
     }
 }
 
-fn captures(delta: mouse::ScrollDelta) -> bool {
-    matches!(delta, mouse::ScrollDelta::Lines { .. })
+fn captures(delta: mouse::ScrollDelta, control_zoom: bool) -> bool {
+    control_zoom || matches!(delta, mouse::ScrollDelta::Lines { .. })
 }
 
 #[cfg(test)]
@@ -154,8 +167,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn control_zoom_captures_precise_and_discrete_scroll_before_native_scrolling() {
+        assert!(captures(mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 }, true));
+        assert!(captures(
+            mouse::ScrollDelta::Pixels { x: 0.0, y: 1.0 },
+            true
+        ));
+    }
+
+    #[test]
     fn line_wheels_are_captured_but_precise_touchpad_scroll_is_native() {
-        assert!(captures(mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 }));
-        assert!(!captures(mouse::ScrollDelta::Pixels { x: 0.0, y: 1.0 }));
+        assert!(captures(
+            mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+            false
+        ));
+        assert!(!captures(
+            mouse::ScrollDelta::Pixels { x: 0.0, y: 1.0 },
+            false
+        ));
     }
 }

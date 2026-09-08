@@ -724,3 +724,34 @@ fn focused_browser_surfaces_keep_an_opaque_window_background() {
         Some(iced::Background::Color(color)) if color.a == 1.0
     ));
 }
+
+#[test]
+fn icon_zoom_keyboard_wheel_and_command_share_the_same_preference() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, _) = App::new();
+    app.view_preferences = view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("one"), entry("two")]);
+    app.grid.select_only(Some(1), 2);
+    app.browser_input.leave_mode();
+    for (value, expected) in [("=", 56), ("+", 64), ("-", 56)] {
+        let key = keyboard::Key::Character(value.into());
+        let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::CTRL, None);
+        assert_eq!(app.view_preferences.icon_size(), expected);
+        assert_eq!(app.grid.icon_size(), f32::from(expected));
+        assert_eq!(app.grid.selected_entry(), Some(1));
+    }
+    let _ = app.update(Message::IconsZoomed(mouse::ScrollDelta::Lines {
+        x: 0.0,
+        y: -1.0,
+    }));
+    assert_eq!(app.view_preferences.icon_size(), 48);
+    let _ = app.begin_command(':');
+    app.command.change("set icon-size=96".to_owned());
+    let _ = app.submit_command();
+    assert_eq!(app.view_preferences.icon_size(), 96);
+    assert_eq!(app.grid.icon_size(), 96.0);
+    assert_eq!(app.grid.selected_entry(), Some(1));
+    assert!(!app.navigation.loading());
+}

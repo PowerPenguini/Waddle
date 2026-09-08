@@ -95,7 +95,15 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
         },
         Action::Transfer { kind, items } => apply_transfer(*kind, items, direction),
         Action::Trash { items } => apply_trash(items, direction),
-        Action::Restore { items } => {
+        Action::Restore {
+            items,
+            replaced_existing,
+        } => {
+            if *replaced_existing {
+                return Err(Error::message(
+                    "Refused Undo: this Restore merged with or replaced an existing destination that cannot be restored",
+                ));
+            }
             let mut effect = apply_trash(
                 items,
                 match direction {
@@ -201,23 +209,24 @@ fn apply_transfer(
     }
     match direction {
         Direction::Undo => {
-            for item in items.iter() {
+            for item in items.iter().filter(|item| !item.undone) {
                 verify_tree(&item.destination, &item.result_fingerprint)?;
                 if matches!(kind, TransferKind::Move) {
                     ensure_absent(&item.source)?;
                 }
             }
-            let mut completed = Vec::new();
-            for item in items.iter().rev() {
+            for item in items.iter_mut().rev().filter(|item| !item.undone) {
                 let result = match kind {
                     TransferKind::Copy => crate::fs::journal_remove(&item.destination),
                     TransferKind::Move => crate::fs::journal_move(&item.destination, &item.source),
                 };
                 if let Err(error) = result {
-                    rollback_transfer(kind, items, &completed, Direction::Undo);
                     return Err(error.into());
                 }
-                completed.push(item.source.clone());
+                item.undone = true;
+                if matches!(kind, TransferKind::Move) {
+                    item.source_fingerprint = TreeFingerprint::read(&item.source)?;
+                }
             }
             Ok(transfer_effect(kind, items, Direction::Undo))
         }
@@ -237,6 +246,7 @@ fn apply_transfer(
                     return Err(error.into());
                 }
                 item.result_fingerprint = TreeFingerprint::read(&item.destination)?;
+                item.undone = false;
                 completed.push(item.destination.clone());
             }
             Ok(transfer_effect(kind, items, Direction::Redo))
@@ -382,4 +392,84 @@ fn parent_folders(first: &Path, second: &Path) -> Vec<PathBuf> {
         }
     }
     folders
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    #[test]
+    fn cross_filesystem_move_can_redo_after_undo() {
+        let original_fs = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let other_fs = tempfile::tempdir_in("/dev/shm").unwrap();
+        let source = original_fs.path().join("folder");
+        let destination = other_fs.path().join("folder");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("item"), "data").unwrap();
+        crate::fs::journal_move(&source, &destination).unwrap();
+        let receipt = crate::fs::TransferReceipt {
+            source: source.clone(),
+            destination: destination.clone(),
+            replaced_existing: false,
+        };
+        let action = Action::transfer(TransferKind::Move, &[receipt])
+            .unwrap()
+            .unwrap();
+        let mut journal = super::super::Journal::in_memory();
+        journal.record(action).unwrap();
+        journal.undo().unwrap();
+        assert!(source.exists());
+        journal
+            .redo()
+            .expect("an unchanged directory should be redoable across filesystems");
+    }
+    #[test]
+    fn copy_undo_can_recover_after_partial_removal_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let first_parent = temp.path().join("first");
+        let second_parent = temp.path().join("second");
+        fs::create_dir(&first_parent).unwrap();
+        fs::create_dir(&second_parent).unwrap();
+        let mut receipts = Vec::new();
+        for (i, parent) in [first_parent.clone(), second_parent.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let source = temp.path().join(format!("source{i}"));
+            let destination = parent.join("copy");
+            fs::write(&source, "data").unwrap();
+            crate::fs::journal_copy(&source, &destination).unwrap();
+            receipts.push(crate::fs::TransferReceipt {
+                source,
+                destination,
+                replaced_existing: false,
+            });
+        }
+        let action = Action::transfer(TransferKind::Copy, &receipts)
+            .unwrap()
+            .unwrap();
+        let journal_path = temp.path().join("history.json");
+        let mut journal = super::super::Journal::open(journal_path.clone()).unwrap();
+        journal.record(action).unwrap();
+        fs::set_permissions(&first_parent, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = journal.undo();
+        fs::set_permissions(&first_parent, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        assert!(
+            !receipts[1].destination.exists(),
+            "second copy was already removed"
+        );
+        let mut journal = super::super::Journal::open(journal_path).unwrap();
+        journal
+            .undo()
+            .expect("retry Undo should handle already removed entries");
+        journal.redo().unwrap();
+        for receipt in &receipts {
+            assert!(receipt.destination.exists());
+        }
+    }
 }

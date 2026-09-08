@@ -55,7 +55,11 @@ impl Launcher for ProcessLauncher {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map(|_| ())
+            .map(|mut child| {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            })
             .map_err(|error| {
                 format!(
                     "could not launch {}: {error}",
@@ -183,5 +187,53 @@ mod tests {
 
         assert!(matches!(result, Err(zbus::fdo::Error::InvalidArgs(_))));
         assert!(launched.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    #[test]
+    fn service_reaps_closed_windows() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("window");
+        let pid_file = temp.path().join("pid");
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\necho $$ > '{}'\n", pid_file.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        ProcessLauncher::new(executable)
+            .launch(
+                &Target {
+                    directory: temp.path().to_path_buf(),
+                    selected: Vec::new(),
+                },
+                "",
+            )
+            .unwrap();
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid: i32 = fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let zombie = status
+            .lines()
+            .any(|line| line.starts_with("State:") && line.contains('Z'));
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        assert!(
+            !zombie,
+            "closed window remained a zombie child of the service"
+        );
     }
 }

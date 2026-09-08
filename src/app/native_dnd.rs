@@ -641,7 +641,12 @@ impl Worker {
                 wl_shm::Format::Argb8888,
             )
             .map_err(|error| format!("could not create the drag icon buffer: {error}"))?;
-        for (target, source) in canvas.chunks_exact_mut(4).zip(pixels.chunks_exact_mut(4)) {
+        for (target, source) in canvas
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(pixels.as_chunks_mut::<4>().0)
+        {
             target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
         }
         let surface = self.compositor_state.create_surface(&self.queue_handle);

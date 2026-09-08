@@ -67,30 +67,44 @@ fn benchmark(
 #[ignore = "release-mode performance benchmark"]
 fn benchmark_grid_cursor_and_view_work() {
     let mut app = app_with_entries(false);
-    benchmark("grid-cursor-view", 500, Duration::from_millis(8), |index| {
-        let position = Point::new(260.0 + (index % 1_500) as f32, 120.0 + (index % 800) as f32);
-        let task = app.handle_event(
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }),
-            event::Status::Ignored,
-        );
-        let _ = black_box(task);
-        black_box(View::new(&app).render());
-    });
+    for size in [24, 48, 128] {
+        let current = app.navigation.current().to_path_buf();
+        app.view_preferences
+            .apply_command(&current, false, &format!("icon-size={size}"))
+            .unwrap();
+        let _ = app.sync_icon_size();
+        benchmark("grid-cursor-view", 500, Duration::from_millis(8), |index| {
+            let position = Point::new(260.0 + (index % 1_500) as f32, 120.0 + (index % 800) as f32);
+            let task = app.handle_event(
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }),
+                event::Status::Ignored,
+            );
+            let _ = black_box(task);
+            black_box(View::new(&app).render());
+        });
+    }
 }
 
 #[test]
 #[ignore = "release-mode performance benchmark"]
 fn benchmark_list_cursor_and_view_work() {
     let mut app = app_with_entries(true);
-    benchmark("list-cursor-view", 500, Duration::from_millis(8), |index| {
-        let position = Point::new(260.0 + (index % 1_500) as f32, 80.0 + (index % 900) as f32);
-        let task = app.handle_event(
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }),
-            event::Status::Ignored,
-        );
-        let _ = black_box(task);
-        black_box(View::new(&app).render());
-    });
+    for size in [24, 48, 128] {
+        let current = app.navigation.current().to_path_buf();
+        app.view_preferences
+            .apply_command(&current, false, &format!("icon-size={size}"))
+            .unwrap();
+        let _ = app.sync_icon_size();
+        benchmark("list-cursor-view", 500, Duration::from_millis(8), |index| {
+            let position = Point::new(260.0 + (index % 1_500) as f32, 80.0 + (index % 900) as f32);
+            let task = app.handle_event(
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }),
+                event::Status::Ignored,
+            );
+            let _ = black_box(task);
+            black_box(View::new(&app).render());
+        });
+    }
 }
 
 #[test]

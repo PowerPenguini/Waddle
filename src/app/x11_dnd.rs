@@ -463,7 +463,7 @@ impl Worker {
     fn prepare_icon(&self, preview: Preview) -> Result<(), String> {
         let rgba = native_dnd::render_icon(preview)?;
         let mut pixels = Vec::with_capacity(rgba.len());
-        for pixel in rgba.chunks_exact(4) {
+        for pixel in rgba.as_chunks::<4>().0 {
             pixels.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 0]);
         }
         let gc = self

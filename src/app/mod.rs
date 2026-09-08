@@ -5,7 +5,9 @@ mod diagnostics;
 mod directory_watch;
 mod drag_hover;
 mod file_operation;
+mod fonts;
 mod grid;
+mod icon_size;
 mod location_monitoring;
 mod navigation;
 mod navigation_integration;
@@ -67,14 +69,13 @@ use file_operation::{
 use fs::FileEntry;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
-    DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_ROW_HEIGHT,
-    LIST_VIEW_TOP_INSET, Motion, SIDEBAR_WIDTH, ScrollTarget, TILE_HEIGHT, TILE_ROW_HEIGHT,
-    TILE_WIDTH, TOOLBAR_HEIGHT,
+    DragHoverTarget, DropZone, GridInteraction, LIST_HEADER_HEIGHT, LIST_VIEW_TOP_INSET, Motion,
+    SIDEBAR_WIDTH, ScrollTarget, TOOLBAR_HEIGHT,
 };
 use iced::time::Instant;
 use iced::{
-    Color, Element, Font, Size, Subscription, Task, Theme, application, event, keyboard, mouse,
-    system, time, widget, window,
+    Color, Element, Size, Subscription, Task, Theme, application, event, keyboard, mouse, system,
+    time, widget, window,
 };
 use navigation::{
     Completion as NavigationCompletion, DisplayedLocation, NavigationSession,
@@ -109,9 +110,6 @@ const SEARCH_LIMIT: usize = 1000;
 const LIST_HORIZONTAL_PADDING: u16 = 8;
 const LIST_HEADER_HORIZONTAL_PADDING: u16 = 4;
 const LIST_COLUMN_SPACING: f32 = 9.0;
-const LIST_ENTRY_ICON_WIDTH: f32 = 20.0;
-const LIST_HEADER_ICON_SLOT_WIDTH: f32 =
-    LIST_ENTRY_ICON_WIDTH - LIST_HEADER_HORIZONTAL_PADDING as f32;
 const _: () = assert!(LIST_HEADER_HORIZONTAL_PADDING > 0);
 const LIST_TYPE_WIDTH: f32 = 90.0;
 const LIST_SIZE_WIDTH: f32 = 100.0;
@@ -130,17 +128,6 @@ const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(200);
 const MOUSE_BACK_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(350);
 const _: () = assert!(SCROLLBAR_THUMB_WIDTH < SCROLLBAR_TRACK_WIDTH);
 const _: () = assert!(SCROLLBAR_TRACK_WIDTH < 10.0);
-const UI_FONT: Font = Font::with_name("Roboto");
-const UI_FONT_SEMIBOLD: Font = Font {
-    weight: iced::font::Weight::Semibold,
-    ..UI_FONT
-};
-const MONO_FONT: Font = Font::with_name("JetBrainsMono Nerd Font Mono");
-const MONO_FONT_SEMIBOLD: Font = Font {
-    weight: iced::font::Weight::Semibold,
-    ..MONO_FONT
-};
-
 const LOCATION_ID: &str = "location";
 const SEARCH_ID: &str = "search";
 const COMMAND_ID: &str = "command";
@@ -213,6 +200,7 @@ enum Message {
         maximum: f32,
     },
     WheelScrolled(ScrollTarget, mouse::ScrollDelta),
+    IconsZoomed(mouse::ScrollDelta),
     TouchpadScrolled(ScrollTarget, mouse::ScrollDelta),
     TreeLoaded {
         request: TreeLoadRequest,
@@ -299,12 +287,13 @@ enum Message {
 }
 
 pub fn run() -> iced::Result {
+    let _ = fonts::selected(true);
     let window = startup::State::open_default().window_settings();
     application(App::new, App::update, App::view)
         .title("Waddle")
         .settings(iced::Settings {
             id: Some("io.github.powerpenguini.Waddle".to_owned()),
-            default_font: UI_FONT,
+            default_font: fonts::bundled().ui,
             antialiasing: true,
             ..iced::Settings::default()
         })
@@ -347,6 +336,7 @@ struct App {
     location_input: String,
     location_input_focused: bool,
     modifiers: keyboard::Modifiers,
+    icon_zoom: icon_size::WheelZoom,
     mouse_back_gesture: Option<MouseBackGesture>,
     pending_tree_navigation: Option<(NavigationRequest, TreeLoadRequest)>,
     pending_volume_navigation: Option<PendingVolumeNavigation>,
@@ -415,6 +405,7 @@ impl App {
             .or(watch_error);
         let mut grid = GridInteraction::default();
         grid.set_sidebar_visible(tree_visible);
+        grid.set_icon_size(view_preferences.icon_size());
         let mut app = Self {
             sidebar_tree,
             navigation: NavigationSession::new(current.clone()),
@@ -441,6 +432,7 @@ impl App {
             location_input: current.display().to_string(),
             location_input_focused: false,
             modifiers: keyboard::Modifiers::default(),
+            icon_zoom: icon_size::WheelZoom::default(),
             mouse_back_gesture: None,
             pending_tree_navigation: None,
             pending_volume_navigation: None,

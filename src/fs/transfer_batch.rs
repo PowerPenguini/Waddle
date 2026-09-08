@@ -40,6 +40,10 @@ struct TransferRoot {
 
 #[derive(Clone, Debug)]
 enum PendingTransfer {
+    Resolve {
+        blocked: BlockedTransfer,
+        choice: ConflictChoice,
+    },
     Entry {
         source: PathBuf,
         destination: PathBuf,
@@ -54,6 +58,7 @@ enum PendingTransfer {
 impl PendingTransfer {
     fn root(&self) -> usize {
         match self {
+            Self::Resolve { blocked, .. } => blocked.root,
             Self::Entry { root, .. } | Self::RemoveSourceDirectory { root, .. } => *root,
         }
     }
@@ -78,6 +83,7 @@ pub struct TransferBatch {
     failed_roots: BTreeSet<usize>,
     retained_roots: BTreeSet<usize>,
     failures: Vec<TransferFailure>,
+    retry: Vec<(PathBuf, PathBuf)>,
     warnings: Vec<TransferWarning>,
     root_bytes: Vec<u64>,
     progressed_roots: BTreeSet<usize>,
@@ -113,6 +119,17 @@ impl TransferBatch {
         )
     }
 
+    pub(crate) fn try_new_mapped(
+        entries: Vec<(PathBuf, PathBuf)>,
+        action: Action,
+    ) -> Result<Self, FsError> {
+        for (source, destination) in &entries {
+            let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+            validate_transfer(std::slice::from_ref(source), parent, action)?;
+        }
+        Ok(Self::new_mapped(entries, action))
+    }
+
     pub(crate) fn new_mapped(
         entries: impl IntoIterator<Item = (PathBuf, PathBuf)>,
         action: Action,
@@ -132,10 +149,6 @@ impl TransferBatch {
                 root,
             });
         }
-        let root_bytes = roots
-            .iter()
-            .map(|root| tree_bytes(&root.source).unwrap_or_default())
-            .collect();
         Self {
             action,
             roots,
@@ -145,8 +158,9 @@ impl TransferBatch {
             failed_roots: BTreeSet::new(),
             retained_roots: BTreeSet::new(),
             failures: Vec::new(),
+            retry: Vec::new(),
             warnings: Vec::new(),
-            root_bytes,
+            root_bytes: Vec::new(),
             progressed_roots: BTreeSet::new(),
             cancelled: false,
         }
@@ -162,6 +176,17 @@ impl TransferBatch {
         cancelled: impl Fn() -> bool,
         mut progress: impl FnMut(TransferProgress),
     ) -> TransferBatchOutcome {
+        if cancelled() {
+            self.cancelled = true;
+            return TransferBatchOutcome::Complete(self.cancel());
+        }
+        if self.root_bytes.is_empty() {
+            self.root_bytes = self
+                .roots
+                .iter()
+                .map(|root| tree_bytes(&root.source).unwrap_or_default())
+                .collect();
+        }
         self.publish_progress(&mut progress);
         while let Some(pending) = self.pending.pop_front() {
             if cancelled() {
@@ -171,6 +196,22 @@ impl TransferBatch {
             }
             let root = pending.root();
             match pending {
+                PendingTransfer::Resolve { blocked, choice } => {
+                    match self.resolve_blocked(blocked.clone(), choice) {
+                        Ok(warnings) => {
+                            self.record_warnings(&blocked.source, &blocked.destination, warnings);
+                        }
+                        Err(error) if error.1.kind() == io::ErrorKind::AlreadyExists => {
+                            self.pending.push_front(PendingTransfer::Entry {
+                                source: blocked.source,
+                                destination: blocked.destination,
+                                root,
+                            });
+                            self.apply_remaining = None;
+                        }
+                        Err(error) => self.fail(root, error.0, error.1),
+                    }
+                }
                 PendingTransfer::RemoveSourceDirectory { source, root } => {
                     if let Err(error) = fs::remove_dir(&source) {
                         self.fail(root, source, error);
@@ -225,6 +266,7 @@ impl TransferBatch {
                                 ),
                                 Err(error) => self.fail(root, error.0, error.1),
                             }
+                            self.publish_completed_root(root, &mut progress);
                             continue;
                         }
                         let conflict = TransferConflict {
@@ -265,30 +307,20 @@ impl TransferBatch {
             self.apply_remaining = Some(choice);
         }
         if let Some(blocked) = self.blocked.take() {
-            match self.resolve_blocked(blocked.clone(), choice) {
-                Ok(warnings) => {
-                    self.record_warnings(&blocked.source, &blocked.destination, warnings)
-                }
-                Err(error) if error.1.kind() == io::ErrorKind::AlreadyExists => {
-                    self.pending.push_front(PendingTransfer::Entry {
-                        source: blocked.source,
-                        destination: blocked.destination,
-                        root: blocked.root,
-                    });
-                    self.apply_remaining = None;
-                }
-                Err(error) => self.fail(blocked.root, error.0, error.1),
-            }
+            self.pending
+                .push_front(PendingTransfer::Resolve { blocked, choice });
         }
         self
     }
 
     pub fn cancel(mut self) -> TransferReport {
         if let Some(blocked) = self.blocked.take() {
+            self.retain_retry(blocked.source, blocked.destination);
             self.retained_roots.insert(blocked.root);
         }
-        for pending in &self.pending {
+        for pending in std::mem::take(&mut self.pending) {
             self.retained_roots.insert(pending.root());
+            self.retry_pending(pending);
         }
         self.report()
     }
@@ -301,8 +333,14 @@ impl TransferBatch {
         match choice {
             ConflictChoice::Skip => {
                 self.retained_roots.insert(blocked.root);
-                self.pending
-                    .retain(|pending| pending.root() != blocked.root);
+                self.retain_retry(blocked.source, blocked.destination);
+                for pending in std::mem::take(&mut self.pending) {
+                    if pending.root() == blocked.root {
+                        self.retry_pending(pending);
+                    } else {
+                        self.pending.push_back(pending);
+                    }
+                }
                 Ok(Vec::new())
             }
             ConflictChoice::KeepBoth => {
@@ -391,10 +429,55 @@ impl TransferBatch {
 
     fn fail(&mut self, root: usize, source: PathBuf, error: io::Error) {
         self.failed_roots.insert(root);
+        let destination = self.destination_for(root, &source);
+        self.retain_retry(source.clone(), destination);
         self.failures.push(TransferFailure {
             source,
             error: error.to_string(),
         });
+    }
+
+    fn destination_for(&self, root: usize, source: &Path) -> PathBuf {
+        let root = &self.roots[root];
+        let relative = source
+            .strip_prefix(&root.source)
+            .expect("entry belongs to its Transfer root");
+        if relative.as_os_str().is_empty() {
+            root.destination.clone()
+        } else {
+            root.destination.join(relative)
+        }
+    }
+
+    fn retry_pending(&mut self, pending: PendingTransfer) {
+        let (source, destination) = match pending {
+            PendingTransfer::Entry {
+                source,
+                destination,
+                ..
+            } => (source, destination),
+            PendingTransfer::Resolve { blocked, .. } => (blocked.source, blocked.destination),
+            PendingTransfer::RemoveSourceDirectory { source, root } => {
+                let destination = self.destination_for(root, &source);
+                (source, destination)
+            }
+        };
+        self.retain_retry(source, destination);
+    }
+
+    fn retain_retry(&mut self, source: PathBuf, destination: PathBuf) {
+        // A failed Move cleanup retries its remaining tree, which already includes
+        // any failed children. Do not queue those children a second time.
+        if self
+            .retry
+            .iter()
+            .any(|(existing, _)| source.starts_with(existing))
+        {
+            return;
+        }
+        self.retry
+            .retain(|(existing, _)| !existing.starts_with(&source));
+        self.retry.push((source, destination));
     }
 
     fn record_warnings(&mut self, source: &Path, destination: &Path, warnings: Vec<String>) {
@@ -433,6 +516,7 @@ impl TransferBatch {
 
     fn report(self) -> TransferReport {
         TransferReport {
+            retry: self.retry,
             completed: self
                 .roots
                 .iter()
