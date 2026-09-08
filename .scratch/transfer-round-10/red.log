@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.08s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test fs::tests::hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy ... FAILED
+
+failures:
+
+---- fs::tests::hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy stdout ----
+
+thread 'fs::tests::hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy' (1103835) panicked at src/fs/tests.rs:2606:13:
+assertion `left == right` failed: Retry must not substitute stale or externally edited bytes for the pending source
+  left: [109, 111, 100, 105, 102, 105, 101, 100]
+ right: [111, 114, 105, 103, 105, 110, 97, 108]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fs::tests::hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

@@ -2563,3 +2563,125 @@ fn hardlink_retry_does_not_reuse_a_changed_source_or_completed_copy() {
         }
     }
 }
+
+#[test]
+fn hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy() {
+    for action in [Action::Move, Action::Copy] {
+        for change_source in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir_in("/dev/shm").unwrap();
+            fs::write(temp.path().join("a"), b"original").unwrap();
+            fs::hard_link(temp.path().join("a"), temp.path().join("b")).unwrap();
+            fs::write(target.path().join("b"), b"conflict").unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::try_new(
+                vec![temp.path().join("a"), temp.path().join("b")],
+                target.path().to_path_buf(),
+                action,
+            )
+            .unwrap()
+            .run() else {
+                panic!("second file should conflict");
+            };
+            let report = batch.cancel();
+            fs::remove_file(target.path().join("b")).unwrap();
+            let changed = if change_source {
+                temp.path().join("b")
+            } else {
+                target.path().join("a")
+            };
+            let modified = fs::metadata(&changed).unwrap().modified().unwrap();
+            fs::write(&changed, b"modified").unwrap();
+            fs::File::open(&changed)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            let report = complete(report.retry_plan().into_batch(action).unwrap());
+            assert!(report.failures.is_empty());
+            let (expected_a, expected_b) = if change_source {
+                (b"original", b"modified")
+            } else {
+                (b"modified", b"original")
+            };
+            assert_eq!(fs::read(target.path().join("a")).unwrap(), expected_a);
+            assert_eq!(
+                fs::read(target.path().join("b")).unwrap(),
+                expected_b,
+                "Retry must not substitute stale or externally edited bytes for the pending source"
+            );
+            assert_ne!(
+                fs::metadata(target.path().join("a")).unwrap().ino(),
+                fs::metadata(target.path().join("b")).unwrap().ino()
+            );
+            assert_eq!(temp.path().join("b").exists(), action == Action::Copy);
+        }
+    }
+}
+
+#[test]
+fn cancel_during_hardlink_content_verification_preserves_both_sides() {
+    use std::cell::Cell;
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(temp.path().join("a"), vec![0x42; 4 * 1024 * 1024]).unwrap();
+    fs::hard_link(temp.path().join("a"), temp.path().join("b")).unwrap();
+    fs::write(target.join("b"), b"conflict").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::try_new(
+        vec![temp.path().join("a"), temp.path().join("b")],
+        target.clone(),
+        Action::Copy,
+    )
+    .unwrap()
+    .run() else {
+        panic!("second file should conflict");
+    };
+    let report = batch.cancel();
+    fs::remove_file(target.join("b")).unwrap();
+    // Update ctime while keeping the bytes, size and mtime: reuse now needs comparison.
+    let modified = fs::metadata(target.join("a")).unwrap().modified().unwrap();
+    fs::File::open(target.join("a"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let cancelled = Cell::new(false);
+    let mut unchanged_progress = 0;
+    let outcome = report
+        .retry_plan()
+        .into_batch(Action::Copy)
+        .unwrap()
+        .run_with(
+            || cancelled.get(),
+            |progress| {
+                if progress.completed_bytes == 0 {
+                    unchanged_progress += 1;
+                    if unchanged_progress == 5 {
+                        cancelled.set(true);
+                    }
+                }
+            },
+        );
+    let TransferBatchOutcome::Complete(report) = outcome else {
+        panic!("no conflict");
+    };
+    assert!(
+        cancelled.get(),
+        "comparison must remain cancellable without reporting copied bytes"
+    );
+    assert!(report.cancelled);
+    assert!(report.completed.is_empty());
+    assert!(!target.join("b").exists());
+    assert_eq!(
+        fs::read(temp.path().join("b")).unwrap(),
+        vec![0x42; 4 * 1024 * 1024]
+    );
+    assert_eq!(
+        fs::read(target.join("a")).unwrap(),
+        vec![0x42; 4 * 1024 * 1024]
+    );
+    let resumed = complete(report.retry_plan().into_batch(Action::Copy).unwrap());
+    assert!(resumed.failures.is_empty());
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino(),
+        fs::metadata(target.join("b")).unwrap().ino()
+    );
+}

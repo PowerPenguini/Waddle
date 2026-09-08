@@ -35,26 +35,100 @@ struct CopiedLink {
     modified: (i64, i64),
     mode: u32,
     attributes: Option<ExtendedAttributes>,
+    #[serde(default)]
+    source_changed: Option<(i64, i64)>,
+    #[serde(default)]
+    changed: Option<(i64, i64)>,
 }
 
 impl CopiedLink {
-    fn usable(&self, source_path: &Path, source: &fs::Metadata) -> bool {
-        self.size == source.len()
+    fn usable(
+        &self,
+        source_path: &Path,
+        source: &fs::Metadata,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<bool> {
+        let Ok(destination) = fs::symlink_metadata(&self.path) else {
+            return Ok(false);
+        };
+        let metadata_match = self.size == source.len()
             && self.mode == source.mode()
             && self.modified == (source.mtime(), source.mtime_nsec())
             && self.attributes.as_ref().is_some_and(|attributes| {
                 read_xattrs(source_path).is_ok_and(|current| current == *attributes)
                     && read_xattrs(&self.path).is_ok_and(|current| current == *attributes)
             })
-            && fs::symlink_metadata(&self.path).is_ok_and(|m| {
-                m.is_file()
-                    && m.dev() == self.device
-                    && m.ino() == self.inode
-                    && m.len() == self.size
-                    && m.mode() == self.mode
-                    && (m.mtime(), m.mtime_nsec()) == self.modified
-            })
+            && destination.is_file()
+            && destination.dev() == self.device
+            && destination.ino() == self.inode
+            && destination.len() == self.size
+            && destination.mode() == self.mode
+            && (destination.mtime(), destination.mtime_nsec()) == self.modified;
+        if !metadata_match {
+            return Ok(false);
+        }
+        if self.source_changed == Some(change_time(source))
+            && self.changed == Some(change_time(&destination))
+        {
+            return Ok(true);
+        }
+        // Contents can change without changing size/mtime. Link count changes
+        // also update ctime, so compare bytes instead of discarding valid links.
+        match same_contents(source_path, source, &self.path, &destination, check) {
+            Ok(equal) => Ok(equal),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
+            Err(_) => Ok(false),
+        }
     }
+}
+
+fn change_time(metadata: &fs::Metadata) -> (i64, i64) {
+    (metadata.ctime(), metadata.ctime_nsec())
+}
+
+fn same_contents(
+    source: &Path,
+    source_metadata: &fs::Metadata,
+    destination: &Path,
+    destination_metadata: &fs::Metadata,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<bool> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let open = |path: &Path| {
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+    };
+    let unchanged = |file: &fs::File, expected: &fs::Metadata| {
+        file.metadata().is_ok_and(|current| {
+            current.is_file()
+                && current.dev() == expected.dev()
+                && current.ino() == expected.ino()
+                && current.len() == expected.len()
+                && change_time(&current) == change_time(expected)
+        })
+    };
+    check()?;
+    let mut left = open(source)?;
+    let mut right = open(destination)?;
+    if !unchanged(&left, source_metadata) || !unchanged(&right, destination_metadata) {
+        return Ok(false);
+    }
+    let mut left_bytes = [0; 64 * 1024];
+    let mut right_bytes = [0; 64 * 1024];
+    let mut remaining = source_metadata.len();
+    while remaining > 0 {
+        check()?;
+        let count = remaining.min(left_bytes.len() as u64) as usize;
+        left.read_exact(&mut left_bytes[..count])?;
+        right.read_exact(&mut right_bytes[..count])?;
+        if left_bytes[..count] != right_bytes[..count] {
+            return Ok(false);
+        }
+        remaining -= count as u64;
+    }
+    Ok(unchanged(&left, source_metadata) && unchanged(&right, destination_metadata))
 }
 
 pub(super) struct PreparedCopy {
@@ -76,6 +150,9 @@ impl PreparedCopy {
                 } else {
                     destination.join(relative)
                 };
+                link.changed = fs::symlink_metadata(&link.path)
+                    .ok()
+                    .map(|m| change_time(&m));
             }
         }
         *links = self.links;
@@ -143,10 +220,15 @@ impl CopyContext<'_> {
 
         let hardlink_key = (metadata.dev(), metadata.ino());
         if let Some(existing) = self.hardlinks.0.get(&hardlink_key)
-            && existing.usable(source, &metadata)
+            && existing.usable(source, &metadata, &mut || (self.progress)(self.bytes))?
         {
             match fs::hard_link(&existing.path, destination) {
                 Ok(()) => {
+                    let existing = self.hardlinks.0.get_mut(&hardlink_key).unwrap();
+                    existing.changed = fs::symlink_metadata(destination)
+                        .ok()
+                        .map(|m| change_time(&m));
+                    existing.source_changed = Some(change_time(&metadata));
                     self.advance(metadata.len())?;
                     return Ok(());
                 }
@@ -217,6 +299,8 @@ impl CopyContext<'_> {
                     modified: (copied.mtime(), copied.mtime_nsec()),
                     mode: copied.mode(),
                     attributes: read_xattrs(destination).ok(),
+                    source_changed: Some(change_time(&metadata)),
+                    changed: Some(change_time(&copied)),
                 },
             );
         }
