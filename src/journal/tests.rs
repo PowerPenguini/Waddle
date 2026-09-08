@@ -718,3 +718,129 @@ fn legacy_new_folder_records_still_undo_and_redo() {
     journal.undo().unwrap();
     assert!(!folder.exists());
 }
+
+#[test]
+fn audit_redo_copy_preserves_hardlinks_between_selected_files() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("a"), b"linked data").unwrap();
+    fs::hard_link(source.join("a"), source.join("b")).unwrap();
+    let crate::fs::TransferBatchOutcome::Complete(report) = crate::fs::TransferBatch::try_new(
+        vec![source.join("a"), source.join("b")],
+        target.clone(),
+        crate::transfer::Action::Copy,
+    )
+    .unwrap()
+    .run() else {
+        panic!("no conflict")
+    };
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino(),
+        fs::metadata(target.join("b")).unwrap().ino()
+    );
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &report.receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    journal.undo().unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal.redo().unwrap();
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino(),
+        fs::metadata(target.join("b")).unwrap().ino(),
+        "Redo broke links preserved by the original Copy"
+    );
+}
+
+#[test]
+fn audit_undo_cross_device_move_preserves_hardlinks() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target_root = tempfile::tempdir_in("/dev/shm").unwrap();
+    let target = target_root.path().join("target");
+    assert_ne!(
+        fs::metadata(temp.path()).unwrap().dev(),
+        fs::metadata(target_root.path()).unwrap().dev()
+    );
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("a"), b"linked data").unwrap();
+    fs::hard_link(source.join("a"), source.join("b")).unwrap();
+    let crate::fs::TransferBatchOutcome::Complete(report) = crate::fs::TransferBatch::try_new(
+        vec![source.join("a"), source.join("b")],
+        target.clone(),
+        crate::transfer::Action::Move,
+    )
+    .unwrap()
+    .run() else {
+        panic!("no conflict")
+    };
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino(),
+        fs::metadata(target.join("b")).unwrap().ino()
+    );
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Move, &report.receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    journal.undo().unwrap();
+    assert_eq!(
+        fs::metadata(source.join("a")).unwrap().ino(),
+        fs::metadata(source.join("b")).unwrap().ino(),
+        "Undo broke links preserved by cross-device Move"
+    );
+}
+
+#[test]
+fn undo_trash_across_filesystems_preserves_selected_hardlinks() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = tempfile::tempdir().unwrap();
+    let trash = tempfile::tempdir_in("/dev/shm").unwrap();
+    assert_ne!(
+        fs::metadata(temp.path()).unwrap().dev(),
+        fs::metadata(trash.path()).unwrap().dev()
+    );
+    fs::write(trash.path().join("a"), b"linked contents").unwrap();
+    fs::hard_link(trash.path().join("a"), trash.path().join("b")).unwrap();
+    let receipts = ["a", "b"].map(|name| {
+        let info = trash.path().join(format!("{name}.trashinfo"));
+        fs::write(&info, "metadata").unwrap();
+        TrashReceipt {
+            original: temp.path().join(name),
+            trashed: trash.path().join(name),
+            info,
+        }
+    });
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(Action::trash(&receipts).unwrap().unwrap())
+        .unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal.undo().unwrap();
+    assert_eq!(
+        fs::metadata(temp.path().join("a")).unwrap().ino(),
+        fs::metadata(temp.path().join("b")).unwrap().ino()
+    );
+    for receipt in receipts {
+        assert!(!receipt.trashed.exists() && !receipt.info.exists());
+        assert_eq!(fs::read(receipt.original).unwrap(), b"linked contents");
+    }
+}

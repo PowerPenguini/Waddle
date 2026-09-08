@@ -1,0 +1,52 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.68s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 9 tests
+test fs::tests::audit_failed_move_replace_preserves_all_old_children ... ok
+test fs::tests::audit_failed_copy_replace_preserves_all_old_children ... ok
+test fs::tests::audit_skip_move_child_still_transfers_sibling ... ok
+test fs::tests::audit_skip_copy_child_still_transfers_sibling ... ok
+test fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict ... ok
+test app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry ... FAILED
+test journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup ... FAILED
+test journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files ... FAILED
+test journal::tests::audit_undo_cross_device_move_preserves_hardlinks ... FAILED
+
+failures:
+
+---- app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry stdout ----
+
+thread 'app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry' (1066960) panicked at src/app/transfer_session/queue.rs:1290:9:
+retry left an empty Trash entry and metadata; restored count = 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup stdout ----
+
+thread 'journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup' (1066967) panicked at src/journal/tests.rs:814:10:
+Undo must resume after its own partial deletion and repaired permissions: Message("Refused operation: /tmp/.tmp4cETlS/copied or its contents changed after it was recorded")
+
+---- journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files stdout ----
+
+thread 'journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files' (1066966) panicked at src/journal/tests.rs:758:5:
+assertion `left == right` failed: Redo broke links preserved by the original Copy
+  left: 702831
+ right: 702833
+
+---- journal::tests::audit_undo_cross_device_move_preserves_hardlinks stdout ----
+
+thread 'journal::tests::audit_undo_cross_device_move_preserves_hardlinks' (1066968) panicked at src/journal/tests.rs:858:5:
+assertion `left == right` failed: Undo broke links preserved by cross-device Move
+  left: 702839
+ right: 702838
+
+
+failures:
+    app::transfer_session::queue::regressions::audit_retry_partial_restore_finishes_the_trash_entry
+    journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files
+    journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup
+    journal::tests::audit_undo_cross_device_move_preserves_hardlinks
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 494 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

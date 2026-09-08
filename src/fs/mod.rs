@@ -21,7 +21,7 @@ pub(crate) use storage_usage::{StorageUsage, storage_usage};
 pub use transfer_batch::{TransferBatch, TransferBatchOutcome};
 
 pub(crate) use browse::{format_size, watchable_directories_without_automount};
-pub(crate) use mutation::{journal_copy, journal_move, journal_remove, tree_bytes};
+pub(crate) use mutation::{JournalTransfer, journal_move, journal_remove, tree_bytes};
 
 #[cfg(test)]
 use mutation::{move_exact, rename_noreplace};
@@ -157,3 +157,6 @@ pub struct TransferConflict {
     pub destination: PathBuf,
     pub directories: bool,
 }
+
+#[cfg(test)]
+pub(crate) use mutation::journal_copy;

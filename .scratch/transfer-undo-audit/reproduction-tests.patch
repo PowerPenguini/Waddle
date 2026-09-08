@@ -1,0 +1,236 @@
+diff --git i/src/app/transfer_session/queue.rs w/src/app/transfer_session/queue.rs
+index a267e86..cb6eba9 100644
+--- i/src/app/transfer_session/queue.rs
++++ w/src/app/transfer_session/queue.rs
+@@ -1217,4 +1217,80 @@ mod regressions {
+             "Undo removed preexisting files"
+         );
+     }
++    #[test]
++    fn audit_retry_partial_restore_finishes_the_trash_entry() {
++        use crate::fs::{FileEntry, TransferBatchOutcome};
++        let temp = tempfile::tempdir().unwrap();
++        let source = temp.path().join("Trash/files/tree");
++        let info = temp.path().join("Trash/info/tree.trashinfo");
++        let original = temp.path().join("restored/tree");
++        fs::create_dir_all(&source).unwrap();
++        fs::create_dir_all(info.parent().unwrap()).unwrap();
++        fs::create_dir_all(&original).unwrap();
++        fs::write(&info, "metadata").unwrap();
++        fs::write(source.join("a"), "incoming a").unwrap();
++        fs::write(source.join("b"), "incoming b").unwrap();
++        fs::write(original.join("a"), "existing a").unwrap();
++        let entries = vec![trash::Entry {
++            file: FileEntry {
++                path: source.clone(),
++                name: "tree".into(),
++                directory: true,
++                metadata: Default::default(),
++            },
++            receipt: journal::TrashReceipt {
++                original: original.clone(),
++                trashed: source.clone(),
++                info: info.clone(),
++            },
++        }];
++        let operations = Operations::default();
++        let mut queue = Queue::open(temp.path().join("history.json"));
++        let mut work = queue
++            .enqueue_restore(entries.clone(), trash::restore_batch(&entries), &operations)
++            .unwrap();
++        for choice in [ConflictChoice::Replace, ConflictChoice::Skip] {
++            let id = work.id();
++            let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) =
++                work.run()
++            else {
++                panic!("expected conflict")
++            };
++            queue.pause_for_conflict(id, *batch).unwrap();
++            work = queue.resolve_conflict(choice, false).unwrap();
++        }
++        let id = work.id();
++        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
++            panic!("expected partial completion")
++        };
++        assert!(report.failures.is_empty());
++        queue.finish(id, Report::Filesystem(&report)).unwrap();
++        trash::finish_restore(report, &entries);
++        assert_eq!(fs::read(original.join("b")).unwrap(), b"incoming b");
++        let work = queue.retry(&operations).unwrap().unwrap();
++        let id = work.id();
++        let WorkOutcome::Filesystem(TransferBatchOutcome::Conflict { batch, .. }, _) = work.run()
++        else {
++            panic!("expected retry conflict")
++        };
++        queue.pause_for_conflict(id, *batch).unwrap();
++        let work = queue
++            .resolve_conflict(ConflictChoice::KeepBoth, false)
++            .unwrap();
++        let id = work.id();
++        let WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), _) = work.run() else {
++            panic!("expected completed retry")
++        };
++        assert!(report.failures.is_empty());
++        queue.finish(id, Report::Filesystem(&report)).unwrap();
++        let restored = trash::finish_restore(report, &entries);
++        assert_eq!(fs::read(original.join("a copy")).unwrap(), b"incoming a");
++        assert_eq!(fs::read(original.join("a")).unwrap(), b"existing a");
++        assert!(!queue.has_retry());
++        assert!(
++            !source.exists() && !info.exists(),
++            "retry left an empty Trash entry and metadata; restored count = {}",
++            restored.restored.len()
++        );
++    }
+ }
+diff --git i/src/journal/tests.rs w/src/journal/tests.rs
+index 7d77d90..3f3d699 100644
+--- i/src/journal/tests.rs
++++ w/src/journal/tests.rs
+@@ -718,3 +718,146 @@ fn legacy_new_folder_records_still_undo_and_redo() {
+     journal.undo().unwrap();
+     assert!(!folder.exists());
+ }
++
++#[test]
++fn audit_redo_copy_preserves_hardlinks_between_selected_files() {
++    use std::os::unix::fs::MetadataExt;
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("source");
++    let target = temp.path().join("target");
++    fs::create_dir(&source).unwrap();
++    fs::create_dir(&target).unwrap();
++    fs::write(source.join("a"), b"linked data").unwrap();
++    fs::hard_link(source.join("a"), source.join("b")).unwrap();
++    let crate::fs::TransferBatchOutcome::Complete(report) = crate::fs::TransferBatch::try_new(
++        vec![source.join("a"), source.join("b")],
++        target.clone(),
++        crate::transfer::Action::Copy,
++    )
++    .unwrap()
++    .run() else {
++        panic!("no conflict")
++    };
++    assert!(report.failures.is_empty());
++    assert_eq!(
++        fs::metadata(target.join("a")).unwrap().ino(),
++        fs::metadata(target.join("b")).unwrap().ino()
++    );
++    let path = temp.path().join("journal.json");
++    let mut journal = Journal::open(path.clone()).unwrap();
++    journal
++        .record(
++            Action::transfer(TransferKind::Copy, &report.receipts)
++                .unwrap()
++                .unwrap(),
++        )
++        .unwrap();
++    journal.undo().unwrap();
++    let mut journal = Journal::open(path).unwrap();
++    journal.redo().unwrap();
++    assert_eq!(
++        fs::metadata(target.join("a")).unwrap().ino(),
++        fs::metadata(target.join("b")).unwrap().ino(),
++        "Redo broke links preserved by the original Copy"
++    );
++}
++
++#[test]
++fn audit_undo_copy_can_resume_after_partial_directory_cleanup() {
++    use std::os::unix::fs::PermissionsExt;
++    assert_ne!(unsafe { libc::geteuid() }, 0);
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("source");
++    let copied = temp.path().join("copied");
++    fs::create_dir(&source).unwrap();
++    for name in ["first", "second"] {
++        fs::create_dir(source.join(name)).unwrap();
++        fs::write(source.join(name).join("data"), b"data").unwrap();
++    }
++    crate::fs::journal_copy(&source, &copied).unwrap();
++    let locked = fs::read_dir(&copied)
++        .unwrap()
++        .last()
++        .unwrap()
++        .unwrap()
++        .path();
++    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
++    let path = temp.path().join("journal.json");
++    let mut journal = Journal::open(path.clone()).unwrap();
++    journal
++        .record(
++            Action::transfer(
++                TransferKind::Copy,
++                &[crate::fs::TransferReceipt {
++                    source: source.clone(),
++                    destination: copied.clone(),
++                    replaced_existing: false,
++                }],
++            )
++            .unwrap()
++            .unwrap(),
++        )
++        .unwrap();
++    assert!(
++        journal.undo().is_err(),
++        "cleanup must fail at the protected child"
++    );
++    assert_eq!(
++        fs::read_dir(&copied).unwrap().count(),
++        1,
++        "fixture must partially remove the copied tree"
++    );
++    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
++    let mut journal = Journal::open(path).unwrap();
++    journal
++        .undo()
++        .expect("Undo must resume after its own partial deletion and repaired permissions");
++    assert!(!copied.exists());
++    assert!(source.join("first/data").exists() && source.join("second/data").exists());
++}
++
++#[test]
++fn audit_undo_cross_device_move_preserves_hardlinks() {
++    use std::os::unix::fs::MetadataExt;
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("source");
++    let target_root = tempfile::tempdir_in("/dev/shm").unwrap();
++    let target = target_root.path().join("target");
++    assert_ne!(
++        fs::metadata(temp.path()).unwrap().dev(),
++        fs::metadata(target_root.path()).unwrap().dev()
++    );
++    fs::create_dir(&source).unwrap();
++    fs::create_dir(&target).unwrap();
++    fs::write(source.join("a"), b"linked data").unwrap();
++    fs::hard_link(source.join("a"), source.join("b")).unwrap();
++    let crate::fs::TransferBatchOutcome::Complete(report) = crate::fs::TransferBatch::try_new(
++        vec![source.join("a"), source.join("b")],
++        target.clone(),
++        crate::transfer::Action::Move,
++    )
++    .unwrap()
++    .run() else {
++        panic!("no conflict")
++    };
++    assert!(report.failures.is_empty());
++    assert_eq!(
++        fs::metadata(target.join("a")).unwrap().ino(),
++        fs::metadata(target.join("b")).unwrap().ino()
++    );
++    let path = temp.path().join("journal.json");
++    let mut journal = Journal::open(path.clone()).unwrap();
++    journal
++        .record(
++            Action::transfer(TransferKind::Move, &report.receipts)
++                .unwrap()
++                .unwrap(),
++        )
++        .unwrap();
++    journal.undo().unwrap();
++    assert_eq!(
++        fs::metadata(source.join("a")).unwrap().ino(),
++        fs::metadata(source.join("b")).unwrap().ino(),
++        "Undo broke links preserved by cross-device Move"
++    );
++}

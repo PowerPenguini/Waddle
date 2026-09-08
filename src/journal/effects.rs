@@ -137,6 +137,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
 }
 
 fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, Error> {
+    let mut transfer = crate::fs::JournalTransfer::default();
     match direction {
         Direction::Undo => {
             for item in items.iter() {
@@ -149,7 +150,7 @@ fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, 
             }
             for item in items.iter_mut() {
                 if !item.restore_pending {
-                    crate::fs::journal_move(&item.trashed, &item.original)?;
+                    transfer.apply(crate::transfer::Action::Move, &item.trashed, &item.original)?;
                     item.restore_pending = true;
                     item.fingerprint = TreeFingerprint::read(&item.original)?;
                 }
@@ -230,6 +231,7 @@ fn apply_transfer(
             "Refused Undo: this transfer replaced an existing destination that cannot be restored",
         ));
     }
+    let mut transfer = crate::fs::JournalTransfer::default();
     match direction {
         Direction::Undo => {
             for item in items.iter().filter(|item| !item.undone) {
@@ -241,7 +243,11 @@ fn apply_transfer(
             for item in items.iter_mut().rev().filter(|item| !item.undone) {
                 let result = match kind {
                     TransferKind::Copy => crate::fs::journal_remove(&item.destination),
-                    TransferKind::Move => crate::fs::journal_move(&item.destination, &item.source),
+                    TransferKind::Move => transfer.apply(
+                        crate::transfer::Action::Move,
+                        &item.destination,
+                        &item.source,
+                    ),
                 };
                 if let Err(error) = result {
                     return Err(error.into());
@@ -261,8 +267,16 @@ fn apply_transfer(
             let mut completed = Vec::new();
             for item in items.iter_mut() {
                 let result = match kind {
-                    TransferKind::Copy => crate::fs::journal_copy(&item.source, &item.destination),
-                    TransferKind::Move => crate::fs::journal_move(&item.source, &item.destination),
+                    TransferKind::Copy => transfer.apply(
+                        crate::transfer::Action::Copy,
+                        &item.source,
+                        &item.destination,
+                    ),
+                    TransferKind::Move => transfer.apply(
+                        crate::transfer::Action::Move,
+                        &item.source,
+                        &item.destination,
+                    ),
                 };
                 if let Err(error) = result {
                     rollback_transfer(kind, items, &completed, Direction::Redo);

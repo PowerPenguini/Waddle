@@ -378,15 +378,34 @@ fn remove_item(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Keep filesystem relationships across all entries of one history operation.
+#[derive(Default)]
+pub(crate) struct JournalTransfer {
+    links: CopyLinks,
+}
+
+impl JournalTransfer {
+    pub(crate) fn apply(
+        &mut self,
+        action: Action,
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), String> {
+        transfer_exact(
+            source,
+            destination,
+            action,
+            &mut |_| Ok(()),
+            &mut self.links,
+        )
+        .map(drop)
+        .map_err(|error| format!("could not transfer entry: {error}"))
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn journal_copy(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_revealed(
-        source,
-        destination,
-        &mut |_| Ok(()),
-        &mut CopyLinks::default(),
-    )
-    .map(drop)
-    .map_err(|error| format!("could not redo Copy: {error}"))
+    JournalTransfer::default().apply(Action::Copy, source, destination)
 }
 
 pub(crate) fn tree_bytes(path: &Path) -> io::Result<u64> {
