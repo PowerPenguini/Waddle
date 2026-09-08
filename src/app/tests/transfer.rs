@@ -218,22 +218,26 @@ fn black_hole_delete_trashes_without_replacing_the_clipboard() {
 
     assert!(matches!(
         app.file_operations.view(),
-        FileOperationView::Trash { message } if message.contains("two")
+        FileOperationView::Idle
     ));
+    assert_eq!(
+        app.transfers.overview().active_action,
+        Some("Moving to Trash")
+    );
+    assert!(!app.file_operations.prompt_active());
     assert_eq!(app.transfers.clipboard_payload(), Some(copied));
 }
 
 #[test]
-fn confirmed_trash_enters_the_transfer_session() {
+fn context_trash_starts_the_transfer_without_confirmation() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
     app.navigation
         .replace_displayed_entries(vec![entry("one"), entry("two")]);
     app.grid.select_click(0, false, false, 2);
     app.grid.select_click(1, true, false, 2);
-    let _ = app.show_trash_prompt();
-
-    let task = app.update(Message::PromptConfirm);
+    let _ = app.show_rename(0);
+    let task = app.update(Message::ContextTrash);
 
     assert!(matches!(
         app.file_operations.view(),
@@ -244,7 +248,38 @@ fn confirmed_trash_enters_the_transfer_session() {
     assert_eq!(overview.active_action, Some("Moving to Trash"));
     assert!(overview.snapshot.is_some());
     assert!(app.bottom_actions().is_empty());
+    assert_ne!(app.browser_input.mode(), InputMode::Rename);
     drop(task);
+}
+
+#[test]
+fn delete_key_trashes_the_selection_without_confirmation() {
+    for count in [0, 1, 2] {
+        let (mut app, _) = App::new();
+        app.navigation.settle_for_test();
+        app.navigation.replace_displayed_entries(
+            [entry("one"), entry("two")]
+                .into_iter()
+                .take(count)
+                .collect(),
+        );
+        for index in 0..count {
+            app.grid.select_click(index, index > 0, false, count);
+        }
+        let delete = keyboard::Key::Named(keyboard::key::Named::Delete);
+        let task = app.handle_key(delete.clone(), delete, keyboard::Modifiers::empty(), None);
+
+        assert!(!app.file_operations.prompt_active());
+        assert_eq!(app.transfers.overview().active, count > 0);
+        if count > 0 {
+            assert_eq!(
+                app.transfers.overview().active_action,
+                Some("Moving to Trash")
+            );
+        }
+        assert!(!app.file_operations.is_busy());
+        drop(task);
+    }
 }
 
 #[test]
@@ -265,8 +300,13 @@ fn black_hole_d_trashes_a_multiple_selection_without_a_motion() {
 
     assert!(matches!(
         app.file_operations.view(),
-        FileOperationView::Trash { message } if message == "Move 2 selected items to Trash?"
+        FileOperationView::Idle
     ));
+    assert_eq!(
+        app.transfers.overview().active_action,
+        Some("Moving to Trash")
+    );
+    assert!(!app.file_operations.prompt_active());
     assert_eq!(app.transfers.clipboard_payload(), Some(copied));
 }
 

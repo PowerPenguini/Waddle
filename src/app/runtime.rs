@@ -389,7 +389,7 @@ impl App {
             }
             Message::ContextTrash => {
                 self.grid.close_context();
-                self.show_trash_prompt()
+                self.trash_selected()
             }
             Message::ContextRestore => {
                 self.grid.close_context();
@@ -1030,7 +1030,7 @@ impl App {
                     .toggle_visual_selection(self.navigation.entries().len());
                 self.schedule_details()
             }
-            InputIntent::Trash => self.show_trash_prompt(),
+            InputIntent::Trash => self.trash_selected(),
             InputIntent::Pending(status) | InputIntent::InvalidSequence(status) => {
                 self.presentation.set_status(status);
                 Task::none()
@@ -1052,7 +1052,7 @@ impl App {
                     self.navigation.entries().len(),
                     self.status_height(),
                 );
-                self.show_trash_prompt()
+                self.trash_selected()
             }
             InputIntent::Activate => self.activate_focused(),
             InputIntent::Parent => self.transition_navigation(NavigationTransition::Parent),

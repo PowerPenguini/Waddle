@@ -33,6 +33,7 @@ made after the original operation.
 - Use Grid or List view, sort files naturally, browse hidden files, and preview images.
 - Navigate with a mouse, arrow keys, or Vim-style motions. Switch between them whenever you want.
 - Copy, Cut, Paste, drag, restore from Trash, cancel long work, and retry failed items.
+- Move items to Trash immediately; permanent deletion and emptying Trash require confirmation.
 - Search the current folder or everything below it without leaving the window.
 - Browse Favorites, Recent files, Trash, and storage volumes from the Sidebar. Activating an unmounted volume mounts and opens it.
 - Keep up to 100 recent operations available for safe Undo and Redo, including after a restart.

@@ -183,17 +183,8 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
         .replace_displayed_entries(vec![entry("one.txt")]);
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
-    let _ = app.show_trash_prompt();
-    let Some(FileOperationConfirmation::Trash(entries)) = app
-        .file_operations
-        .confirm(app.navigation.current().to_path_buf())
-    else {
-        panic!("Trash confirmation must start a Transfer");
-    };
-    app.file_operations.finish_trash_transfer(vec![(
-        entries[0].clone(),
-        "Trash is unavailable".to_owned(),
-    )]);
+    app.file_operations
+        .finish_trash_transfer(vec![(entry("one.txt"), "Trash is unavailable".to_owned())]);
     app.sync_transient_presentation();
 
     assert!(matches!(
@@ -258,7 +249,7 @@ fn live_refresh_preserves_scroll_selection_rename_and_pending_cut_by_path() {
 }
 
 #[test]
-fn deletion_prompt_accepts_y_and_n_from_the_keyboard() {
+fn permanent_delete_prompt_accepts_y_and_n_from_the_keyboard() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
     app.navigation
@@ -266,21 +257,22 @@ fn deletion_prompt_accepts_y_and_n_from_the_keyboard() {
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
 
-    let _ = app.show_trash_prompt();
+    app.file_operations
+        .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
+    app.sync_transient_presentation();
     press(&mut app, "n");
     assert!(matches!(
         app.file_operations.view(),
         FileOperationView::Idle
     ));
 
-    let _ = app.show_trash_prompt();
+    app.file_operations
+        .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
+    app.sync_transient_presentation();
     let key = keyboard::Key::Character("Y".into());
     let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("Y"));
-    assert!(app.transfers.overview().active);
-    assert!(matches!(
-        app.file_operations.view(),
-        FileOperationView::Idle
-    ));
+    assert!(app.foreground_operation_active());
+    assert!(app.file_operations.is_busy());
     drop(task);
 }
 

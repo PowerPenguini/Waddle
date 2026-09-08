@@ -61,10 +61,7 @@ use browser_input::{
     NamedKey as InputNamedKey, Press as InputPress,
 };
 use command::{CommandSession, ProcessAdapter};
-use file_operation::{
-    Confirmation as FileOperationConfirmation, FileOperationSession, View as FileOperationView,
-    Work as FileOperationWork,
-};
+use file_operation::{FileOperationSession, View as FileOperationView, Work as FileOperationWork};
 use fs::FileEntry;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,

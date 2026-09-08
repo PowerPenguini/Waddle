@@ -8,11 +8,11 @@ use iced::{
 use crate::journal;
 
 use super::{
-    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationConfirmation,
-    FileOperationSession, FileOperationWork, InputMode, Message, NEW_FOLDER_ID,
-    NavigationTransition, OPEN_WITH_ID, OperationKind, RENAME_ID, TransientPresentation, command,
-    file_operation, open_with, places, presentation::command_failure_report, properties, recent,
-    system_icon_task, transfer_integration, trash,
+    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationSession, FileOperationWork,
+    InputMode, Message, NEW_FOLDER_ID, NavigationTransition, OPEN_WITH_ID, OperationKind,
+    RENAME_ID, TransientPresentation, command, file_operation, open_with, places,
+    presentation::command_failure_report, properties, recent, system_icon_task,
+    transfer_integration, trash,
 };
 
 impl App {
@@ -487,7 +487,7 @@ impl App {
         self.start_file_operation(work)
     }
 
-    pub(super) fn show_trash_prompt(&mut self) -> Task<Message> {
+    pub(super) fn trash_selected(&mut self) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
         }
@@ -495,10 +495,15 @@ impl App {
         if entries.is_empty() {
             return Task::none();
         }
-        self.open_file_operation(move |session| {
-            session.begin_trash(entries);
-        });
-        Task::none()
+        if self.browser_input.mode() == InputMode::Rename {
+            self.browser_input.leave_mode();
+        }
+        self.file_operations.cancel();
+        self.command.close_output();
+        self.sync_transient_presentation();
+        self.transfers
+            .trash(entries, &self.operations)
+            .map(transfer_integration::transfer_runtime_message)
     }
 
     pub(super) fn selected_trash_entries(&self) -> Vec<trash::Entry> {
@@ -557,11 +562,7 @@ impl App {
             .confirm(self.navigation.current().to_path_buf());
         self.sync_transient_presentation();
         match confirmation {
-            Some(FileOperationConfirmation::Work(work)) => self.start_file_operation(work),
-            Some(FileOperationConfirmation::Trash(entries)) => self
-                .transfers
-                .trash(entries, &self.operations)
-                .map(transfer_integration::transfer_runtime_message),
+            Some(work) => self.start_file_operation(work),
             None => Task::none(),
         }
     }

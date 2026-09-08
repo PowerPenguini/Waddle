@@ -25,10 +25,6 @@ enum State {
         value: String,
         error: String,
     },
-    Trash {
-        entries: Vec<FileEntry>,
-        message: String,
-    },
     PermanentDelete {
         entries: Vec<FileEntry>,
         message: String,
@@ -53,7 +49,6 @@ pub(super) enum View<'a> {
     Rename { value: &'a str, error: &'a str },
     NewFolder { value: &'a str, error: &'a str },
     NewFile { value: &'a str, error: &'a str },
-    Trash { message: &'a str },
     PermanentDelete { message: &'a str, detail: &'a str },
     Error { message: &'a str },
     Warning { message: &'a str },
@@ -132,11 +127,6 @@ impl Work {
     }
 }
 
-pub(super) enum Confirmation {
-    Work(Work),
-    Trash(Vec<FileEntry>),
-}
-
 fn run_entries(
     entries: Vec<FileEntry>,
     mut operation: impl FnMut(&FileEntry) -> Result<(), String>,
@@ -211,7 +201,6 @@ impl FileOperationSession {
             State::Rename { value, error, .. } => View::Rename { value, error },
             State::NewFolder { value, error } => View::NewFolder { value, error },
             State::NewFile { value, error } => View::NewFile { value, error },
-            State::Trash { message, .. } => View::Trash { message },
             State::PermanentDelete {
                 message, detail, ..
             }
@@ -234,7 +223,7 @@ impl FileOperationSession {
     pub(super) fn prompt_interaction(&self) -> PromptInteraction {
         match self.state {
             State::NewFolder { .. } | State::NewFile { .. } => PromptInteraction::Input,
-            State::Trash { .. } | State::PermanentDelete { .. } | State::TrashDelete { .. } => {
+            State::PermanentDelete { .. } | State::TrashDelete { .. } => {
                 PromptInteraction::Confirmation
             }
             State::Error { .. } | State::Warning { .. } => PromptInteraction::Acknowledgement,
@@ -275,16 +264,6 @@ impl FileOperationSession {
             value: String::new(),
             error: String::new(),
         };
-    }
-
-    pub(super) fn begin_trash(&mut self, entries: Vec<FileEntry>) -> bool {
-        if entries.is_empty() {
-            return false;
-        }
-        let message = deletion_confirmation(&entries);
-        self.busy = false;
-        self.state = State::Trash { entries, message };
-        true
     }
 
     pub(super) fn begin_trash_delete(
@@ -369,29 +348,20 @@ impl FileOperationSession {
         }))
     }
 
-    pub(super) fn confirm(&mut self, current: PathBuf) -> Option<Confirmation> {
+    pub(super) fn confirm(&mut self, current: PathBuf) -> Option<Work> {
         if self.busy {
             return None;
         }
         match &self.state {
-            State::NewFolder { .. } => self.submit_name(current).map(Confirmation::Work),
-            State::NewFile { .. } => self.submit_name(current).map(Confirmation::Work),
-            State::Trash { entries, .. } => {
-                let entries = entries.clone();
-                self.state = State::Idle;
-                Some(Confirmation::Trash(entries))
-            }
+            State::NewFolder { .. } => self.submit_name(current),
+            State::NewFile { .. } => self.submit_name(current),
             State::PermanentDelete { entries, .. } => {
                 self.busy = true;
-                Some(Confirmation::Work(Work(WorkKind::PermanentDelete(
-                    entries.clone(),
-                ))))
+                Some(Work(WorkKind::PermanentDelete(entries.clone())))
             }
             State::TrashDelete { entries, .. } => {
                 self.busy = true;
-                Some(Confirmation::Work(Work(WorkKind::TrashDelete(
-                    entries.clone(),
-                ))))
+                Some(Work(WorkKind::TrashDelete(entries.clone())))
             }
             State::Error { .. } | State::Warning { .. } => {
                 self.state = State::Idle;
@@ -545,14 +515,6 @@ fn completion_feedback(completion: &CompletionKind) -> (Option<String>, Option<S
     (Some(status), detail)
 }
 
-fn deletion_confirmation(entries: &[FileEntry]) -> String {
-    if entries.len() == 1 {
-        format!("Move “{}” to Trash?", fs::display_name(&entries[0].name))
-    } else {
-        format!("Move {} selected items to Trash?", entries.len())
-    }
-}
-
 fn permanent_delete_confirmation(count: usize) -> String {
     if count == 1 {
         "Permanently delete this item instead?".to_owned()
@@ -654,17 +616,9 @@ mod tests {
     }
 
     #[test]
-    fn trash_confirmation_returns_a_transfer_and_partial_failure_escalates() {
-        let one = entry("one.txt");
+    fn partial_trash_failure_requires_permanent_delete_confirmation() {
         let two = entry("two.txt");
         let mut session = FileOperationSession::default();
-        assert!(session.begin_trash(vec![one.clone(), two.clone()]));
-        let Some(Confirmation::Trash(entries)) = session.confirm(PathBuf::from("/work")) else {
-            panic!("Trash confirmation must return a Transfer request");
-        };
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(session.view(), View::Idle));
-
         session.finish_trash_transfer(vec![(two, "Trash unavailable".to_owned())]);
         assert!(matches!(
             session.view(),
@@ -701,14 +655,10 @@ mod tests {
     fn permanent_delete_failure_and_cancellation_stay_in_the_session() {
         let failed = entry("failed.txt");
         let mut session = FileOperationSession::default();
-        assert!(session.begin_trash(vec![failed.clone()]));
-        let _ = session.confirm(PathBuf::from("/work"));
         session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));
 
-        assert!(session.begin_trash(vec![failed.clone()]));
-        let _ = session.confirm(PathBuf::from("/work"));
         session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
         assert!(session.confirm(PathBuf::from("/work")).is_some());
         let effects = session.complete(Completion::prepare(CompletionKind::PermanentDelete(vec![

@@ -375,24 +375,6 @@ impl<'a> View<'a> {
             FileOperationView::NewFile { value, error } => {
                 self.name_prompt_bar("new file", value, error)
             }
-            FileOperationView::Trash { message } => compact_status_line(
-                row![
-                    self.text("trash")
-                        .font(self.fonts().mono)
-                        .size(11)
-                        .color(self.app().iced_theme().palette().danger),
-                    self.text(message)
-                        .size(11)
-                        .line_height(iced::Pixels(13.0))
-                        .width(Fill),
-                    self.text("Y/n")
-                        .font(self.fonts().mono_semibold())
-                        .size(11)
-                        .color(self.app().iced_theme().palette().danger),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ),
             FileOperationView::PermanentDelete { message, detail } => {
                 let header = row![
                     self.text("delete permanently")

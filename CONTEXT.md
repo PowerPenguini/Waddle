@@ -10,7 +10,7 @@ _Avoid_: Search mode, filter state
 
 **Transfer**:
 A request that copies or moves one or more filesystem entries, moves them to Trash, or restores
-them from Trash. Clipboard paste, internal drag, native drag, confirmed Trash, and Restore are ways
+them from Trash. Clipboard paste, internal drag, native drag, Trash, and Restore are ways
 to initiate the same Transfer.
 _Avoid_: Drag operation, file move
 
@@ -35,7 +35,7 @@ The modal meaning of browser key sequences, including Vim motions and pending op
 _Avoid_: Shortcut handler, key map
 
 **File operation session**:
-An active rename, New Folder, Trash confirmation, or permanent-delete interaction that retains its input, entries, and failure context until completion or cancellation. Confirmed Trash continues as a Transfer.
+An active rename, New Folder, or permanent-delete interaction that retains its input, entries, and failure context until completion or cancellation. A failed Trash Transfer may lead to a permanent-delete confirmation.
 _Avoid_: Prompt state, delete dialog
 
 **Transient presentation**:
