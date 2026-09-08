@@ -1,0 +1,142 @@
+diff --git i/src/fs/tests.rs w/src/fs/tests.rs
+index 51e214f..a4f4d37 100644
+--- i/src/fs/tests.rs
++++ w/src/fs/tests.rs
+@@ -15,6 +15,137 @@ fn complete(batch: TransferBatch) -> TransferReport {
+     report
+ }
+ 
++#[test]
++fn hunt_cancel_during_a_single_large_copy_stops_before_publication() {
++    use std::cell::Cell;
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("large.bin");
++    let destination = temp.path().join("target");
++    fs::create_dir(&destination).unwrap();
++    fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
++    let cancel = Cell::new(false);
++    let outcome = TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy)
++        .unwrap()
++        .run_with(
++            || cancel.get(),
++            |p| {
++                if p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
++                    cancel.set(true);
++                }
++            },
++        );
++    assert!(cancel.get(), "fixture must cancel during the file");
++    let TransferBatchOutcome::Complete(report) = outcome else {
++        panic!("no conflict")
++    };
++    assert!(report.cancelled, "Cancel was ignored: {report:?}");
++    assert!(source.exists());
++    assert!(
++        !destination.join("large.bin").exists(),
++        "cancelled copy was published"
++    );
++}
++
++#[test]
++fn hunt_cross_device_move_preserves_files_added_while_copying() {
++    let source_root = tempfile::tempdir().unwrap();
++    let destination = tempfile::tempdir_in("/dev/shm").unwrap();
++    assert_ne!(
++        fs::metadata(source_root.path()).unwrap().dev(),
++        fs::metadata(destination.path()).unwrap().dev()
++    );
++    let source = source_root.path().join("tree");
++    fs::create_dir(&source).unwrap();
++    fs::write(source.join("large.bin"), vec![0x42; 4 * 1024 * 1024]).unwrap();
++    let added = source.join("created-during-transfer.txt");
++    let mut injected = false;
++    let outcome = TransferBatch::try_new(
++        vec![source.clone()],
++        destination.path().to_path_buf(),
++        Action::Move,
++    )
++    .unwrap()
++    .run_with(
++        || false,
++        |p| {
++            if !injected && p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
++                fs::write(&added, b"new data must survive").unwrap();
++                injected = true;
++            }
++        },
++    );
++    assert!(injected, "fixture must add data during the file");
++    assert!(matches!(outcome, TransferBatchOutcome::Complete(_)));
++    let moved = destination.path().join("tree/created-during-transfer.txt");
++    assert!(
++        added.exists() || moved.exists(),
++        "Move deleted a newly created file without copying it"
++    );
++}
++
++#[test]
++fn hunt_merge_copy_preserves_hardlinks_between_siblings() {
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("tree");
++    let destination = temp.path().join("target");
++    fs::create_dir(&source).unwrap();
++    fs::create_dir_all(destination.join("tree")).unwrap();
++    fs::write(source.join("one"), b"linked contents").unwrap();
++    fs::hard_link(source.join("one"), source.join("two")).unwrap();
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        TransferBatch::try_new(vec![source], destination.clone(), Action::Copy)
++            .unwrap()
++            .run()
++    else {
++        panic!("expected merge")
++    };
++    let report = complete(batch.resolve(ConflictChoice::Replace, false));
++    assert!(report.failures.is_empty());
++    assert_eq!(
++        fs::metadata(destination.join("tree/one")).unwrap().ino(),
++        fs::metadata(destination.join("tree/two")).unwrap().ino(),
++        "merge broke the hardlink relationship"
++    );
++}
++
++#[test]
++fn hunt_destination_race_does_not_reset_transfer_progress() {
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("large.bin");
++    let destination = temp.path().join("target");
++    fs::create_dir(&destination).unwrap();
++    fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
++    let collision = destination.join("large.bin");
++    let mut injected = false;
++    let mut updates = Vec::new();
++    let outcome = TransferBatch::try_new(vec![source], destination, Action::Copy)
++        .unwrap()
++        .run_with(
++            || false,
++            |p| {
++                if !injected && p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
++                    fs::write(&collision, b"another process created this").unwrap();
++                    injected = true;
++                }
++                updates.push(p.completed_bytes);
++            },
++        );
++    assert!(injected);
++    let TransferBatchOutcome::Conflict { batch, .. } = outcome else {
++        panic!("expected conflict after the destination appeared");
++    };
++    let outcome = batch
++        .resolve(ConflictChoice::KeepBoth, false)
++        .run_with(|| false, |p| updates.push(p.completed_bytes));
++    assert!(
++        matches!(outcome, TransferBatchOutcome::Complete(ref report) if report.failures.is_empty())
++    );
++    assert!(
++        updates.windows(2).all(|p| p[0] <= p[1]),
++        "byte counter moved backwards: {updates:?}"
++    );
++}
++
+ #[test]
+ fn copying_reports_bytes_before_the_file_is_complete() {
+     let temp = tempfile::tempdir().unwrap();

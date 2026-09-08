@@ -9,8 +9,9 @@ use crate::transfer::Action;
 use super::{
     FsError,
     browse::validate_name,
+    source_tree::SourceTree,
     transfer_batch::FileIdentity,
-    tree_copy::{copy_item_with_warnings, remove_incomplete_copy},
+    tree_copy::{CopyLinks, copy_item_with_warnings, remove_incomplete_copy},
 };
 
 pub fn create_folder(parent: &Path, name: &str) -> Result<PathBuf, FsError> {
@@ -98,21 +99,23 @@ pub(super) fn transfer_exact(
     source: &Path,
     destination: &Path,
     action: Action,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     match action {
-        Action::Copy => copy_revealed(source, destination, progress),
-        Action::Move => move_exact_with_progress(source, destination, progress),
+        Action::Copy => copy_revealed(source, destination, progress, links),
+        Action::Move => move_exact_with_progress(source, destination, progress, links),
     }
 }
 
 fn copy_revealed(
     source: &Path,
     destination: &Path,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     let staging = staging_path(destination)?;
-    let warnings = match copy_item_with_warnings(source, &staging, progress) {
+    let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
         Ok(warnings) => warnings,
         Err(error) => {
             remove_incomplete_copy(&staging);
@@ -123,37 +126,48 @@ fn copy_revealed(
         remove_incomplete_copy(&staging);
         return Err(error);
     }
-    Ok(warnings)
+    Ok(warnings.publish(&staging, destination, links))
 }
 
 pub(super) fn move_exact(source: &Path, destination: &Path) -> io::Result<Vec<String>> {
-    move_exact_with_progress(source, destination, &mut |_| {})
+    move_exact_with_progress(
+        source,
+        destination,
+        &mut |_| Ok(()),
+        &mut CopyLinks::default(),
+    )
 }
 
 fn move_exact_with_progress(
     source: &Path,
     destination: &Path,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     match rename_noreplace(source, destination) {
         Ok(()) => {
-            progress(tree_bytes(destination).unwrap_or_default());
+            let _ = progress(tree_bytes(destination).unwrap_or_default());
             Ok(Vec::new())
         }
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+            let snapshot = SourceTree::read(source)?;
             let staging = staging_path(destination)?;
-            let warnings = match copy_item_with_warnings(source, &staging, progress) {
+            let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
                 Ok(warnings) => warnings,
                 Err(error) => {
                     remove_incomplete_copy(&staging);
                     return Err(error);
                 }
             };
+            if let Err(error) = snapshot.verify(source) {
+                remove_incomplete_copy(&staging);
+                return Err(error);
+            }
             if let Err(error) = rename_noreplace(&staging, destination) {
                 remove_incomplete_copy(&staging);
                 return Err(error);
             }
-            if let Err(error) = remove_item(source) {
+            if let Err(error) = snapshot.remove_copied(source) {
                 return Err(io::Error::new(
                     error.kind(),
                     format!(
@@ -161,7 +175,7 @@ fn move_exact_with_progress(
                     ),
                 ));
             }
-            Ok(warnings)
+            Ok(warnings.publish(&staging, destination, links))
         }
         Err(error) => Err(error),
     }
@@ -173,7 +187,8 @@ pub(super) fn replace_exact_with_progress(
     destination: &Path,
     action: Action,
     observed: FileIdentity,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     if FileIdentity::read(destination)? != observed {
         return Err(io::Error::new(
@@ -202,15 +217,15 @@ pub(super) fn replace_exact_with_progress(
                     })?;
                     return Err(error);
                 }
-                progress(tree_bytes(destination).unwrap_or_default());
+                let _ = progress(tree_bytes(destination).unwrap_or_default());
                 Ok(Vec::new())
             }
             Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                replace_by_staging(source, destination, observed, true, progress)
+                replace_by_staging(source, destination, observed, true, progress, links)
             }
             Err(error) => Err(error),
         },
-        Action::Copy => replace_by_staging(source, destination, observed, false, progress),
+        Action::Copy => replace_by_staging(source, destination, observed, false, progress, links),
     }
 }
 
@@ -220,7 +235,8 @@ pub(super) fn replace_exact_with_progress(
     destination: &Path,
     action: Action,
     observed: FileIdentity,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     if FileIdentity::read(destination)? != observed {
         return Err(io::Error::new(
@@ -229,7 +245,7 @@ pub(super) fn replace_exact_with_progress(
         ));
     }
     let staging = staging_path(destination)?;
-    let warnings = transfer_exact(source, &staging, Action::Copy, progress)?;
+    let warnings = transfer_exact(source, &staging, Action::Copy, progress, links)?;
     remove_item(destination)?;
     fs::rename(&staging, destination)?;
     if action == Action::Move {
@@ -244,16 +260,26 @@ fn replace_by_staging(
     destination: &Path,
     observed: FileIdentity,
     remove_source: bool,
-    progress: &mut dyn FnMut(u64),
+    progress: &mut dyn FnMut(u64) -> io::Result<()>,
+    links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
+    let snapshot = remove_source
+        .then(|| SourceTree::read(source))
+        .transpose()?;
     let staging = staging_path(destination)?;
-    let warnings = match copy_item_with_warnings(source, &staging, progress) {
+    let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
         Ok(warnings) => warnings,
         Err(error) => {
             remove_incomplete_copy(&staging);
             return Err(error);
         }
     };
+    if let Some(snapshot) = &snapshot
+        && let Err(error) = snapshot.verify(source)
+    {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
     if let Err(error) = rename_exchange(&staging, destination) {
         remove_incomplete_copy(&staging);
         return Err(error);
@@ -277,10 +303,10 @@ fn replace_by_staging(
         remove_incomplete_copy(&staging);
         return Err(error);
     }
-    if remove_source {
-        remove_item(source)?;
+    if let Some(snapshot) = snapshot {
+        snapshot.remove_copied(source)?;
     }
-    Ok(warnings)
+    Ok(warnings.publish(&staging, destination, links))
 }
 
 fn staging_path(destination: &Path) -> io::Result<PathBuf> {
@@ -313,9 +339,14 @@ fn remove_item(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn journal_copy(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_revealed(source, destination, &mut |_| {})
-        .map(drop)
-        .map_err(|error| format!("could not redo Copy: {error}"))
+    copy_revealed(
+        source,
+        destination,
+        &mut |_| Ok(()),
+        &mut CopyLinks::default(),
+    )
+    .map(drop)
+    .map_err(|error| format!("could not redo Copy: {error}"))
 }
 
 pub(crate) fn tree_bytes(path: &Path) -> io::Result<u64> {
@@ -427,5 +458,12 @@ pub(super) fn replace_exact(
     action: Action,
     observed: FileIdentity,
 ) -> io::Result<Vec<String>> {
-    replace_exact_with_progress(source, destination, action, observed, &mut |_| {})
+    replace_exact_with_progress(
+        source,
+        destination,
+        action,
+        observed,
+        &mut |_| Ok(()),
+        &mut CopyLinks::default(),
+    )
 }

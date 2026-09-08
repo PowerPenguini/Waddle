@@ -1,0 +1,49 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 9 tests
+test fs::tests::hunt_failed_move_replace_keeps_the_incoming_source_for_retry ... ok
+test fs::tests::hunt_failed_copy_replace_restores_the_destination ... ok
+test fs::tests::hunt_failed_copy_cleans_staging_with_read_only_descendants ... ok
+test fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings ... FAILED
+test fs::tests::hunt_keep_both_preserves_dotted_directory_names_and_non_utf8_file_extensions ... ok
+test fs::tests::hunt_keep_both_can_duplicate_a_maximum_length_name ... ok
+test fs::tests::hunt_cross_device_move_preserves_files_added_while_copying ... FAILED
+test fs::tests::hunt_cancel_during_a_single_large_copy_stops_before_publication ... FAILED
+test fs::tests::hunt_destination_race_does_not_reset_transfer_progress ... FAILED
+
+failures:
+
+---- fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings stdout ----
+
+thread 'fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings' (1036697) panicked at src/fs/tests.rs:104:5:
+assertion `left == right` failed: merge broke the hardlink relationship
+  left: 604887
+ right: 604889
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- fs::tests::hunt_cross_device_move_preserves_files_added_while_copying stdout ----
+
+thread 'fs::tests::hunt_cross_device_move_preserves_files_added_while_copying' (1036690) panicked at src/fs/tests.rs:80:5:
+Move deleted a newly created file without copying it
+
+---- fs::tests::hunt_cancel_during_a_single_large_copy_stops_before_publication stdout ----
+
+thread 'fs::tests::hunt_cancel_during_a_single_large_copy_stops_before_publication' (1036689) panicked at src/fs/tests.rs:41:5:
+Cancel was ignored: TransferReport { retry: [], completed: ["/tmp/.tmpomvu4m/target/large.bin"], failures: [], retained: [], warnings: [], receipts: [TransferReceipt { source: "/tmp/.tmpomvu4m/large.bin", destination: "/tmp/.tmpomvu4m/target/large.bin", replaced_existing: false }], cancelled: false }
+
+---- fs::tests::hunt_destination_race_does_not_reset_transfer_progress stdout ----
+
+thread 'fs::tests::hunt_destination_race_does_not_reset_transfer_progress' (1036691) panicked at src/fs/tests.rs:143:5:
+byte counter moved backwards: [0, 1048576, 2097152, 3145728, 4194304, 0, 1048576, 2097152, 3145728, 4194304, 4194304, 4194304]
+
+
+failures:
+    fs::tests::hunt_cancel_during_a_single_large_copy_stops_before_publication
+    fs::tests::hunt_cross_device_move_preserves_files_added_while_copying
+    fs::tests::hunt_destination_race_does_not_reset_transfer_progress
+    fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

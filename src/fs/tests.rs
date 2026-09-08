@@ -16,6 +16,137 @@ fn complete(batch: TransferBatch) -> TransferReport {
 }
 
 #[test]
+fn hunt_cancel_during_a_single_large_copy_stops_before_publication() {
+    use std::cell::Cell;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("large.bin");
+    let destination = temp.path().join("target");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
+    let cancel = Cell::new(false);
+    let outcome = TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy)
+        .unwrap()
+        .run_with(
+            || cancel.get(),
+            |p| {
+                if p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
+                    cancel.set(true);
+                }
+            },
+        );
+    assert!(cancel.get(), "fixture must cancel during the file");
+    let TransferBatchOutcome::Complete(report) = outcome else {
+        panic!("no conflict")
+    };
+    assert!(report.cancelled, "Cancel was ignored: {report:?}");
+    assert!(source.exists());
+    assert!(
+        !destination.join("large.bin").exists(),
+        "cancelled copy was published"
+    );
+}
+
+#[test]
+fn hunt_cross_device_move_preserves_files_added_while_copying() {
+    let source_root = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir_in("/dev/shm").unwrap();
+    assert_ne!(
+        fs::metadata(source_root.path()).unwrap().dev(),
+        fs::metadata(destination.path()).unwrap().dev()
+    );
+    let source = source_root.path().join("tree");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("large.bin"), vec![0x42; 4 * 1024 * 1024]).unwrap();
+    let added = source.join("created-during-transfer.txt");
+    let mut injected = false;
+    let outcome = TransferBatch::try_new(
+        vec![source.clone()],
+        destination.path().to_path_buf(),
+        Action::Move,
+    )
+    .unwrap()
+    .run_with(
+        || false,
+        |p| {
+            if !injected && p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
+                fs::write(&added, b"new data must survive").unwrap();
+                injected = true;
+            }
+        },
+    );
+    assert!(injected, "fixture must add data during the file");
+    assert!(matches!(outcome, TransferBatchOutcome::Complete(_)));
+    let moved = destination.path().join("tree/created-during-transfer.txt");
+    assert!(
+        added.exists() || moved.exists(),
+        "Move deleted a newly created file without copying it"
+    );
+}
+
+#[test]
+fn hunt_merge_copy_preserves_hardlinks_between_siblings() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let destination = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(destination.join("tree")).unwrap();
+    fs::write(source.join("one"), b"linked contents").unwrap();
+    fs::hard_link(source.join("one"), source.join("two")).unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source], destination.clone(), Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected merge")
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::metadata(destination.join("tree/one")).unwrap().ino(),
+        fs::metadata(destination.join("tree/two")).unwrap().ino(),
+        "merge broke the hardlink relationship"
+    );
+}
+
+#[test]
+fn hunt_destination_race_does_not_reset_transfer_progress() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("large.bin");
+    let destination = temp.path().join("target");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
+    let collision = destination.join("large.bin");
+    let mut injected = false;
+    let mut updates = Vec::new();
+    let outcome = TransferBatch::try_new(vec![source], destination, Action::Copy)
+        .unwrap()
+        .run_with(
+            || false,
+            |p| {
+                if !injected && p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
+                    fs::write(&collision, b"another process created this").unwrap();
+                    injected = true;
+                }
+                updates.push(p.completed_bytes);
+            },
+        );
+    assert!(injected);
+    let TransferBatchOutcome::Conflict { batch, .. } = outcome else {
+        panic!("expected conflict after the destination appeared");
+    };
+    let outcome = batch
+        .resolve(ConflictChoice::KeepBoth, false)
+        .run_with(|| false, |p| updates.push(p.completed_bytes));
+    assert!(
+        matches!(outcome, TransferBatchOutcome::Complete(ref report) if report.failures.is_empty())
+    );
+    assert!(
+        updates.windows(2).all(|p| p[0] <= p[1]),
+        "byte counter moved backwards: {updates:?}"
+    );
+}
+
+#[test]
 fn copying_reports_bytes_before_the_file_is_complete() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("large.bin");
@@ -1799,4 +1930,172 @@ fn hunt_failed_copy_replace_restores_the_destination() {
         fs::read_to_string(destination).unwrap(),
         "incoming contents"
     );
+}
+
+#[test]
+fn cancelling_copy_and_cross_device_move_preserves_conflict_destinations() {
+    use std::cell::Cell;
+    for action in [Action::Copy, Action::Move] {
+        for choice in [
+            None,
+            Some(ConflictChoice::Replace),
+            Some(ConflictChoice::KeepBoth),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir_in("/dev/shm").unwrap();
+            assert_ne!(
+                fs::metadata(temp.path()).unwrap().dev(),
+                fs::metadata(target.path()).unwrap().dev()
+            );
+            let source = temp.path().join("large.bin");
+            let destination = target.path().join("large.bin");
+            fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
+            let mut batch =
+                TransferBatch::try_new_mapped(vec![(source.clone(), destination.clone())], action)
+                    .unwrap();
+            if let Some(choice) = choice {
+                fs::write(&destination, b"original destination").unwrap();
+                let TransferBatchOutcome::Conflict { batch: blocked, .. } = batch.run() else {
+                    panic!("expected conflict")
+                };
+                batch = blocked.resolve(choice, false);
+            }
+            let cancel = Cell::new(false);
+            let outcome = batch.run_with(
+                || cancel.get(),
+                |p| {
+                    if p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
+                        cancel.set(true);
+                    }
+                },
+            );
+            let TransferBatchOutcome::Complete(report) = outcome else {
+                panic!("unexpected conflict")
+            };
+            assert!(
+                cancel.get() && report.cancelled,
+                "{action:?} {choice:?}: {report:?}"
+            );
+            assert!(
+                report.failures.is_empty()
+                    && report.completed.is_empty()
+                    && report.receipts.is_empty()
+            );
+            assert_eq!(report.retry.len(), 1);
+            assert_eq!(fs::metadata(&source).unwrap().len(), 4 * 1024 * 1024);
+            if choice.is_some() {
+                assert_eq!(fs::read(&destination).unwrap(), b"original destination");
+            } else {
+                assert!(!destination.exists());
+            }
+            assert_eq!(
+                fs::read_dir(target.path()).unwrap().count(),
+                usize::from(choice.is_some()),
+                "cancel left staging data"
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_device_move_retains_a_source_replaced_during_copy() {
+    for choice in [
+        None,
+        Some(ConflictChoice::Replace),
+        Some(ConflictChoice::KeepBoth),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(temp.path()).unwrap().dev(),
+            fs::metadata(target.path()).unwrap().dev()
+        );
+        let source = temp.path().join("large.bin");
+        let destination = target.path().join("large.bin");
+        fs::write(&source, vec![0x42; 4 * 1024 * 1024]).unwrap();
+        let mut batch = TransferBatch::try_new(
+            vec![source.clone()],
+            target.path().to_path_buf(),
+            Action::Move,
+        )
+        .unwrap();
+        if let Some(choice) = choice {
+            fs::write(&destination, b"original destination").unwrap();
+            let TransferBatchOutcome::Conflict { batch: blocked, .. } = batch.run() else {
+                panic!("expected conflict")
+            };
+            batch = blocked.resolve(choice, false);
+        }
+        let mut replaced = false;
+        let outcome = batch.run_with(
+            || false,
+            |p| {
+                if !replaced && p.completed_bytes > 0 && p.completed_bytes < p.total_bytes {
+                    fs::rename(&source, temp.path().join("saved.bin")).unwrap();
+                    fs::write(&source, b"new source must survive").unwrap();
+                    replaced = true;
+                }
+            },
+        );
+        let TransferBatchOutcome::Complete(report) = outcome else {
+            panic!("unexpected conflict")
+        };
+        assert!(replaced);
+        assert_eq!(fs::read(&source).unwrap(), b"new source must survive");
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.completed.is_empty());
+        assert_eq!(report.retry.len(), 1);
+        if choice.is_some() {
+            assert_eq!(fs::read(&destination).unwrap(), b"original destination");
+        }
+        assert_eq!(
+            fs::read_dir(target.path()).unwrap().count(),
+            usize::from(choice.is_some())
+        );
+    }
+}
+
+#[test]
+fn merged_cross_device_move_preserves_hardlinks_across_conflicts() {
+    for choice in [ConflictChoice::Replace, ConflictChoice::KeepBoth] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(temp.path()).unwrap().dev(),
+            fs::metadata(target.path()).unwrap().dev()
+        );
+        let source = temp.path().join("tree");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("one"), b"linked contents").unwrap();
+        fs::hard_link(source.join("one"), source.join("two")).unwrap();
+        let destination = target.path().join("tree");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("two"), b"old contents").unwrap();
+        let TransferBatchOutcome::Conflict { batch, .. } = TransferBatch::try_new(
+            vec![source.clone()],
+            target.path().to_path_buf(),
+            Action::Move,
+        )
+        .unwrap()
+        .run() else {
+            panic!("expected directory conflict")
+        };
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            batch.resolve(ConflictChoice::Replace, false).run()
+        else {
+            panic!("expected child conflict")
+        };
+        let report = complete(batch.resolve(choice, false));
+        assert!(report.failures.is_empty(), "{report:?}");
+        let second = if choice == ConflictChoice::KeepBoth {
+            "two copy"
+        } else {
+            "two"
+        };
+        assert_eq!(
+            fs::metadata(destination.join("one")).unwrap().ino(),
+            fs::metadata(destination.join(second)).unwrap().ino()
+        );
+        assert!(!source.exists());
+    }
 }

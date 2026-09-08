@@ -1,0 +1,27 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `release` profile [optimized] target(s) in 14.20s
+     Running unittests src/main.rs (target/release/deps/waddle-2f0e1c778b3a2cc3)
+
+running 7 tests
+test app::performance::benchmark_cached_theme_and_sidebar_loading_work ... benchmark cached-theme: median=8ns/op p95=8ns/op budget=2µs/op samples=21 iterations=100000
+benchmark sidebar-loading: median=12ns/op p95=14ns/op budget=2µs/op samples=21 iterations=100000
+ok
+test app::performance::benchmark_grid_cursor_and_view_work ... benchmark grid-cursor-view: median=250.022µs/op p95=252.3µs/op budget=8ms/op samples=21 iterations=500
+benchmark grid-cursor-view: median=160.668µs/op p95=161.589µs/op budget=8ms/op samples=21 iterations=500
+benchmark grid-cursor-view: median=68.004µs/op p95=68.519µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_internal_drag_preview_work ... benchmark internal-drag-preview: median=1.127µs/op p95=1.168µs/op budget=100µs/op samples=21 iterations=2000
+ok
+test app::performance::benchmark_large_marquee_selection_work ... benchmark large-marquee-selection: median=3.199µs/op p95=3.238µs/op budget=250µs/op samples=21 iterations=500
+ok
+test app::performance::benchmark_list_cursor_and_view_work ... benchmark list-cursor-view: median=61.979µs/op p95=62.324µs/op budget=8ms/op samples=21 iterations=500
+benchmark list-cursor-view: median=57.125µs/op p95=57.512µs/op budget=8ms/op samples=21 iterations=500
+benchmark list-cursor-view: median=38.765µs/op p95=38.907µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_scroll_frame_work ... benchmark scroll-frame: median=107ns/op p95=109ns/op budget=20µs/op samples=21 iterations=10000
+ok
+test app::system_icons::tests::benchmark_system_icon_cold_load_and_cached_resolution ... benchmark system-icons: cold-load=682.856679ms cached=13ns/op requests=112
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 484 filtered out; finished in 7.63s
+

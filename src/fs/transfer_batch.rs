@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs, io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -13,6 +13,7 @@ use super::{
     mutation::{
         available_copy_destination, replace_exact_with_progress, transfer_exact, tree_bytes,
     },
+    tree_copy::CopyLinks,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +90,8 @@ pub struct TransferBatch {
     warnings: Vec<TransferWarning>,
     root_bytes: Vec<u64>,
     copied_bytes: Vec<u64>,
+    entry_bytes: BTreeMap<PathBuf, u64>,
+    links: CopyLinks,
     progressed_roots: BTreeSet<usize>,
     cancelled: bool,
 }
@@ -166,6 +169,8 @@ impl TransferBatch {
             root_bytes: Vec::new(),
             progressed_roots: BTreeSet::new(),
             copied_bytes: Vec::new(),
+            entry_bytes: BTreeMap::new(),
+            links: CopyLinks::default(),
             cancelled: false,
         }
     }
@@ -203,19 +208,47 @@ impl TransferBatch {
             let baseline = self.current_progress();
             let base = self.copied_bytes[root];
             let limit = self.root_bytes[root];
+            let source_key = match &pending {
+                PendingTransfer::Entry { source, .. }
+                | PendingTransfer::RemoveSourceDirectory { source, .. } => source.clone(),
+                PendingTransfer::Resolve { blocked, .. } => blocked.source.clone(),
+            };
+            let previous = self
+                .entry_bytes
+                .get(&source_key)
+                .copied()
+                .unwrap_or_default();
+            let mut entry_copied = previous;
             let mut copied = base;
             let mut update_bytes = |bytes| {
-                copied = copied.max(base.saturating_add(bytes).min(limit));
+                entry_copied = entry_copied.max(bytes);
+                copied = copied.max(base.saturating_add(entry_copied - previous).min(limit));
                 progress(TransferProgress {
                     completed_bytes: baseline.completed_bytes.saturating_add(copied - base),
                     ..baseline
                 });
+                if cancelled() {
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "transfer cancelled",
+                    ))
+                } else {
+                    Ok(())
+                }
             };
             match pending {
                 PendingTransfer::Resolve { blocked, choice } => {
                     match self.resolve_blocked(blocked.clone(), choice, &mut update_bytes) {
                         Ok(warnings) => {
                             self.record_warnings(&blocked.source, &blocked.destination, warnings);
+                        }
+                        Err(error)
+                            if error.1.kind() == io::ErrorKind::Interrupted && cancelled() =>
+                        {
+                            self.pending
+                                .push_front(PendingTransfer::Resolve { blocked, choice });
+                            self.cancelled = true;
+                            return TransferBatchOutcome::Complete(self.cancel());
                         }
                         Err(error) if error.1.kind() == io::ErrorKind::AlreadyExists => {
                             self.pending.push_front(PendingTransfer::Entry {
@@ -280,8 +313,18 @@ impl TransferBatch {
                                     &blocked.destination,
                                     warnings,
                                 ),
+                                Err(error)
+                                    if error.1.kind() == io::ErrorKind::Interrupted
+                                        && cancelled() =>
+                                {
+                                    self.pending
+                                        .push_front(PendingTransfer::Resolve { blocked, choice });
+                                    self.cancelled = true;
+                                    return TransferBatchOutcome::Complete(self.cancel());
+                                }
                                 Err(error) => self.fail(root, error.0, error.1),
                             }
+                            self.entry_bytes.insert(source_key, entry_copied);
                             self.copied_bytes[root] = copied;
                             self.publish_completed_root(root, &mut progress);
                             continue;
@@ -297,10 +340,27 @@ impl TransferBatch {
                             conflict,
                         };
                     }
-                    match transfer_exact(&source, &destination, self.action, &mut update_bytes) {
+                    match transfer_exact(
+                        &source,
+                        &destination,
+                        self.action,
+                        &mut update_bytes,
+                        &mut self.links,
+                    ) {
                         Ok(warnings) => self.record_warnings(&source, &destination, warnings),
                         Err(error) => {
+                            if error.kind() == io::ErrorKind::Interrupted && cancelled() {
+                                self.pending.push_front(PendingTransfer::Entry {
+                                    source,
+                                    destination,
+                                    root,
+                                });
+                                self.cancelled = true;
+                                return TransferBatchOutcome::Complete(self.cancel());
+                            }
                             if error.kind() == io::ErrorKind::AlreadyExists {
+                                self.entry_bytes.insert(source_key, entry_copied);
+                                self.copied_bytes[root] = copied;
                                 self.pending.push_front(PendingTransfer::Entry {
                                     source,
                                     destination,
@@ -313,6 +373,7 @@ impl TransferBatch {
                     }
                 }
             }
+            self.entry_bytes.insert(source_key, entry_copied);
             self.copied_bytes[root] = copied;
             self.publish_completed_root(root, &mut progress);
         }
@@ -347,7 +408,7 @@ impl TransferBatch {
         &mut self,
         blocked: BlockedTransfer,
         choice: ConflictChoice,
-        progress: &mut dyn FnMut(u64),
+        progress: &mut dyn FnMut(u64) -> io::Result<()>,
     ) -> Result<Vec<String>, (PathBuf, io::Error)> {
         match choice {
             ConflictChoice::Skip => {
@@ -381,8 +442,14 @@ impl TransferBatch {
                 if self.roots[blocked.root].source == blocked.source {
                     self.roots[blocked.root].destination = destination.clone();
                 }
-                transfer_exact(&blocked.source, &destination, self.action, progress)
-                    .map_err(|error| (blocked.source, error))
+                transfer_exact(
+                    &blocked.source,
+                    &destination,
+                    self.action,
+                    progress,
+                    &mut self.links,
+                )
+                .map_err(|error| (blocked.source, error))
             }
             ConflictChoice::Replace if blocked.directories => {
                 let root = blocked.root;
@@ -400,6 +467,7 @@ impl TransferBatch {
                     self.action,
                     blocked.destination_identity,
                     progress,
+                    &mut self.links,
                 )
                 .map_err(|error| (blocked.source, error));
                 if result.is_ok() {
@@ -413,13 +481,19 @@ impl TransferBatch {
     fn merge_directories(
         &mut self,
         blocked: BlockedTransfer,
-        progress: &mut dyn FnMut(u64),
+        progress: &mut dyn FnMut(u64) -> io::Result<()>,
     ) -> Result<Vec<String>, (PathBuf, io::Error)> {
         if FileIdentity::read(&blocked.destination)
             .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
         {
-            return transfer_exact(&blocked.source, &blocked.destination, self.action, progress)
-                .map_err(|error| (blocked.source, error));
+            return transfer_exact(
+                &blocked.source,
+                &blocked.destination,
+                self.action,
+                progress,
+                &mut self.links,
+            )
+            .map_err(|error| (blocked.source, error));
         }
         if FileIdentity::read(&blocked.destination).ok() != Some(blocked.destination_identity) {
             return Err((

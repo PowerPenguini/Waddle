@@ -1,3 +1,4 @@
+mod source_tree;
 use std::{ffi::OsString, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
