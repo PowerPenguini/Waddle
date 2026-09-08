@@ -1,0 +1,23 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.42s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 1 test
+
+thread 'journal::tests::trash_and_restore_history_resume_after_process_exit' (1153210) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:79:13:
+restore=false, returning=false: 
+thread 'journal::tests::trash_recovery_child' (1153220) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:22:16:
+called `Result::unwrap()` on an `Err` value: Io { context: "could not fingerprint /tmp/.tmpR1aAfQ/original", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::trash_and_restore_history_resume_after_process_exit ... FAILED
+
+failures:
+
+failures:
+    journal::tests::trash_and_restore_history_resume_after_process_exit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 552 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin waddle`

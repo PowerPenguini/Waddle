@@ -38,7 +38,7 @@ impl Publication {
         })
     }
 
-    fn verify(&self, path: &Path) -> Result<(), Error> {
+    pub(super) fn verify(&self, path: &Path) -> Result<(), Error> {
         let metadata = fs::symlink_metadata(path)
             .map_err(|e| Error::io("could not inspect prepared history result", e))?;
         if metadata.dev() != self.device

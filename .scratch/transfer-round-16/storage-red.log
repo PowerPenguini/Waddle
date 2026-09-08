@@ -1,0 +1,23 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.85s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 1 test
+
+thread 'journal::tests::transfer_rejects_delayed_storage_errors_before_publication' (1154738) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:129:17:
+error=28, moving=false, replace=false: 
+thread 'journal::tests::storage_error_child' (1154745) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:105:5:
+unflushed data must not be reported as successful: TransferReport { copied_links: CopyLinks({}), retry: [], completed: ["/tmp/.tmpxrFWZH/source"], failures: [], retained: [], warnings: [], receipts: [TransferReceipt { source: "/tmp/.tmpB4owxu/source", destination: "/tmp/.tmpxrFWZH/source", replaced_existing: false }], cancelled: false }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::transfer_rejects_delayed_storage_errors_before_publication ... FAILED
+
+failures:
+
+failures:
+    journal::tests::transfer_rejects_delayed_storage_errors_before_publication
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 554 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin waddle`

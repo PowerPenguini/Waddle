@@ -12,12 +12,22 @@ pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, Error> {
     if let Some(result) = test_backend::trash(path) {
         return result;
     }
+    use std::os::unix::fs::MetadataExt;
+    let identity =
+        fs::symlink_metadata(path).map_err(|e| Error::io("could not identify Trash source", e))?;
     gio::File::for_path(path)
         .trash(None::<&gio::Cancellable>)
         .map_err(|error| {
             Error::desktop(format!("could not move {} to Trash", path.display()), error)
         })?;
-    locate_trash(path).ok_or_else(|| {
+    locate_trash(path, &|candidate| {
+        fs::symlink_metadata(candidate).is_ok_and(|current| {
+            current.dev() == identity.dev()
+                && current.ino() == identity.ino()
+                && current.file_type() == identity.file_type()
+        })
+    })
+    .ok_or_else(|| {
         Error::message(format!(
             "moved {} to Trash, but its recovery metadata could not be located",
             path.display()
@@ -25,11 +35,23 @@ pub(crate) fn trash(path: &Path) -> Result<TrashReceipt, Error> {
     })
 }
 
-fn locate_trash(original: &Path) -> Option<TrashReceipt> {
-    locate_desktop_trash(original).or_else(|| locate_home_trash(original))
+pub(super) fn recover_trash(
+    original: &Path,
+    expected: &super::recovery::Publication,
+) -> Result<TrashReceipt, Error> {
+    locate_trash(original, &|path| expected.verify(path).is_ok()).ok_or_else(|| {
+        Error::message(format!(
+            "Refused recovery: the recorded Trash entry for {} could not be located",
+            original.display()
+        ))
+    })
 }
 
-fn locate_desktop_trash(original: &Path) -> Option<TrashReceipt> {
+fn locate_trash(original: &Path, accept: &dyn Fn(&Path) -> bool) -> Option<TrashReceipt> {
+    locate_home_trash(original, accept).or_else(|| locate_desktop_trash(original, accept))
+}
+
+fn locate_desktop_trash(original: &Path, accept: &dyn Fn(&Path) -> bool) -> Option<TrashReceipt> {
     use std::os::unix::ffi::OsStringExt;
 
     let trash = gio::File::for_uri("trash:///");
@@ -55,6 +77,9 @@ fn locate_desktop_trash(original: &Path) -> Option<TrashReceipt> {
         let Some(trashed) = gio::File::for_uri(target_uri.as_str()).path() else {
             continue;
         };
+        if !accept(&trashed) {
+            continue;
+        }
         let Some(trash_root) = trashed.parent().and_then(Path::parent) else {
             continue;
         };
@@ -79,7 +104,7 @@ fn locate_desktop_trash(original: &Path) -> Option<TrashReceipt> {
     matches.pop().map(|(_, receipt)| receipt)
 }
 
-fn locate_home_trash(original: &Path) -> Option<TrashReceipt> {
+fn locate_home_trash(original: &Path, accept: &dyn Fn(&Path) -> bool) -> Option<TrashReceipt> {
     let data_home = std::env::var_os("XDG_DATA_HOME").map_or_else(
         || {
             std::env::var_os("HOME")
@@ -109,6 +134,9 @@ fn locate_home_trash(original: &Path) -> Option<TrashReceipt> {
             let name = info.file_stem()?;
             let trashed = trash.join("files").join(name);
             fs::symlink_metadata(&trashed).ok()?;
+            if !accept(&trashed) {
+                return None;
+            }
             let modified = entry.metadata().ok()?.modified().ok()?;
             Some((
                 modified,

@@ -1,0 +1,25 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.45s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 1 test
+
+thread 'journal::tests::native_trash_receipt_identifies_the_moved_file_among_duplicate_original_paths' (1156579) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:166:5:
+
+thread 'journal::tests::native_trash_identity_child' (1156581) panicked at src/journal/../../.scratch/transfer-round-16/trash_probes.rs:146:5:
+assertion `left == right` failed: Trash returned an unrelated older receipt
+  left: [111, 108, 100, 32, 100, 97, 116, 97]
+ right: [110, 101, 119, 32, 100, 97, 116, 97]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::native_trash_receipt_identifies_the_moved_file_among_duplicate_original_paths ... FAILED
+
+failures:
+
+failures:
+    journal::tests::native_trash_receipt_identifies_the_moved_file_among_duplicate_original_paths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 556 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

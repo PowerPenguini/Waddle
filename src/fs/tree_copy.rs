@@ -300,6 +300,10 @@ impl CopyContext<'_> {
         }
         self.bytes = base.saturating_add(copied);
         self.metadata(source, destination, &metadata, false);
+        // Buffered writes can succeed even when the device later reports ENOSPC
+        // or EIO. Surface those errors while this is still an unpublished copy,
+        // before Replace discards old data or Move removes the source.
+        output.sync_all()?;
         if metadata.nlink() > 1 {
             let copied = fs::symlink_metadata(destination)?;
             self.hardlinks.0.insert(

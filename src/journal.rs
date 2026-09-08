@@ -211,6 +211,10 @@ pub(crate) struct TrashItem {
     // A completed physical Trash awaiting the remaining entries in this batch.
     #[serde(default)]
     trash_pending: bool,
+    #[serde(default)]
+    restoration: Option<recovery::Publication>,
+    #[serde(default)]
+    trashing: Option<recovery::Publication>,
 }
 
 impl Action {
@@ -224,9 +228,12 @@ impl Action {
                         .first()
                         .is_some_and(|first| items.iter().any(|item| item.undone != first.undone))
             }
-            Self::Trash { items, .. } | Self::Restore { items, .. } => items
-                .iter()
-                .any(|item| item.restore_pending || item.trash_pending),
+            Self::Trash { items, .. } | Self::Restore { items, .. } => items.iter().any(|item| {
+                item.restore_pending
+                    || item.trash_pending
+                    || item.restoration.is_some()
+                    || item.trashing.is_some()
+            }),
             _ => false,
         }
     }
@@ -302,6 +309,8 @@ impl Action {
                     fingerprint: TreeFingerprint::read(&receipt.trashed)?,
                     restore_pending: false,
                     trash_pending: false,
+                    restoration: None,
+                    trashing: None,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -328,6 +337,8 @@ impl Action {
                     fingerprint: TreeFingerprint::read(&receipt.original)?,
                     restore_pending: false,
                     trash_pending: false,
+                    restoration: None,
+                    trashing: None,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;

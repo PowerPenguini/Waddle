@@ -417,6 +417,7 @@ impl JournalTransfer {
         run(self)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(
         &mut self,
         action: Action,

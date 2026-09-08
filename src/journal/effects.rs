@@ -117,7 +117,14 @@ pub(super) fn apply(
             items,
             transfer,
         } => apply_transfer(*kind, items, direction, transfer, checkpoint),
-        Action::Trash { items, transfer } => apply_trash(items, direction, transfer),
+        Action::Trash { items, transfer } => {
+            apply_trash(items, direction, transfer, &mut |items, transfer| {
+                checkpoint(&Action::Trash {
+                    items: items.to_vec(),
+                    transfer: transfer.clone(),
+                })
+            })
+        }
         Action::Restore {
             items,
             transfer,
@@ -135,6 +142,13 @@ pub(super) fn apply(
                     Direction::Redo => Direction::Undo,
                 },
                 transfer,
+                &mut |items, transfer| {
+                    checkpoint(&Action::Restore {
+                        items: items.to_vec(),
+                        transfer: transfer.clone(),
+                        replaced_existing: false,
+                    })
+                },
             )?;
             effect.status = match direction {
                 Direction::Undo => "Undid Restore",
@@ -146,26 +160,70 @@ pub(super) fn apply(
     }
 }
 
+type TrashCheckpoint<'a> =
+    dyn FnMut(&[TrashItem], &crate::fs::JournalTransfer) -> Result<(), Error> + 'a;
+
 fn apply_trash(
     items: &mut [TrashItem],
     direction: Direction,
     transfer: &mut crate::fs::JournalTransfer,
+    checkpoint: &mut TrashCheckpoint<'_>,
 ) -> Result<Effect, Error> {
-    let effect: Result<Effect, Error> = match direction {
-        Direction::Undo => {
-            for item in items.iter() {
-                if item.restore_pending {
-                    verify_tree(&item.original, &item.fingerprint)?;
-                } else {
-                    verify_tree(&item.trashed, &item.fingerprint)?;
-                    ensure_absent(&item.original)?;
-                }
+    for item in items.iter() {
+        if item.restoration.is_some() || item.trashing.is_some() {
+            continue;
+        }
+        match direction {
+            Direction::Undo if item.restore_pending => {
+                verify_tree(&item.original, &item.fingerprint)?
             }
-            for item in items.iter_mut() {
+            Direction::Undo => {
+                verify_tree(&item.trashed, &item.fingerprint)?;
+                ensure_absent(&item.original)?;
+            }
+            Direction::Redo if item.trash_pending => verify_tree(&item.trashed, &item.fingerprint)?,
+            Direction::Redo => verify_tree(&item.original, &item.fingerprint)?,
+        }
+    }
+    for index in 0..items.len() {
+        let mut item = items[index].clone();
+        match direction {
+            Direction::Undo => {
                 if !item.restore_pending {
-                    transfer.apply(crate::transfer::Action::Move, &item.trashed, &item.original)?;
+                    if item.restoration.is_none() {
+                        let cleanup = super::removal::RemovalPlan::capture(&item.trashed)?;
+                        let source = item.trashed.clone();
+                        let target = item.original.clone();
+                        let result = transfer.apply_checkpointed(
+                            crate::transfer::Action::Move,
+                            &source,
+                            &target,
+                            &mut |staging, context| {
+                                item.restoration = Some(
+                                    super::recovery::Publication::capture(
+                                        staging,
+                                        Some(cleanup.clone()),
+                                    )
+                                    .map_err(|e| e.to_string())?,
+                                );
+                                items[index] = item.clone();
+                                checkpoint(items, context).map_err(|e| e.to_string())
+                            },
+                        );
+                        items[index] = item.clone();
+                        result.map_err(Error::message)?;
+                    }
+                    let result = item
+                        .restoration
+                        .as_mut()
+                        .unwrap()
+                        .finish(&item.trashed, &item.original);
+                    items[index] = item.clone();
+                    item.fingerprint = result?;
+                    item.restoration = None;
                     item.restore_pending = true;
-                    item.fingerprint = TreeFingerprint::read(&item.original)?;
+                    items[index] = item.clone();
+                    checkpoint(items, transfer)?;
                 }
                 match fs::remove_file(&item.info) {
                     Ok(()) => {}
@@ -178,42 +236,46 @@ fn apply_trash(
                     }
                 }
             }
-            // Journal::undo/redo persists these flags on failure. Clear them only
-            // once every restore and cleanup has completed and the cursor can advance.
-            for item in items.iter_mut() {
-                item.restore_pending = false;
-            }
-            Ok(trash_effect(items, Direction::Undo))
-        }
-        Direction::Redo => {
-            for item in items.iter() {
-                if item.trash_pending {
-                    verify_tree(&item.trashed, &item.fingerprint)?;
-                } else {
-                    verify_tree(&item.original, &item.fingerprint)?;
-                }
-            }
-            for item in items.iter_mut() {
+            Direction::Redo => {
                 if item.trash_pending {
                     continue;
                 }
-                let receipt = trash(&item.original)?;
+                if item.trashing.is_none() {
+                    item.trashing =
+                        Some(super::recovery::Publication::capture(&item.original, None)?);
+                    items[index] = item.clone();
+                    checkpoint(items, transfer)?;
+                }
+                let identity = item.trashing.as_ref().unwrap();
+                let receipt = match fs::symlink_metadata(&item.original) {
+                    Ok(_) => {
+                        identity.verify(&item.original)?;
+                        trash(&item.original)?
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        super::trash_receipt::recover_trash(&item.original, identity)?
+                    }
+                    Err(error) => {
+                        return Err(Error::io("could not inspect pending Trash source", error));
+                    }
+                };
+                identity.verify(&receipt.trashed)?;
                 item.trashed = receipt.trashed;
                 item.info = receipt.info;
                 item.trash_pending = true;
-                item.fingerprint = TreeFingerprint::read(&item.trashed)?;
+                item.trashing = None;
+                items[index] = item.clone();
+                checkpoint(items, transfer)?;
             }
-            // Keep each receipt and its metadata on failure. The saved progress
-            // lets a retry skip completed entries without a fallible rollback.
-            for item in items.iter_mut() {
-                item.trash_pending = false;
-            }
-            Ok(trash_effect(items, Direction::Redo))
         }
-    };
-    let effect = effect?;
+        items[index] = item;
+    }
+    for item in items.iter_mut() {
+        item.restore_pending = false;
+        item.trash_pending = false;
+    }
     *transfer = Default::default();
-    Ok(effect)
+    Ok(trash_effect(items, direction))
 }
 
 fn trash_effect(items: &[TrashItem], direction: Direction) -> Effect {
