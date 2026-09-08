@@ -676,6 +676,7 @@ impl App {
                         self.mutations_allowed() && !self.file_operations.prompt_active(),
                     ) =>
             {
+                self.presentation.set_focus(BrowserFocus::Entries);
                 self.refresh_status();
                 self.grid.cancel_scroll(ScrollTarget::Entries);
                 Task::none()

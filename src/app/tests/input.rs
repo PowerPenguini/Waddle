@@ -93,6 +93,46 @@ fn captured_context_menu_click_does_not_start_marquee_or_clear_selection() {
 }
 
 #[test]
+fn marquee_selection_takes_keyboard_focus_from_the_sidebar_before_copy() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.grid.resize(iced::Size::new(820.0, 560.0));
+    app.navigation
+        .replace_displayed_entries(vec![entry("selected.txt")]);
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+
+    for event in [
+        mouse::Event::CursorMoved {
+            position: iced::Point::new(700.0, 300.0),
+        },
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+        mouse::Event::CursorMoved {
+            position: iced::Point::new(
+                SIDEBAR_WIDTH + 1.0,
+                TOOLBAR_HEIGHT + TOOLBAR_DIVIDER_HEIGHT + 1.0,
+            ),
+        },
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    ] {
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(event),
+            event::Status::Ignored,
+        ));
+    }
+    assert_eq!(app.grid.selected_entry(), Some(0));
+    press(&mut app, "y");
+    assert_eq!(app.presentation.status(), "Copied selected.txt");
+    assert_eq!(
+        app.transfers
+            .clipboard_payload()
+            .expect("Copy must act on the selected file")
+            .paths,
+        [PathBuf::from("/start/selected.txt")]
+    );
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+}
+
+#[test]
 fn right_clicking_one_of_multiple_selected_entries_keeps_the_selection() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
