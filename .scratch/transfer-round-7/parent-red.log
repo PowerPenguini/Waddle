@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.97s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test fs::tests::resumed_merge_does_not_follow_replaced_parent_directories_for_pending_siblings ... FAILED
+
+failures:
+
+---- fs::tests::resumed_merge_does_not_follow_replaced_parent_directories_for_pending_siblings stdout ----
+
+thread 'fs::tests::resumed_merge_does_not_follow_replaced_parent_directories_for_pending_siblings' (1090936) panicked at src/fs/tests.rs:2457:17:
+assertion `left == right` failed: pending siblings must not be read or removed through a substituted source parent
+  left: None
+ right: Some([117, 110, 114, 101, 108, 97, 116, 101, 100, 32, 98])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fs::tests::resumed_merge_does_not_follow_replaced_parent_directories_for_pending_siblings
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 513 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

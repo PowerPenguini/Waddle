@@ -2361,3 +2361,160 @@ fn cross_device_failed_replace_preserves_entire_destination() {
         b"original second"
     );
 }
+
+#[test]
+fn directory_conflict_does_not_follow_a_replaced_source_symlink() {
+    use std::os::unix::fs::symlink;
+    for action in [Action::Move, Action::Copy] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("tree");
+        let saved = temp.path().join("saved-tree");
+        let outside = temp.path().join("unrelated");
+        let target = temp.path().join("target");
+        let destination = target.join("tree");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("selected.txt"), b"selected data").unwrap();
+        fs::write(outside.join("unrelated.txt"), b"must remain here").unwrap();
+        fs::write(destination.join("existing.txt"), b"existing data").unwrap();
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            TransferBatch::try_new(vec![source.clone()], target, action)
+                .unwrap()
+                .run()
+        else {
+            panic!("expected directory conflict");
+        };
+        fs::rename(&source, &saved).unwrap();
+        symlink(&outside, &source).unwrap();
+        let report = complete(batch.resolve(ConflictChoice::Replace, false));
+        assert_eq!(
+            fs::read(outside.join("unrelated.txt")).ok().as_deref(),
+            Some(b"must remain here".as_slice()),
+            "a paused directory merge must not move data through a substituted source symlink"
+        );
+        assert!(
+            !destination.join("unrelated.txt").exists(),
+            "Copy must not traverse a substituted symlink either"
+        );
+        assert_eq!(
+            fs::read(saved.join("selected.txt")).unwrap(),
+            b"selected data"
+        );
+        assert_eq!(
+            fs::read(destination.join("existing.txt")).unwrap(),
+            b"existing data"
+        );
+        assert_eq!(fs::read_link(&source).unwrap(), outside);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.completed.is_empty());
+        assert_eq!(report.retry, [(source, destination)]);
+    }
+}
+
+#[test]
+fn resumed_merge_does_not_follow_replaced_parent_directories_for_pending_siblings() {
+    use std::os::unix::fs::symlink;
+    for action in [Action::Move, Action::Copy] {
+        for replace_source in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("tree");
+            let target = temp.path().join("target");
+            let destination = target.join("tree");
+            let outside = temp.path().join("unrelated");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir_all(&destination).unwrap();
+            fs::create_dir(&outside).unwrap();
+            fs::write(source.join("a"), b"selected a").unwrap();
+            fs::write(source.join("b"), b"selected b").unwrap();
+            fs::write(destination.join("a"), b"existing a").unwrap();
+            if replace_source {
+                fs::write(outside.join("b"), b"unrelated b").unwrap();
+            }
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                TransferBatch::try_new(vec![source.clone()], target, action)
+                    .unwrap()
+                    .run()
+            else {
+                panic!("expected directory conflict");
+            };
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                batch.resolve(ConflictChoice::Replace, false).run()
+            else {
+                panic!("expected first child conflict");
+            };
+            let replaced = if replace_source {
+                &source
+            } else {
+                &destination
+            };
+            let saved = temp.path().join("saved-parent");
+            fs::rename(replaced, &saved).unwrap();
+            symlink(&outside, replaced).unwrap();
+            // Skip the blocked child, then resume the already planned sibling.
+            let report = complete(batch.resolve(ConflictChoice::Skip, false));
+            if replace_source {
+                assert_eq!(
+                    fs::read(outside.join("b")).ok().as_deref(),
+                    Some(b"unrelated b".as_slice()),
+                    "pending siblings must not be read or removed through a substituted source parent"
+                );
+                assert!(!destination.join("b").exists());
+                assert_eq!(fs::read(saved.join("b")).unwrap(), b"selected b");
+            } else {
+                assert!(
+                    !outside.join("b").exists(),
+                    "pending siblings must not be written through a substituted destination parent"
+                );
+                assert_eq!(fs::read(source.join("b")).unwrap(), b"selected b");
+                assert_eq!(fs::read(saved.join("a")).unwrap(), b"existing a");
+            }
+            assert!(!report.failures.is_empty());
+            assert!(report.completed.is_empty());
+        }
+    }
+}
+
+#[test]
+fn conflict_choices_preserve_replaced_source_files_and_existing_destinations() {
+    for action in [Action::Copy, Action::Move] {
+        for choice in [
+            ConflictChoice::Replace,
+            ConflictChoice::KeepBoth,
+            ConflictChoice::Skip,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("item.txt");
+            let saved = temp.path().join("selected.txt");
+            let target = temp.path().join("target");
+            fs::create_dir(&target).unwrap();
+            fs::write(&source, b"selected data").unwrap();
+            fs::write(target.join("item.txt"), b"existing data").unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                TransferBatch::try_new(vec![source.clone()], target.clone(), action)
+                    .unwrap()
+                    .run()
+            else {
+                panic!("expected file conflict");
+            };
+            fs::rename(&source, &saved).unwrap();
+            fs::write(&source, b"replacement data").unwrap();
+            let report = complete(batch.resolve(choice, false));
+            assert_eq!(fs::read(&source).unwrap(), b"replacement data");
+            assert_eq!(fs::read(&saved).unwrap(), b"selected data");
+            assert_eq!(fs::read(target.join("item.txt")).unwrap(), b"existing data");
+            assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+            assert!(report.completed.is_empty());
+            assert_eq!(report.retry, [(source, target.join("item.txt"))]);
+            if choice == ConflictChoice::Skip {
+                assert!(
+                    report.failures.is_empty(),
+                    "Skip must remain possible without modifying either entry"
+                );
+            } else {
+                assert_eq!(report.failures.len(), 1);
+                assert!(report.failures[0].error.contains("source changed"));
+            }
+        }
+    }
+}

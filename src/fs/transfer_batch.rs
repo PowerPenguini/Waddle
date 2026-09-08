@@ -72,8 +72,16 @@ struct BlockedTransfer {
     source: PathBuf,
     destination: PathBuf,
     root: usize,
+    source_identity: FileIdentity,
     destination_identity: FileIdentity,
     directories: bool,
+}
+
+#[derive(Clone, Debug)]
+struct MergeDirectory {
+    source_identity: FileIdentity,
+    destination: PathBuf,
+    destination_identity: FileIdentity,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +100,7 @@ pub struct TransferBatch {
     copied_bytes: Vec<u64>,
     entry_bytes: BTreeMap<PathBuf, u64>,
     links: CopyLinks,
+    merged_directories: BTreeMap<PathBuf, MergeDirectory>,
     progressed_roots: BTreeSet<usize>,
     cancelled: bool,
 }
@@ -171,6 +180,7 @@ impl TransferBatch {
             copied_bytes: Vec::new(),
             entry_bytes: BTreeMap::new(),
             links: CopyLinks::default(),
+            merged_directories: BTreeMap::new(),
             cancelled: false,
         }
     }
@@ -213,6 +223,17 @@ impl TransferBatch {
                 | PendingTransfer::RemoveSourceDirectory { source, .. } => source.clone(),
                 PendingTransfer::Resolve { blocked, .. } => blocked.source.clone(),
             };
+            if !matches!(
+                &pending,
+                PendingTransfer::Resolve {
+                    choice: ConflictChoice::Skip,
+                    ..
+                }
+            ) && let Err(error) = self.verify_merge_ancestors(&source_key)
+            {
+                self.fail(root, source_key, error);
+                continue;
+            }
             let previous = self
                 .entry_bytes
                 .get(&source_key)
@@ -291,6 +312,11 @@ impl TransferBatch {
                             source,
                             destination,
                             root,
+                            source_identity: FileIdentity {
+                                device: source_metadata.dev(),
+                                inode: source_metadata.ino(),
+                                kind: source_metadata.mode() & libc::S_IFMT,
+                            },
                             destination_identity: FileIdentity {
                                 device: destination_metadata.dev(),
                                 inode: destination_metadata.ino(),
@@ -410,6 +436,19 @@ impl TransferBatch {
         choice: ConflictChoice,
         progress: &mut dyn FnMut(u64) -> io::Result<()>,
     ) -> Result<Vec<String>, (PathBuf, io::Error)> {
+        if choice != ConflictChoice::Skip {
+            let identity = FileIdentity::read(&blocked.source)
+                .map_err(|error| (blocked.source.clone(), error))?;
+            if identity != blocked.source_identity {
+                return Err((
+                    blocked.source,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the source changed while the conflict was open; retry the Transfer to use the new source",
+                    ),
+                ));
+            }
+        }
         match choice {
             ConflictChoice::Skip => {
                 self.retained_roots.insert(blocked.root);
@@ -477,6 +516,29 @@ impl TransferBatch {
         }
     }
 
+    fn verify_merge_ancestors(&self, source: &Path) -> io::Result<()> {
+        for ancestor in source.ancestors() {
+            let Some(merged) = self.merged_directories.get(ancestor) else {
+                continue;
+            };
+            for (path, expected) in [
+                (ancestor, merged.source_identity),
+                (merged.destination.as_path(), merged.destination_identity),
+            ] {
+                if FileIdentity::read(path)? != expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "the merge folder {} changed while the Transfer was pending",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn merge_directories(
         &mut self,
         blocked: BlockedTransfer,
@@ -507,6 +569,16 @@ impl TransferBatch {
             .map_err(|error| (blocked.source.clone(), error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| (blocked.source.clone(), error))?;
+        // Pending children and source cleanup remain tied to these directories
+        // across later file conflicts, even when the blocked child is skipped.
+        self.merged_directories.insert(
+            blocked.source.clone(),
+            MergeDirectory {
+                source_identity: blocked.source_identity,
+                destination: blocked.destination.clone(),
+                destination_identity: blocked.destination_identity,
+            },
+        );
         children.sort_by_key(std::fs::DirEntry::file_name);
         if self.action == Action::Move {
             self.pending
