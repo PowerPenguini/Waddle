@@ -9,7 +9,8 @@ use iced::{
 use crate::{
     fs::FileEntry,
     transfer::{
-        Action as TransferAction, Event as TransferEvent, NativeUpdate, Request as TransferRequest,
+        Action as TransferAction, ClipboardCompletion, Event as TransferEvent, NativeUpdate,
+        Request as TransferRequest,
     },
 };
 
@@ -74,12 +75,20 @@ impl App {
         }
         match self.transfers.clipboard_read() {
             None => self.paste_current(),
-            Some(Ok(completion)) => Task::perform(completion, Message::ClipboardRead),
+            Some(Ok(completion)) => self.paste_clipboard(completion),
             Some(Err(error)) => {
                 self.presentation.set_status(error);
                 Task::none()
             }
         }
+    }
+
+    pub(super) fn paste_clipboard(&self, completion: ClipboardCompletion) -> Task<Message> {
+        let destination = self.navigation.current().to_path_buf();
+        Task::perform(completion, move |result| Message::ClipboardRead {
+            destination,
+            result,
+        })
     }
 
     pub(super) fn paste_current(&mut self) -> Task<Message> {

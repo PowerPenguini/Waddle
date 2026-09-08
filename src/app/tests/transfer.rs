@@ -162,11 +162,14 @@ fn system_clipboard_completion_enters_the_same_transfer_session() {
         std::fs::write(path, "x").unwrap();
     }
 
-    let _ = app.update(Message::ClipboardRead(Ok(ClipboardImport {
-        paths: paths.clone(),
-        action: TransferAction::Copy,
-        generation: None,
-    })));
+    let _ = app.update(Message::ClipboardRead {
+        destination: destination.clone(),
+        result: Ok(ClipboardImport {
+            paths: paths.clone(),
+            action: TransferAction::Copy,
+            generation: None,
+        }),
+    });
 
     let request = app.transfers.paste(destination).unwrap();
     assert_eq!(request.paths, paths);
@@ -641,4 +644,72 @@ fn incoming_drop_targets_folders_empty_grid_and_rejects_files_and_toolbar() {
         app.drop_destination_at(iced::Point::new(300.0, 20.0), true),
         None
     );
+}
+
+#[test]
+fn delayed_clipboard_paste_keeps_the_requested_destination_after_navigation() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for action in [TransferAction::Copy, TransferAction::Move] {
+                let temp = tempfile::tempdir().unwrap();
+                let requested = temp.path().join("requested");
+                let other = temp.path().join("other");
+                let source = temp.path().join("notes.txt");
+                std_fs::create_dir(&requested).unwrap();
+                std_fs::create_dir(&other).unwrap();
+                std_fs::write(&source, "paste into the requested folder").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(requested.clone());
+                app.navigation.settle_for_test();
+                app.transfers =
+                    transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                app.view_preferences =
+                    super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+                let (send, receive) = iced::futures::channel::oneshot::channel();
+                // Delay only the OS clipboard response. Task creation, navigation,
+                // message handling and the filesystem Transfer are production code.
+                let paste = app.paste_clipboard(Box::pin(async move { receive.await.unwrap() }));
+                let navigation = app.transition_navigation(NavigationTransition::Open {
+                    requested: other.clone(),
+                    remember: true,
+                    select: None,
+                });
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    super::navigation::finish_tasks(&mut app, navigation),
+                )
+                .await
+                .unwrap();
+                assert_eq!(app.navigation.current(), other);
+                send.send(Ok(ClipboardImport {
+                    paths: vec![source.clone()],
+                    action,
+                    generation: None,
+                }))
+                .unwrap();
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    super::navigation::finish_tasks(&mut app, paste),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    requested.join("notes.txt").exists(),
+                    "Paste must keep the destination chosen before the clipboard response"
+                );
+                assert_eq!(
+                    std_fs::read(requested.join("notes.txt")).unwrap(),
+                    b"paste into the requested folder"
+                );
+                assert!(
+                    !other.join("notes.txt").exists(),
+                    "navigation must not redirect a pending Paste"
+                );
+                assert_eq!(source.exists(), action == TransferAction::Copy);
+                assert!(!app.transfers.overview().active);
+            }
+        });
 }

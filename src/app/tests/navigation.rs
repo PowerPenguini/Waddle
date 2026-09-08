@@ -56,7 +56,7 @@ fn sidebar_returns_from_recent_and_trash_to_the_previous_folder() {
     });
 }
 
-async fn finish_tasks(app: &mut App, task: Task<Message>) {
+pub(super) async fn finish_tasks(app: &mut App, task: Task<Message>) {
     use iced::futures::StreamExt;
     let mut pending = std::collections::VecDeque::from([task]);
     while let Some(task) = pending.pop_front() {

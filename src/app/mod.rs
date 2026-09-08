@@ -279,7 +279,10 @@ enum Message {
     },
     Copy,
     Paste,
-    ClipboardRead(Result<ClipboardImport, String>),
+    ClipboardRead {
+        destination: PathBuf,
+        result: Result<ClipboardImport, String>,
+    },
     OperationError(String),
     Noop,
 }

@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.19s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::tests::transfer::delayed_clipboard_paste_keeps_the_requested_destination_after_navigation ... FAILED
+
+failures:
+
+---- app::tests::transfer::delayed_clipboard_paste_keeps_the_requested_destination_after_navigation stdout ----
+
+thread 'app::tests::transfer::delayed_clipboard_paste_keeps_the_requested_destination_after_navigation' (1083185) panicked at src/app/tests/transfer.rs:696:17:
+Paste must keep the destination chosen before the clipboard response
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::tests::transfer::delayed_clipboard_paste_keeps_the_requested_destination_after_navigation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 509 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--bin waddle`

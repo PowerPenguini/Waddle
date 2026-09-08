@@ -528,9 +528,11 @@ impl App {
             Message::JournalFinished { journal, result } => self.finish_journal(*journal, result),
             Message::Copy => self.copy_selection(),
             Message::Paste => self.paste(),
-            Message::ClipboardRead(result) => match result {
+            Message::ClipboardRead {
+                destination,
+                result,
+            } => match result {
                 Ok(payload) => {
-                    let destination = self.navigation.current().to_path_buf();
                     if let Some(request) = self.transfers.paste_import(payload, destination) {
                         self.sync_location_monitoring();
                         self.start_transfer(request)
