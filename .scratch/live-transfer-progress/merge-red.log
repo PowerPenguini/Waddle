@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.22s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test fs::tests::merged_directory_moves_report_progress_between_children ... FAILED
+
+failures:
+
+---- fs::tests::merged_directory_moves_report_progress_between_children stdout ----
+
+thread 'fs::tests::merged_directory_moves_report_progress_between_children' (1029073) panicked at src/fs/tests.rs:49:5:
+no progress between child moves: [TransferProgress { completed_entries: 0, total_entries: 1, completed_bytes: 0, total_bytes: 11 }, TransferProgress { completed_entries: 1, total_entries: 1, completed_bytes: 11, total_bytes: 11 }, TransferProgress { completed_entries: 1, total_entries: 1, completed_bytes: 11, total_bytes: 11 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fs::tests::merged_directory_moves_report_progress_between_children
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

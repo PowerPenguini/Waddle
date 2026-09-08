@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on build directory
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 12.79s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::trash::tests::trash_progress_measures_directory_contents_in_the_worker ... FAILED
+
+failures:
+
+---- app::trash::tests::trash_progress_measures_directory_contents_in_the_worker stdout ----
+
+thread 'app::trash::tests::trash_progress_measures_directory_contents_in_the_worker' (1029983) panicked at src/app/trash.rs:513:9:
+assertion `left == right` failed
+  left: 0
+ right: 8
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::trash::tests::trash_progress_measures_directory_contents_in_the_worker
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

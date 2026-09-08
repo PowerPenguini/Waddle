@@ -16,6 +16,200 @@ fn complete(batch: TransferBatch) -> TransferReport {
 }
 
 #[test]
+fn copying_reports_bytes_before_the_file_is_complete() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("large.bin");
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let contents = vec![0x5a; 4 * 1024 * 1024];
+    fs::write(&source, &contents).unwrap();
+    let mut updates = Vec::new();
+    let outcome = TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy)
+        .unwrap()
+        .run_with(|| false, |update| updates.push(update));
+    assert!(
+        matches!(outcome, TransferBatchOutcome::Complete(ref report) if report.failures.is_empty())
+    );
+    assert!(
+        updates.iter().any(|p| p.completed_entries == 0
+            && p.completed_bytes > 0
+            && p.completed_bytes < contents.len() as u64),
+        "no progress during file copy: {updates:?}"
+    );
+    assert_eq!(
+        updates.last().unwrap().completed_bytes,
+        contents.len() as u64
+    );
+    assert_eq!(fs::read(destination.join("large.bin")).unwrap(), contents);
+    assert!(source.exists());
+}
+
+#[test]
+fn merged_directory_moves_report_progress_between_children() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(target.join("tree")).unwrap();
+    fs::write(source.join("one"), b"first").unwrap();
+    fs::write(source.join("two"), b"second").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], target.clone(), Action::Move)
+            .unwrap()
+            .run()
+    else {
+        panic!("directory merge must ask")
+    };
+    let mut updates = Vec::new();
+    let result = batch
+        .resolve(ConflictChoice::Replace, false)
+        .run_with(|| false, |p| updates.push(p));
+    assert!(
+        matches!(result, TransferBatchOutcome::Complete(ref report) if report.failures.is_empty())
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|p| p.completed_entries == 0 && p.completed_bytes == 5),
+        "no progress between child moves: {updates:?}"
+    );
+    assert_eq!(updates.last().unwrap().completed_bytes, 11);
+    assert!(!source.exists());
+    assert_eq!(fs::read(target.join("tree/two")).unwrap(), b"second");
+}
+
+#[test]
+fn skipped_transfers_do_not_inflate_byte_progress() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("target");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, b"skip me").unwrap();
+    fs::write(destination.join("source"), b"keep me").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source], destination, Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected conflict")
+    };
+    let mut updates = Vec::new();
+    let _ = batch
+        .resolve(ConflictChoice::Skip, false)
+        .run_with(|| false, |p| updates.push(p));
+    assert!(
+        updates.iter().all(|p| p.completed_bytes == 0),
+        "skipped bytes were not transferred: {updates:?}"
+    );
+}
+
+#[test]
+fn copy_conflicts_and_cross_filesystem_moves_and_restores_report_live_bytes() {
+    let source_root = tempfile::tempdir().unwrap();
+    let destination_root = tempfile::tempdir_in("/dev/shm").expect("cross-filesystem fixture");
+    assert_ne!(
+        fs::metadata(source_root.path()).unwrap().dev(),
+        fs::metadata(destination_root.path()).unwrap().dev(),
+        "fixtures must exercise EXDEV"
+    );
+    for action in [Action::Copy, Action::Move] {
+        for choice in [
+            None,
+            Some(ConflictChoice::Replace),
+            Some(ConflictChoice::KeepBoth),
+        ] {
+            let source_dir = tempfile::tempdir_in(source_root.path()).unwrap();
+            let destination = tempfile::tempdir_in(destination_root.path()).unwrap();
+            let source = source_dir.path().join("large.bin");
+            let content = vec![0x39; 4 * 1024 * 1024];
+            fs::write(&source, &content).unwrap();
+            if choice.is_some() {
+                fs::write(destination.path().join("large.bin"), b"old").unwrap();
+            }
+            // Restore uses this same mapped Move path for Trash receipts.
+            let batch = TransferBatch::try_new_mapped(
+                vec![(source.clone(), destination.path().join("large.bin"))],
+                action,
+            )
+            .unwrap();
+            let mut updates = Vec::new();
+            let mut outcome = batch.run_with(|| false, |p| updates.push(p));
+            if let TransferBatchOutcome::Conflict { batch, .. } = outcome {
+                outcome = batch
+                    .resolve(choice.unwrap(), false)
+                    .run_with(|| false, |p| updates.push(p));
+            }
+            let TransferBatchOutcome::Complete(report) = outcome else {
+                panic!("conflict should resolve")
+            };
+            assert!(report.failures.is_empty(), "{:?}", report.failures);
+            assert!(
+                updates.iter().any(|p| p.completed_entries == 0
+                    && p.completed_bytes > 0
+                    && p.completed_bytes < content.len() as u64),
+                "{action:?}/{choice:?}: no intermediate bytes"
+            );
+            assert!(
+                updates
+                    .windows(2)
+                    .all(|p| p[0].completed_bytes <= p[1].completed_bytes)
+            );
+            assert!(updates.iter().all(|p| p.completed_bytes <= p.total_bytes));
+            assert_eq!(
+                updates.last().unwrap().completed_bytes,
+                content.len() as u64
+            );
+            assert_eq!(fs::read(&report.completed[0]).unwrap(), content);
+            assert_eq!(source.exists(), action == Action::Copy);
+        }
+    }
+}
+
+#[test]
+fn sparse_and_linked_directory_copy_reports_monotonic_logical_bytes() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let destination = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let mut sparse = fs::File::create(source.join("sparse")).unwrap();
+    sparse.set_len(8 * 1024 * 1024).unwrap();
+    sparse.seek(SeekFrom::Start(2 * 1024 * 1024)).unwrap();
+    sparse.write_all(&vec![0x43; 2 * 1024 * 1024]).unwrap();
+    fs::hard_link(source.join("sparse"), source.join("linked")).unwrap();
+    symlink("sparse", source.join("symlink")).unwrap();
+    let mut updates = Vec::new();
+    let outcome = TransferBatch::try_new(vec![source], destination.clone(), Action::Copy)
+        .unwrap()
+        .run_with(|| false, |p| updates.push(p));
+    assert!(
+        matches!(outcome, TransferBatchOutcome::Complete(ref report) if report.failures.is_empty())
+    );
+    assert!(updates.iter().any(|p| p.completed_entries == 0
+        && p.completed_bytes > 0
+        && p.completed_bytes < p.total_bytes));
+    assert!(
+        updates
+            .windows(2)
+            .all(|p| p[0].completed_bytes <= p[1].completed_bytes)
+    );
+    assert_eq!(
+        updates.last().unwrap().completed_bytes,
+        16 * 1024 * 1024 + 6
+    );
+    assert_eq!(
+        updates.last().unwrap().completed_bytes,
+        updates.last().unwrap().total_bytes
+    );
+    assert_eq!(
+        fs::metadata(destination.join("tree/sparse")).unwrap().ino(),
+        fs::metadata(destination.join("tree/linked")).unwrap().ino()
+    );
+}
+
+#[test]
 fn copying_a_fifo_fails_without_waiting_for_a_writer() {
     use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
 

@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.61s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test fs::tests::skipped_transfers_do_not_inflate_byte_progress ... FAILED
+
+failures:
+
+---- fs::tests::skipped_transfers_do_not_inflate_byte_progress stdout ----
+
+thread 'fs::tests::skipped_transfers_do_not_inflate_byte_progress' (1031831) panicked at src/fs/tests.rs:92:5:
+skipped bytes were not transferred: [TransferProgress { completed_entries: 0, total_entries: 1, completed_bytes: 0, total_bytes: 7 }, TransferProgress { completed_entries: 1, total_entries: 1, completed_bytes: 7, total_bytes: 7 }, TransferProgress { completed_entries: 1, total_entries: 1, completed_bytes: 7, total_bytes: 7 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fs::tests::skipped_transfers_do_not_inflate_byte_progress
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 483 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

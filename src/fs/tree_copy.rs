@@ -9,24 +9,37 @@ use std::{
 pub(super) fn copy_item_with_warnings(
     source: &Path,
     destination: &Path,
+    progress: &mut dyn FnMut(u64),
 ) -> io::Result<Vec<String>> {
-    let mut context = CopyContext::default();
+    let mut context = CopyContext {
+        hardlinks: HashMap::new(),
+        warnings: Vec::new(),
+        bytes: 0,
+        progress,
+    };
     context.copy(source, destination)?;
     Ok(context.warnings)
 }
 
-#[derive(Default)]
-struct CopyContext {
+struct CopyContext<'a> {
     hardlinks: HashMap<(u64, u64), PathBuf>,
     warnings: Vec<String>,
+    bytes: u64,
+    progress: &'a mut dyn FnMut(u64),
 }
 
-impl CopyContext {
+impl CopyContext<'_> {
+    fn advance(&mut self, bytes: u64) {
+        self.bytes = self.bytes.saturating_add(bytes);
+        (self.progress)(self.bytes);
+    }
+
     fn copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
         let metadata = fs::symlink_metadata(source)?;
         if metadata.file_type().is_symlink() {
             copy_symlink(source, destination)?;
             self.metadata(source, destination, &metadata, true);
+            self.advance(metadata.len());
             return Ok(());
         }
         if metadata.is_dir() {
@@ -51,7 +64,10 @@ impl CopyContext {
             && let Some(existing) = self.hardlinks.get(&hardlink_key)
         {
             match fs::hard_link(existing, destination) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    self.advance(metadata.len());
+                    return Ok(());
+                }
                 Err(error) => self.warnings.push(format!(
                     "hardlink relationship for {}: {error}",
                     source.display()
@@ -77,8 +93,16 @@ impl CopyContext {
             .create_new(true)
             .open(destination)?;
         let sparse = metadata.len() > 0 && metadata.blocks().saturating_mul(512) < metadata.len();
+        let base = self.bytes;
+        let mut copied = 0;
+        let mut report = |position| {
+            // Sparse fallback may restart the same file. Do not count its
+            // earlier extents twice or move the displayed progress backwards.
+            copied = copied.max(position);
+            (self.progress)(base.saturating_add(copied));
+        };
         if sparse {
-            match copy_sparse(&mut input, &mut output, metadata.len()) {
+            match copy_sparse(&mut input, &mut output, metadata.len(), &mut report) {
                 Ok(()) => {}
                 Err(error)
                     if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP)) =>
@@ -90,13 +114,14 @@ impl CopyContext {
                     input.seek(SeekFrom::Start(0))?;
                     output.set_len(0)?;
                     output.seek(SeekFrom::Start(0))?;
-                    io::copy(&mut input, &mut output)?;
+                    copy_stream(&mut input, &mut output, &mut report)?;
                 }
                 Err(error) => return Err(error),
             }
         } else {
-            io::copy(&mut input, &mut output)?;
+            copy_stream(&mut input, &mut output, &mut report)?;
         }
+        self.bytes = base.saturating_add(copied);
         if metadata.nlink() > 1 {
             self.hardlinks
                 .insert(hardlink_key, destination.to_path_buf());
@@ -149,7 +174,12 @@ pub(super) fn record_metadata_result(
 }
 
 #[cfg(target_os = "linux")]
-fn copy_sparse(input: &mut fs::File, output: &mut fs::File, length: u64) -> io::Result<()> {
+fn copy_sparse(
+    input: &mut fs::File,
+    output: &mut fs::File,
+    length: u64,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
     let mut offset = 0_i64;
     output.set_len(length)?;
     while offset < length as i64 {
@@ -169,15 +199,43 @@ fn copy_sparse(input: &mut fs::File, output: &mut fs::File, length: u64) -> io::
         }
         input.seek(SeekFrom::Start(data as u64))?;
         output.seek(SeekFrom::Start(data as u64))?;
-        io::copy(&mut input.take((hole - data) as u64), output)?;
+        progress(data as u64);
+        copy_stream(
+            &mut input.take((hole - data) as u64),
+            output,
+            &mut |copied| progress(data as u64 + copied),
+        )?;
         offset = hole;
     }
+    progress(length);
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn copy_sparse(input: &mut fs::File, output: &mut fs::File, _: u64) -> io::Result<()> {
-    io::copy(input, output).map(|_| ())
+fn copy_sparse(
+    input: &mut fs::File,
+    output: &mut fs::File,
+    _: u64,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    copy_stream(input, output, progress)
+}
+
+fn copy_stream(
+    input: &mut impl Read,
+    output: &mut fs::File,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let mut copied = 0_u64;
+    loop {
+        // Bound each kernel-assisted copy so a large file produces live updates.
+        let bytes = io::copy(&mut input.take(1024 * 1024), output)?;
+        if bytes == 0 {
+            return Ok(());
+        }
+        copied = copied.saturating_add(bytes);
+        progress(copied);
+    }
 }
 
 #[cfg(target_os = "linux")]

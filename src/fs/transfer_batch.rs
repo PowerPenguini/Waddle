@@ -10,7 +10,9 @@ use crate::transfer::Action;
 use super::{
     ConflictChoice, FsError, TransferConflict, TransferFailure, TransferProgress, TransferReceipt,
     TransferReport, TransferWarning,
-    mutation::{available_copy_destination, replace_exact, transfer_exact, tree_bytes},
+    mutation::{
+        available_copy_destination, replace_exact_with_progress, transfer_exact, tree_bytes,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +88,7 @@ pub struct TransferBatch {
     retry: Vec<(PathBuf, PathBuf)>,
     warnings: Vec<TransferWarning>,
     root_bytes: Vec<u64>,
+    copied_bytes: Vec<u64>,
     progressed_roots: BTreeSet<usize>,
     cancelled: bool,
 }
@@ -162,6 +165,7 @@ impl TransferBatch {
             warnings: Vec::new(),
             root_bytes: Vec::new(),
             progressed_roots: BTreeSet::new(),
+            copied_bytes: Vec::new(),
             cancelled: false,
         }
     }
@@ -186,6 +190,7 @@ impl TransferBatch {
                 .iter()
                 .map(|root| tree_bytes(&root.source).unwrap_or_default())
                 .collect();
+            self.copied_bytes = vec![0; self.roots.len()];
         }
         self.publish_progress(&mut progress);
         while let Some(pending) = self.pending.pop_front() {
@@ -195,9 +200,20 @@ impl TransferBatch {
                 return TransferBatchOutcome::Complete(self.cancel());
             }
             let root = pending.root();
+            let baseline = self.current_progress();
+            let base = self.copied_bytes[root];
+            let limit = self.root_bytes[root];
+            let mut copied = base;
+            let mut update_bytes = |bytes| {
+                copied = copied.max(base.saturating_add(bytes).min(limit));
+                progress(TransferProgress {
+                    completed_bytes: baseline.completed_bytes.saturating_add(copied - base),
+                    ..baseline
+                });
+            };
             match pending {
                 PendingTransfer::Resolve { blocked, choice } => {
-                    match self.resolve_blocked(blocked.clone(), choice) {
+                    match self.resolve_blocked(blocked.clone(), choice, &mut update_bytes) {
                         Ok(warnings) => {
                             self.record_warnings(&blocked.source, &blocked.destination, warnings);
                         }
@@ -258,7 +274,7 @@ impl TransferBatch {
                             .apply_remaining
                             .or(same_directory_copy.then_some(ConflictChoice::KeepBoth))
                         {
-                            match self.resolve_blocked(blocked.clone(), choice) {
+                            match self.resolve_blocked(blocked.clone(), choice, &mut update_bytes) {
                                 Ok(warnings) => self.record_warnings(
                                     &blocked.source,
                                     &blocked.destination,
@@ -266,6 +282,7 @@ impl TransferBatch {
                                 ),
                                 Err(error) => self.fail(root, error.0, error.1),
                             }
+                            self.copied_bytes[root] = copied;
                             self.publish_completed_root(root, &mut progress);
                             continue;
                         }
@@ -280,7 +297,7 @@ impl TransferBatch {
                             conflict,
                         };
                     }
-                    match transfer_exact(&source, &destination, self.action) {
+                    match transfer_exact(&source, &destination, self.action, &mut update_bytes) {
                         Ok(warnings) => self.record_warnings(&source, &destination, warnings),
                         Err(error) => {
                             if error.kind() == io::ErrorKind::AlreadyExists {
@@ -296,6 +313,7 @@ impl TransferBatch {
                     }
                 }
             }
+            self.copied_bytes[root] = copied;
             self.publish_completed_root(root, &mut progress);
         }
         self.publish_progress(&mut progress);
@@ -329,6 +347,7 @@ impl TransferBatch {
         &mut self,
         blocked: BlockedTransfer,
         choice: ConflictChoice,
+        progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<String>, (PathBuf, io::Error)> {
         match choice {
             ConflictChoice::Skip => {
@@ -362,12 +381,12 @@ impl TransferBatch {
                 if self.roots[blocked.root].source == blocked.source {
                     self.roots[blocked.root].destination = destination.clone();
                 }
-                transfer_exact(&blocked.source, &destination, self.action)
+                transfer_exact(&blocked.source, &destination, self.action, progress)
                     .map_err(|error| (blocked.source, error))
             }
             ConflictChoice::Replace if blocked.directories => {
                 let root = blocked.root;
-                let result = self.merge_directories(blocked);
+                let result = self.merge_directories(blocked, progress);
                 if result.is_ok() {
                     self.roots[root].replaced_existing = true;
                 }
@@ -375,11 +394,12 @@ impl TransferBatch {
             }
             ConflictChoice::Replace => {
                 let root = blocked.root;
-                let result = replace_exact(
+                let result = replace_exact_with_progress(
                     &blocked.source,
                     &blocked.destination,
                     self.action,
                     blocked.destination_identity,
+                    progress,
                 )
                 .map_err(|error| (blocked.source, error));
                 if result.is_ok() {
@@ -393,11 +413,12 @@ impl TransferBatch {
     fn merge_directories(
         &mut self,
         blocked: BlockedTransfer,
+        progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<String>, (PathBuf, io::Error)> {
         if FileIdentity::read(&blocked.destination)
             .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
         {
-            return transfer_exact(&blocked.source, &blocked.destination, self.action)
+            return transfer_exact(&blocked.source, &blocked.destination, self.action, progress)
                 .map_err(|error| (blocked.source, error));
         }
         if FileIdentity::read(&blocked.destination).ok() != Some(blocked.destination_identity) {
@@ -506,16 +527,16 @@ impl TransferBatch {
     }
 
     fn publish_progress(&self, progress: &mut impl FnMut(TransferProgress)) {
-        progress(TransferProgress {
+        progress(self.current_progress());
+    }
+
+    fn current_progress(&self) -> TransferProgress {
+        TransferProgress {
             completed_entries: self.progressed_roots.len() as u64,
             total_entries: self.roots.len() as u64,
-            completed_bytes: self
-                .progressed_roots
-                .iter()
-                .filter_map(|index| self.root_bytes.get(*index))
-                .sum(),
+            completed_bytes: self.copied_bytes.iter().sum(),
             total_bytes: self.root_bytes.iter().sum(),
-        });
+        }
     }
 
     fn report(self) -> TransferReport {

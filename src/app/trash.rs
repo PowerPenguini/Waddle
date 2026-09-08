@@ -50,7 +50,6 @@ impl Adapter for GioAdapter {
 #[derive(Clone, Debug)]
 pub(super) struct Batch {
     entries: Vec<FileEntry>,
-    total_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -64,14 +63,7 @@ pub(super) struct Report {
 
 impl Batch {
     pub(super) fn new(entries: Vec<FileEntry>) -> Self {
-        let total_bytes = entries
-            .iter()
-            .filter_map(|entry| entry.metadata.size)
-            .fold(0_u64, u64::saturating_add);
-        Self {
-            entries,
-            total_bytes,
-        }
+        Self { entries }
     }
 
     pub(super) fn run(
@@ -92,40 +84,52 @@ impl Batch {
         prepare_undo: impl FnOnce(&[journal::TrashReceipt]) -> Result<Option<journal::Action>, String>,
     ) -> Report {
         let total_entries = self.entries.len() as u64;
+        // Measure when work starts, including directory contents. Listing
+        // metadata may be missing or stale while this batch is queued.
+        let sizes: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                crate::fs::tree_bytes(&entry.path)
+                    .unwrap_or_else(|_| entry.metadata.size.unwrap_or_default())
+            })
+            .collect();
+        let total_bytes = sizes.iter().copied().fold(0_u64, u64::saturating_add);
         let mut completed_entries = 0_u64;
         let mut completed_bytes = 0_u64;
         let mut receipts = Vec::new();
         let mut failures = Vec::new();
         let mut retained = Vec::new();
-        let mut entries = self.entries.into_iter();
+        let mut entries = self.entries.into_iter().zip(sizes);
         publish_progress(
             &mut progress,
             completed_entries,
             total_entries,
             completed_bytes,
-            self.total_bytes,
+            total_bytes,
         );
         let mut was_cancelled = false;
-        while let Some(entry) = entries.next() {
+        while let Some((entry, bytes)) = entries.next() {
             if cancelled() {
                 retained.push(entry);
-                retained.extend(entries);
+                retained.extend(entries.map(|(entry, _)| entry));
                 was_cancelled = true;
                 break;
             }
-            let bytes = entry.metadata.size.unwrap_or_default();
             match adapter.trash(&entry.path) {
-                Ok(receipt) => receipts.push(receipt),
+                Ok(receipt) => {
+                    receipts.push(receipt);
+                    completed_bytes = completed_bytes.saturating_add(bytes);
+                }
                 Err(error) => failures.push((entry, error)),
             }
             completed_entries = completed_entries.saturating_add(1);
-            completed_bytes = completed_bytes.saturating_add(bytes);
             publish_progress(
                 &mut progress,
                 completed_entries,
                 total_entries,
                 completed_bytes,
-                self.total_bytes,
+                total_bytes,
             );
         }
         let undo = prepare_undo(&receipts);
@@ -497,6 +501,30 @@ mod tests {
     }
 
     #[test]
+    fn trash_progress_measures_directory_contents_in_the_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        let mut entry = file_entry(folder.clone(), 0);
+        entry.directory = true;
+        entry.metadata.size = None;
+        let batch = Batch::new(vec![entry]);
+        // Files may change while the batch waits in the queue.
+        fs::write(folder.join("file"), b"contents").unwrap();
+        let mut updates = Vec::new();
+        let report = batch.run_with(
+            &MemoryAdapter::default(),
+            || false,
+            |p| updates.push(p),
+            |_| Ok(None),
+        );
+        assert!(report.failures.is_empty());
+        assert_eq!(updates.first().unwrap().total_bytes, 8);
+        assert_eq!(updates.last().unwrap().completed_bytes, 8);
+        assert_eq!(updates.last().unwrap().completed_entries, 1);
+    }
+
+    #[test]
     fn trash_batch_reports_progress_failures_and_retained_entries() {
         let first = file_entry("/work/one", 10);
         let second = file_entry("/work/two", 20);
@@ -540,7 +568,7 @@ mod tests {
                 TransferProgress {
                     completed_entries: 2,
                     total_entries: 3,
-                    completed_bytes: 30,
+                    completed_bytes: 10,
                     total_bytes: 60,
                 },
             ]
