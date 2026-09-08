@@ -1,0 +1,27 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `release` profile [optimized] target(s) in 12.56s
+     Running unittests src/main.rs (target/release/deps/waddle-2f0e1c778b3a2cc3)
+
+running 7 tests
+test app::performance::benchmark_cached_theme_and_sidebar_loading_work ... benchmark cached-theme: median=8ns/op p95=8ns/op budget=2µs/op samples=21 iterations=100000
+benchmark sidebar-loading: median=11ns/op p95=15ns/op budget=2µs/op samples=21 iterations=100000
+ok
+test app::performance::benchmark_grid_cursor_and_view_work ... benchmark grid-cursor-view: median=229.466µs/op p95=232.005µs/op budget=8ms/op samples=21 iterations=500
+benchmark grid-cursor-view: median=148.753µs/op p95=149.687µs/op budget=8ms/op samples=21 iterations=500
+benchmark grid-cursor-view: median=63.112µs/op p95=63.613µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_internal_drag_preview_work ... benchmark internal-drag-preview: median=1.122µs/op p95=1.163µs/op budget=100µs/op samples=21 iterations=2000
+ok
+test app::performance::benchmark_large_marquee_selection_work ... benchmark large-marquee-selection: median=3.162µs/op p95=3.166µs/op budget=250µs/op samples=21 iterations=500
+ok
+test app::performance::benchmark_list_cursor_and_view_work ... benchmark list-cursor-view: median=60.531µs/op p95=61.288µs/op budget=8ms/op samples=21 iterations=500
+benchmark list-cursor-view: median=55.812µs/op p95=56.052µs/op budget=8ms/op samples=21 iterations=500
+benchmark list-cursor-view: median=37.845µs/op p95=38.261µs/op budget=8ms/op samples=21 iterations=500
+ok
+test app::performance::benchmark_scroll_frame_work ... benchmark scroll-frame: median=105ns/op p95=106ns/op budget=20µs/op samples=21 iterations=10000
+ok
+test app::system_icons::tests::benchmark_system_icon_cold_load_and_cached_resolution ... benchmark system-icons: cold-load=664.48944ms cached=17ns/op requests=112
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 7.17s
+

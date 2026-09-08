@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.36s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::tests::navigation::sidebar_returns_from_recent_and_trash_to_the_previous_folder ... FAILED
+
+failures:
+
+---- app::tests::navigation::sidebar_returns_from_recent_and_trash_to_the_previous_folder stdout ----
+
+thread 'app::tests::navigation::sidebar_returns_from_recent_and_trash_to_the_previous_folder' (931291) panicked at src/app/tests/navigation.rs:43:13:
+clicking the previous folder must leave Recent/Trash
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::tests::navigation::sidebar_returns_from_recent_and_trash_to_the_previous_folder
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

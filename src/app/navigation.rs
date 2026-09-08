@@ -207,7 +207,7 @@ impl NavigationSession {
     }
 
     pub(super) fn can_go_back(&self) -> bool {
-        !self.history.is_empty()
+        !self.folder_displayed() || !self.history.is_empty()
     }
 
     pub(super) fn can_go_forward(&self) -> bool {
@@ -714,6 +714,35 @@ mod tests {
             session.child_folders(),
             [PathBuf::from("/start/alpha"), PathBuf::from("/start/beta")]
         );
+    }
+
+    #[test]
+    fn back_is_available_from_recent_and_trash_without_folder_history() {
+        for trash in [false, true] {
+            let mut session = NavigationSession::new(PathBuf::from("/start"));
+            assert!(!session.can_go_back());
+            let (request, completion) = if trash {
+                (session.trash(), Completion::Trash(Ok(Vec::new())))
+            } else {
+                (session.recent(), Completion::Recent(Ok(Vec::new())))
+            };
+            assert!(matches!(
+                session.complete(&request, completion),
+                Outcome::Committed(_)
+            ));
+            assert!(
+                session.can_go_back(),
+                "the Back button must let users leave Recent/Trash even on first launch"
+            );
+            let back = session.transition(Transition::Back).unwrap();
+            assert_eq!(back.requested(), Some(Path::new("/start")));
+            let _ = session.complete(&back, Completion::Folder(Ok(opened("/start", Vec::new()))));
+            assert!(session.folder_displayed());
+            assert!(
+                !session.can_go_back(),
+                "returning must not create a history entry"
+            );
+        }
     }
 
     #[test]

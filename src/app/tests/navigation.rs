@@ -1,5 +1,61 @@
 use super::*;
 
+#[test]
+fn sidebar_returns_from_recent_and_trash_to_the_previous_folder() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for trash in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let folder = temp.path().join("folder");
+            std_fs::create_dir(&folder).unwrap();
+            std_fs::write(folder.join("visible.txt"), "content").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(folder.clone());
+            app.view_preferences =
+                super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                id: "fixture".into(),
+                path: Some(folder.clone()),
+                label: "Fixture".into(),
+                can_unmount: false,
+            }]);
+            let message = if trash {
+                Message::TrashLoaded {
+                    request: app.navigation.trash(),
+                    result: Some(Ok(Vec::new())),
+                }
+            } else {
+                Message::RecentLoaded {
+                    request: app.navigation.recent(),
+                    result: Some(Ok(Vec::new())),
+                }
+            };
+            let _ = app.update(message);
+            assert!(!app.navigation.folder_displayed());
+            let row = app
+                .sidebar_tree
+                .rows(&folder)
+                .into_iter()
+                .find(|row| row.label == "Fixture")
+                .unwrap();
+            let task = app.activate_tree_row(row.id);
+            tokio::time::timeout(Duration::from_secs(5), finish_tasks(&mut app, task))
+                .await
+                .unwrap();
+            assert!(
+                app.navigation.folder_displayed(),
+                "clicking the previous folder must leave Recent/Trash"
+            );
+            assert_eq!(app.navigation.current(), folder);
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(app.navigation.entries()[0].name, "visible.txt");
+        }
+    });
+}
+
 async fn finish_tasks(app: &mut App, task: Task<Message>) {
     use iced::futures::StreamExt;
     let mut pending = std::collections::VecDeque::from([task]);
@@ -12,6 +68,65 @@ async fn finish_tasks(app: &mut App, task: Task<Message>) {
             }
         }
     }
+}
+
+#[test]
+fn sidebar_current_folder_supersedes_a_pending_navigation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("current");
+        let other = temp.path().join("other");
+        std_fs::create_dir(&current).unwrap();
+        std_fs::create_dir(&other).unwrap();
+        std_fs::write(current.join("stay.txt"), "content").unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(current.clone());
+        app.view_preferences =
+            super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+            id: "fixture".into(),
+            path: Some(current.clone()),
+            label: "Fixture".into(),
+            can_unmount: false,
+        }]);
+        let old_task = app.transition_navigation(NavigationTransition::Open {
+            requested: other.clone(),
+            remember: true,
+            select: None,
+        });
+        let old_request = app.navigation.pending_request().unwrap();
+        let row = app
+            .sidebar_tree
+            .rows(&current)
+            .into_iter()
+            .find(|row| row.label == "Fixture")
+            .unwrap();
+        let task = app.activate_tree_row(row.id);
+        tokio::time::timeout(Duration::from_secs(5), finish_tasks(&mut app, task))
+            .await
+            .unwrap();
+        // The old worker may have finished before cancellation reached it.
+        let stale = app.update(Message::NavigationFinished {
+            request: old_request,
+            result: Ok(opened(other, Vec::new())),
+        });
+        tokio::time::timeout(Duration::from_secs(5), finish_tasks(&mut app, stale))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.navigation.current(),
+            current,
+            "an older folder request must not override the latest Sidebar choice"
+        );
+        assert_eq!(app.navigation.entries()[0].name, "stay.txt");
+        assert!(!app.navigation.loading());
+        assert!(!app.navigation.can_go_back());
+        drop(old_task);
+    });
 }
 
 #[test]

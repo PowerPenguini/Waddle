@@ -599,7 +599,9 @@ impl App {
                 )
             }
             TreeActivation::Folder { path, load } => {
-                let already_current = path == current;
+                let already_current = path == current
+                    && self.navigation.folder_displayed()
+                    && !self.navigation.loading();
                 if already_current {
                     if let Some(request) = load {
                         self.sidebar_tree
