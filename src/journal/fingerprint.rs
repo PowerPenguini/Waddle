@@ -5,6 +5,31 @@ use serde::{Deserialize, Serialize};
 use super::Error;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl DirectoryIdentity {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| Error::io(format!("could not verify {}", path.display()), error))?;
+        if !metadata.is_dir() {
+            return Err(Error::message(format!(
+                "{} is no longer a folder",
+                path.display()
+            )));
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Fingerprint {
     kind: u32,
     size: u64,

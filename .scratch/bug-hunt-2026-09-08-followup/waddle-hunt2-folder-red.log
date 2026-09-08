@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.24s
+     Running unittests src/main.rs (target/debug/deps/waddle-a54e1eaa65e097ed)
+
+running 1 test
+
+thread 'journal::tests::hunt_new_folder_undo_works_after_undoing_its_child_creation' (900385) panicked at src/journal/tests.rs:533:20:
+the same now-empty folder should remain undoable: Message("Refused operation: /tmp/.tmpzcFYqC/folder changed after it was recorded")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::hunt_new_folder_undo_works_after_undoing_its_child_creation ... FAILED
+
+failures:
+
+failures:
+    journal::tests::hunt_new_folder_undo_works_after_undoing_its_child_creation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 441 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

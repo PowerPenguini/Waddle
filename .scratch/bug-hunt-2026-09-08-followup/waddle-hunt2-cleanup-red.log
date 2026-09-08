@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.80s
+     Running unittests src/main.rs (target/debug/deps/waddle-a54e1eaa65e097ed)
+
+running 1 test
+
+thread 'fs::tests::hunt_failed_copy_cleans_staging_with_read_only_descendants' (898627) panicked at src/fs/tests.rs:1528:5:
+failed Copy leaked staging trees: ["/tmp/.tmpuU27ip/destination/.waddle-replace-898626-0"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fs::tests::hunt_failed_copy_cleans_staging_with_read_only_descendants ... FAILED
+
+failures:
+
+failures:
+    fs::tests::hunt_failed_copy_cleans_staging_with_read_only_descendants
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 439 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

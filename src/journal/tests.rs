@@ -511,3 +511,92 @@ fn hunt_trash_undo_can_retry_after_metadata_cleanup_fails() {
     }
     assert_eq!(journal.undo().unwrap_err().to_string(), "Nothing to undo");
 }
+
+#[test]
+fn hunt_new_folder_undo_works_after_undoing_its_child_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("folder");
+    let child = folder.join("child.txt");
+    let journal_path = temp.path().join("history.json");
+    fs::create_dir(&folder).unwrap();
+    // Pin the initial timestamp so this does not depend on filesystem clock resolution.
+    fs::File::open(&folder)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+        .unwrap();
+    let mut journal = Journal::open(journal_path.clone()).unwrap();
+    journal
+        .record(Action::new_folder(folder.clone()).unwrap())
+        .unwrap();
+    fs::write(&child, "").unwrap();
+    journal
+        .record(Action::new_file(child.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
+    assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+    let mut journal = Journal::open(journal_path).unwrap();
+    journal
+        .undo()
+        .expect("the same now-empty folder should remain undoable");
+    assert!(!folder.exists());
+    journal.redo().unwrap();
+    journal.redo().unwrap();
+    assert!(child.is_file());
+    journal.undo().unwrap();
+    journal.undo().unwrap();
+    assert!(!folder.exists());
+}
+
+#[test]
+fn new_folder_undo_preserves_replacement_directories_and_symlinks() {
+    for symlink in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("folder");
+        let original = temp.path().join("original");
+        fs::create_dir(&folder).unwrap();
+        let mut journal = Journal::open(temp.path().join("history.json")).unwrap();
+        journal
+            .record(Action::new_folder(folder.clone()).unwrap())
+            .unwrap();
+        fs::rename(&folder, &original).unwrap();
+        if symlink {
+            std::os::unix::fs::symlink(&original, &folder).unwrap();
+        } else {
+            fs::create_dir(&folder).unwrap();
+            fs::File::open(&folder)
+                .unwrap()
+                .set_modified(fs::metadata(&original).unwrap().modified().unwrap())
+                .unwrap();
+        }
+        assert!(
+            journal.undo().is_err(),
+            "Undo must reject a different directory at the same path"
+        );
+        assert!(fs::symlink_metadata(&folder).is_ok());
+        assert!(original.is_dir());
+    }
+}
+
+#[test]
+fn legacy_new_folder_records_still_undo_and_redo() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    let mut legacy = serde_json::to_value(Action::new_folder(folder.clone()).unwrap()).unwrap();
+    legacy["NewFolder"]
+        .as_object_mut()
+        .unwrap()
+        .remove("identity");
+    let path = temp.path().join("history.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(serde_json::from_value(legacy).unwrap())
+        .unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal.undo().unwrap();
+    assert!(!folder.exists());
+    journal.redo().unwrap();
+    assert!(folder.is_dir());
+    journal.undo().unwrap();
+    assert!(!folder.exists());
+}

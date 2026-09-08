@@ -246,7 +246,17 @@ fn replace_by_staging(
             "the destination changed while Replace was running",
         ));
     }
-    remove_item(&staging)?;
+    if let Err(error) = remove_item(&staging) {
+        // The old destination is still at staging. Put it back before reporting
+        // failure so that an unsuccessful Replace does not publish an unrecorded copy.
+        rename_exchange(&staging, destination).map_err(|rollback| {
+            io::Error::new(error.kind(), format!(
+                "could not clean up the replaced destination: {error}; could not restore the destination: {rollback}"
+            ))
+        })?;
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
     if remove_source {
         remove_item(source)?;
     }

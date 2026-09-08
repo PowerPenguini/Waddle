@@ -7,7 +7,7 @@ mod store;
 mod trash_receipt;
 
 use effects::{Direction, apply};
-use fingerprint::{Fingerprint, TreeFingerprint};
+use fingerprint::{DirectoryIdentity, Fingerprint, TreeFingerprint};
 pub(crate) use store::{Effect, Journal};
 pub(crate) use trash_receipt::trash;
 
@@ -123,6 +123,8 @@ pub(crate) enum Action {
     NewFolder {
         path: PathBuf,
         fingerprint: Fingerprint,
+        #[serde(default)]
+        identity: Option<DirectoryIdentity>,
     },
     NewFile {
         path: PathBuf,
@@ -194,6 +196,7 @@ impl Action {
     pub(crate) fn new_folder(path: PathBuf) -> Result<Self, Error> {
         Ok(Self::NewFolder {
             fingerprint: Fingerprint::read(&path)?,
+            identity: Some(DirectoryIdentity::read(&path)?),
             path,
         })
     }

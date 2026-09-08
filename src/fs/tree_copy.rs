@@ -374,7 +374,17 @@ pub(super) fn remove_incomplete_copy(path: &Path) {
         return;
     };
     if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        let _ = fs::remove_dir_all(path);
+        use std::os::unix::fs::PermissionsExt;
+
+        // These directories belong to an unpublished copy. Preserved source
+        // permissions may prevent cleanup; never change the source or follow links.
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode() | 0o700));
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                remove_incomplete_copy(&entry.path());
+            }
+        }
+        let _ = fs::remove_dir(path);
     } else {
         let _ = fs::remove_file(path);
     }

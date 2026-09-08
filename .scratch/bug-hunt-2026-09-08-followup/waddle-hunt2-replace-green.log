@@ -1,0 +1,9 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.79s
+     Running unittests src/main.rs (target/debug/deps/waddle-a54e1eaa65e097ed)
+
+running 1 test
+test fs::tests::hunt_failed_copy_replace_restores_the_destination ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 440 filtered out; finished in 0.00s
+

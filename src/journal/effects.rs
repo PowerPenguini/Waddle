@@ -4,8 +4,8 @@ use std::{
 };
 
 use super::{
-    Action, Error, Fingerprint, TransferItem, TransferKind, TrashItem, TreeFingerprint,
-    store::Effect, trash,
+    Action, DirectoryIdentity, Error, Fingerprint, TransferItem, TransferKind, TrashItem,
+    TreeFingerprint, store::Effect, trash,
 };
 
 #[derive(Clone, Copy)]
@@ -35,7 +35,11 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                 select: Some(destination.to_path_buf()),
             })
         }
-        Action::NewFolder { path, fingerprint } => match direction {
+        Action::NewFolder {
+            path,
+            fingerprint,
+            identity,
+        } => match direction {
             Direction::Undo => {
                 let mut entries = fs::read_dir(&*path).map_err(|error| {
                     Error::io(format!("could not inspect {}", path.display()), error)
@@ -46,7 +50,17 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                         path.display()
                     )));
                 }
-                verify(path, fingerprint)?;
+                if let Some(expected) = identity {
+                    if DirectoryIdentity::read(path)? != *expected {
+                        return Err(Error::message(format!(
+                            "Refused Undo: {} is a different folder",
+                            path.display()
+                        )));
+                    }
+                } else {
+                    // Older records have no identity; retain their conservative check.
+                    verify(path, fingerprint)?;
+                }
                 fs::remove_dir(&*path)
                     .map_err(|error| Error::io("could not undo New Folder", error))?;
                 Ok(Effect {
@@ -60,6 +74,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                 fs::create_dir(&*path)
                     .map_err(|error| Error::io("could not redo New Folder", error))?;
                 *fingerprint = Fingerprint::read(path)?;
+                *identity = Some(DirectoryIdentity::read(path)?);
                 Ok(Effect {
                     status: "Redid New Folder".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),

@@ -1489,3 +1489,120 @@ fn hunt_keep_both_preserves_dotted_directory_names_and_non_utf8_file_extensions(
     assert!(destination.file_name().unwrap().as_bytes().len() <= 255);
     assert_eq!(fs::read_to_string(destination).unwrap(), "data");
 }
+
+#[test]
+fn hunt_failed_copy_cleans_staging_with_read_only_descendants() {
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    };
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let protected = source.join("a-protected");
+    let destination = temp.path().join("destination");
+    fs::create_dir_all(&protected).unwrap();
+    fs::create_dir(&destination).unwrap();
+    fs::write(protected.join("keep.txt"), "source contents").unwrap();
+    fs::set_permissions(&protected, fs::Permissions::from_mode(0o500)).unwrap();
+    std::os::unix::fs::symlink(&protected, source.join("a-link")).unwrap();
+    let fifo = CString::new(source.join("z-pipe").as_os_str().as_bytes()).unwrap();
+    // SAFETY: fifo is a live NUL-terminated path to a temporary fixture.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let report = complete(
+        TransferBatch::try_new(vec![source.clone()], destination.clone(), Action::Copy).unwrap(),
+    );
+    let leftovers = fs::read_dir(&destination)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    // Repair fixture permissions even when running against the broken cleanup.
+    for path in &leftovers {
+        if path.join("a-protected").is_dir() {
+            fs::set_permissions(path.join("a-protected"), fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+    }
+    let source_mode = fs::metadata(&protected).unwrap().permissions().mode() & 0o777;
+    fs::set_permissions(&protected, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0].error.contains("special files"));
+    assert_eq!(source_mode, 0o500, "cleanup must not chmod the original");
+    assert_eq!(
+        fs::read_to_string(protected.join("keep.txt")).unwrap(),
+        "source contents"
+    );
+    assert!(
+        leftovers.is_empty(),
+        "failed Copy leaked staging trees: {leftovers:?}"
+    );
+}
+
+#[test]
+fn hunt_failed_copy_replace_restores_the_destination() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("item");
+    let parent = temp.path().join("destination");
+    let destination = parent.join("item");
+    fs::create_dir_all(destination.join("locked")).unwrap();
+    fs::write(destination.join("locked/old.txt"), "old contents").unwrap();
+    fs::write(&source, "incoming contents").unwrap();
+    fs::set_permissions(
+        destination.join("locked"),
+        fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], parent.clone(), Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected a replacement conflict");
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    let entries = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    for path in &entries {
+        if path.join("locked").is_dir() {
+            fs::set_permissions(path.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    assert_eq!(report.failures.len(), 1, "protected cleanup must fail");
+    assert_eq!(fs::read_to_string(&source).unwrap(), "incoming contents");
+    assert!(
+        destination.is_dir(),
+        "failed Replace must restore the old destination path"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("locked/old.txt")).unwrap(),
+        "old contents"
+    );
+    assert_eq!(
+        entries.as_slice(),
+        std::slice::from_ref(&destination),
+        "failed Replace must not leak a hidden tree"
+    );
+
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source], parent, Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected retry conflict");
+    };
+    let retry = complete(batch.resolve(ConflictChoice::Replace, false));
+    assert!(retry.failures.is_empty(), "{:?}", retry.failures);
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        "incoming contents"
+    );
+}
