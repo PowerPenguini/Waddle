@@ -1,0 +1,13 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.78s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 5 tests
+test fs::tests::audit_skip_move_child_still_transfers_sibling ... ok
+test fs::tests::audit_failed_move_replace_preserves_all_old_children ... ok
+test fs::tests::audit_failed_copy_replace_preserves_all_old_children ... ok
+test fs::tests::audit_skip_copy_child_still_transfers_sibling ... ok
+test fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 491 filtered out; finished in 0.00s
+

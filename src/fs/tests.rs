@@ -2099,3 +2099,265 @@ fn merged_cross_device_move_preserves_hardlinks_across_conflicts() {
         assert!(!source.exists());
     }
 }
+
+#[test]
+fn audit_skip_copy_child_still_transfers_sibling() {
+    audit_skip_one_merged_child_still_transfers_its_sibling(Action::Copy);
+}
+
+#[test]
+fn audit_skip_move_child_still_transfers_sibling() {
+    audit_skip_one_merged_child_still_transfers_its_sibling(Action::Move);
+}
+
+fn audit_skip_one_merged_child_still_transfers_its_sibling(action: Action) {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let target = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(target.join("tree")).unwrap();
+    fs::write(source.join("a"), b"incoming").unwrap();
+    fs::write(source.join("b"), b"sibling").unwrap();
+    fs::write(target.join("tree/a"), b"existing").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], target.clone(), action)
+            .unwrap()
+            .run()
+    else {
+        panic!("folder conflict")
+    };
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        batch.resolve(ConflictChoice::Replace, false).run()
+    else {
+        panic!("child conflict")
+    };
+    let report = complete(batch.resolve(ConflictChoice::Skip, false));
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(fs::read(target.join("tree/a")).unwrap(), b"existing");
+    assert_eq!(
+        fs::read(target.join("tree/b")).ok().as_deref(),
+        Some(b"sibling".as_slice()),
+        "skipping a also skipped b: {action:?}"
+    );
+}
+
+#[test]
+fn audit_failed_copy_replace_preserves_all_old_children() {
+    audit_failed_replace_preserves_all_old_destination_children(Action::Copy);
+}
+
+#[test]
+fn audit_failed_move_replace_preserves_all_old_children() {
+    audit_failed_replace_preserves_all_old_destination_children(Action::Move);
+}
+
+fn audit_failed_replace_preserves_all_old_destination_children(action: Action) {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0, "requires ordinary user");
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("item");
+    let target = temp.path().join("target");
+    let destination = target.join("item");
+    fs::create_dir_all(&destination).unwrap();
+    for n in 0..2 {
+        fs::create_dir(destination.join(format!("child{n}"))).unwrap();
+        fs::write(destination.join(format!("child{n}/data")), b"old contents").unwrap();
+    }
+    // Make the final read_dir entry fail after earlier entries were removed.
+    let locked = fs::read_dir(&destination)
+        .unwrap()
+        .last()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(&source, b"incoming").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], target, action)
+            .unwrap()
+            .run()
+    else {
+        panic!("conflict")
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(fs::read(&source).unwrap(), b"incoming");
+    for n in 0..2 {
+        assert_eq!(
+            fs::read(destination.join(format!("child{n}/data")))
+                .ok()
+                .as_deref(),
+            Some(b"old contents".as_slice()),
+            "failed Replace lost child{n}: {action:?}"
+        );
+    }
+}
+
+#[test]
+fn audit_hardlink_copy_uses_current_source_permissions_after_conflict() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let target = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(target.join("tree")).unwrap();
+    fs::write(source.join("a"), b"linked contents").unwrap();
+    fs::set_permissions(source.join("a"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::hard_link(source.join("a"), source.join("b")).unwrap();
+    fs::write(target.join("tree/b"), b"existing").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], target.clone(), Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("folder conflict")
+    };
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        batch.resolve(ConflictChoice::Replace, false).run()
+    else {
+        panic!("child conflict")
+    };
+    fs::set_permissions(source.join("b"), fs::Permissions::from_mode(0o600)).unwrap();
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        fs::metadata(target.join("tree/b")).unwrap().mode() & 0o777,
+        0o600,
+        "copy reused stale access permissions"
+    );
+}
+
+#[test]
+fn hardlink_copy_uses_current_xattrs_after_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("tree");
+    let target = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(target.join("tree")).unwrap();
+    fs::write(source.join("a"), b"linked contents").unwrap();
+    set_xattr(&source.join("a"), "user.waddle-access", b"old").unwrap();
+    fs::hard_link(source.join("a"), source.join("b")).unwrap();
+    fs::write(target.join("tree/b"), b"existing").unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new(vec![source.clone()], target.clone(), Action::Copy)
+            .unwrap()
+            .run()
+    else {
+        panic!("folder conflict")
+    };
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        batch.resolve(ConflictChoice::Replace, false).run()
+    else {
+        panic!("child conflict")
+    };
+    set_xattr(&source.join("b"), "user.waddle-access", b"updated").unwrap();
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        get_xattr(&target.join("tree/b"), "user.waddle-access").unwrap(),
+        b"updated",
+        "copy reused stale extended attributes"
+    );
+}
+
+#[test]
+fn nested_skip_preserves_only_skipped_sources_and_retry_targets() {
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(temp.path()).unwrap().dev(),
+            fs::metadata(target.path()).unwrap().dev()
+        );
+        let source = temp.path().join("tree");
+        let destination = target.path().join("tree");
+        fs::create_dir_all(source.join("a")).unwrap();
+        fs::create_dir_all(destination.join("a")).unwrap();
+        for name in ["a/one", "a/two", "b"] {
+            fs::write(source.join(name), name).unwrap();
+        }
+        fs::write(destination.join("a/one"), b"keep existing").unwrap();
+        let mut batch =
+            TransferBatch::try_new_mapped(vec![(source.clone(), destination.clone())], action)
+                .unwrap();
+        for _ in 0..2 {
+            let TransferBatchOutcome::Conflict {
+                batch: blocked,
+                conflict,
+            } = batch.run()
+            else {
+                panic!("directory conflict")
+            };
+            assert!(conflict.directories);
+            batch = blocked.resolve(ConflictChoice::Replace, false);
+        }
+        let TransferBatchOutcome::Conflict { batch, conflict } = batch.run() else {
+            panic!("file conflict")
+        };
+        assert_eq!(conflict.source, source.join("a/one"));
+        let report = complete(batch.resolve(ConflictChoice::Skip, false));
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(
+            report.retry,
+            vec![(source.join("a/one"), destination.join("a/one"))]
+        );
+        assert_eq!(
+            fs::read(destination.join("a/one")).unwrap(),
+            b"keep existing"
+        );
+        assert_eq!(fs::read(source.join("a/one")).unwrap(), b"a/one");
+        for name in ["a/two", "b"] {
+            assert_eq!(fs::read(destination.join(name)).unwrap(), name.as_bytes());
+            assert_eq!(source.join(name).exists(), action == Action::Copy);
+        }
+    }
+}
+
+#[test]
+fn cross_device_failed_replace_preserves_entire_destination() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0, "requires ordinary user");
+    let temp = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir_in("/dev/shm").unwrap();
+    assert_ne!(
+        fs::metadata(temp.path()).unwrap().dev(),
+        fs::metadata(target.path()).unwrap().dev()
+    );
+    let source = temp.path().join("item");
+    let destination = target.path().join("item");
+    fs::write(&source, b"incoming").unwrap();
+    fs::create_dir_all(destination.join("locked")).unwrap();
+    fs::write(destination.join("first"), b"original first").unwrap();
+    fs::write(destination.join("locked/second"), b"original second").unwrap();
+    fs::set_permissions(
+        destination.join("locked"),
+        fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } =
+        TransferBatch::try_new_mapped(vec![(source.clone(), destination.clone())], Action::Move)
+            .unwrap()
+            .run()
+    else {
+        panic!("expected conflict")
+    };
+    let report = complete(batch.resolve(ConflictChoice::Replace, false));
+    fs::set_permissions(
+        destination.join("locked"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.retry, vec![(source.clone(), destination.clone())]);
+    assert!(report.receipts.is_empty());
+    assert_eq!(fs::read(source).unwrap(), b"incoming");
+    assert_eq!(
+        fs::read(destination.join("first")).unwrap(),
+        b"original first"
+    );
+    assert_eq!(
+        fs::read(destination.join("locked/second")).unwrap(),
+        b"original second"
+    );
+}

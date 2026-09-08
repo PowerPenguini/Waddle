@@ -1,0 +1,76 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.68s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 68 tests
+test fs::tests::browse_error_preserves_the_io_error_source ... ok
+test fs::tests::atomic_rename_does_not_clobber_a_concurrently_created_destination ... ok
+test fs::tests::browse_options_apply_natural_sort_metadata_keys_and_hidden_visibility ... ok
+test fs::tests::cancellation_before_a_resolved_conflict_runs_keeps_both_files ... ok
+test fs::tests::cancelled_batch_keeps_completed_results_and_removes_private_incomplete_names ... ok
+test fs::tests::batch_copy_keeps_successes_when_one_source_fails ... ok
+test fs::tests::cancelling_a_paused_batch_move_keeps_earlier_successes ... ok
+test fs::tests::copies_directories_recursively ... ok
+test fs::tests::copies_files_without_overwriting_existing_entries ... ok
+test fs::tests::copy_rejects_a_directory_descendant ... ok
+test fs::tests::copy_and_replace_accept_maximum_length_filenames ... ok
+test fs::tests::copy_preserves_sparse_hardlink_symlink_timestamp_permission_and_xattr_metadata ... ok
+test fs::tests::directory_entries_retain_size_and_modified_metadata_for_list_details ... ok
+test fs::tests::cross_filesystem_move_publishes_only_a_complete_destination ... ok
+test fs::tests::dormant_automount_metadata_stays_lazy ... ok
+test fs::tests::creates_renames_and_deletes ... ok
+test fs::tests::failed_cross_filesystem_move_removes_private_staging ... ok
+test fs::tests::cross_filesystem_move_reports_failure_and_keeps_complete_destination_if_source_removal_fails ... ok
+test fs::tests::deleting_symlink_preserves_target ... ok
+test fs::tests::hunt_failed_move_replace_keeps_the_incoming_source_for_retry ... ok
+test fs::tests::hidden_preference_is_shared_by_recursive_search_and_tree_traversal ... ok
+test fs::tests::hunt_failed_copy_replace_restores_the_destination ... ok
+test fs::tests::hunt_keep_both_preserves_dotted_directory_names_and_non_utf8_file_extensions ... ok
+test fs::tests::failed_move_cleanup_retries_the_remaining_tree_once ... ok
+test fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings ... ok
+test fs::tests::mapped_transfer_restores_each_source_to_its_exact_destination ... ok
+test fs::tests::copying_a_fifo_fails_without_waiting_for_a_writer ... ok
+test fs::tests::hunt_failed_copy_cleans_staging_with_read_only_descendants ... ok
+test fs::tests::moves_file_into_directory ... ok
+test fs::tests::mountinfo_identifies_autofs_mount_ids_and_paths ... ok
+test fs::tests::metadata_warning_is_kept_separate_from_content_failure ... ok
+test fs::tests::merged_directory_moves_report_progress_between_children ... ok
+test fs::tests::move_pauses_before_an_existing_destination ... ok
+test fs::tests::new_empty_files_never_overwrite ... ok
+test fs::tests::reads_child_folders_hidden_filtered_and_sorted ... ok
+test fs::tests::merged_cross_device_move_preserves_hardlinks_across_conflicts ... ok
+test fs::tests::move_rejects_a_directory_descendant ... ok
+test fs::tests::opened_directory_reuses_one_scan_for_sidebar_folders ... ok
+test fs::tests::reads_hidden_by_default_and_sorts_by_type_ascending ... ok
+test fs::tests::recursive_search_matches_relative_paths_and_skips_hidden_entries ... ok
+test fs::tests::recursive_search_stops_when_cancellation_is_requested ... ok
+test fs::tests::replace_preserves_symlink_identity_and_rejects_a_changed_destination ... ok
+test fs::tests::recursive_search_reports_truncation_at_the_result_limit ... ok
+test fs::tests::revealed_hidden_entry_bypasses_filter_without_showing_its_siblings ... ok
+test fs::tests::size_sort_keeps_folders_first_in_both_directions ... ok
+test fs::tests::replacing_conflicting_directories_merges_without_deleting_the_existing_tree ... ok
+test fs::tests::skipped_transfers_do_not_inflate_byte_progress ... ok
+test fs::tests::sorts_a_directory_symlink_with_directories ... ok
+test fs::tests::skipping_a_conflict_keeps_the_source_and_existing_destination ... ok
+test fs::tests::resolving_a_conflict_defers_mutation_until_the_worker_runs ... ok
+test fs::tests::transfer_batch_pauses_before_a_conflict_and_escape_retains_pending_sources ... ok
+test fs::tests::transfer_preflight_rejects_a_move_to_the_existing_parent ... ok
+test fs::tests::transfer_preflight_preserves_symlinks_and_checks_destination_permissions ... ok
+test fs::tests::validates_names ... ok
+test fs::tests::type_sort_orders_folders_extensions_then_extensionless_files ... ok
+test fs::tests::transfer_batch_supports_one_shot_and_batch_conflict_choices ... ok
+test fs::tests::transfer_preflight_revalidates_sources_destination_and_descendants ... ok
+test fs::tests::hunt_keep_both_can_duplicate_a_maximum_length_name ... ok
+test fs::tests::hunt_cancel_during_a_single_large_copy_stops_before_publication ... ok
+test fs::tests::sparse_and_linked_directory_copy_reports_monotonic_logical_bytes ... ok
+test fs::tests::reads_permissions_size_and_owner_for_status ... ok
+test fs::tests::hunt_cross_device_move_preserves_files_added_while_copying ... ok
+test fs::tests::copying_reports_bytes_before_the_file_is_complete ... ok
+test fs::tests::hunt_destination_race_does_not_reset_transfer_progress ... ok
+test fs::tests::cross_device_move_retains_a_source_replaced_during_copy ... ok
+test fs::tests::cancelling_copy_and_cross_device_move_preserves_conflict_destinations ... ok
+test fs::tests::copy_conflicts_and_cross_filesystem_moves_and_restores_report_live_bytes ... ok
+test fs::tests::scans_a_large_directory_completely_and_in_order ... ok
+
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.06s
+

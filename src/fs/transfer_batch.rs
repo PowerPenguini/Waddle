@@ -413,14 +413,13 @@ impl TransferBatch {
         match choice {
             ConflictChoice::Skip => {
                 self.retained_roots.insert(blocked.root);
+                // Keep transferring siblings. Only ancestor cleanup is no longer
+                // possible: a skipped descendant deliberately remains in place.
+                self.pending.retain(|pending| {
+                    !matches!(pending, PendingTransfer::RemoveSourceDirectory { source, .. }
+                        if blocked.source.starts_with(source))
+                });
                 self.retain_retry(blocked.source, blocked.destination);
-                for pending in std::mem::take(&mut self.pending) {
-                    if pending.root() == blocked.root {
-                        self.retry_pending(pending);
-                    } else {
-                        self.pending.push_back(pending);
-                    }
-                }
                 Ok(Vec::new())
             }
             ConflictChoice::KeepBoth => {

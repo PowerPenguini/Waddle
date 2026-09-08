@@ -196,35 +196,39 @@ pub(super) fn replace_exact_with_progress(
             "the destination changed while the conflict was open",
         ));
     }
+    check_replace_cleanup(destination)?;
     match action {
-        Action::Move => match rename_exchange(source, destination) {
-            Ok(()) => {
-                if FileIdentity::read(source)? != observed {
-                    rename_exchange(source, destination)?;
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "the destination changed while Replace was running",
-                    ));
-                }
-                if let Err(error) = remove_item(source) {
-                    // A failed cleanup must not leave the old destination at the
-                    // source path: Retry would then move that old data over the
-                    // incoming item. Restore the incoming source before reporting failure.
-                    rename_exchange(source, destination).map_err(|rollback| {
+        Action::Move => {
+            let backup = staging_path(destination)?;
+            match rename_exchange(source, destination) {
+                Ok(()) => {
+                    if FileIdentity::read(source)? != observed {
+                        rename_exchange(source, destination)?;
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "the destination changed while Replace was running",
+                        ));
+                    }
+                    // Move the old destination away from the source before destructive
+                    // cleanup. A failure must never make Retry move old data as input.
+                    if let Err(error) = rename_noreplace(source, &backup) {
+                        rename_exchange(source, destination).map_err(|rollback| {
                         io::Error::new(error.kind(), format!(
-                            "could not clean up the replaced destination: {error}; could not restore the source: {rollback}"
+                            "could not retain the old destination: {error}; could not restore the source: {rollback}"
                         ))
                     })?;
-                    return Err(error);
+                        return Err(error);
+                    }
+                    let warnings = cleanup_replaced(&backup).into_iter().collect();
+                    let _ = progress(tree_bytes(destination).unwrap_or_default());
+                    Ok(warnings)
                 }
-                let _ = progress(tree_bytes(destination).unwrap_or_default());
-                Ok(Vec::new())
+                Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                    replace_by_staging(source, destination, observed, true, progress, links)
+                }
+                Err(error) => Err(error),
             }
-            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                replace_by_staging(source, destination, observed, true, progress, links)
-            }
-            Err(error) => Err(error),
-        },
+        }
         Action::Copy => replace_by_staging(source, destination, observed, false, progress, links),
     }
 }
@@ -280,6 +284,10 @@ fn replace_by_staging(
         remove_incomplete_copy(&staging);
         return Err(error);
     }
+    if let Err(error) = check_replace_cleanup(destination) {
+        remove_incomplete_copy(&staging);
+        return Err(error);
+    }
     if let Err(error) = rename_exchange(&staging, destination) {
         remove_incomplete_copy(&staging);
         return Err(error);
@@ -292,21 +300,53 @@ fn replace_by_staging(
             "the destination changed while Replace was running",
         ));
     }
-    if let Err(error) = remove_item(&staging) {
-        // The old destination is still at staging. Put it back before reporting
-        // failure so that an unsuccessful Replace does not publish an unrecorded copy.
-        rename_exchange(&staging, destination).map_err(|rollback| {
-            io::Error::new(error.kind(), format!(
-                "could not clean up the replaced destination: {error}; could not restore the destination: {rollback}"
-            ))
-        })?;
-        remove_incomplete_copy(&staging);
-        return Err(error);
-    }
+    // Publication is committed. Recursive deletion may fail after removing some
+    // old entries, so exchanging it back would fabricate a destructive rollback.
+    let cleanup_warning = cleanup_replaced(&staging);
     if let Some(snapshot) = snapshot {
         snapshot.remove_copied(source)?;
     }
-    Ok(warnings.publish(&staging, destination, links))
+    let mut warnings = warnings.publish(&staging, destination, links);
+    warnings.extend(cleanup_warning);
+    Ok(warnings)
+}
+
+#[cfg(target_os = "linux")]
+fn check_replace_cleanup(path: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(path)?.peekable();
+    if entries.peek().is_some() {
+        let path_c = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+        // SAFETY: path_c is valid for this call. Use effective credentials and ACLs.
+        if unsafe {
+            libc::faccessat(
+                libc::AT_FDCWD,
+                path_c.as_ptr(),
+                libc::W_OK | libc::X_OK,
+                libc::AT_EACCESS,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    for entry in entries {
+        check_replace_cleanup(&entry?.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_replaced(path: &Path) -> Option<String> {
+    remove_item(path).err().map(|error| format!(
+        "replacement completed, but old destination cleanup failed: {error}; remaining entries kept at {}",
+        path.display()
+    ))
 }
 
 fn staging_path(destination: &Path) -> io::Result<PathBuf> {

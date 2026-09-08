@@ -1,0 +1,59 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 5 tests
+test fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict ... FAILED
+test fs::tests::audit_failed_copy_replace_preserves_all_old_children ... FAILED
+test fs::tests::audit_skip_move_child_still_transfers_sibling ... FAILED
+test fs::tests::audit_failed_move_replace_preserves_all_old_children ... FAILED
+test fs::tests::audit_skip_copy_child_still_transfers_sibling ... FAILED
+
+failures:
+
+---- fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict stdout ----
+
+thread 'fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict' (1052882) panicked at src/fs/tests.rs:2224:5:
+assertion `left == right` failed: copy reused stale access permissions
+  left: 420
+ right: 384
+
+---- fs::tests::audit_failed_copy_replace_preserves_all_old_children stdout ----
+
+thread 'fs::tests::audit_failed_copy_replace_preserves_all_old_children' (1052880) panicked at src/fs/tests.rs:2187:9:
+assertion `left == right` failed: failed Replace lost child1: Copy
+  left: None
+ right: Some([111, 108, 100, 32, 99, 111, 110, 116, 101, 110, 116, 115])
+
+---- fs::tests::audit_skip_move_child_still_transfers_sibling stdout ----
+
+thread 'fs::tests::audit_skip_move_child_still_transfers_sibling' (1052884) panicked at src/fs/tests.rs:2137:5:
+assertion `left == right` failed: skipping a also skipped b: Move
+  left: None
+ right: Some([115, 105, 98, 108, 105, 110, 103])
+
+---- fs::tests::audit_failed_move_replace_preserves_all_old_children stdout ----
+
+thread 'fs::tests::audit_failed_move_replace_preserves_all_old_children' (1052881) panicked at src/fs/tests.rs:2187:9:
+assertion `left == right` failed: failed Replace lost child1: Move
+  left: None
+ right: Some([111, 108, 100, 32, 99, 111, 110, 116, 101, 110, 116, 115])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- fs::tests::audit_skip_copy_child_still_transfers_sibling stdout ----
+
+thread 'fs::tests::audit_skip_copy_child_still_transfers_sibling' (1052883) panicked at src/fs/tests.rs:2137:5:
+assertion `left == right` failed: skipping a also skipped b: Copy
+  left: None
+ right: Some([115, 105, 98, 108, 105, 110, 103])
+
+
+failures:
+    fs::tests::audit_failed_copy_replace_preserves_all_old_children
+    fs::tests::audit_failed_move_replace_preserves_all_old_children
+    fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict
+    fs::tests::audit_skip_copy_child_still_transfers_sibling
+    fs::tests::audit_skip_move_child_still_transfers_sibling
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 491 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

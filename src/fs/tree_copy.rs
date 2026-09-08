@@ -16,17 +16,25 @@ struct CopiedLink {
     inode: u64,
     size: u64,
     modified: (i64, i64),
+    mode: u32,
+    attributes: Option<ExtendedAttributes>,
 }
 
 impl CopiedLink {
-    fn usable(&self, source: &fs::Metadata) -> bool {
+    fn usable(&self, source_path: &Path, source: &fs::Metadata) -> bool {
         self.size == source.len()
+            && self.mode == source.mode()
             && self.modified == (source.mtime(), source.mtime_nsec())
+            && self.attributes.as_ref().is_some_and(|attributes| {
+                read_xattrs(source_path).is_ok_and(|current| current == *attributes)
+                    && read_xattrs(&self.path).is_ok_and(|current| current == *attributes)
+            })
             && fs::symlink_metadata(&self.path).is_ok_and(|m| {
                 m.is_file()
                     && m.dev() == self.device
                     && m.ino() == self.inode
                     && m.len() == self.size
+                    && m.mode() == self.mode
                     && (m.mtime(), m.mtime_nsec()) == self.modified
             })
     }
@@ -118,7 +126,7 @@ impl CopyContext<'_> {
 
         let hardlink_key = (metadata.dev(), metadata.ino());
         if let Some(existing) = self.hardlinks.0.get(&hardlink_key)
-            && existing.usable(&metadata)
+            && existing.usable(source, &metadata)
         {
             match fs::hard_link(&existing.path, destination) {
                 Ok(()) => {
@@ -190,6 +198,8 @@ impl CopyContext<'_> {
                     inode: copied.ino(),
                     size: copied.len(),
                     modified: (copied.mtime(), copied.mtime_nsec()),
+                    mode: copied.mode(),
+                    attributes: read_xattrs(destination).ok(),
                 },
             );
         }
@@ -350,15 +360,14 @@ pub(super) fn set_times(_: &Path, _: i64, _: i64, _: i64, _: i64) -> io::Result<
     ))
 }
 
+type ExtendedAttributes = Vec<(std::ffi::CString, Vec<u8>)>;
+
 #[cfg(target_os = "linux")]
-fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
+fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let source = CString::new(source.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
-    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
-    })?;
     // SAFETY: source is a valid NUL-terminated path and the null buffer requests its size.
     let size = unsafe { libc::llistxattr(source.as_ptr(), std::ptr::null_mut(), 0) };
     if size < 0 {
@@ -374,6 +383,7 @@ fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
         }
         names.truncate(read as usize);
     }
+    let mut attributes = Vec::new();
     for bytes in names
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
@@ -402,6 +412,18 @@ fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
             }
             value.truncate(read as usize);
         }
+        attributes.push((name, value));
+    }
+    attributes.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(attributes)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination contains NUL"))?;
+    for (name, value) in read_xattrs(source)? {
         // SAFETY: destination, name, and value are valid for the duration of the call.
         let result = unsafe {
             libc::lsetxattr(
@@ -417,6 +439,14 @@ fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_xattrs(_: &Path) -> io::Result<ExtendedAttributes> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "extended attributes are unsupported",
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]

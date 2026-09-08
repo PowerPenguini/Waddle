@@ -1,0 +1,136 @@
+diff --git i/src/fs/tests.rs w/src/fs/tests.rs
+index a890fac..ccd7b16 100644
+--- i/src/fs/tests.rs
++++ w/src/fs/tests.rs
+@@ -2099,3 +2099,131 @@ fn merged_cross_device_move_preserves_hardlinks_across_conflicts() {
+         assert!(!source.exists());
+     }
+ }
++
++#[test]
++fn audit_skip_copy_child_still_transfers_sibling() {
++    audit_skip_one_merged_child_still_transfers_its_sibling(Action::Copy);
++}
++
++#[test]
++fn audit_skip_move_child_still_transfers_sibling() {
++    audit_skip_one_merged_child_still_transfers_its_sibling(Action::Move);
++}
++
++fn audit_skip_one_merged_child_still_transfers_its_sibling(action: Action) {
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("tree");
++    let target = temp.path().join("target");
++    fs::create_dir(&source).unwrap();
++    fs::create_dir_all(target.join("tree")).unwrap();
++    fs::write(source.join("a"), b"incoming").unwrap();
++    fs::write(source.join("b"), b"sibling").unwrap();
++    fs::write(target.join("tree/a"), b"existing").unwrap();
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        TransferBatch::try_new(vec![source.clone()], target.clone(), action)
++            .unwrap()
++            .run()
++    else {
++        panic!("folder conflict")
++    };
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        batch.resolve(ConflictChoice::Replace, false).run()
++    else {
++        panic!("child conflict")
++    };
++    let report = complete(batch.resolve(ConflictChoice::Skip, false));
++    assert!(report.failures.is_empty(), "{report:?}");
++    assert_eq!(fs::read(target.join("tree/a")).unwrap(), b"existing");
++    assert_eq!(
++        fs::read(target.join("tree/b")).ok().as_deref(),
++        Some(b"sibling".as_slice()),
++        "skipping a also skipped b: {action:?}"
++    );
++}
++
++#[test]
++fn audit_failed_copy_replace_preserves_all_old_children() {
++    audit_failed_replace_preserves_all_old_destination_children(Action::Copy);
++}
++
++#[test]
++fn audit_failed_move_replace_preserves_all_old_children() {
++    audit_failed_replace_preserves_all_old_destination_children(Action::Move);
++}
++
++fn audit_failed_replace_preserves_all_old_destination_children(action: Action) {
++    use std::os::unix::fs::PermissionsExt;
++    assert_ne!(unsafe { libc::geteuid() }, 0, "requires ordinary user");
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("item");
++    let target = temp.path().join("target");
++    let destination = target.join("item");
++    fs::create_dir_all(&destination).unwrap();
++    for n in 0..2 {
++        fs::create_dir(destination.join(format!("child{n}"))).unwrap();
++        fs::write(destination.join(format!("child{n}/data")), b"old contents").unwrap();
++    }
++    // Make the final read_dir entry fail after earlier entries were removed.
++    let locked = fs::read_dir(&destination)
++        .unwrap()
++        .last()
++        .unwrap()
++        .unwrap()
++        .path();
++    fs::write(&source, b"incoming").unwrap();
++    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        TransferBatch::try_new(vec![source.clone()], target, action)
++            .unwrap()
++            .run()
++    else {
++        panic!("conflict")
++    };
++    let report = complete(batch.resolve(ConflictChoice::Replace, false));
++    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
++    assert_eq!(report.failures.len(), 1);
++    assert_eq!(fs::read(&source).unwrap(), b"incoming");
++    for n in 0..2 {
++        assert_eq!(
++            fs::read(destination.join(format!("child{n}/data")))
++                .ok()
++                .as_deref(),
++            Some(b"old contents".as_slice()),
++            "failed Replace lost child{n}: {action:?}"
++        );
++    }
++}
++
++#[test]
++fn audit_hardlink_copy_uses_current_source_permissions_after_conflict() {
++    use std::os::unix::fs::PermissionsExt;
++    let temp = tempfile::tempdir().unwrap();
++    let source = temp.path().join("tree");
++    let target = temp.path().join("target");
++    fs::create_dir(&source).unwrap();
++    fs::create_dir_all(target.join("tree")).unwrap();
++    fs::write(source.join("a"), b"linked contents").unwrap();
++    fs::set_permissions(source.join("a"), fs::Permissions::from_mode(0o644)).unwrap();
++    fs::hard_link(source.join("a"), source.join("b")).unwrap();
++    fs::write(target.join("tree/b"), b"existing").unwrap();
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        TransferBatch::try_new(vec![source.clone()], target.clone(), Action::Copy)
++            .unwrap()
++            .run()
++    else {
++        panic!("folder conflict")
++    };
++    let TransferBatchOutcome::Conflict { batch, .. } =
++        batch.resolve(ConflictChoice::Replace, false).run()
++    else {
++        panic!("child conflict")
++    };
++    fs::set_permissions(source.join("b"), fs::Permissions::from_mode(0o600)).unwrap();
++    let report = complete(batch.resolve(ConflictChoice::Replace, false));
++    assert!(report.failures.is_empty());
++    assert_eq!(
++        fs::metadata(target.join("tree/b")).unwrap().mode() & 0o777,
++        0o600,
++        "copy reused stale access permissions"
++    );
++}
