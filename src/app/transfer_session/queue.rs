@@ -1515,7 +1515,7 @@ mod regressions {
             assert!(report.failures.is_empty());
             let count = if split_retry { 1 } else { 2 };
             assert!(
-                matches!(undo.unwrap(), Some(journal::Action::Restore { items, replaced_existing: false }) if items.len() == count)
+                matches!(undo.unwrap(), Some(journal::Action::Restore { items, replaced_existing: false, .. }) if items.len() == count)
             );
             let restored = trash::finish_restore(report, &entries);
             assert_eq!(restored.restored.len(), count);

@@ -138,12 +138,18 @@ pub(crate) enum Action {
     Transfer {
         kind: TransferKind,
         items: Vec<TransferItem>,
+        #[serde(default)]
+        transfer: crate::fs::JournalTransfer,
     },
     Trash {
         items: Vec<TrashItem>,
+        #[serde(default)]
+        transfer: crate::fs::JournalTransfer,
     },
     Restore {
         items: Vec<TrashItem>,
+        #[serde(default)]
+        transfer: crate::fs::JournalTransfer,
         #[serde(default = "legacy_transfer_requires_refusal")]
         replaced_existing: bool,
     },
@@ -246,7 +252,11 @@ impl Action {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok(Some(Self::Transfer { kind, items }))
+        Ok(Some(Self::Transfer {
+            kind,
+            items,
+            transfer: Default::default(),
+        }))
     }
 
     pub(crate) fn trash(receipts: &[TrashReceipt]) -> Result<Option<Self>, Error> {
@@ -265,7 +275,10 @@ impl Action {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok(Some(Self::Trash { items }))
+        Ok(Some(Self::Trash {
+            items,
+            transfer: Default::default(),
+        }))
     }
 
     pub(crate) fn restore(
@@ -289,6 +302,7 @@ impl Action {
             .collect::<Result<Vec<_>, Error>>()?;
         Ok(Some(Self::Restore {
             items,
+            transfer: Default::default(),
             replaced_existing,
         }))
     }

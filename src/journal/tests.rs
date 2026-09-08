@@ -1107,3 +1107,222 @@ fn partial_redo_preserves_completed_entries_and_checks_them_before_resuming() {
         }
     }
 }
+
+#[test]
+fn partial_history_retry_preserves_hardlinks_after_reopening_the_journal() {
+    use std::os::unix::{
+        ffi::OsStringExt,
+        fs::{MetadataExt, PermissionsExt},
+    };
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(temp.path()).unwrap().dev(),
+            fs::metadata(target.path()).unwrap().dev()
+        );
+        let first = temp
+            .path()
+            .join("first")
+            .join(std::ffi::OsString::from_vec(b"a-\xff".to_vec()));
+        let second = temp.path().join("second/b");
+        let first_target = target.path().join("first").join(first.file_name().unwrap());
+        let second_target = target.path().join("second/b");
+        for path in [&first, &second, &first_target, &second_target] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&first, b"linked history data").unwrap();
+        fs::hard_link(&first, &second).unwrap();
+        let action = match kind {
+            TransferKind::Copy => crate::transfer::Action::Copy,
+            TransferKind::Move => crate::transfer::Action::Move,
+        };
+        let mut transfer = crate::fs::JournalTransfer::default();
+        let receipts = [
+            (first.clone(), first_target.clone()),
+            (second.clone(), second_target.clone()),
+        ]
+        .map(|(source, destination)| {
+            transfer.apply(action, &source, &destination).unwrap();
+            crate::fs::TransferReceipt {
+                source,
+                destination,
+                replaced_existing: false,
+            }
+        });
+        let journal_path = temp.path().join("journal.json");
+        let mut journal = Journal::open(journal_path.clone()).unwrap();
+        journal
+            .record(Action::transfer(kind, &receipts).unwrap().unwrap())
+            .unwrap();
+        let blocked = match kind {
+            TransferKind::Copy => {
+                journal.undo().unwrap();
+                second_target.parent().unwrap()
+            }
+            TransferKind::Move => first.parent().unwrap(),
+        };
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = match kind {
+            TransferKind::Copy => journal.redo(),
+            TransferKind::Move => journal.undo(),
+        };
+        fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        let mut journal = Journal::open(journal_path).unwrap();
+        let (left, right) = match kind {
+            TransferKind::Copy => {
+                journal.redo().unwrap();
+                (&first_target, &second_target)
+            }
+            TransferKind::Move => {
+                journal.undo().unwrap();
+                (&first, &second)
+            }
+        };
+        assert_eq!(fs::read(left).unwrap(), b"linked history data");
+        assert_eq!(fs::read(right).unwrap(), b"linked history data");
+        assert_eq!(
+            fs::metadata(left).unwrap().ino(),
+            fs::metadata(right).unwrap().ino(),
+            "retrying the same history operation must preserve its hardlinks across journal reopen"
+        );
+    }
+}
+
+#[test]
+fn resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir_in("/dev/shm").unwrap();
+    let first = temp.path().join("first/a");
+    let second = temp.path().join("second/b");
+    fs::create_dir_all(first.parent().unwrap()).unwrap();
+    fs::create_dir_all(second.parent().unwrap()).unwrap();
+    fs::write(&first, b"original").unwrap();
+    fs::hard_link(&first, &second).unwrap();
+    let mut transfer = crate::fs::JournalTransfer::default();
+    let receipts = [first.clone(), second.clone()].map(|source| {
+        let destination = target.path().join(source.file_name().unwrap());
+        transfer
+            .apply(crate::transfer::Action::Move, &source, &destination)
+            .unwrap();
+        crate::fs::TransferReceipt {
+            source,
+            destination,
+            replaced_existing: false,
+        }
+    });
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Move, &receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    fs::set_permissions(first.parent().unwrap(), fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.undo();
+    fs::set_permissions(first.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    let modified = fs::metadata(&second).unwrap().modified().unwrap();
+    fs::write(&second, b"modified").unwrap();
+    fs::File::open(&second)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    assert!(
+        journal.undo().is_err(),
+        "Undo must verify completed source contents before reusing their hardlinks"
+    );
+    assert!(!first.exists());
+    assert_eq!(fs::read(&second).unwrap(), b"modified");
+    assert_eq!(fs::read(&receipts[0].destination).unwrap(), b"original");
+}
+
+#[test]
+fn trash_undo_preserves_hardlinks_after_cleanup_failure_and_journal_reopen() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let restored = tempfile::tempdir_in("/dev/shm").unwrap();
+    let files = temp.path().join("Trash/files");
+    let info = temp.path().join("Trash/info");
+    fs::create_dir_all(&files).unwrap();
+    fs::create_dir(&info).unwrap();
+    fs::write(files.join("a"), b"linked contents").unwrap();
+    fs::hard_link(files.join("a"), files.join("b")).unwrap();
+    let receipts = ["a", "b"].map(|name| {
+        let info = info.join(format!("{name}.trashinfo"));
+        fs::write(&info, "fixture metadata").unwrap();
+        TrashReceipt {
+            original: restored.path().join(name),
+            trashed: files.join(name),
+            info,
+        }
+    });
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(Action::trash(&receipts).unwrap().unwrap())
+        .unwrap();
+    fs::set_permissions(&info, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.undo();
+    fs::set_permissions(&info, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert!(receipts[0].original.exists());
+    assert!(receipts[1].trashed.exists());
+    let mut journal = Journal::open(path).unwrap();
+    journal.undo().unwrap();
+    for receipt in &receipts {
+        assert_eq!(fs::read(&receipt.original).unwrap(), b"linked contents");
+        assert!(!receipt.trashed.exists());
+        assert!(!receipt.info.exists());
+    }
+    assert_eq!(
+        fs::metadata(&receipts[0].original).unwrap().ino(),
+        fs::metadata(&receipts[1].original).unwrap().ino()
+    );
+}
+
+#[test]
+fn transfer_history_without_saved_link_context_still_supports_undo_and_redo() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, "legacy history").unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    // Exercise the older on-disk schema, which did not include this optional field.
+    let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    legacy["entries"][0]["action"]["Transfer"]
+        .as_object_mut()
+        .unwrap()
+        .remove("transfer");
+    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal.undo().unwrap();
+    assert!(!destination.exists());
+    journal.redo().unwrap();
+    assert_eq!(fs::read(source).unwrap(), b"legacy history");
+    assert_eq!(fs::read(destination).unwrap(), b"legacy history");
+}

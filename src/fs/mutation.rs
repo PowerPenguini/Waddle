@@ -379,7 +379,7 @@ fn remove_item(path: &Path) -> io::Result<()> {
 }
 
 /// Keep filesystem relationships across all entries of one history operation.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct JournalTransfer {
     links: CopyLinks,
 }

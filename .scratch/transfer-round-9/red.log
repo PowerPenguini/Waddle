@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.28s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal ... FAILED
+
+failures:
+
+---- journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal stdout ----
+
+thread 'journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal' (1098638) panicked at src/journal/tests.rs:1186:9:
+assertion `left == right` failed: retrying the same history operation must preserve its hardlinks across journal reopen
+  left: 271267
+ right: 271268
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 518 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

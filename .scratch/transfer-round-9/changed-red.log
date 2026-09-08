@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.34s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test journal::tests::resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match ... FAILED
+
+failures:
+
+---- journal::tests::resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match stdout ----
+
+thread 'journal::tests::resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match' (1100182) panicked at src/journal/tests.rs:1238:5:
+Undo must verify completed source contents before reusing their hardlinks
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    journal::tests::resumed_move_undo_refuses_edited_completed_files_even_when_timestamps_match
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 519 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

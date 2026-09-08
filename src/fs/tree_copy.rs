@@ -6,11 +6,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CopyLinks(HashMap<(u64, u64), CopiedLink>);
 
-#[derive(Clone, Debug)]
+// JSON object keys cannot represent device/inode tuples. Store an entry list.
+impl Serialize for CopyLinks {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for CopyLinks {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries = Vec::<((u64, u64), CopiedLink)>::deserialize(deserializer)?;
+        Ok(Self(entries.into_iter().collect()))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CopiedLink {
+    #[serde(with = "crate::path_serde")]
     path: PathBuf,
     device: u64,
     inode: u64,

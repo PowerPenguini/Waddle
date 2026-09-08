@@ -108,10 +108,15 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                 })
             }
         },
-        Action::Transfer { kind, items } => apply_transfer(*kind, items, direction),
-        Action::Trash { items } => apply_trash(items, direction),
+        Action::Transfer {
+            kind,
+            items,
+            transfer,
+        } => apply_transfer(*kind, items, direction, transfer),
+        Action::Trash { items, transfer } => apply_trash(items, direction, transfer),
         Action::Restore {
             items,
+            transfer,
             replaced_existing,
         } => {
             if *replaced_existing {
@@ -125,6 +130,7 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
                     Direction::Undo => Direction::Redo,
                     Direction::Redo => Direction::Undo,
                 },
+                transfer,
             )?;
             effect.status = match direction {
                 Direction::Undo => "Undid Restore",
@@ -136,9 +142,12 @@ pub(super) fn apply(action: &mut Action, direction: Direction) -> Result<Effect,
     }
 }
 
-fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, Error> {
-    let mut transfer = crate::fs::JournalTransfer::default();
-    match direction {
+fn apply_trash(
+    items: &mut [TrashItem],
+    direction: Direction,
+    transfer: &mut crate::fs::JournalTransfer,
+) -> Result<Effect, Error> {
+    let effect: Result<Effect, Error> = match direction {
         Direction::Undo => {
             for item in items.iter() {
                 if item.restore_pending {
@@ -196,7 +205,10 @@ fn apply_trash(items: &mut [TrashItem], direction: Direction) -> Result<Effect, 
             }
             Ok(trash_effect(items, Direction::Redo))
         }
-    }
+    };
+    let effect = effect?;
+    *transfer = Default::default();
+    Ok(effect)
 }
 
 fn trash_effect(items: &[TrashItem], direction: Direction) -> Effect {
@@ -225,16 +237,22 @@ fn apply_transfer(
     kind: TransferKind,
     items: &mut [TransferItem],
     direction: Direction,
+    transfer: &mut crate::fs::JournalTransfer,
 ) -> Result<Effect, Error> {
     if items.iter().any(|item| item.replaced_existing) {
         return Err(Error::message(
             "Refused Undo: this transfer replaced an existing destination that cannot be restored",
         ));
     }
-    let mut transfer = crate::fs::JournalTransfer::default();
-    match direction {
+    let effect: Result<Effect, Error> = match direction {
         Direction::Undo => {
-            for item in items.iter().filter(|item| !item.undone) {
+            for item in items.iter() {
+                if item.undone {
+                    if matches!(kind, TransferKind::Move) {
+                        verify_tree(&item.source, &item.source_fingerprint)?;
+                    }
+                    continue;
+                }
                 if let Some(removal) = &item.removal {
                     removal.verify(&item.destination)?;
                 } else {
@@ -312,7 +330,10 @@ fn apply_transfer(
             }
             Ok(transfer_effect(kind, items, Direction::Redo))
         }
-    }
+    };
+    let effect = effect?;
+    *transfer = Default::default();
+    Ok(effect)
 }
 
 fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direction) -> Effect {
