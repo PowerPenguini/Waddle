@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.38s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup ... FAILED
+
+failures:
+
+---- journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup stdout ----
+
+thread 'journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup' (1070646) panicked at src/journal/tests.rs:896:10:
+Undo must resume after its own partial deletion and repaired permissions: Message("Refused operation: /tmp/.tmpBNmMwA/copied or its contents changed after it was recorded")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    journal::tests::audit_undo_copy_can_resume_after_partial_directory_cleanup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 502 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

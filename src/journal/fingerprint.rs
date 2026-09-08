@@ -44,9 +44,21 @@ pub(super) struct TreeFingerprint {
 }
 
 impl TreeFingerprint {
+    pub(super) fn is_directory(&self) -> bool {
+        self.root.kind == libc::S_IFDIR
+    }
+
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
+        Self::read_with_permissions(path, true)
+    }
+
+    pub(super) fn read_without_permissions(path: &Path) -> Result<Self, Error> {
+        Self::read_with_permissions(path, false)
+    }
+
+    fn read_with_permissions(path: &Path, permissions: bool) -> Result<Self, Error> {
         let mut digest = Fnv::default();
-        hash_tree(path, Path::new(""), &mut digest)?;
+        hash_tree(path, Path::new(""), &mut digest, permissions)?;
         Ok(Self {
             root: Fingerprint::read(path)?,
             digest: digest.0,
@@ -71,13 +83,25 @@ impl Fnv {
     }
 }
 
-fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Error> {
+fn hash_tree(
+    path: &Path,
+    relative: &Path,
+    digest: &mut Fnv,
+    permissions: bool,
+) -> Result<(), Error> {
     use std::{io::Read, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?;
     digest.write(relative.as_os_str().as_bytes());
-    digest.write(&metadata.mode().to_le_bytes());
+    digest.write(
+        &(if permissions {
+            metadata.mode()
+        } else {
+            metadata.mode() & libc::S_IFMT
+        })
+        .to_le_bytes(),
+    );
     digest.write(&metadata.size().to_le_bytes());
     digest.write(&metadata.mtime().to_le_bytes());
     digest.write(&metadata.mtime_nsec().to_le_bytes());
@@ -95,7 +119,12 @@ fn hash_tree(path: &Path, relative: &Path, digest: &mut Fnv) -> Result<(), Error
             .map_err(|error| Error::io("could not read directory entry", error))?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
-            hash_tree(&entry.path(), &relative.join(entry.file_name()), digest)?;
+            hash_tree(
+                &entry.path(),
+                &relative.join(entry.file_name()),
+                digest,
+                permissions,
+            )?;
         }
     } else if metadata.is_file() {
         use std::os::unix::fs::OpenOptionsExt;

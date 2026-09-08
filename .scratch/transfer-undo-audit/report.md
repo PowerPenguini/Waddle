@@ -2,7 +2,7 @@
 
 Date: 2026-09-08
 Revision: 3dab5d9
-Scope: diagnosis only. Three remaining issues reproduced by four tests, failing in two consecutive runs. No production implementation changes.
+Scope: audit and fixes in successive committed rounds. The initial audit reproduced three issues with four tests failing in two consecutive runs.
 
 ## Round 1 — hardlinks in history operations
 
@@ -12,7 +12,17 @@ Three permanent tests cover Copy Redo after reopening the journal, cross-device 
 
 The complete release gate passed (`round-1-release-gate.log`): 494 tests passed, 8 ignored; 2 scrollbar tests; strict Clippy; release build; FileManager1 activation; 5 real X11 tests; desktop metadata and package smoke tests. The debug executable was rebuilt separately.
 
-Still pending: partial-directory Undo recovery and partial Restore Retry bookkeeping. Subsequent rounds must also audit history retries after partial completion; this round does not claim all Transfer bugs are gone.
+After Round 1, partial-directory Undo recovery and partial Restore Retry bookkeeping were still pending. Subsequent rounds must also audit history retries after partial completion; this round does not claim all Transfer bugs are gone.
+
+## Round 2 — resumable Copy Undo inside directories
+
+Copy Undo now keeps a serializable removal plan for directory entries. Each successful nonrecursive removal advances that plan; the existing journal save-on-error persists the remaining entries. A resumed operation verifies file identity and content, directory identity, and the exact remaining child names. It tolerates permission repair and directory timestamp changes caused by its own deletions, while refusing external additions, file replacements, content changes, and substituted directory symlinks. Ordinary single-file Undo retains its existing atomic unlink path.
+
+The original partial-directory reproduction failed before implementation (`round-2-red.log`) and passed after it (`round-2-green.log`). Its permanent test reopens the journal after failure, repairs permissions, finishes Undo, and exercises Redo followed by Undo again. An additional test covers four external-change cases, ensuring the remaining data survives refused retries. Existing journal tests cover prior record formats and partial progress across top-level entries.
+
+The full release gate passed (`round-2-release-gate.log`): 496 tests passed, 8 ignored; 2 scrollbar tests; strict Clippy; release build; FileManager1 activation; 5 real X11 tests; metadata and packaged archive smoke tests. The debug executable was rebuilt as well.
+
+This round covers recovery after a reported deletion failure and journal save. Abrupt process/power loss during the mutation remains an audit area; no crash-durability claim is made. Still pending from the original audit: partial Restore Retry bookkeeping. The overall bug-hunting goal remains active.
 
 The original audit and reproduction patch below describe revision 3dab5d9, before Round 1.
 
@@ -61,6 +71,6 @@ PATH=/home/powerpenguini/.cargo/bin:$PATH cargo test audit_
 git apply -R .scratch/transfer-undo-audit/reproduction-tests.patch
 ```
 
-Both `red.log` and `red-repeat.log` show 5 existing audit tests passing and 4 new tests failing. The patch passes `git apply --check` against the restored files. All data is isolated in temporary directories. These findings have not been fixed in this scan.
+Both original `red.log` and `red-repeat.log` show 5 existing audit tests passing and 4 new tests failing. The patch passed `git apply --check` against the original audited revision. All data is isolated in temporary directories. Fix status is recorded in the round sections above.
 
 After removing the reproduction patch, `cargo test --all-targets` passed with 491 tests passing and 8 ignored (`baseline.log`). No release gate or live application restart was performed for this diagnosis-only scan.

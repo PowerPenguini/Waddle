@@ -844,3 +844,127 @@ fn undo_trash_across_filesystems_preserves_selected_hardlinks() {
         assert_eq!(fs::read(receipt.original).unwrap(), b"linked contents");
     }
 }
+#[test]
+fn audit_undo_copy_can_resume_after_partial_directory_cleanup() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let copied = temp.path().join("copied");
+    fs::create_dir(&source).unwrap();
+    for name in ["first", "second"] {
+        fs::create_dir(source.join(name)).unwrap();
+        fs::write(source.join(name).join("data"), b"data").unwrap();
+    }
+    crate::fs::journal_copy(&source, &copied).unwrap();
+    let locked = fs::read_dir(&copied)
+        .unwrap()
+        .last()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: copied.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        journal.undo().is_err(),
+        "cleanup must fail at the protected child"
+    );
+    assert_eq!(
+        fs::read_dir(&copied).unwrap().count(),
+        1,
+        "fixture must partially remove the copied tree"
+    );
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal
+        .undo()
+        .expect("Undo must resume after its own partial deletion and repaired permissions");
+    assert!(!copied.exists());
+    assert!(source.join("first/data").exists() && source.join("second/data").exists());
+    journal.redo().unwrap();
+    assert_eq!(fs::read(copied.join("first/data")).unwrap(), b"data");
+    assert_eq!(fs::read(copied.join("second/data")).unwrap(), b"data");
+    journal.undo().unwrap();
+    assert!(!copied.exists());
+}
+
+#[test]
+fn resumed_copy_undo_preserves_external_changes_to_remaining_entries() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for change in ["contents", "replacement", "addition", "directory-symlink"] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let copied = temp.path().join("copied");
+        fs::create_dir(&source).unwrap();
+        for name in ["first", "second"] {
+            fs::create_dir(source.join(name)).unwrap();
+            fs::write(source.join(name).join("data"), b"data").unwrap();
+        }
+        crate::fs::journal_copy(&source, &copied).unwrap();
+        let locked = fs::read_dir(&copied)
+            .unwrap()
+            .last()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: copied.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(journal.undo().is_err());
+        assert_eq!(fs::read_dir(&copied).unwrap().count(), 1);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        let remaining = locked.join("data");
+        match change {
+            "contents" => fs::write(&remaining, b"externally changed").unwrap(),
+            "replacement" => {
+                fs::rename(&remaining, temp.path().join("old-file")).unwrap();
+                fs::write(&remaining, b"data").unwrap();
+            }
+            "addition" => fs::write(copied.join("new-file"), b"new data").unwrap(),
+            "directory-symlink" => {
+                let external = temp.path().join("external");
+                fs::rename(&locked, &external).unwrap();
+                std::os::unix::fs::symlink(&external, &locked).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = fs::read(&remaining).unwrap();
+        let mut journal = Journal::open(path).unwrap();
+        assert!(journal.undo().is_err(), "Undo accepted external {change}");
+        assert_eq!(fs::read(&remaining).unwrap(), before);
+        if change == "addition" {
+            assert_eq!(fs::read(copied.join("new-file")).unwrap(), b"new data");
+        }
+        assert!(source.join("first/data").exists() && source.join("second/data").exists());
+    }
+}

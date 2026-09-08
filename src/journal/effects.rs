@@ -235,14 +235,34 @@ fn apply_transfer(
     match direction {
         Direction::Undo => {
             for item in items.iter().filter(|item| !item.undone) {
-                verify_tree(&item.destination, &item.result_fingerprint)?;
+                if let Some(removal) = &item.removal {
+                    removal.verify(&item.destination)?;
+                } else {
+                    verify_tree(&item.destination, &item.result_fingerprint)?;
+                }
                 if matches!(kind, TransferKind::Move) {
                     ensure_absent(&item.source)?;
                 }
             }
             for item in items.iter_mut().rev().filter(|item| !item.undone) {
                 let result = match kind {
-                    TransferKind::Copy => crate::fs::journal_remove(&item.destination),
+                    // A single unlink cannot partially remove an item. Only
+                    // directories need the persisted per-entry removal plan.
+                    TransferKind::Copy if !item.result_fingerprint.is_directory() => {
+                        crate::fs::journal_remove(&item.destination)
+                    }
+                    TransferKind::Copy => {
+                        if item.removal.is_none() {
+                            let plan = super::removal::RemovalPlan::capture(&item.destination)?;
+                            verify_tree(&item.destination, &item.result_fingerprint)?;
+                            item.removal = Some(plan);
+                        }
+                        item.removal
+                            .as_mut()
+                            .unwrap()
+                            .remove(&item.destination)
+                            .map_err(|e| e.to_string())
+                    }
                     TransferKind::Move => transfer.apply(
                         crate::transfer::Action::Move,
                         &item.destination,
@@ -253,6 +273,7 @@ fn apply_transfer(
                     return Err(error.into());
                 }
                 item.undone = true;
+                item.removal = None;
                 if matches!(kind, TransferKind::Move) {
                     item.source_fingerprint = TreeFingerprint::read(&item.source)?;
                 }

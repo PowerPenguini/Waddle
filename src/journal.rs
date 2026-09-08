@@ -3,6 +3,7 @@ use std::{io, path::PathBuf};
 
 mod effects;
 mod fingerprint;
+mod removal;
 mod store;
 mod trash_receipt;
 
@@ -166,6 +167,8 @@ pub(crate) struct TransferItem {
     replaced_existing: bool,
     #[serde(default)]
     undone: bool,
+    #[serde(default)]
+    removal: Option<removal::RemovalPlan>,
 }
 
 fn legacy_transfer_requires_refusal() -> bool {
@@ -239,6 +242,7 @@ impl Action {
                     result_fingerprint,
                     replaced_existing: receipt.replaced_existing,
                     undone: false,
+                    removal: None,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
