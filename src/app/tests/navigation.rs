@@ -466,11 +466,9 @@ fn clipboard_ownership_loss_keeps_the_internal_cut_pending() {
     press(&mut app, "d");
     assert!(app.navigation.entries().is_empty());
 
-    let update = app.transfers.handle_native_with_adapter(
-        &NoopTransferAdapter,
-        TransferEvent::ClipboardOwnershipLost,
-        |_, _| None,
-    );
+    let update = app
+        .transfers
+        .handle_native(TransferEvent::ClipboardOwnershipLost, |_, _| None);
     let _ = app.apply_native_update(update);
 
     assert_eq!(app.transfers.pending_cut_paths(), paths);

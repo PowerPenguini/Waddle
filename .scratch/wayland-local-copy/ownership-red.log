@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.35s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::transfer_session::tests::external_clipboard_replaces_waddles_copy_after_ownership_loss ... FAILED
+
+failures:
+
+---- app::transfer_session::tests::external_clipboard_replaces_waddles_copy_after_ownership_loss stdout ----
+
+thread 'app::transfer_session::tests::external_clipboard_replaces_waddles_copy_after_ownership_loss' (1010893) panicked at src/app/transfer_session.rs:1096:18:
+Paste must consult the new clipboard owner
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::transfer_session::tests::external_clipboard_replaces_waddles_copy_after_ownership_loss
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

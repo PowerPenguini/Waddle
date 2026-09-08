@@ -15,28 +15,8 @@ use crate::app::navigation::NavigationSession;
 use crate::app::tree::{NodeKind, SidebarTree, VolumeRoot};
 use crate::fs::FileEntry;
 use crate::transfer::{
-    Action as TransferAction, Adapter as TransferAdapter, AdapterCompletion, ClipboardImport,
-    Event as TransferEvent, Preview as TransferPreview, TransferState,
+    Action as TransferAction, ClipboardImport, Event as TransferEvent, TransferState,
 };
-
-struct NoopTransferAdapter;
-
-impl TransferAdapter for NoopTransferAdapter {
-    fn start(
-        &self,
-        _paths: Vec<PathBuf>,
-        _preview: TransferPreview,
-        _copy_only: bool,
-    ) -> Result<AdapterCompletion, String> {
-        Err("unused test adapter".to_owned())
-    }
-
-    fn set_target(&self, _id: u64, _destination: Option<PathBuf>) {}
-
-    fn finish_inbound(&self, _id: u64) {}
-
-    fn shutdown(&self) {}
-}
 
 fn entry(name: &str) -> FileEntry {
     FileEntry {

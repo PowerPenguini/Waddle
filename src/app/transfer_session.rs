@@ -77,6 +77,7 @@ pub(super) struct TransferSession {
     queue: Queue,
     conflict: Option<ActiveConflict>,
     native: native_clipboard::Platform,
+    local_copy: bool,
 }
 
 pub(super) enum CompletionPresentation {
@@ -190,6 +191,7 @@ impl TransferSession {
             queue: Queue::open_default(),
             conflict: None,
             native: native_clipboard::Platform::default(),
+            local_copy: false,
         }
     }
 
@@ -200,6 +202,7 @@ impl TransferSession {
             queue: Queue::open(path),
             conflict: None,
             native: native_clipboard::Platform::default(),
+            local_copy: false,
         }
     }
 
@@ -215,9 +218,23 @@ impl TransferSession {
     }
 
     pub(super) fn clipboard_read(&self) -> Option<Result<ClipboardCompletion, String>> {
-        self.native
-            .clipboard()
-            .map(ClipboardAdapter::read_clipboard)
+        self.clipboard_read_with(
+            self.native
+                .clipboard()
+                .map(|source| source as &dyn ClipboardAdapter),
+        )
+    }
+
+    fn clipboard_read_with(
+        &self,
+        adapter: Option<&dyn ClipboardAdapter>,
+    ) -> Option<Result<ClipboardCompletion, String>> {
+        // Our Copy is already available in the Transfer session, even when
+        // Wayland has not supplied an offer back to this data device.
+        if self.local_copy {
+            return None;
+        }
+        adapter.map(ClipboardAdapter::read_clipboard)
     }
 
     pub(super) fn handle_window_file(&mut self, event: WindowFileEvent) -> WindowFileUpdate {
@@ -539,6 +556,7 @@ impl TransferSession {
     ) -> Option<ClipboardChange> {
         let restore_entries = !self.state.pending_cut_paths().is_empty();
         let status = self.state.copy(entries)?;
+        self.local_copy = true;
         let status = self.write_clipboard(adapter).map_or(status, |error| {
             format!("Copied inside Waddle; system clipboard failed: {error}")
         });
@@ -567,6 +585,7 @@ impl TransferSession {
         adapter: Option<&dyn ClipboardAdapter>,
     ) -> Option<ClipboardChange> {
         let status = self.state.cut(entries)?;
+        self.local_copy = false;
         let status = self.write_clipboard(adapter).map_or(status, |error| {
             format!("Cut inside Waddle; system clipboard failed: {error}")
         });
@@ -652,10 +671,11 @@ impl TransferSession {
         import: ClipboardImport,
         destination: PathBuf,
     ) -> Option<Request> {
-        self.state
-            .import_clipboard(import)
-            .then(|| self.state.paste(destination))
-            .flatten()
+        if !self.state.import_clipboard(import) {
+            return None;
+        }
+        self.local_copy = false;
+        self.state.paste(destination)
     }
 
     pub(super) fn start_outgoing_active<P>(
@@ -693,6 +713,12 @@ impl TransferSession {
     where
         F: FnMut(Point, bool) -> Option<PathBuf>,
     {
+        if matches!(event, Event::ClipboardOwnershipLost) {
+            // A newer system selection supersedes our Copy. Keep pending Cut
+            // entries intact: they have a separate, explicit cancellation.
+            self.local_copy = false;
+            return NativeUpdate::None;
+        }
         let native = std::mem::take(&mut self.native);
         let Some(adapter) = native.dnd() else {
             self.native = native;
@@ -714,20 +740,6 @@ impl TransferSession {
         F: FnMut(Point, bool) -> Option<PathBuf>,
     {
         self.state.handle_native(adapter, event, destination_at)
-    }
-
-    #[cfg(test)]
-    pub(super) fn handle_native_with_adapter<A, F>(
-        &mut self,
-        adapter: &A,
-        event: Event,
-        destination_at: F,
-    ) -> NativeUpdate
-    where
-        A: Adapter,
-        F: FnMut(Point, bool) -> Option<PathBuf>,
-    {
-        self.handle_native_with(adapter, event, destination_at)
     }
 
     fn finish_transfer(
@@ -996,6 +1008,7 @@ mod tests {
     struct MemoryClipboard {
         writes: Arc<Mutex<Vec<ClipboardPayload>>>,
         clears: Arc<Mutex<Vec<u64>>>,
+        import: Option<ClipboardImport>,
     }
 
     impl ClipboardAdapter for MemoryClipboard {
@@ -1005,12 +1018,113 @@ mod tests {
         }
 
         fn read_clipboard(&self) -> Result<ClipboardCompletion, String> {
-            Err("unused test read".to_owned())
+            let import = self.import.clone().ok_or("unused test read")?;
+            Ok(Box::pin(async move { Ok(import) }))
         }
 
         fn clear_clipboard(&self, generation: u64) {
             self.clears.lock().unwrap().push(generation);
         }
+    }
+
+    struct UnavailableClipboard;
+
+    impl ClipboardAdapter for UnavailableClipboard {
+        fn write_clipboard(&self, _: ClipboardPayload) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn read_clipboard(&self) -> Result<ClipboardCompletion, String> {
+            Ok(Box::pin(async {
+                Err("the Wayland clipboard has no file offer".to_owned())
+            }))
+        }
+
+        fn clear_clipboard(&self, _: u64) {}
+    }
+
+    #[test]
+    fn copied_downloads_paste_without_a_wayland_file_offer() {
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let downloads = temp.path().join("Downloads");
+            let destination = temp.path().join("pendrive");
+            std::fs::create_dir_all(&downloads).unwrap();
+            std::fs::create_dir_all(&destination).unwrap();
+            let source = downloads.join("notes.txt");
+            std::fs::write(&source, "copy me").unwrap();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            session
+                .copy_with(&[entry(source.clone())], Some(&UnavailableClipboard))
+                .unwrap();
+
+            // The same clipboard decision and Transfer path used by App::paste.
+            let request = match session.clipboard_read_with(Some(&UnavailableClipboard)) {
+                None => session.paste(destination.clone()),
+                Some(result) => {
+                    let import = result
+                        .unwrap()
+                        .await
+                        .expect("Waddle's own Copy must remain pasteable");
+                    session.paste_import(import, destination.clone())
+                }
+            }
+            .unwrap();
+            let operations = Operations::default();
+            let task = session.start(request, &operations).unwrap();
+            assert!(matches!(
+                run_task(&mut session, task, &destination, &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert_eq!(
+                std::fs::read_to_string(destination.join("notes.txt")).unwrap(),
+                "copy me"
+            );
+            assert_eq!(std::fs::read_to_string(source).unwrap(), "copy me");
+        });
+    }
+
+    #[test]
+    fn external_clipboard_replaces_waddles_copy_after_ownership_loss() {
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            let external = temp.path().join("external.txt");
+            let clipboard = MemoryClipboard {
+                import: Some(ClipboardImport {
+                    paths: vec![external.clone()],
+                    action: Action::Copy,
+                    generation: None,
+                }),
+                ..MemoryClipboard::default()
+            };
+            session
+                .copy_with(&[entry(temp.path().join("old.txt"))], Some(&clipboard))
+                .unwrap();
+            session.handle_native(Event::ClipboardOwnershipLost, |_, _| None);
+            let import = session
+                .clipboard_read_with(Some(&clipboard))
+                .expect("Paste must consult the new clipboard owner")
+                .unwrap()
+                .await
+                .unwrap();
+            let request = session
+                .paste_import(import, temp.path().join("pendrive"))
+                .unwrap();
+            assert_eq!(request.paths, [external]);
+
+            // A later non-file clipboard must report its error, not resurrect
+            // either the old local Copy or the previously imported files.
+            let result = session
+                .clipboard_read_with(Some(&UnavailableClipboard))
+                .expect("imported files do not own the clipboard")
+                .unwrap()
+                .await;
+            assert_eq!(
+                result.unwrap_err(),
+                "the Wayland clipboard has no file offer"
+            );
+        });
     }
 
     fn runtime() -> tokio::runtime::Runtime {

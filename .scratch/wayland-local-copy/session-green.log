@@ -1,0 +1,20 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.53s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 13 tests
+test app::transfer_session::tests::drag_activation_captures_sources_and_release_consumes_the_drag ... ok
+test app::transfer_session::tests::invalid_drag_release_is_consumed_without_a_request ... ok
+test app::transfer_session::tests::external_clipboard_replaces_waddles_copy_after_ownership_loss ... ok
+test app::transfer_session::tests::transfer_session_owns_cut_reconciliation_and_native_clipboard_updates ... ok
+test app::transfer_session::tests::restore_uses_transfer_conflicts_without_entering_transfer_history ... ok
+test app::transfer_session::tests::copied_downloads_paste_without_a_wayland_file_offer ... ok
+test app::transfer_session::tests::restore_work_retains_foreground_activity_after_session_is_dropped ... ok
+test app::transfer_session::tests::restore_completion_cleans_metadata_and_prepares_undo ... ok
+test app::transfer_session::tests::queued_restores_keep_foreground_activity_until_every_restore_completes ... ok
+test app::transfer_session::tests::transfer_session_resolves_the_conflict_continuation_owned_by_the_queue ... ok
+test app::transfer_session::tests::restore_queues_behind_an_active_transfer_in_submission_order ... ok
+test app::transfer_session::tests::restore_retry_stays_foreground_until_completion_and_keeps_undo ... ok
+test app::transfer_session::tests::trash_completion_uses_transfer_feedback_history_and_retry ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.00s
