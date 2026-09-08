@@ -1,0 +1,73 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.20s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 10 tests
+test journal::tests::audit_copy_fingerprint_error_protects_older_history ... first failure: could not fingerprint /tmp/.tmpxJA7wb/destination: Permission denied (os error 13)
+Undo after the Redo failure: Ok(Effect { status: "Undid New File", changed_folders: ["/tmp/.tmpxJA7wb"], select: None }); older file exists=false
+
+thread 'journal::tests::audit_copy_fingerprint_error_protects_older_history' (1141112) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:124:9:
+Undo crossed the unrecorded Redo effect and deleted an unrelated older file
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpRARNPo/destination: Permission denied (os error 13)
+kind=Copy, crash=false, undo=false, retry=Err(Message("Refused operation: /tmp/.tmpRARNPo/destination now exists")); source exists=true, destination exists=true
+
+thread 'journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error' (1141115) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Message("Refused operation: /tmp/.tmpRARNPo/destination now exists"))
+FAILED
+test journal::tests::audit_copy_redo_recovers_after_process_exit ... kind=Copy, crash=true, undo=false, retry=Err(Message("Refused operation: /tmp/.tmp9w12k8/destination now exists")); source exists=true, destination exists=true
+
+thread 'journal::tests::audit_copy_redo_recovers_after_process_exit' (1141121) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Message("Refused operation: /tmp/.tmp9w12k8/destination now exists"))
+FAILED
+test journal::tests::audit_copy_undo_recovers_after_process_exit ... kind=Copy, crash=true, undo=true, retry=Err(Io { context: "could not fingerprint /tmp/.tmpyACGGt/destination", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=true, destination exists=false
+
+thread 'journal::tests::audit_copy_undo_recovers_after_process_exit' (1141124) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmpyACGGt/destination", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+FAILED
+test journal::tests::audit_history_fault_child ... ok
+test journal::tests::audit_move_fingerprint_error_protects_older_history ... first failure: could not fingerprint /tmp/.tmpDrzdMA/destination: Permission denied (os error 13)
+Undo after the Redo failure: Ok(Effect { status: "Undid New File", changed_folders: ["/tmp/.tmpDrzdMA"], select: None }); older file exists=false
+
+thread 'journal::tests::audit_move_fingerprint_error_protects_older_history' (1141128) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:124:9:
+Undo crossed the unrecorded Redo effect and deleted an unrelated older file
+FAILED
+test journal::tests::audit_move_redo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpHrZtzB/destination: Permission denied (os error 13)
+kind=Move, crash=false, undo=false, retry=Err(Io { context: "could not fingerprint /tmp/.tmpHrZtzB/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=false, destination exists=true
+
+thread 'journal::tests::audit_move_redo_recovers_after_fingerprint_read_error' (1141131) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmpHrZtzB/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+FAILED
+test journal::tests::audit_move_redo_recovers_after_process_exit ... kind=Move, crash=true, undo=false, retry=Err(Io { context: "could not fingerprint /tmp/.tmpLCQzHh/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=false, destination exists=true
+
+thread 'journal::tests::audit_move_redo_recovers_after_process_exit' (1141136) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmpLCQzHh/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+FAILED
+test journal::tests::audit_move_undo_recovers_after_fingerprint_read_error ... first failure: could not fingerprint /tmp/.tmpxu7CzF/source: Permission denied (os error 13)
+kind=Move, crash=false, undo=true, retry=Ok(Effect { status: "Undid Move", changed_folders: ["/tmp/.tmpxu7CzF"], select: Some("/tmp/.tmpxu7CzF/source") }); source exists=true, destination exists=false
+ok
+test journal::tests::audit_move_undo_recovers_after_process_exit ... kind=Move, crash=true, undo=true, retry=Err(Io { context: "could not fingerprint /tmp/.tmpULTLFI/destination", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=true, destination exists=false
+
+thread 'journal::tests::audit_move_undo_recovers_after_process_exit' (1141143) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:140:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmpULTLFI/destination", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+FAILED
+
+failures:
+
+failures:
+    journal::tests::audit_copy_fingerprint_error_protects_older_history
+    journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error
+    journal::tests::audit_copy_redo_recovers_after_process_exit
+    journal::tests::audit_copy_undo_recovers_after_process_exit
+    journal::tests::audit_move_fingerprint_error_protects_older_history
+    journal::tests::audit_move_redo_recovers_after_fingerprint_read_error
+    journal::tests::audit_move_redo_recovers_after_process_exit
+    journal::tests::audit_move_undo_recovers_after_process_exit
+
+test result: FAILED. 2 passed; 8 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin waddle`

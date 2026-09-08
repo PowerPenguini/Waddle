@@ -1,0 +1,41 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.76s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 5 tests
+test journal::tests::audit_history_fault_child ... ok
+kind=Move, crash=true, retry=Err(Io { context: "could not fingerprint /tmp/.tmpOdDCY0/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=false, destination exists=true
+
+thread 'journal::tests::audit_move_redo_recovers_after_process_exit' (1137966) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:55:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmpOdDCY0/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+first failure: could not fingerprint /tmp/.tmpOEgLPk/destination: Permission denied (os error 13)
+first failure: could not fingerprint /tmp/.tmp3CTFki/destination: Permission denied (os error 13)
+test journal::tests::audit_move_redo_recovers_after_process_exit ... FAILEDkind=
+Copy, crash=false, retry=Err(Message("Refused operation: /tmp/.tmpOEgLPk/destination now exists")); source exists=true, destination exists=true
+
+thread 'journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error' (1137962) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:55:5:
+completed filesystem effect must remain recoverable: Err(Message("Refused operation: /tmp/.tmpOEgLPk/destination now exists"))
+kind=Move, crash=false, retry=Err(Io { context: "could not fingerprint /tmp/.tmp3CTFki/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }); source exists=test journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error ... falseFAILED, destination exists=
+true
+kind=
+thread 'journal::tests::audit_move_redo_recovers_after_fingerprint_read_error' (1137965) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:55:5:
+completed filesystem effect must remain recoverable: Err(Io { context: "could not fingerprint /tmp/.tmp3CTFki/source", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } })
+Copy, crash=true, retry=Err(Message("Refused operation: /tmp/.tmpVRSWjo/destination now exists")); source exists=true, destination exists=true
+
+thread 'journal::tests::audit_copy_redo_recovers_after_process_exit' (1137963) panicked at src/journal/../../.scratch/transfer-audit-14/history_probes.rs:55:5:
+completed filesystem effect must remain recoverable: Err(Message("Refused operation: /tmp/.tmpVRSWjo/destination now exists"))
+test journal::tests::audit_move_redo_recovers_after_fingerprint_read_error ... FAILED
+test journal::tests::audit_copy_redo_recovers_after_process_exit ... FAILED
+
+failures:
+
+failures:
+    journal::tests::audit_copy_redo_recovers_after_fingerprint_read_error
+    journal::tests::audit_copy_redo_recovers_after_process_exit
+    journal::tests::audit_move_redo_recovers_after_fingerprint_read_error
+    journal::tests::audit_move_redo_recovers_after_process_exit
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 532 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

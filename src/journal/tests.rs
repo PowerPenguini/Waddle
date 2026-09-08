@@ -1736,3 +1736,5 @@ fn partial_retrashing_preserves_metadata_and_retries_after_reopen() {
         );
     }
 }
+
+include!("../../.scratch/transfer-audit-14/history_probes.rs");

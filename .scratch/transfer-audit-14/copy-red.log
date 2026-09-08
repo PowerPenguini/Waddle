@@ -1,0 +1,20 @@
+   Compiling waddle v0.0.8 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.65s
+     Running unittests src/main.rs (target/debug/deps/waddle-60ad12b79314504f)
+
+running 1 test
+edited after 1048576 bytes; success receipts: 1; old bytes: 1048576; new bytes: 3145728; warnings: []
+
+thread 'fs::tests::audit_copy_rejects_mixed_source_versions' (1137291) panicked at src/fs/../../.scratch/transfer-audit-14/copy_probes.rs:30:5:
+published a mixture of two source versions
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fs::tests::audit_copy_rejects_mixed_source_versions ... FAILED
+
+failures:
+
+failures:
+    fs::tests::audit_copy_rejects_mixed_source_versions
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 531 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

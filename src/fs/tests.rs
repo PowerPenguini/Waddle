@@ -2797,3 +2797,5 @@ fn failed_copy_preserves_existing_staging_name_files_directories_and_symlinks() 
         }
     }
 }
+
+include!("../../.scratch/transfer-audit-14/copy_probes.rs");
