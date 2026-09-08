@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.47s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::tests::transient::output_does_not_take_editing_keys_from_the_visible_location_input ... FAILED
+
+failures:
+
+---- app::tests::transient::output_does_not_take_editing_keys_from_the_visible_location_input stdout ----
+
+thread 'app::tests::transient::output_does_not_take_editing_keys_from_the_visible_location_input' (1000011) panicked at src/app/tests/transient.rs:187:9:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::tests::transient::output_does_not_take_editing_keys_from_the_visible_location_input
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

@@ -1,0 +1,14 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.38s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 7 tests
+test app::tests::transient::copying_visible_output_cannot_confirm_a_hidden_permanent_delete ... ok
+test app::tests::transient::dismissing_output_refocuses_the_restored_iced_input ... ok
+test app::tests::transient::replacing_output_with_a_prompt_restores_status_only_after_dismissal ... ok
+test app::tests::transient::escape_dismisses_visible_output_before_the_hidden_file_prompt ... ok
+test app::tests::transient::entering_rename_keeps_the_initial_filename_selected ... ok
+test app::tests::transient::output_does_not_take_editing_keys_from_the_visible_location_input ... ok
+test app::tests::transient::output_suspends_and_restores_history_and_editing_modes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 468 filtered out; finished in 0.01s

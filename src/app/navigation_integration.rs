@@ -718,8 +718,7 @@ impl App {
     }
 
     pub(super) fn begin_search(&mut self) -> Task<Message> {
-        self.browser_input.enter(InputMode::Search);
-        self.close_command_output();
+        self.change_transient(|sessions| sessions.begin_search());
         self.operations.cancel(OperationKind::Search);
         self.search.begin(&self.grid);
         widget::operation::focus(Id::new(SEARCH_ID))

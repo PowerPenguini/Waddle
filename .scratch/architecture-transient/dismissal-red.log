@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.20s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::tests::transient::escape_dismisses_visible_output_before_the_hidden_file_prompt ... FAILED
+
+failures:
+
+---- app::tests::transient::escape_dismisses_visible_output_before_the_hidden_file_prompt stdout ----
+
+thread 'app::tests::transient::escape_dismisses_visible_output_before_the_hidden_file_prompt' (988669) panicked at src/app/tests/transient.rs:14:5:
+assertion failed: app.command.output().is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::tests::transient::escape_dismisses_visible_output_before_the_hidden_file_prompt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 470 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin waddle`

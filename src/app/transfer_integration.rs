@@ -360,7 +360,6 @@ impl App {
         &mut self,
         update: TransferBatchUpdate,
     ) -> Task<Message> {
-        self.sync_transient_presentation();
         match update {
             TransferBatchUpdate::Completed { outcome, next } => Task::batch([
                 self.apply_transfer_completion(*outcome),
@@ -435,17 +434,13 @@ impl App {
         key: char,
         remaining: bool,
     ) -> Task<Message> {
-        let task = self
-            .transfers
+        self.transfers
             .resolve_conflict(key, remaining, &self.operations)
-            .map(transfer_runtime_message);
-        self.sync_transient_presentation();
-        task
+            .map(transfer_runtime_message)
     }
 
     pub(super) fn cancel_transfer_conflict(&mut self) -> Task<Message> {
         let update = self.transfers.cancel(&self.operations);
-        self.sync_transient_presentation();
         match update {
             TransferCancelUpdate::Conflict(task) => task.map(transfer_runtime_message),
             TransferCancelUpdate::Active => {

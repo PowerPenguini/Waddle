@@ -1,27 +1,20 @@
 use std::path::PathBuf;
 
-use iced::{
-    Task,
-    widget::{self, Id},
-};
+use iced::Task;
 
 use crate::journal;
 
 use super::{
-    App, COMMAND_ID, Completion, DisplayedLocation, FileOperationSession, FileOperationWork,
-    InputMode, Message, NEW_FOLDER_ID, NavigationTransition, OPEN_WITH_ID, OperationKind,
-    RENAME_ID, TransientPresentation, command, file_operation, open_with, places,
+    App, Completion, DisplayedLocation, FileOperationSession, FileOperationWork, InputMode,
+    Message, NavigationTransition, OperationKind, command, file_operation, open_with, places,
     presentation::command_failure_report, properties, recent, system_icon_task,
-    transfer_integration, trash,
+    transfer_integration, transient::Dismiss, trash,
 };
 
 impl App {
     pub(super) fn begin_command(&mut self, prefix: char) -> Task<Message> {
-        self.open_with.cancel();
-        self.browser_input.enter(InputMode::Command);
-        self.command.begin(prefix);
-        self.sync_transient_presentation();
-        widget::operation::focus(Id::new(COMMAND_ID))
+        self.change_transient(|sessions| sessions.begin_command(prefix));
+        self.refocus_bottom_input()
     }
 
     pub(super) fn begin_open_with(&mut self) -> Task<Message> {
@@ -34,22 +27,16 @@ impl App {
                 .set_status("Select an entry or pass a path after --".to_owned());
             return Task::none();
         };
-        self.command.close_output();
-        if let Err(error) = self.open_with.begin(path) {
+        if let Err(error) = self.change_transient(|sessions| sessions.begin_open_with(path)) {
             self.presentation.set_status(error);
             return Task::none();
         }
-        self.browser_input.enter(InputMode::OpenWith);
-        self.sync_transient_presentation();
-        widget::operation::focus(Id::new(OPEN_WITH_ID))
+        self.refocus_bottom_input()
     }
 
     pub(super) fn submit_command(&mut self) -> Task<Message> {
-        if self.browser_input.mode() != InputMode::Command {
-            return Task::none();
-        }
-        self.browser_input.leave_mode();
-        let action = self.command.submit(self.navigation.current().to_path_buf());
+        let current = self.navigation.current().to_path_buf();
+        let action = self.change_transient(|sessions| sessions.submit_command(current));
         self.apply_command_action(action)
     }
 
@@ -61,14 +48,10 @@ impl App {
                 Task::none()
             }
             command::CommandAction::Quit => self.quit(),
-            command::CommandAction::OutputChanged => {
-                self.sync_transient_presentation();
-                Task::none()
-            }
+            command::CommandAction::OutputChanged => Task::none(),
             command::CommandAction::Refresh => self.live_refresh(),
             command::CommandAction::Diagnostics => {
                 self.command.show_diagnostics(self.diagnostics.report());
-                self.sync_transient_presentation();
                 Task::none()
             }
             command::CommandAction::ChangeSettings { local, arguments } => {
@@ -224,7 +207,6 @@ impl App {
             self.diagnostics.record(summary, detail);
         }
         let consequences = self.command.complete(result, self.navigation.current());
-        self.sync_transient_presentation();
         if let Some(error) = consequences.error {
             self.show_error(error);
             return Task::none();
@@ -250,45 +232,6 @@ impl App {
         }
     }
 
-    pub(super) fn transient_presentation(&self) -> TransientPresentation {
-        let transfers = self.transfers.overview();
-        if transfers.conflict_prompt.is_some() {
-            TransientPresentation::conflict()
-        } else if let Some(height) = self.open_with.preferred_height() {
-            TransientPresentation::open_with(height)
-        } else if let Some(output) = self.command.output() {
-            TransientPresentation::command_output(&output.detail)
-        } else if self.file_operations.prompt_active() {
-            TransientPresentation::file_operation(self.file_operations.expanded_detail())
-        } else if transfers.expanded && self.browser_input.mode() == InputMode::Browser {
-            TransientPresentation::transfer_history()
-        } else {
-            TransientPresentation::standard()
-        }
-    }
-
-    pub(super) fn sync_transient_presentation(&mut self) {
-        let next = self.transient_presentation();
-        if self.presentation.sync_transient(next) {
-            self.refresh_status();
-        }
-    }
-
-    pub(super) fn show_command_output(&mut self, summary: String, detail: String) {
-        self.command.show_output(summary, detail);
-        self.sync_transient_presentation();
-    }
-
-    pub(super) fn show_command_detail(&mut self, detail: String) {
-        self.command.show_settings(detail);
-        self.sync_transient_presentation();
-    }
-
-    pub(super) fn close_command_output(&mut self) {
-        self.command.close_output();
-        self.sync_transient_presentation();
-    }
-
     pub(super) fn show_rename(&mut self, index: usize) -> Task<Message> {
         if !self.mutations_allowed() {
             return Task::none();
@@ -296,14 +239,8 @@ impl App {
         let Some(entry) = self.navigation.entries().get(index).cloned() else {
             return Task::none();
         };
-        self.file_operations.begin_rename(entry);
-        self.browser_input.enter(InputMode::Rename);
-        self.command.close_output();
-        self.sync_transient_presentation();
-        Task::batch([
-            widget::operation::focus(Id::new(RENAME_ID)),
-            widget::operation::select_all(Id::new(RENAME_ID)),
-        ])
+        self.change_transient(|sessions| sessions.begin_rename(entry));
+        self.focus_bottom_input(true)
     }
 
     pub(super) fn rename_selected(&mut self) -> Task<Message> {
@@ -314,10 +251,7 @@ impl App {
     }
 
     pub(super) fn cancel_rename(&mut self) {
-        self.browser_input.leave_mode();
-        if self.file_operations.cancel() {
-            self.sync_transient_presentation();
-        }
+        self.change_transient(|sessions| sessions.dismiss(Dismiss::FileOperation));
     }
 
     pub(super) fn show_new_folder(&mut self) -> Task<Message> {
@@ -325,7 +259,7 @@ impl App {
             return Task::none();
         }
         self.open_file_operation(|session| session.begin_new_folder());
-        widget::operation::focus(Id::new(NEW_FOLDER_ID))
+        self.refocus_bottom_input()
     }
 
     pub(super) fn show_new_file(&mut self) -> Task<Message> {
@@ -333,7 +267,7 @@ impl App {
             return Task::none();
         }
         self.open_file_operation(|session| session.begin_new_file());
-        widget::operation::focus(Id::new(NEW_FOLDER_ID))
+        self.refocus_bottom_input()
     }
 
     pub(super) fn show_properties(&mut self) -> Task<Message> {
@@ -417,29 +351,27 @@ impl App {
     }
 
     pub(super) fn choose_open_with(&mut self, application: String) -> Task<Message> {
-        let Some(request) = self.open_with.choose(&application) else {
+        let Some(request) =
+            self.change_transient(|sessions| sessions.choose_open_with(&application))
+        else {
             return Task::none();
         };
         self.finish_open_with(request)
     }
 
     pub(super) fn submit_open_with(&mut self) -> Task<Message> {
-        let Some(request) = self.open_with.submit_custom() else {
+        let Some(request) = self.change_transient(|sessions| sessions.submit_open_with()) else {
             return Task::none();
         };
         self.finish_open_with(request)
     }
 
     pub(super) fn cancel_open_with(&mut self) -> Task<Message> {
-        self.open_with.cancel();
-        self.browser_input.leave_mode();
-        self.sync_transient_presentation();
+        self.change_transient(|sessions| sessions.dismiss(Dismiss::OpenWith));
         Task::none()
     }
 
     fn finish_open_with(&mut self, request: open_with::Request) -> Task<Message> {
-        self.browser_input.leave_mode();
-        self.sync_transient_presentation();
         self.run_open_with_path(request.path, request.application, false)
     }
 
@@ -495,12 +427,7 @@ impl App {
         if entries.is_empty() {
             return Task::none();
         }
-        if self.browser_input.mode() == InputMode::Rename {
-            self.browser_input.leave_mode();
-        }
-        self.file_operations.cancel();
-        self.command.close_output();
-        self.sync_transient_presentation();
+        self.change_transient(|sessions| sessions.prepare_trash());
         self.transfers
             .trash(entries, &self.operations)
             .map(transfer_integration::transfer_runtime_message)
@@ -557,10 +484,9 @@ impl App {
     }
 
     pub(super) fn confirm_prompt(&mut self) -> Task<Message> {
-        let confirmation = self
-            .file_operations
-            .confirm(self.navigation.current().to_path_buf());
-        self.sync_transient_presentation();
+        let current = self.navigation.current().to_path_buf();
+        let confirmation =
+            self.change_transient(|sessions| sessions.confirm_file_operation(current));
         match confirmation {
             Some(work) => self.start_file_operation(work),
             None => Task::none(),
@@ -568,34 +494,16 @@ impl App {
     }
 
     pub(super) fn cancel_prompt(&mut self) -> Task<Message> {
-        if self.file_operations.cancel() {
-            self.sync_transient_presentation();
-        }
+        self.change_transient(|sessions| sessions.dismiss(Dismiss::FileOperation));
         Task::none()
     }
 
     pub(super) fn prompt_blocks_action(&mut self) -> bool {
-        if self.open_with.is_open() {
-            let _ = self.cancel_open_with();
-        }
-        if !self.file_operations.prompt_active() {
-            return false;
-        }
-        if self.file_operations.is_busy() {
-            return true;
-        }
-        let _ = self.cancel_prompt();
-        false
+        self.change_transient(|sessions| sessions.blocks_action())
     }
 
     pub(super) fn open_file_operation(&mut self, open: impl FnOnce(&mut FileOperationSession)) {
-        if self.browser_input.mode() == InputMode::Rename {
-            self.browser_input.leave_mode();
-            self.file_operations.cancel();
-        }
-        self.command.close_output();
-        open(&mut self.file_operations);
-        self.sync_transient_presentation();
+        self.change_transient(|sessions| sessions.open_file_operation(open));
     }
 
     pub(super) fn start_file_operation(&mut self, work: FileOperationWork) -> Task<Message> {
@@ -614,14 +522,8 @@ impl App {
         &mut self,
         completion: file_operation::Completion,
     ) -> Task<Message> {
-        let effects = self.file_operations.complete(completion);
-        if let Some(detail) = effects.detail {
-            self.command.show_settings(detail);
-        }
-        if effects.renamed {
-            self.browser_input.leave_mode();
-        }
-        self.sync_transient_presentation();
+        let effects =
+            self.change_transient(|sessions| sessions.complete_file_operation(completion));
         if let Some(status) = effects.status {
             self.presentation.set_status(status);
         }

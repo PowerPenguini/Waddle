@@ -306,7 +306,12 @@ impl BrowserInput {
         Intent::InvalidSequence(format!("Invalid Browser sequence: {sequence}"))
     }
 
+    #[cfg(test)]
     pub(super) fn handle(&mut self, press: Press, context: Context) -> Intent {
+        self.handle_in_mode(press, context, self.mode)
+    }
+
+    pub(super) fn handle_in_mode(&mut self, press: Press, context: Context, mode: Mode) -> Intent {
         if context.transfer_conflict {
             if press.named == NamedKey::Escape {
                 return Intent::ConflictCancel;
@@ -350,8 +355,8 @@ impl BrowserInput {
             };
         }
 
-        if self.mode != Mode::Browser {
-            if self.mode == Mode::Command && press.named == NamedKey::Tab {
+        if mode != Mode::Browser {
+            if mode == Mode::Command && press.named == NamedKey::Tab {
                 return Intent::CompleteCommand;
             }
             let cancel = press.named == NamedKey::Escape
@@ -359,7 +364,7 @@ impl BrowserInput {
             if !cancel {
                 return Intent::None;
             }
-            return match self.mode {
+            return match mode {
                 Mode::Search => {
                     self.leave_mode();
                     Intent::CancelSearch

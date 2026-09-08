@@ -6,37 +6,23 @@ use iced::{
 use crate::fs;
 
 use super::{
-    App, BrowserStatusModel, COMMAND_ID, DisplayedLocation, FileOperationView, InputMode, Message,
-    NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID, TransientPresentationKind, open_with,
+    App, BrowserStatusModel, COMMAND_ID, DisplayedLocation, Message, NEW_FOLDER_ID, OPEN_WITH_ID,
+    RENAME_ID, SEARCH_ID,
 };
 
 impl App {
     fn active_bottom_input(&self) -> Option<(&'static str, bool)> {
-        match self.transient_presentation().kind() {
-            TransientPresentationKind::OpenWith => match self.open_with.view() {
-                open_with::View::Open { custom, .. } => Some((OPEN_WITH_ID, custom.is_empty())),
-                open_with::View::Closed => None,
-            },
-            TransientPresentationKind::FileOperation => match self.file_operations.view() {
-                FileOperationView::NewFolder { value, .. }
-                | FileOperationView::NewFile { value, .. } => {
-                    Some((NEW_FOLDER_ID, value.is_empty()))
-                }
-                _ => None,
-            },
-            TransientPresentationKind::Standard => match self.browser_input.mode() {
-                InputMode::Search => Some((SEARCH_ID, self.search.query().is_empty())),
-                InputMode::Command => Some((COMMAND_ID, self.command.text().is_empty())),
-                InputMode::Rename => match self.file_operations.view() {
-                    FileOperationView::Rename { value, .. } => Some((RENAME_ID, value.is_empty())),
-                    _ => None,
-                },
-                InputMode::Browser | InputMode::Location | InputMode::OpenWith => None,
-            },
-            TransientPresentationKind::Conflict
-            | TransientPresentationKind::CommandOutput
-            | TransientPresentationKind::TransferHistory => None,
-        }
+        self.transient_presentation().input().map(|input| {
+            use super::transient::InputTarget;
+            let id = match input.target {
+                InputTarget::Search => SEARCH_ID,
+                InputTarget::Command => COMMAND_ID,
+                InputTarget::Rename => RENAME_ID,
+                InputTarget::NewName => NEW_FOLDER_ID,
+                InputTarget::OpenWith => OPEN_WITH_ID,
+            };
+            (id, input.empty)
+        })
     }
 
     pub(super) fn active_bottom_input_empty(&self) -> bool {
@@ -48,8 +34,18 @@ impl App {
     }
 
     pub(super) fn refocus_bottom_input(&self) -> Task<Message> {
+        self.focus_bottom_input(false)
+    }
+
+    pub(super) fn focus_bottom_input(&self, select_all: bool) -> Task<Message> {
         self.active_bottom_input()
-            .map_or_else(Task::none, |(id, _)| widget::operation::focus(Id::new(id)))
+            .map_or_else(Task::none, |(id, _)| {
+                widget::operation::focus(Id::new(id)).chain(if select_all {
+                    widget::operation::select_all(Id::new(id))
+                } else {
+                    Task::none()
+                })
+            })
     }
 
     pub(super) fn flash_copy_feedback(&mut self) {

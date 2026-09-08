@@ -30,7 +30,8 @@ impl<'a> View<'a> {
     pub(super) fn status_bar(self) -> Element<'a, Message> {
         let height = self.app().status_height();
         let status_model = self.app().browser_status_model();
-        let transient = self.app().transient_presentation().kind();
+        let resolved = self.app().transient_presentation();
+        let transient = resolved.kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
                 self.text(status_model.text)
@@ -97,7 +98,7 @@ impl<'a> View<'a> {
         } else if transient == TransientPresentationKind::TransferHistory {
             self.transfer_history_bar()
         } else {
-            let status: Element<'_, Message> = match self.app().browser_input.mode() {
+            let status: Element<'_, Message> = match resolved.mode() {
                 InputMode::Search => {
                     let prefix = if self.app().search.is_recursive() {
                         "//"

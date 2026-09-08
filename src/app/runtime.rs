@@ -10,12 +10,12 @@ use iced::{
 use crate::{fs, theme, transfer::Event as TransferEvent};
 
 use super::{
-    App, BottomInput, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget,
-    DisplayedLocation, InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
+    App, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget, DisplayedLocation,
+    InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, ScrollTarget, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
-    find_window_after_delay, location_monitoring, native_clipboard, scroll_motion,
-    system_icon_task, transfer_integration, transfer_session,
+    NavigationTransition, ScrollTarget, TransientPresentationKind, TreeLoadOutcome, X11_INBOUND_ID,
+    clears_status_notice, find_window_after_delay, location_monitoring, native_clipboard,
+    scroll_motion, system_icon_task, transfer_integration, transfer_session,
 };
 
 fn is_modifier_key(key: &keyboard::Key) -> bool {
@@ -42,6 +42,12 @@ fn is_modifier_key(key: &keyboard::Key) -> bool {
 
 impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
+        let previous = self.transient_presentation();
+        let task = self.update_message(message);
+        self.finish_presentation_update(previous, task)
+    }
+
+    fn update_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Event(event, status) => {
                 if clears_status_notice(&event) {
@@ -95,7 +101,6 @@ impl App {
             },
             Message::ToggleTransferHistory => {
                 self.transfers.toggle_expanded();
-                self.sync_transient_presentation();
                 Task::none()
             }
             Message::CopyTransferReport => {
@@ -886,8 +891,10 @@ impl App {
         if cancel_bottom_input {
             self.grid.close_context();
         }
+        let foreground_operation_active = self.foreground_operation_active();
         let transfers = self.transfers.overview();
-        let intent = self.browser_input.handle(
+        let intent = self.transient_presentation().handle(
+            &mut self.browser_input,
             InputPress {
                 text,
                 named,
@@ -897,16 +904,12 @@ impl App {
                 logo: modifiers.logo(),
             },
             InputContext {
-                transfer_conflict: transfers.conflict_prompt.is_some(),
                 transfer_active: transfers.active,
                 transfer_retry: transfers.retry,
-                transfer_history_open: transfers.expanded,
                 transfer_history_available: transfers.active
                     || transfers.retry
                     || !transfers.history.is_empty(),
-                prompt: self.file_operations.prompt_interaction(),
-                foreground_operation_active: self.foreground_operation_active(),
-                command_output: self.command.output().is_some(),
+                foreground_operation_active,
                 visual_active: self.grid.visual_active(),
                 selection_count: self.grid.selection_count(),
                 has_selection: self.grid.selected_entry().is_some(),
@@ -914,10 +917,7 @@ impl App {
                 navigation_pending: self.navigation.loading(),
                 file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
-                bottom_input: BottomInput::new(
-                    self.bottom_input_active(),
-                    self.active_bottom_input_empty(),
-                ),
+                ..InputContext::default()
             },
         );
         self.apply_input_intent(intent)
@@ -939,7 +939,9 @@ impl App {
             InputIntent::CopyTransferReport => self.update(Message::CopyTransferReport),
             InputIntent::CancelSearch => self.cancel_search(),
             InputIntent::CancelCommand => {
-                self.command.cancel();
+                self.change_transient(|sessions| {
+                    sessions.dismiss(super::transient::Dismiss::Command)
+                });
                 Task::none()
             }
             InputIntent::CancelRename => {
@@ -1172,7 +1174,7 @@ impl App {
     }
 
     pub(super) fn bottom_actions(&self) -> Vec<Message> {
-        if self.command.output().is_some() {
+        if self.transient_presentation().kind() == TransientPresentationKind::CommandOutput {
             return vec![Message::CopyCommandReport];
         }
         Vec::new()

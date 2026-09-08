@@ -12,7 +12,8 @@ use crate::fs::FileEntry;
 
 use super::{
     CONTENT_GUTTER, EntryIconKind, Message, Motion, SCROLLBAR_THUMB_WIDTH, SCROLLBAR_TRACK_WIDTH,
-    STATUS_HEIGHT, TOOLBAR_ICON_SIZE, command, duration_ratio, transfer_session, tree,
+    STATUS_HEIGHT, TOOLBAR_ICON_SIZE, TransientPresentation, TransientPresentationKind, command,
+    duration_ratio, transfer_session, tree,
 };
 
 const COPY_FEEDBACK_HOLD: Duration = Duration::from_millis(320);
@@ -101,74 +102,6 @@ pub(super) struct BrowserStatusModel<'a> {
     pub(super) text: &'a str,
     pub(super) retry: bool,
     pub(super) history: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum TransientPresentationKind {
-    Conflict,
-    OpenWith,
-    CommandOutput,
-    FileOperation,
-    TransferHistory,
-    #[default]
-    Standard,
-}
-
-impl TransientPresentationKind {
-    fn overrides_browser_status(self) -> bool {
-        self != Self::Standard
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct TransientPresentation {
-    kind: TransientPresentationKind,
-    expanded_height: Option<f32>,
-}
-
-impl TransientPresentation {
-    pub(super) fn standard() -> Self {
-        Self::default()
-    }
-
-    pub(super) fn conflict() -> Self {
-        Self {
-            kind: TransientPresentationKind::Conflict,
-            expanded_height: None,
-        }
-    }
-
-    pub(super) fn open_with(height: f32) -> Self {
-        Self {
-            kind: TransientPresentationKind::OpenWith,
-            expanded_height: Some(height),
-        }
-    }
-
-    pub(super) fn command_output(detail: &str) -> Self {
-        Self {
-            kind: TransientPresentationKind::CommandOutput,
-            expanded_height: Some(expanded_bar_height(detail)),
-        }
-    }
-
-    pub(super) fn file_operation(detail: Option<&str>) -> Self {
-        Self {
-            kind: TransientPresentationKind::FileOperation,
-            expanded_height: detail.map(expanded_bar_height),
-        }
-    }
-
-    pub(super) fn transfer_history() -> Self {
-        Self {
-            kind: TransientPresentationKind::TransferHistory,
-            expanded_height: Some(190.0),
-        }
-    }
-
-    pub(super) fn kind(self) -> TransientPresentationKind {
-        self.kind
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -359,16 +292,25 @@ impl Presentation {
     }
 
     pub(super) fn sync_transient(&mut self, next: TransientPresentation) -> bool {
-        let closed =
-            self.transient.overrides_browser_status() && !next.kind.overrides_browser_status();
-        self.transient = next.kind;
-        self.transient_expanded = next.expanded_height.is_some();
-        if let Some(height) = next.expanded_height {
+        // Most messages leave the presentation unchanged. In particular, do
+        // not reset animation time when synchronizing an AnimationFrame.
+        if self.transient == next.kind()
+            && self.transient_expanded == next.expanded_height().is_some()
+            && next
+                .expanded_height()
+                .is_none_or(|height| height == self.expanded_bar_height)
+        {
+            return false;
+        }
+        let closed = next.restores_status_after(self.transient);
+        self.transient = next.kind();
+        self.transient_expanded = next.expanded_height().is_some();
+        if let Some(height) = next.expanded_height() {
             self.expanded_bar_height = height;
         }
         self.now = Instant::now();
         self.output_expansion
-            .go_mut(next.expanded_height.is_some(), self.now);
+            .go_mut(next.expanded_height().is_some(), self.now);
         closed
     }
 
@@ -1229,30 +1171,5 @@ mod tests {
             feedback.intensity(now + COPY_FEEDBACK_HOLD + Duration::from_millis(1), true),
             0.0
         );
-    }
-
-    #[test]
-    fn transient_lifecycle_restores_status_only_after_the_last_overlay_closes() {
-        let now = Instant::now();
-        let mut presentation = Presentation::new(now, None);
-
-        assert!(!presentation.sync_transient(TransientPresentation::open_with(120.0)));
-        assert!(
-            !presentation.sync_transient(TransientPresentation::command_output("command detail"))
-        );
-        assert!(presentation.sync_transient(TransientPresentation::standard()));
-        assert!(!presentation.sync_transient(TransientPresentation::standard()));
-    }
-
-    #[test]
-    fn transient_lifecycle_owns_reduced_motion_height() {
-        let now = Instant::now();
-        let mut presentation = Presentation::new(now, None);
-
-        presentation.sync_transient(TransientPresentation::open_with(120.0));
-        assert_eq!(presentation.status_height(true), 120.0);
-
-        presentation.sync_transient(TransientPresentation::conflict());
-        assert_eq!(presentation.status_height(true), STATUS_HEIGHT);
     }
 }

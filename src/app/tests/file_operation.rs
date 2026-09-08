@@ -185,7 +185,7 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
         .select_only(Some(0), app.navigation.entries().len());
     app.file_operations
         .finish_trash_transfer(vec![(entry("one.txt"), "Trash is unavailable".to_owned())]);
-    app.sync_transient_presentation();
+    let _ = app.update(Message::Noop);
 
     assert!(matches!(
         app.file_operations.view(),
@@ -259,7 +259,7 @@ fn permanent_delete_prompt_accepts_y_and_n_from_the_keyboard() {
 
     app.file_operations
         .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
-    app.sync_transient_presentation();
+    let _ = app.update(Message::Noop);
     press(&mut app, "n");
     assert!(matches!(
         app.file_operations.view(),
@@ -268,7 +268,7 @@ fn permanent_delete_prompt_accepts_y_and_n_from_the_keyboard() {
 
     app.file_operations
         .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
-    app.sync_transient_presentation();
+    let _ = app.update(Message::Noop);
     let key = keyboard::Key::Character("Y".into());
     let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("Y"));
     assert!(app.foreground_operation_active());
