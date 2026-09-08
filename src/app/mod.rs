@@ -54,7 +54,7 @@ use std::{path::PathBuf, time::Duration};
 use crate::{
     fs, journal, theme,
     transfer::{
-        Action as TransferAction, ClipboardImport, Event as TransferEvent,
+        Action as TransferAction, ClipboardImport, ClipboardRevision, Event as TransferEvent,
         Outcome as TransferOutcome,
     },
 };
@@ -281,6 +281,7 @@ enum Message {
     Paste,
     ClipboardRead {
         destination: PathBuf,
+        revision: ClipboardRevision,
         result: Result<ClipboardImport, String>,
     },
     OperationError(String),

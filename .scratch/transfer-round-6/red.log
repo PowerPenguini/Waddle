@@ -1,0 +1,24 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.91s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test app::tests::transfer::delayed_paste_does_not_replace_a_newer_copy_or_cut ... FAILED
+
+failures:
+
+---- app::tests::transfer::delayed_paste_does_not_replace_a_newer_copy_or_cut stdout ----
+
+thread 'app::tests::transfer::delayed_paste_does_not_replace_a_newer_copy_or_cut' (1086123) panicked at src/app/tests/transfer.rs:773:21:
+assertion `left == right` failed: a delayed Paste must not overwrite a later Copy or Cut
+  left: Some(ClipboardPayload { paths: ["/tmp/.tmp2QMYvt/external.txt"], action: Copy, generation: 2 })
+ right: Some(ClipboardPayload { paths: ["/tmp/.tmp2QMYvt/newer.txt"], action: Copy, generation: 1 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::tests::transfer::delayed_paste_does_not_replace_a_newer_copy_or_cut
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 510 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--bin waddle`

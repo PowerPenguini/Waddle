@@ -85,8 +85,10 @@ impl App {
 
     pub(super) fn paste_clipboard(&self, completion: ClipboardCompletion) -> Task<Message> {
         let destination = self.navigation.current().to_path_buf();
+        let revision = self.transfers.clipboard_revision();
         Task::perform(completion, move |result| Message::ClipboardRead {
             destination,
+            revision,
             result,
         })
     }

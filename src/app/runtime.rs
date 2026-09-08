@@ -530,10 +530,13 @@ impl App {
             Message::Paste => self.paste(),
             Message::ClipboardRead {
                 destination,
+                revision,
                 result,
             } => match result {
                 Ok(payload) => {
-                    if let Some(request) = self.transfers.paste_import(payload, destination) {
+                    if let Some(request) =
+                        self.transfers.paste_import(payload, destination, revision)
+                    {
                         self.sync_location_monitoring();
                         self.start_transfer(request)
                     } else {

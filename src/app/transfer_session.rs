@@ -10,7 +10,8 @@ use crate::{
     journal,
     transfer::{
         Action, Adapter, AdapterCompletion, ClipboardAdapter, ClipboardCompletion, ClipboardImport,
-        Consequences, Event, NativeUpdate, Outcome, Preview, Release, Request, TransferState,
+        ClipboardRevision, Consequences, Event, NativeUpdate, Outcome, Preview, Release, Request,
+        TransferState,
     },
 };
 
@@ -215,6 +216,10 @@ impl TransferSession {
 
     pub(super) fn native_subscription(&self) -> Option<Subscription<Event>> {
         self.native.subscription()
+    }
+
+    pub(super) fn clipboard_revision(&self) -> ClipboardRevision {
+        self.state.clipboard_revision()
     }
 
     pub(super) fn clipboard_read(&self) -> Option<Result<ClipboardCompletion, String>> {
@@ -670,7 +675,13 @@ impl TransferSession {
         &mut self,
         import: ClipboardImport,
         destination: PathBuf,
+        revision: ClipboardRevision,
     ) -> Option<Request> {
+        if revision != self.state.clipboard_revision() {
+            // The earlier Paste still runs, but must neither replace nor clear
+            // a newer Copy/Cut when its response or Transfer completes.
+            return Request::detached_clipboard(import, destination);
+        }
         if !self.state.import_clipboard(import) {
             return None;
         }
@@ -1066,7 +1077,7 @@ mod tests {
                         .unwrap()
                         .await
                         .expect("Waddle's own Copy must remain pasteable");
-                    session.paste_import(import, destination.clone())
+                    session.paste_import(import, destination.clone(), session.clipboard_revision())
                 }
             }
             .unwrap();
@@ -1109,7 +1120,11 @@ mod tests {
                 .await
                 .unwrap();
             let request = session
-                .paste_import(import, temp.path().join("pendrive"))
+                .paste_import(
+                    import,
+                    temp.path().join("pendrive"),
+                    session.clipboard_revision(),
+                )
                 .unwrap();
             assert_eq!(request.paths, [external]);
 
@@ -1124,6 +1139,54 @@ mod tests {
                 result.unwrap_err(),
                 "the Wayland clipboard has no file offer"
             );
+        });
+    }
+
+    #[test]
+    fn delayed_paste_does_not_resurrect_clipboard_after_a_new_cut_was_cancelled() {
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("external.txt");
+            let newer = temp.path().join("new-cut.txt");
+            let destination = temp.path().join("target");
+            std::fs::write(&source, "earlier Paste").unwrap();
+            std::fs::write(&newer, "cancelled Cut").unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            let mut session = TransferSession::open(temp.path().join("transfers.json"));
+            let clipboard = MemoryClipboard {
+                import: Some(ClipboardImport {
+                    paths: vec![source],
+                    action: Action::Copy,
+                    generation: None,
+                }),
+                ..MemoryClipboard::default()
+            };
+            let revision = session.clipboard_revision();
+            let read = session
+                .clipboard_read_with(Some(&clipboard))
+                .unwrap()
+                .unwrap();
+            session.cut(&[entry(newer.clone())]).unwrap();
+            assert!(session.cancel_cut());
+            let request = session
+                .paste_import(read.await.unwrap(), destination.clone(), revision)
+                .unwrap();
+            assert!(
+                session.clipboard_payload().is_none(),
+                "the cancelled Cut must leave the clipboard empty"
+            );
+            let operations = Operations::default();
+            let task = session.start(request, &operations).unwrap();
+            assert!(matches!(
+                run_task(&mut session, task, &destination, &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert_eq!(
+                std::fs::read(destination.join("external.txt")).unwrap(),
+                b"earlier Paste"
+            );
+            assert_eq!(std::fs::read(newer).unwrap(), b"cancelled Cut");
+            assert!(session.clipboard_payload().is_none());
         });
     }
 

@@ -1,0 +1,12 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.00s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 4 tests
+test app::scroll_motion::tests::a_delayed_animation_offset_does_not_cancel_newer_scroll_work ... ok
+test app::transfer_session::tests::delayed_paste_does_not_resurrect_clipboard_after_a_new_cut_was_cancelled ... ok
+test app::tests::transfer::delayed_clipboard_paste_keeps_the_requested_destination_after_navigation ... ok
+test app::tests::transfer::delayed_paste_does_not_replace_a_newer_copy_or_cut ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 508 filtered out; finished in 0.22s
+

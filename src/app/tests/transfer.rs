@@ -164,6 +164,7 @@ fn system_clipboard_completion_enters_the_same_transfer_session() {
 
     let _ = app.update(Message::ClipboardRead {
         destination: destination.clone(),
+        revision: app.transfers.clipboard_revision(),
         result: Ok(ClipboardImport {
             paths: paths.clone(),
             action: TransferAction::Copy,
@@ -710,6 +711,79 @@ fn delayed_clipboard_paste_keeps_the_requested_destination_after_navigation() {
                 );
                 assert_eq!(source.exists(), action == TransferAction::Copy);
                 assert!(!app.transfers.overview().active);
+            }
+        });
+}
+
+#[test]
+fn delayed_paste_does_not_replace_a_newer_copy_or_cut() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for imported_action in [TransferAction::Copy, TransferAction::Move] {
+                for newer_action in [TransferAction::Copy, TransferAction::Move] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let destination = temp.path().join("target");
+                    std_fs::create_dir(&destination).unwrap();
+                    let old = temp.path().join("external.txt");
+                    let newer = destination.join("newer.txt");
+                    std_fs::write(&old, "earlier Paste").unwrap();
+                    std_fs::write(&newer, "new clipboard").unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(destination.clone());
+                    app.navigation.settle_for_test();
+                    app.transfers =
+                        transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                    app.view_preferences = super::view_preferences::Preferences::empty_at(
+                        temp.path().join("waddlerc"),
+                    );
+                    let (send, receive) = iced::futures::channel::oneshot::channel();
+                    let pending =
+                        app.paste_clipboard(Box::pin(async move { receive.await.unwrap() }));
+                    app.navigation.replace_displayed_entries(vec![FileEntry {
+                        path: newer.clone(),
+                        name: "newer.txt".into(),
+                        directory: false,
+                        metadata: Default::default(),
+                    }]);
+                    app.grid.select_only(Some(0), 1);
+                    let _ = match newer_action {
+                        TransferAction::Copy => app.update(Message::Copy),
+                        TransferAction::Move => app.cut_selection(),
+                    };
+                    let expected = app.transfers.clipboard_payload().unwrap();
+                    send.send(Ok(ClipboardImport {
+                        paths: vec![old.clone()],
+                        action: imported_action,
+                        generation: None,
+                    }))
+                    .unwrap();
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        super::navigation::finish_tasks(&mut app, pending),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        std_fs::read(destination.join("external.txt")).unwrap(),
+                        b"earlier Paste"
+                    );
+                    assert_eq!(old.exists(), imported_action == TransferAction::Copy);
+                    assert_eq!(
+                        app.transfers.clipboard_payload(),
+                        Some(expected),
+                        "a delayed Paste must not overwrite a later Copy or Cut"
+                    );
+                    assert_eq!(std_fs::read(&newer).unwrap(), b"new clipboard");
+                    let next = app
+                        .transfers
+                        .paste(temp.path().join("next-target"))
+                        .unwrap();
+                    assert_eq!(next.paths, vec![newer]);
+                    assert_eq!(next.action, newer_action);
+                }
             }
         });
 }

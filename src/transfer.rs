@@ -116,6 +116,10 @@ pub(crate) struct ClipboardPayload {
     pub(crate) generation: u64,
 }
 
+// A local revision, independent of a generation supplied by a native clipboard owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ClipboardRevision(u64);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClipboardImport {
     pub(crate) paths: Vec<PathBuf>,
@@ -131,6 +135,39 @@ pub(crate) struct Request {
     pub(crate) inbound_id: Option<u64>,
     pub(crate) clipboard_generation: Option<u64>,
     initiator: Initiator,
+}
+
+impl Request {
+    pub(crate) fn detached_clipboard(
+        import: ClipboardImport,
+        destination: PathBuf,
+    ) -> Option<Self> {
+        Self::clipboard(import.paths, destination, import.action, None)
+    }
+
+    fn clipboard(
+        paths: Vec<PathBuf>,
+        destination: PathBuf,
+        action: Action,
+        clipboard_generation: Option<u64>,
+    ) -> Option<Self> {
+        if paths.is_empty()
+            || (action == Action::Move
+                && paths
+                    .iter()
+                    .all(|path| path.parent() == Some(destination.as_path())))
+        {
+            return None;
+        }
+        Some(Self {
+            paths,
+            destination,
+            action,
+            inbound_id: None,
+            clipboard_generation,
+            initiator: Initiator::Clipboard,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,22 +314,16 @@ impl TransferState {
 
     pub(crate) fn paste(&self, destination: PathBuf) -> Option<Request> {
         let clipboard = self.clipboard.as_ref()?;
-        if clipboard.action == Action::Move
-            && clipboard
-                .paths
-                .iter()
-                .all(|path| path.parent() == Some(destination.as_path()))
-        {
-            return None;
-        }
-        Some(Request {
-            paths: clipboard.paths.clone(),
+        Request::clipboard(
+            clipboard.paths.clone(),
             destination,
-            action: clipboard.action,
-            inbound_id: None,
-            clipboard_generation: Some(clipboard.generation),
-            initiator: Initiator::Clipboard,
-        })
+            clipboard.action,
+            Some(clipboard.generation),
+        )
+    }
+
+    pub(crate) fn clipboard_revision(&self) -> ClipboardRevision {
+        ClipboardRevision(self.next_clipboard_generation)
     }
 
     pub(crate) fn clipboard_payload(&self) -> Option<ClipboardPayload> {
