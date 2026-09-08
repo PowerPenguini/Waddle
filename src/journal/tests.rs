@@ -968,3 +968,142 @@ fn resumed_copy_undo_preserves_external_changes_to_remaining_entries() {
         assert!(source.join("first/data").exists() && source.join("second/data").exists());
     }
 }
+
+#[test]
+fn redo_copy_resumes_after_a_later_failure_and_failed_rollback() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("source-one");
+    let second = temp.path().join("source-two");
+    let first_parent = temp.path().join("target-one");
+    let second_parent = temp.path().join("target-two");
+    fs::create_dir_all(first.join("locked")).unwrap();
+    fs::create_dir(&first_parent).unwrap();
+    fs::create_dir(&second_parent).unwrap();
+    fs::write(first.join("locked/data"), b"first data").unwrap();
+    fs::set_permissions(first.join("locked"), fs::Permissions::from_mode(0o500)).unwrap();
+    fs::write(&second, b"second data").unwrap();
+    let receipts = [
+        (first.clone(), first_parent.join("copy")),
+        (second, second_parent.join("copy")),
+    ]
+    .map(|(source, destination)| {
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        crate::fs::TransferReceipt {
+            source,
+            destination,
+            replaced_existing: false,
+        }
+    });
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(journal.undo().is_err());
+    fs::set_permissions(
+        receipts[0].destination.join("locked"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    journal.undo().unwrap();
+    fs::set_permissions(&second_parent, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = journal.redo();
+    fs::set_permissions(&second_parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert!(
+        receipts[0].destination.join("locked/data").exists(),
+        "fixture must leave an already copied item"
+    );
+    let mut journal = Journal::open(path).unwrap();
+    let resumed = journal.redo();
+    fs::set_permissions(first.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(
+        receipts[0].destination.join("locked"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    resumed.expect("Redo must resume its own partial work after repairing permissions");
+    assert_eq!(
+        fs::read(receipts[0].destination.join("locked/data")).unwrap(),
+        b"first data"
+    );
+    assert_eq!(fs::read(&receipts[1].destination).unwrap(), b"second data");
+}
+
+#[test]
+fn partial_redo_preserves_completed_entries_and_checks_them_before_resuming() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        for change_completed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let receipts = ["one", "two"].map(|name| {
+                let source = temp.path().join(name);
+                let parent = temp.path().join(format!("target-{name}"));
+                fs::create_dir(&parent).unwrap();
+                let destination = parent.join(name);
+                fs::write(&source, name).unwrap();
+                match kind {
+                    TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+                    TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+                }
+                crate::fs::TransferReceipt {
+                    source,
+                    destination,
+                    replaced_existing: false,
+                }
+            });
+            let path = temp.path().join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal
+                .record(Action::transfer(kind, &receipts).unwrap().unwrap())
+                .unwrap();
+            journal.undo().unwrap();
+            let blocked = receipts[1].destination.parent().unwrap();
+            fs::set_permissions(blocked, fs::Permissions::from_mode(0o500)).unwrap();
+            let failed = journal.redo();
+            fs::set_permissions(blocked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(failed.is_err());
+            let completed = &receipts[0].destination;
+            assert_eq!(fs::read(completed).unwrap(), b"one");
+            let inode = fs::metadata(completed).unwrap().ino();
+            assert!(!receipts[1].destination.exists());
+            assert_eq!(
+                receipts[0].source.exists(),
+                matches!(kind, TransferKind::Copy)
+            );
+            if change_completed {
+                fs::write(completed, "external edit").unwrap();
+            }
+            let mut journal = Journal::open(path).unwrap();
+            let resumed = journal.redo();
+            if change_completed {
+                assert!(
+                    resumed.is_err(),
+                    "a changed completed entry must block the retry"
+                );
+                assert_eq!(fs::read(completed).unwrap(), b"external edit");
+                assert!(!receipts[1].destination.exists());
+                assert_eq!(fs::read(&receipts[1].source).unwrap(), b"two");
+            } else {
+                resumed.unwrap();
+                assert_eq!(fs::metadata(completed).unwrap().ino(), inode);
+                assert_eq!(fs::read(&receipts[1].destination).unwrap(), b"two");
+                journal.undo().unwrap();
+                for receipt in &receipts {
+                    assert!(receipt.source.exists());
+                    assert!(!receipt.destination.exists());
+                }
+                journal.redo().unwrap();
+                assert_eq!(fs::read(completed).unwrap(), b"one");
+                assert_eq!(fs::read(&receipts[1].destination).unwrap(), b"two");
+            }
+        }
+    }
+}

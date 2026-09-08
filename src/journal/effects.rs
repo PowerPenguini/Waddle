@@ -282,11 +282,16 @@ fn apply_transfer(
         }
         Direction::Redo => {
             for item in items.iter() {
-                verify_tree(&item.source, &item.source_fingerprint)?;
-                ensure_absent(&item.destination)?;
+                if item.undone {
+                    verify_tree(&item.source, &item.source_fingerprint)?;
+                    ensure_absent(&item.destination)?;
+                } else {
+                    verify_tree(&item.destination, &item.result_fingerprint)?;
+                }
             }
-            let mut completed = Vec::new();
-            for item in items.iter_mut() {
+            // As with Undo, retain completed entries when a later entry fails.
+            // Journal saves their state on error so a retry can resume safely.
+            for item in items.iter_mut().filter(|item| item.undone) {
                 let result = match kind {
                     TransferKind::Copy => transfer.apply(
                         crate::transfer::Action::Copy,
@@ -300,42 +305,12 @@ fn apply_transfer(
                     ),
                 };
                 if let Err(error) = result {
-                    rollback_transfer(kind, items, &completed, Direction::Redo);
                     return Err(error.into());
                 }
                 item.result_fingerprint = TreeFingerprint::read(&item.destination)?;
                 item.undone = false;
-                completed.push(item.destination.clone());
             }
             Ok(transfer_effect(kind, items, Direction::Redo))
-        }
-    }
-}
-
-fn rollback_transfer(
-    kind: TransferKind,
-    items: &[TransferItem],
-    completed: &[PathBuf],
-    direction: Direction,
-) {
-    for path in completed.iter().rev() {
-        let Some(item) = items
-            .iter()
-            .find(|item| item.source == *path || item.destination == *path)
-        else {
-            continue;
-        };
-        match (kind, direction) {
-            (TransferKind::Copy, Direction::Redo) => {
-                let _ = crate::fs::journal_remove(&item.destination);
-            }
-            (TransferKind::Move, Direction::Undo) => {
-                let _ = crate::fs::journal_move(&item.source, &item.destination);
-            }
-            (TransferKind::Move, Direction::Redo) => {
-                let _ = crate::fs::journal_move(&item.destination, &item.source);
-            }
-            (TransferKind::Copy, Direction::Undo) => {}
         }
     }
 }
