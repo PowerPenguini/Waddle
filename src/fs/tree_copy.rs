@@ -170,9 +170,17 @@ pub(super) fn copy_item_with_warnings(
         hardlinks: links.clone(),
         warnings: Vec::new(),
         bytes: 0,
+        created: false,
         progress,
     };
-    context.copy(source, destination)?;
+    if let Err(error) = context.copy(source, destination) {
+        // Creation can lose a race to an unrelated entry. Only clean a root
+        // that this copy actually created; create_new/mkdir/link are exclusive.
+        if context.created {
+            remove_incomplete_copy(destination);
+        }
+        return Err(error);
+    }
     Ok(PreparedCopy {
         warnings: context.warnings,
         links: context.hardlinks,
@@ -183,6 +191,7 @@ struct CopyContext<'a> {
     hardlinks: CopyLinks,
     warnings: Vec<String>,
     bytes: u64,
+    created: bool,
     progress: &'a mut dyn FnMut(u64) -> io::Result<()>,
 }
 
@@ -197,12 +206,14 @@ impl CopyContext<'_> {
         let metadata = fs::symlink_metadata(source)?;
         if metadata.file_type().is_symlink() {
             copy_symlink(source, destination)?;
+            self.created = true;
             self.metadata(source, destination, &metadata, true);
             self.advance(metadata.len())?;
             return Ok(());
         }
         if metadata.is_dir() {
             fs::create_dir(destination)?;
+            self.created = true;
             let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
             entries.sort_by_key(std::fs::DirEntry::file_name);
             for entry in entries {
@@ -224,6 +235,7 @@ impl CopyContext<'_> {
         {
             match fs::hard_link(&existing.path, destination) {
                 Ok(()) => {
+                    self.created = true;
                     let existing = self.hardlinks.0.get_mut(&hardlink_key).unwrap();
                     existing.changed = fs::symlink_metadata(destination)
                         .ok()
@@ -256,6 +268,7 @@ impl CopyContext<'_> {
             .write(true)
             .create_new(true)
             .open(destination)?;
+        self.created = true;
         let sparse = metadata.len() > 0 && metadata.blocks().saturating_mul(512) < metadata.len();
         let base = self.bytes;
         let mut copied = 0;

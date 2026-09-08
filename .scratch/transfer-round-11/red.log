@@ -1,0 +1,22 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.73s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+test fs::tests::concurrent_copies_to_one_folder_do_not_share_or_remove_each_others_staging ... FAILED
+
+failures:
+
+---- fs::tests::concurrent_copies_to_one_folder_do_not_share_or_remove_each_others_staging stdout ----
+
+thread 'fs::tests::concurrent_copies_to_one_folder_do_not_share_or_remove_each_others_staging' (1107896) panicked at src/fs/tests.rs:2739:9:
+one copy interfered with the other's staging: [TransferFailure { source: "/tmp/.tmp16VDUH/second", error: "No such file or directory (os error 2)" }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fs::tests::concurrent_copies_to_one_folder_do_not_share_or_remove_each_others_staging
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

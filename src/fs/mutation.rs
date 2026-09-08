@@ -115,13 +115,7 @@ fn copy_revealed(
     links: &mut CopyLinks,
 ) -> io::Result<Vec<String>> {
     let staging = staging_path(destination)?;
-    let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
-        Ok(warnings) => warnings,
-        Err(error) => {
-            remove_incomplete_copy(&staging);
-            return Err(error);
-        }
-    };
+    let warnings = copy_item_with_warnings(source, &staging, progress, links)?;
     if let Err(error) = rename_noreplace(&staging, destination) {
         remove_incomplete_copy(&staging);
         return Err(error);
@@ -152,13 +146,7 @@ fn move_exact_with_progress(
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
             let snapshot = SourceTree::read(source)?;
             let staging = staging_path(destination)?;
-            let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
-                Ok(warnings) => warnings,
-                Err(error) => {
-                    remove_incomplete_copy(&staging);
-                    return Err(error);
-                }
-            };
+            let warnings = copy_item_with_warnings(source, &staging, progress, links)?;
             if let Err(error) = snapshot.verify(source) {
                 remove_incomplete_copy(&staging);
                 return Err(error);
@@ -271,13 +259,7 @@ fn replace_by_staging(
         .then(|| SourceTree::read(source))
         .transpose()?;
     let staging = staging_path(destination)?;
-    let warnings = match copy_item_with_warnings(source, &staging, progress, links) {
-        Ok(warnings) => warnings,
-        Err(error) => {
-            remove_incomplete_copy(&staging);
-            return Err(error);
-        }
-    };
+    let warnings = copy_item_with_warnings(source, &staging, progress, links)?;
     if let Some(snapshot) = &snapshot
         && let Err(error) = snapshot.verify(source)
     {
@@ -350,10 +332,15 @@ fn cleanup_replaced(path: &Path) -> Option<String> {
 }
 
 fn staging_path(destination: &Path) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_STAGING: AtomicU64 = AtomicU64::new(0);
     let directory = destination.parent().unwrap_or_else(|| Path::new("."));
-    for nonce in 0_u64..10_000 {
-        let candidate = format!(".waddle-replace-{}-{nonce}", std::process::id());
-        let path = directory.join(candidate);
+    for _ in 0..10_000 {
+        // Every concurrent operation in this process gets a distinct candidate,
+        // including before either operation has created its staging entry.
+        let nonce = NEXT_STAGING.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(".waddle-replace-{}-{nonce}", std::process::id()));
         if path == destination {
             continue;
         }

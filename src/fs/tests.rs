@@ -2685,3 +2685,115 @@ fn cancel_during_hardlink_content_verification_preserves_both_sides() {
         fs::metadata(target.join("b")).unwrap().ino()
     );
 }
+
+#[test]
+fn concurrent_copies_to_one_folder_do_not_share_or_remove_each_others_staging() {
+    use std::{sync::mpsc, time::Duration};
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        let destination = target.path().join("target");
+        fs::create_dir(&destination).unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::write(&first, vec![0x11; 2 * 1024 * 1024]).unwrap();
+        fs::write(&second, vec![0x22; 2 * 1024 * 1024]).unwrap();
+        let (start, started) = mpsc::channel();
+        let (ready, prepared) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let second_destination = destination.clone();
+        let worker = std::thread::spawn(move || {
+            started.recv_timeout(Duration::from_secs(5)).unwrap();
+            let mut signalled = false;
+            TransferBatch::try_new(vec![second], second_destination, action)
+                .unwrap()
+                .run_with(
+                    || false,
+                    |progress| {
+                        if !signalled && progress.completed_bytes > 0 {
+                            signalled = true;
+                            ready.send(()).unwrap();
+                            let _ = resumed.recv_timeout(Duration::from_secs(5));
+                        }
+                    },
+                )
+        });
+        let mut updates = 0;
+        let first_outcome = TransferBatch::try_new(vec![first], destination.clone(), action)
+            .unwrap()
+            .run_with(
+                || false,
+                |_| {
+                    updates += 1;
+                    if updates == 2 {
+                        // The first copy chose its staging location but has not opened it.
+                        start.send(()).unwrap();
+                        prepared.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                },
+            );
+        let _ = resume.send(());
+        let second_outcome = worker.join().unwrap();
+        for outcome in [first_outcome, second_outcome] {
+            let TransferBatchOutcome::Complete(report) = outcome else {
+                panic!("different filenames must not conflict");
+            };
+            assert!(
+                report.failures.is_empty(),
+                "one copy interfered with the other's staging: {:?}",
+                report.failures
+            );
+        }
+        assert_eq!(
+            fs::read(destination.join("first")).unwrap(),
+            vec![0x11; 2 * 1024 * 1024]
+        );
+        assert_eq!(
+            fs::read(destination.join("second")).unwrap(),
+            vec![0x22; 2 * 1024 * 1024]
+        );
+        assert_eq!(
+            fs::read_dir(destination).unwrap().count(),
+            2,
+            "completed copies must clean their staging directories"
+        );
+        assert_eq!(temp.path().join("first").exists(), action == Action::Copy);
+        assert_eq!(temp.path().join("second").exists(), action == Action::Copy);
+    }
+}
+
+#[test]
+fn failed_copy_preserves_existing_staging_name_files_directories_and_symlinks() {
+    use std::os::unix::{fs::symlink, net::UnixListener};
+    for kind in ["file", "directory", "symlink"] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let existing = target.join(format!(".waddle-replace-{}-0", std::process::id()));
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"unrelated data").unwrap();
+        match kind {
+            "file" => fs::write(&existing, b"unrelated data").unwrap(),
+            "directory" => {
+                fs::create_dir(&existing).unwrap();
+                fs::write(existing.join("data"), b"unrelated data").unwrap();
+            }
+            _ => symlink(&outside, &existing).unwrap(),
+        }
+        let source = temp.path().join("unsupported-socket");
+        let _socket = UnixListener::bind(&source).unwrap();
+        let report =
+            complete(TransferBatch::try_new(vec![source], target.clone(), Action::Copy).unwrap());
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(fs::read(&outside).unwrap(), b"unrelated data");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+        if kind == "directory" {
+            assert_eq!(fs::read(existing.join("data")).unwrap(), b"unrelated data");
+        } else {
+            assert_eq!(fs::read(&existing).unwrap(), b"unrelated data");
+            if kind == "symlink" {
+                assert_eq!(fs::read_link(existing).unwrap(), outside);
+            }
+        }
+    }
+}
