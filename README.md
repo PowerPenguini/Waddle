@@ -182,6 +182,12 @@ paths must remain below 8 ms per input-and-render operation to preserve 60 FPS h
 scripts/benchmark-performance.sh
 ```
 
+For chevron rendering changes, run the GPU regression with a headless graphics adapter:
+
+```sh
+WGPU_BACKEND=gl cargo test chevrons_keep_even_edges -- --ignored
+```
+
 ## Project notes
 
 - [Product roadmap](ROADMAP.md)

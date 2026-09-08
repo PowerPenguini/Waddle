@@ -686,7 +686,9 @@ pub(super) fn toolbar_button(
         TOOLBAR_ICON_SIZE,
         blend_colors(background, color, if enabled { 0.98 } else { 0.30 }),
     );
-    button(icon)
+    // A fixed-size button passes its minimum bounds to its child. Contain the
+    // SVG so the hit target does not stretch the icon before rasterization.
+    button(container(icon).center(Fill))
         .on_press_maybe(enabled.then_some(message))
         .width(26)
         .height(30)

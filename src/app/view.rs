@@ -1,5 +1,9 @@
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "tests/chevron_rendering.rs"]
+mod chevron_rendering;
+
 use iced::{
     Alignment, Element, Fill, Length, Padding,
     time::Instant,
@@ -915,7 +919,9 @@ impl<'a> View<'a> {
             } else {
                 include_bytes!("../ui/icons/sort-ascending.svg")
             };
-            label = label.push(themed_svg(icon, 14.0, color));
+            // Whole, even raster dimensions at quarter-step display scales
+            // avoid dropping edge pixels when Iced snaps the SVG to the grid.
+            label = label.push(themed_svg(icon, 16.0, color));
         }
         container(
             button(
