@@ -18,6 +18,7 @@ pub(super) struct Entry {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Favorite {
+    #[serde(with = "crate::path_serde")]
     path: PathBuf,
     label: String,
 }
@@ -144,11 +145,12 @@ impl Places {
                 {
                     return Err("the current folder is already a Favorite".to_owned());
                 }
-                self.favorites.push(Favorite {
+                let mut favorites = self.favorites.clone();
+                favorites.push(Favorite {
                     path: current.to_path_buf(),
                     label: label.clone(),
                 });
-                self.save()?;
+                self.commit(favorites)?;
                 Ok(format!("Added Favorite: {label}"))
             }
             "remove" => {
@@ -161,8 +163,9 @@ impl Places {
                 if index == 0 || index > self.favorites.len() {
                     return Err("Favorite index is out of range".to_owned());
                 }
-                let removed = self.favorites.remove(index - 1);
-                self.save()?;
+                let mut favorites = self.favorites.clone();
+                let removed = favorites.remove(index - 1);
+                self.commit(favorites)?;
                 Ok(format!("Removed Favorite: {}", removed.label))
             }
             "list" | "" => Ok(if self.favorites.is_empty() {
@@ -190,21 +193,24 @@ impl Places {
         if from >= self.favorites.len() || to >= self.favorites.len() || from == to {
             return Ok(());
         }
-        let favorite = self.favorites.remove(from);
-        self.favorites.insert(to, favorite);
-        self.save()
+        let mut favorites = self.favorites.clone();
+        let favorite = favorites.remove(from);
+        favorites.insert(to, favorite);
+        self.commit(favorites)
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn commit(&mut self, favorites: Vec<Favorite>) -> Result<(), String> {
         let directory = self.path.parent().ok_or("Favorites path has no parent")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         let temporary = self.path.with_extension("json.tmp");
         fs::write(
             &temporary,
-            serde_json::to_vec_pretty(&self.favorites).map_err(|error| error.to_string())?,
+            serde_json::to_vec_pretty(&favorites).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.path).map_err(|error| error.to_string())
+        fs::rename(temporary, &self.path).map_err(|error| error.to_string())?;
+        self.favorites = favorites;
+        Ok(())
     }
 }
 
@@ -380,6 +386,87 @@ pub(super) fn run_volume_command(arguments: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunt_favorites_preserve_non_utf8_folder_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"folder-\xff".to_vec()));
+        fs::create_dir(&folder).unwrap();
+        let path = temp.path().join("favorites.json");
+        let mut places = Places::empty_at(path.clone());
+        places
+            .command(&folder, "add My folder")
+            .expect("a valid Unix path must remain a saveable Favorite");
+        let reopened = Places {
+            path: path.clone(),
+            favorites: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
+        };
+        assert!(
+            reopened
+                .entries()
+                .iter()
+                .any(|entry| entry.kind == NodeKind::Favorite
+                    && entry.path == folder
+                    && entry.label == "My folder")
+        );
+    }
+
+    #[test]
+    fn hunt_failed_favorite_save_preserves_state_and_allows_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("favorites.json");
+        let mut places = Places::empty_at(path.clone());
+        for name in ["one", "two", "three"] {
+            fs::create_dir(temp.path().join(name)).unwrap();
+        }
+        places.command(&temp.path().join("one"), "add One").unwrap();
+        places.command(&temp.path().join("two"), "add Two").unwrap();
+        let before = places.command(temp.path(), "list").unwrap();
+        let disk_before = fs::read(&path).unwrap();
+        // An occupied staging path deterministically makes writes fail, including as root.
+        let blocked = path.with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(
+            places
+                .command(&temp.path().join("three"), "add Three")
+                .is_err()
+        );
+        assert_eq!(
+            places.command(temp.path(), "list").unwrap(),
+            before,
+            "failed Add must not create an unsaved Favorite"
+        );
+        assert!(places.command(temp.path(), "remove 1").is_err());
+        assert_eq!(
+            places.command(temp.path(), "list").unwrap(),
+            before,
+            "failed Remove must preserve the Favorite"
+        );
+        assert!(places.reorder(0, 1).is_err());
+        assert_eq!(
+            places.command(temp.path(), "list").unwrap(),
+            before,
+            "failed Reorder must preserve order"
+        );
+        assert_eq!(fs::read(&path).unwrap(), disk_before);
+        fs::remove_dir(blocked).unwrap();
+        places
+            .command(&temp.path().join("three"), "add Three")
+            .expect("retry should work after repairing storage");
+        places.reorder(2, 0).unwrap();
+        places.command(temp.path(), "remove 2").unwrap();
+        let favorites: Vec<Favorite> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            favorites
+                .iter()
+                .map(|favorite| favorite.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Three", "Two"]
+        );
+    }
 
     #[test]
     fn favorites_keep_custom_labels_and_persist_drag_order() {

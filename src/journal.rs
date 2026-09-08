@@ -116,17 +116,21 @@ struct Entry {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) enum Action {
     Rename {
+        #[serde(with = "crate::path_serde")]
         before: PathBuf,
+        #[serde(with = "crate::path_serde")]
         after: PathBuf,
         fingerprint: Fingerprint,
     },
     NewFolder {
+        #[serde(with = "crate::path_serde")]
         path: PathBuf,
         fingerprint: Fingerprint,
         #[serde(default)]
         identity: Option<DirectoryIdentity>,
     },
     NewFile {
+        #[serde(with = "crate::path_serde")]
         path: PathBuf,
         fingerprint: Fingerprint,
     },
@@ -152,7 +156,9 @@ pub(crate) enum TransferKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct TransferItem {
+    #[serde(with = "crate::path_serde")]
     source: PathBuf,
+    #[serde(with = "crate::path_serde")]
     destination: PathBuf,
     source_fingerprint: TreeFingerprint,
     result_fingerprint: TreeFingerprint,
@@ -175,8 +181,11 @@ pub(crate) struct TrashReceipt {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct TrashItem {
+    #[serde(with = "crate::path_serde")]
     original: PathBuf,
+    #[serde(with = "crate::path_serde")]
     trashed: PathBuf,
+    #[serde(with = "crate::path_serde")]
     info: PathBuf,
     fingerprint: TreeFingerprint,
     // A completed physical restore awaiting the rest of the batch or metadata cleanup.

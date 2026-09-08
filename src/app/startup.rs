@@ -8,6 +8,7 @@ use crate::launch;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct Stored {
+    #[serde(with = "crate::path_serde::optional")]
     last_directory: Option<PathBuf>,
     width: f32,
     height: f32,
@@ -232,6 +233,38 @@ mod tests {
             std::env::current_dir().unwrap()
         );
         assert_eq!(reopened.window_settings().size, Size::new(900.0, 700.0));
+    }
+
+    #[test]
+    fn hunt_non_utf8_last_directory_does_not_block_session_saving() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"folder-\xff".to_vec()));
+        fs::create_dir(&folder).unwrap();
+        let path = temp.path().join("startup.json");
+        let mut state = State {
+            path: path.clone(),
+            stored: Stored::default(),
+            requested: None,
+            error: None,
+        };
+        state.remember_size(Size::new(800.0, 600.0));
+        state.remember_directory(folder.clone());
+        state.remember_size(Size::new(960.0, 720.0));
+        let reopened = State {
+            path: path.clone(),
+            stored: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
+            requested: None,
+            error: None,
+        };
+        assert_eq!(
+            reopened.initial_directory(true),
+            folder,
+            "the exact last directory must survive restarting"
+        );
+        assert_eq!(reopened.window_settings().size, Size::new(960.0, 720.0));
     }
 
     #[test]

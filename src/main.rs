@@ -3,6 +3,7 @@ mod file_manager_service;
 mod fs;
 mod journal;
 mod launch;
+mod path_serde;
 mod theme;
 mod transfer;
 #[path = "clipboard.rs"]

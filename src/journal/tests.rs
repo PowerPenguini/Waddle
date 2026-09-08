@@ -2,6 +2,124 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn hunt_journal_round_trips_non_utf8_file_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"file-\xff.txt".to_vec()));
+    let journal_path = temp.path().join("history.json");
+    fs::write(&file, "").unwrap();
+    let mut journal = Journal::open(journal_path.clone()).unwrap();
+    journal
+        .record(Action::new_file(file.clone()).unwrap())
+        .expect("a valid Unix filename must not disable persistent Undo");
+    let mut journal = Journal::open(journal_path).unwrap();
+    journal.undo().unwrap();
+    assert!(!file.exists());
+    journal.redo().unwrap();
+    assert_eq!(fs::read(&file).unwrap(), b"");
+}
+
+#[test]
+fn non_utf8_copy_and_move_records_support_persistent_undo_and_redo() {
+    use std::os::unix::ffi::OsStringExt;
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"folder-\xfe".to_vec()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, "preserve me").unwrap();
+        match kind {
+            TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+            TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+        }
+        let path = temp.path().join("history.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    kind,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        let mut journal = Journal::open(path).unwrap();
+        journal.undo().unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "preserve me");
+        assert!(!destination.exists());
+        journal.redo().unwrap();
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "preserve me");
+        assert_eq!(source.exists(), matches!(kind, TransferKind::Copy));
+    }
+}
+
+#[test]
+fn non_utf8_rename_folder_and_trash_records_survive_restart() {
+    use std::os::unix::ffi::OsStringExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"folder-\xfe".to_vec()));
+    fs::create_dir(&root).unwrap();
+    let before = root.join("before");
+    let after = root.join("after");
+    fs::write(&after, "recover me").unwrap();
+    let path = temp.path().join("history.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(Action::rename(before.clone(), after.clone()).unwrap())
+        .unwrap();
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal.undo().unwrap();
+    assert_eq!(fs::read_to_string(&before).unwrap(), "recover me");
+    journal.redo().unwrap();
+    let folder = root.join("new-folder");
+    fs::create_dir(&folder).unwrap();
+    journal
+        .record(Action::new_folder(folder.clone()).unwrap())
+        .unwrap();
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal.undo().unwrap();
+    assert!(!folder.exists());
+    journal.redo().unwrap();
+    assert!(folder.is_dir());
+
+    // A private Trash fixture exercises every persisted receipt path without using desktop Trash.
+    let trashed = root.join("Trash/files/item");
+    let info = root.join("Trash/info/item.trashinfo");
+    fs::create_dir_all(trashed.parent().unwrap()).unwrap();
+    fs::create_dir_all(info.parent().unwrap()).unwrap();
+    fs::rename(&after, &trashed).unwrap();
+    fs::write(&info, "metadata").unwrap();
+    journal
+        .record(
+            Action::trash(&[TrashReceipt {
+                original: after.clone(),
+                trashed: trashed.clone(),
+                info: info.clone(),
+            }])
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    let mut journal = Journal::open(path).unwrap();
+    journal.undo().unwrap();
+    assert_eq!(fs::read_to_string(after).unwrap(), "recover me");
+    assert!(!trashed.exists());
+    assert!(!info.exists());
+}
+
+#[test]
 fn fingerprint_rejects_a_fifo_without_opening_it() {
     use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
 

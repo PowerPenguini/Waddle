@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.16s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+
+thread 'app::places::tests::hunt_failed_favorite_save_preserves_state_and_allows_retry' (919250) panicked at src/app/places.rs:414:9:
+assertion `left == right` failed: failed Add must not create an unsaved Favorite
+  left: "1. One  /tmp/.tmpf7c9Yi/one\n2. Two  /tmp/.tmpf7c9Yi/two\n3. Three  /tmp/.tmpf7c9Yi/three"
+ right: "1. One  /tmp/.tmpf7c9Yi/one\n2. Two  /tmp/.tmpf7c9Yi/two"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::places::tests::hunt_failed_favorite_save_preserves_state_and_allows_retry ... FAILED
+
+failures:
+
+failures:
+    app::places::tests::hunt_failed_favorite_save_preserves_state_and_allows_retry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.7 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.86s
+     Running unittests src/main.rs (target/debug/deps/waddle-b9344362d3359149)
+
+running 1 test
+
+thread 'app::startup::tests::hunt_non_utf8_last_directory_does_not_block_session_saving' (918234) panicked at src/app/startup.rs:251:9:
+assertion `left == right` failed: the exact last directory must survive restarting
+  left: "/home/powerpenguini/Projects/Waddle"
+ right: "/tmp/.tmprRuJBV/folder-\xFF"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::startup::tests::hunt_non_utf8_last_directory_does_not_block_session_saving ... FAILED
+
+failures:
+
+failures:
+    app::startup::tests::hunt_non_utf8_last_directory_does_not_block_session_saving
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 450 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`
