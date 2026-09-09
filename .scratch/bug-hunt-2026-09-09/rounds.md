@@ -343,3 +343,17 @@ outside this work.
   filesystem refresh and navigation effects and existing diagnostic recording.
 - Green: help survives both cases and the created file appears after refresh.
   All-target tests passed (616 passed, 22 ignored), along with Clippy and formatting.
+
+## Round 26: continuous writes starve filesystem notifications
+
+- Reproduction: confirm the app's native watch is installed, then write a file
+  every 10 ms while awaiting an event through the monitoring subscription.
+- Red: `cargo test location_monitoring_refreshes_while_a_file_is_continuously_written -- --nocapture`
+  received no event during the three-second window of sustained writes.
+- Cause: every write reset the trailing debounce timestamp, so the monitor waited
+  indefinitely for a quiet period before notifying the browser.
+- Fix: retain the first change time and flush batches once they reach 500 ms,
+  while keeping the existing 120 ms quiet-period debounce for short bursts.
+- Green: an event arrives while writes continue and the app refresh displays the
+  busy file. Existing burst-debounce coverage also passes. All-target tests passed
+  (617 passed, 22 ignored), along with Clippy and formatting.

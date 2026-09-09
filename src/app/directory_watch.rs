@@ -22,6 +22,7 @@ use iced::{
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 const DEBOUNCE: Duration = Duration::from_millis(120);
+const MAX_BATCH_DELAY: Duration = Duration::from_millis(500);
 const MAX_WATCHES: usize = 2_048;
 
 #[derive(Clone, Debug)]
@@ -33,6 +34,7 @@ pub(super) struct Event {
 
 #[derive(Default)]
 struct PendingChange {
+    first_changed: Option<Instant>,
     changed: Option<Instant>,
     removed: HashSet<PathBuf>,
 }
@@ -156,10 +158,14 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
         let ready = pending
             .iter()
             .filter_map(|(path, change)| {
-                change
+                let quiet = change
                     .changed
-                    .is_some_and(|changed| changed.elapsed() >= DEBOUNCE)
-                    .then_some(path.clone())
+                    .is_some_and(|changed| changed.elapsed() >= DEBOUNCE);
+                // A busy writer must not postpone notification indefinitely.
+                let expired = change
+                    .first_changed
+                    .is_some_and(|changed| changed.elapsed() >= MAX_BATCH_DELAY);
+                (quiet || expired).then_some(path.clone())
             })
             .collect::<Vec<_>>();
         for path in ready {
@@ -205,7 +211,9 @@ fn collect_changed_watches(
         }
         if let Some(directory) = watched.get(&event.wd) {
             let change = pending.entry(directory.clone()).or_default();
-            change.changed = Some(Instant::now());
+            let now = Instant::now();
+            change.first_changed.get_or_insert(now);
+            change.changed = Some(now);
             let name_start = offset + std::mem::size_of::<libc::inotify_event>();
             let name_bytes = &buffer[name_start..offset + record_size];
             let name_length = name_bytes

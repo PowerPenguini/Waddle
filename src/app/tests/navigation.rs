@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn location_monitoring_refreshes_while_a_file_is_continuously_written() {
+    use iced::futures::{StreamExt, stream::BoxStream};
+
+    async fn write_until_notified(
+        events: &mut BoxStream<'static, super::directory_watch::Event>,
+        path: &Path,
+        interval: Duration,
+    ) -> super::directory_watch::Event {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                std_fs::write(path, "updated").unwrap();
+                if let Ok(Some(event)) = tokio::time::timeout(interval, events.next()).await
+                    && event.path == path.parent().unwrap()
+                    && !event.watch_failed
+                {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("ongoing writes must reach the browser without waiting for the writer to stop")
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(Vec::new());
+            app.sync_location_monitoring();
+            let subscription = app.location_monitoring.as_ref().unwrap().subscription();
+            let recipe = iced::advanced::subscription::into_recipes(subscription)
+                .pop()
+                .unwrap();
+            let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+
+            // Confirm that the native watch is installed before the sustained writes.
+            let event = write_until_notified(
+                &mut events,
+                &temp.path().join("ready.txt"),
+                Duration::from_millis(300),
+            )
+            .await;
+            let task = app.update(Message::DirectoryChanged(event));
+            finish_tasks(&mut app, task).await;
+
+            let busy = temp.path().join("busy.txt");
+            let event = write_until_notified(&mut events, &busy, Duration::from_millis(10)).await;
+            let task = app.update(Message::DirectoryChanged(event));
+            finish_tasks(&mut app, task).await;
+            assert!(
+                app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == busy)
+            );
+        });
+}
+
+#[test]
 fn queued_shell_results_preserve_newer_help_while_refreshing_changed_files() {
     use iced::futures::StreamExt;
 
