@@ -51,8 +51,8 @@ impl Transition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Target {
     Folder { requested: PathBuf, kind: Kind },
-    Recent,
-    Trash,
+    Recent { refresh: bool },
+    Trash { refresh: bool },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,15 +71,15 @@ impl Request {
     pub(super) fn location(&self) -> DisplayedLocation {
         match self.target {
             Target::Folder { .. } => DisplayedLocation::Folder,
-            Target::Recent => DisplayedLocation::Recent,
-            Target::Trash => DisplayedLocation::Trash,
+            Target::Recent { .. } => DisplayedLocation::Recent,
+            Target::Trash { .. } => DisplayedLocation::Trash,
         }
     }
 
     pub(super) fn requested(&self) -> Option<&Path> {
         match &self.target {
             Target::Folder { requested, .. } => Some(requested),
-            Target::Recent | Target::Trash => None,
+            Target::Recent { .. } | Target::Trash { .. } => None,
         }
     }
 
@@ -384,13 +384,24 @@ impl NavigationSession {
     }
 
     pub(super) fn recent(&mut self) -> Start {
-        let mut start = self.begin(Target::Recent, Vec::new());
+        let mut start = self.begin(Target::Recent { refresh: false }, Vec::new());
         start.cancel_search = true;
         start
     }
 
     pub(super) fn trash(&mut self) -> Start {
-        let mut start = self.begin(Target::Trash, Vec::new());
+        let mut start = self.begin(Target::Trash { refresh: false }, Vec::new());
+        start.cancel_search = true;
+        start
+    }
+
+    pub(super) fn refresh_displayed(&mut self, selected: Vec<PathBuf>) -> Start {
+        let target = match self.displayed_location() {
+            DisplayedLocation::Folder => return self.refresh_selected(selected),
+            DisplayedLocation::Recent => Target::Recent { refresh: true },
+            DisplayedLocation::Trash => Target::Trash { refresh: true },
+        };
+        let mut start = self.begin(target, selected);
         start.cancel_search = true;
         start
     }
@@ -435,8 +446,12 @@ impl NavigationSession {
             (Target::Folder { kind, .. }, Completion::Folder(result)) => {
                 self.complete_folder(kind, &request.select, result, hidden_paths)
             }
-            (Target::Recent, Completion::Recent(result)) => self.complete_recent(result),
-            (Target::Trash, Completion::Trash(result)) => self.complete_trash(result),
+            (Target::Recent { refresh }, Completion::Recent(result)) => {
+                self.complete_recent(&request.select, *refresh, result)
+            }
+            (Target::Trash { refresh }, Completion::Trash(result)) => {
+                self.complete_trash(&request.select, *refresh, result)
+            }
             _ => Outcome::Ignored,
         };
         let refresh = !self.loading()
@@ -535,7 +550,12 @@ impl NavigationSession {
         )
     }
 
-    fn complete_recent(&mut self, result: Result<Vec<FileEntry>, String>) -> Outcome {
+    fn complete_recent(
+        &mut self,
+        select: &[PathBuf],
+        refresh: bool,
+        result: Result<Vec<FileEntry>, String>,
+    ) -> Outcome {
         let entries = match result {
             Ok(entries) => entries,
             Err(error) => return Outcome::Failed(error),
@@ -546,10 +566,21 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries: Vec::new(),
         };
-        self.commit(Vec::new(), false, false, DisplayedLocation::Recent)
+        let selected = self
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| select.contains(&entry.path).then_some(index))
+            .collect();
+        self.commit(selected, refresh, false, DisplayedLocation::Recent)
     }
 
-    fn complete_trash(&mut self, result: Result<Vec<trash::Entry>, String>) -> Outcome {
+    fn complete_trash(
+        &mut self,
+        select: &[PathBuf],
+        refresh: bool,
+        result: Result<Vec<trash::Entry>, String>,
+    ) -> Outcome {
         let trash_entries = match result {
             Ok(entries) => entries,
             Err(error) => return Outcome::Failed(error),
@@ -564,7 +595,13 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries,
         };
-        self.commit(Vec::new(), false, false, DisplayedLocation::Trash)
+        let selected = self
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| select.contains(&entry.path).then_some(index))
+            .collect();
+        self.commit(selected, refresh, false, DisplayedLocation::Trash)
     }
 
     fn commit(

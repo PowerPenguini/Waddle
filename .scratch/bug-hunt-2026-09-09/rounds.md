@@ -142,3 +142,17 @@ outside this work.
 - Green: the native monitoring regression passed in under one second; all-target
   tests passed (606 passed, 19 ignored); Clippy with warnings denied and formatting
   passed.
+
+## Round 12: refreshing Recent and Trash clears selection and scrolling
+
+- Reproduction: select two nonadjacent entries, scroll, refresh through app
+  messages, and deliver entries with a new row before the selected files.
+- Red: `cargo test refreshing_recent_and_trash_preserves_selection_by_path_and_scroll -- --nocapture`
+  returned an empty selection instead of `bravo` and `omega`.
+- Cause: refreshing special locations used their opening requests, which always
+  clear selection and reset scrolling.
+- Fix: Navigation session distinguishes refresh from opening for Recent/Trash;
+  refresh requests carry selected paths and preserve the scroll position.
+- Green: Recent and Trash regression scenarios passed; all-target tests passed
+  (607 passed, 19 ignored); Clippy and formatting passed. All seven release-mode
+  benchmarks passed; grid/list p95 stayed below 0.77 ms (8 ms budget).

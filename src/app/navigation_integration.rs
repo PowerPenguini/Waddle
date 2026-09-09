@@ -239,11 +239,22 @@ impl App {
     }
 
     pub(super) fn refresh_location(&mut self) -> Task<Message> {
-        match self.navigation.displayed_location() {
-            DisplayedLocation::Recent => self.open_recent(),
-            DisplayedLocation::Trash => self.open_trash(),
-            DisplayedLocation::Folder => self.live_refresh(),
+        if self.navigation.folder_displayed() {
+            return self.live_refresh();
         }
+        if self.prompt_blocks_action()
+            || self.foreground_operation_active()
+            || self.navigation.loading()
+        {
+            return Task::none();
+        }
+        let selected = self
+            .selected_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        let start = self.navigation.refresh_displayed(selected);
+        self.request_navigation(start)
     }
 
     pub(super) fn open_recent(&mut self) -> Task<Message> {

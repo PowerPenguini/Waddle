@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn refreshing_recent_and_trash_preserves_selection_by_path_and_scroll() {
+    for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(PathBuf::from("/start"));
+        let completion = |request: NavigationRequest, entries: Vec<FileEntry>| match location {
+            DisplayedLocation::Recent => Message::RecentLoaded {
+                request,
+                result: Some(Ok(entries)),
+            },
+            DisplayedLocation::Trash => Message::TrashLoaded {
+                request,
+                result: Some(Ok(entries
+                    .into_iter()
+                    .map(|file| super::trash::Entry {
+                        receipt: crate::journal::TrashReceipt {
+                            original: PathBuf::from("/original").join(&file.name),
+                            trashed: file.path.clone(),
+                            info: PathBuf::from("/info").join(&file.name),
+                        },
+                        file,
+                    })
+                    .collect())),
+            },
+            DisplayedLocation::Folder => unreachable!(),
+        };
+        let start = match location {
+            DisplayedLocation::Recent => app.navigation.recent(),
+            DisplayedLocation::Trash => app.navigation.trash(),
+            DisplayedLocation::Folder => unreachable!(),
+        };
+        let _ = app.update(completion(
+            start.request.unwrap(),
+            vec![entry("bravo"), entry("delta"), entry("omega")],
+        ));
+        app.grid.select_click(0, false, false, 3);
+        app.grid.select_click(2, true, false, 3);
+        app.grid.set_scroll(173.0);
+
+        let work = app.update(Message::Refresh);
+        let request = app.navigation.pending_request().expect("refresh request");
+        let _ = app.update(completion(
+            request,
+            vec![
+                entry("alpha"),
+                entry("bravo"),
+                entry("delta"),
+                entry("omega"),
+            ],
+        ));
+        let selected = app
+            .selected_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected,
+            [PathBuf::from("/start/bravo"), PathBuf::from("/start/omega")]
+        );
+        assert_eq!(app.grid.scroll_offset(), 173.0);
+        drop(work);
+    }
+}
+
+#[test]
 fn location_monitoring_follows_a_replaced_current_folder() {
     use iced::futures::{StreamExt, stream::BoxStream};
 
