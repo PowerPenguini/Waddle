@@ -79,7 +79,7 @@ impl App {
                             Task::none()
                         };
                         let browse = if applied.browse_changed {
-                            self.live_refresh()
+                            self.refresh_location()
                         } else if applied.tree_changed {
                             self.load_visible_thumbnails()
                         } else {

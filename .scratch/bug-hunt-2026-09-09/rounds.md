@@ -55,3 +55,15 @@ outside this work.
 - Green: insertion and removal scenarios passed; all-target tests passed
   (599 passed, 19 ignored); Clippy with warnings denied and formatting passed.
   All seven release-mode benchmarks passed; grid/list p95 remained below 0.69 ms.
+
+## Round 5: changing view settings leaves Recent and Trash
+
+- Reproduction: display Recent or Trash, submit `:set view=list`, and deliver any
+  resulting navigation completion through app messages.
+- Red: `cargo test setting_list_view_keeps_the_displayed_recent_or_trash_location -- --nocapture`
+  changed the displayed location from Recent to Folder.
+- Cause: applying browse settings used the same folder-only refresh mistake in
+  a separate command branch.
+- Fix: refresh the displayed location after applying browse settings.
+- Green: the regression passed for Recent and Trash; all-target tests passed
+  (600 passed, 19 ignored); Clippy with warnings denied and formatting passed.

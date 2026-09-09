@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn setting_list_view_keeps_the_displayed_recent_or_trash_location() {
+    for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        app.view_preferences =
+            super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        let initial = match location {
+            DisplayedLocation::Recent => Message::RecentLoaded {
+                request: app.navigation.recent().request.unwrap(),
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Trash => Message::TrashLoaded {
+                request: app.navigation.trash().request.unwrap(),
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Folder => unreachable!(),
+        };
+        let _ = app.update(initial);
+        press(&mut app, ":");
+        let _ = app.update(Message::CommandChanged("set view=list".to_owned()));
+        let work = app.update(Message::CommandSubmitted);
+        if let Some(request) = app.navigation.pending_request() {
+            let completed = match request.location() {
+                DisplayedLocation::Folder => Message::NavigationFinished {
+                    request,
+                    result: Ok(opened(temp.path().to_path_buf(), Vec::new())),
+                },
+                DisplayedLocation::Recent => Message::RecentLoaded {
+                    request,
+                    result: Some(Ok(Vec::new())),
+                },
+                DisplayedLocation::Trash => Message::TrashLoaded {
+                    request,
+                    result: Some(Ok(Vec::new())),
+                },
+            };
+            let _ = app.update(completed);
+        }
+        assert_eq!(
+            app.navigation.displayed_location(),
+            location,
+            "changing the view must not navigate to the previous folder"
+        );
+        assert_eq!(
+            app.view_preferences.for_directory(temp.path()).view,
+            fs::ViewMode::List
+        );
+        drop(work);
+    }
+}
+
+#[test]
 fn refresh_command_reloads_the_displayed_recent_or_trash_location() {
     for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
         let temp = tempfile::tempdir().unwrap();
