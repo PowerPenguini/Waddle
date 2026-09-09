@@ -203,13 +203,14 @@ pub(super) struct CommandSession {
     prefix: Option<char>,
     text: String,
     output: Option<Output>,
+    output_revision: u64,
 }
 
 impl CommandSession {
     pub(super) fn begin(&mut self, prefix: char) {
         self.prefix = Some(prefix);
         self.text.clear();
-        self.output = None;
+        self.close_output();
     }
 
     pub(super) fn cancel(&mut self) {
@@ -233,7 +234,12 @@ impl CommandSession {
         self.output.as_ref()
     }
 
+    pub(super) fn output_revision(&self) -> u64 {
+        self.output_revision
+    }
+
     pub(super) fn close_output(&mut self) {
+        self.output_revision = self.output_revision.wrapping_add(1);
         self.output = None;
     }
 
@@ -247,10 +253,10 @@ impl CommandSession {
             return CommandAction::Quit;
         }
         if prefix == ':' && matches!(trimmed, "help" | "h") {
-            self.output = Some(Output {
-                summary: ":help  •  Waddle commands".to_owned(),
-                detail: format!("{COMMAND_HELP}\n\n{}", browser_input::HELP),
-            });
+            self.show_output(
+                ":help  •  Waddle commands".to_owned(),
+                format!("{COMMAND_HELP}\n\n{}", browser_input::HELP),
+            );
             return CommandAction::OutputChanged;
         }
         if prefix == ':' && matches!(trimmed, "terminal" | "t") {
@@ -350,6 +356,7 @@ impl CommandSession {
         completion: Result<Completion, String>,
         current: &Path,
     ) -> Consequences {
+        self.output_revision = self.output_revision.wrapping_add(1);
         match completion {
             Ok(Completion::Terminal { directory, result }) => match result {
                 Ok(()) => {
@@ -409,20 +416,15 @@ impl CommandSession {
     }
 
     pub(super) fn show_diagnostics(&mut self, detail: String) {
-        self.output = Some(Output {
-            summary: ":diagnostics  •  local command failures".to_owned(),
-            detail,
-        });
+        self.show_output(":diagnostics  •  local command failures".to_owned(), detail);
     }
 
     pub(super) fn show_settings(&mut self, detail: String) {
-        self.output = Some(Output {
-            summary: ":set  •  session settings".to_owned(),
-            detail,
-        });
+        self.show_output(":set  •  session settings".to_owned(), detail);
     }
 
     pub(super) fn show_output(&mut self, summary: String, detail: String) {
+        self.close_output();
         self.output = Some(Output { summary, detail });
     }
 

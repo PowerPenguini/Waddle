@@ -213,3 +213,18 @@ outside this work.
   when no files are selected. All-target tests passed (611 passed, 19 ignored),
   along with Clippy and formatting. All seven release performance benchmarks
   passed; grid/list p95 work remained below 0.77 ms against the 8 ms budget.
+
+## Round 17: queued Properties replaces newer command output
+
+- Reproduction: retain the completion of a real Properties read, submit `:help`
+  or Properties for another file, then deliver the retained result through app
+  messages. Also exercise an unsuccessful read of a missing file.
+- Red: `cargo test queued_properties_results_cannot_replace_newer_command_output -- --nocapture`
+  replaced the help screen with Properties for `old.txt`.
+- Cause: Properties completions had no identity linking them to the Command
+  session output they were requested for.
+- Fix: advance the output revision when output is replaced or dismissed, capture
+  it on Properties requests, and ignore obsolete results and errors.
+- Green: newer help and Properties output and status survive both successful
+  and unsuccessful stale reads. All-target tests passed (612 passed, 19 ignored),
+  along with Clippy and formatting.

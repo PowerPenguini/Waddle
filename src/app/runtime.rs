@@ -474,7 +474,10 @@ impl App {
                 request,
                 result.map_or(NavigationCompletion::Cancelled, NavigationCompletion::Trash),
             ),
-            Message::PropertiesFinished(result) => {
+            Message::PropertiesFinished { request, result } => {
+                if request != self.command.output_revision() {
+                    return Task::none();
+                }
                 match result {
                     Ok(info) => {
                         self.show_command_output(

@@ -272,7 +272,10 @@ enum Message {
         request: NavigationRequest,
         result: Option<Result<Vec<trash::Entry>, String>>,
     },
-    PropertiesFinished(Result<properties::Info, String>),
+    PropertiesFinished {
+        request: u64,
+        result: Result<properties::Info, String>,
+    },
     MetadataFinished(Result<String, String>),
     AnimationFrame(Instant),
     RenameChanged(String),

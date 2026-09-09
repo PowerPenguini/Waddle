@@ -281,16 +281,18 @@ impl App {
             return Task::none();
         };
         self.close_command_output();
+        let request = self.command.output_revision();
         self.presentation
             .set_status("Reading Properties…".to_owned());
         Task::perform(
             self.operations
                 .run_foreground(OperationKind::Details, move |_| properties::read(&path)),
-            |completion| match completion {
-                Completion::Finished(result) => Message::PropertiesFinished(result),
-                Completion::Cancelled => {
-                    Message::PropertiesFinished(Err("Properties request was replaced".to_owned()))
-                }
+            move |completion| Message::PropertiesFinished {
+                request,
+                result: match completion {
+                    Completion::Finished(result) => result,
+                    Completion::Cancelled => Err("Properties request was replaced".to_owned()),
+                },
             },
         )
     }

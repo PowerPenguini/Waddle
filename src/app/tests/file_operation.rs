@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn queued_properties_results_cannot_replace_newer_command_output() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for old_exists in [true, false] {
+                for newer_command in ["help", "properties current.txt"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    if old_exists {
+                        std_fs::write(temp.path().join("old.txt"), "old").unwrap();
+                    }
+                    std_fs::write(temp.path().join("current.txt"), "current").unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    press(&mut app, ":");
+                    let _ = app.update(Message::CommandChanged("properties old.txt".into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                    let mut queued = Vec::new();
+                    while let Some(action) = stream.next().await {
+                        if let iced_runtime::Action::Output(message) = action {
+                            queued.push(message);
+                        }
+                    }
+                    assert_eq!(queued.len(), 1);
+
+                    press(&mut app, ":");
+                    let _ = app.update(Message::CommandChanged(newer_command.into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    navigation::finish_tasks(&mut app, task).await;
+                    let output = app.command.output().cloned().unwrap();
+                    assert!(output.summary.contains(if newer_command == "help" {
+                        ":help"
+                    } else {
+                        "current.txt"
+                    }));
+                    let status = app.presentation.status().to_owned();
+
+                    for message in queued {
+                        let task = app.update(message);
+                        navigation::finish_tasks(&mut app, task).await;
+                    }
+                    assert_eq!(app.command.output(), Some(&output));
+                    assert_eq!(app.presentation.status(), status);
+                }
+            }
+        });
+}
+
+#[test]
 fn folder_symlinks_use_directory_applications_and_default_associations() {
     use gio::prelude::AppInfoExt;
 
@@ -639,10 +693,13 @@ fn closing_properties_restores_the_previous_browser_status() {
 
     let _ = app.show_properties();
     assert_eq!(app.presentation.status(), "Reading Properties…");
-    let _ = app.update(Message::PropertiesFinished(Ok(properties::Info {
-        name: "document.txt".to_owned(),
-        detail: "Type: Plain text".to_owned(),
-    })));
+    let _ = app.update(Message::PropertiesFinished {
+        request: app.command.output_revision(),
+        result: Ok(properties::Info {
+            name: "document.txt".to_owned(),
+            detail: "Type: Plain text".to_owned(),
+        }),
+    });
     let _ = app.apply_input_intent(InputIntent::CloseCommandOutput);
 
     assert!(app.command.output().is_none());
