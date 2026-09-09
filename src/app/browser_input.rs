@@ -148,7 +148,14 @@ pub(super) struct Context {
     pub(super) pending_cut: bool,
     pub(super) navigation_pending: bool,
     pub(super) file_operators_allowed: bool,
+    pub(super) trash_delete_allowed: bool,
     pub(super) bottom_input: BottomInput,
+}
+
+impl Context {
+    fn deletion_allowed(self) -> bool {
+        self.file_operators_allowed || self.trash_delete_allowed
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -559,18 +566,18 @@ impl BrowserInput {
                     self.black_hole_stage = 2;
                     Intent::Pending(self.pending_status())
                 }
-                (2, Some("x")) if context.file_operators_allowed => {
+                (2, Some("x")) if context.deletion_allowed() => {
                     self.clear_sequence();
                     Intent::Trash
                 }
                 (2, Some("d"))
-                    if context.file_operators_allowed
+                    if context.deletion_allowed()
                         && (context.visual_active || context.selection_count > 1) =>
                 {
                     self.clear_sequence();
                     Intent::Trash
                 }
-                (2, Some("d")) if context.file_operators_allowed && context.has_selection => {
+                (2, Some("d")) if context.deletion_allowed() && context.has_selection => {
                     let count = self.count.take().unwrap_or(1);
                     self.black_hole_stage = 0;
                     self.delete_pending = Some((count, None, true));
@@ -632,6 +639,9 @@ impl BrowserInput {
                 self.black_hole_stage = 1;
                 Intent::Pending(self.pending_status())
             }
+            Some("y" | "x" | "d") if context.trash_delete_allowed => {
+                Intent::InvalidSequence("Use Delete to delete permanently from Trash".to_owned())
+            }
             Some("y" | "x" | "d") => Intent::InvalidSequence(
                 "File operators are unavailable in the focused sidebar".to_owned(),
             ),
@@ -655,7 +665,7 @@ impl BrowserInput {
             Some("$") => Intent::Move(Motion::RowEnd, 1),
             _ if press.named == NamedKey::Enter => Intent::Activate,
             _ if press.named == NamedKey::Backspace => Intent::Parent,
-            _ if press.named == NamedKey::Delete && context.file_operators_allowed => Intent::Trash,
+            _ if press.named == NamedKey::Delete && context.deletion_allowed() => Intent::Trash,
             _ if count.is_some() => {
                 self.count = count;
                 self.invalid_sequence(text.unwrap_or("key"))

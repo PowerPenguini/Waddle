@@ -1,6 +1,116 @@
 use super::*;
 
 #[test]
+fn trash_keyboard_delete_opens_confirmation_for_selected_items() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .install_trash_entries(vec![crate::app::trash::Entry {
+            file: entry("trashed.txt"),
+            receipt: crate::journal::TrashReceipt {
+                original: PathBuf::from("/original/trashed.txt"),
+                trashed: PathBuf::from("/start/trashed.txt"),
+                info: PathBuf::from("/info/trashed.txt.trashinfo"),
+            },
+        }]);
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.update(Message::EntryReleased(0));
+    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    for key in ["\"", "_", "d", "d"] {
+        press(&mut app, key);
+    }
+
+    assert!(
+        matches!(
+            app.file_operations.view(),
+            FileOperationView::PermanentDelete { message, detail }
+                if message == "Permanently delete “trashed.txt” from Trash?"
+                    && detail == "This cannot be undone."
+        ),
+        "Deleting a selected Trash item must open confirmation, got: {}",
+        app.presentation.status()
+    );
+}
+
+#[test]
+fn select_all_in_trash_moves_focus_to_entries_before_delete() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.install_trash_entries(
+        ["one.txt", "two.txt"]
+            .into_iter()
+            .map(|name| crate::app::trash::Entry {
+                file: entry(name),
+                receipt: crate::journal::TrashReceipt {
+                    original: PathBuf::from("/original").join(name),
+                    trashed: PathBuf::from("/start").join(name),
+                    info: PathBuf::from("/info").join(format!("{name}.trashinfo")),
+                },
+            })
+            .collect(),
+    );
+    app.grid.select_only(Some(0), 2);
+    app.presentation.set_focus(BrowserFocus::Sidebar);
+    let delete = keyboard::Key::Named(keyboard::key::Named::Delete);
+    let _ = app.handle_key(
+        delete.clone(),
+        delete.clone(),
+        keyboard::Modifiers::empty(),
+        None,
+    );
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::Idle
+    ));
+    let select_all = keyboard::Key::Character("a".into());
+    let _ = app.handle_key(
+        select_all.clone(),
+        select_all,
+        keyboard::Modifiers::CTRL,
+        Some("a"),
+    );
+    assert_eq!(app.grid.selection_count(), 2);
+    let _ = app.handle_key(delete.clone(), delete, keyboard::Modifiers::empty(), None);
+
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::PermanentDelete { message, .. }
+            if message == "Permanently delete 2 selected Trash items?"
+    ));
+}
+
+#[test]
+fn cut_in_trash_explains_delete_instead_of_claiming_sidebar_focus() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .install_trash_entries(vec![crate::app::trash::Entry {
+            file: entry("trashed.txt"),
+            receipt: crate::journal::TrashReceipt {
+                original: PathBuf::from("/original/trashed.txt"),
+                trashed: PathBuf::from("/start/trashed.txt"),
+                info: PathBuf::from("/info/trashed.txt.trashinfo"),
+            },
+        }]);
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.update(Message::EntryReleased(0));
+
+    for key in ["d", "x"] {
+        press(&mut app, key);
+        assert_eq!(
+            app.presentation.status(),
+            "Use Delete to delete permanently from Trash"
+        );
+        assert!(matches!(
+            app.file_operations.view(),
+            FileOperationView::Idle
+        ));
+        assert!(app.transfers.pending_cut_paths().is_empty());
+        assert_eq!(app.navigation.entries().len(), 1);
+    }
+}
+
+#[test]
 fn app_tests_do_not_open_the_user_operation_journal() {
     let (app, _) = App::new();
 

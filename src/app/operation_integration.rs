@@ -420,6 +420,9 @@ impl App {
     }
 
     pub(super) fn trash_selected(&mut self) -> Task<Message> {
+        if self.navigation.displayed_location() == DisplayedLocation::Trash {
+            return self.show_trash_delete_prompt(false);
+        }
         if !self.mutations_allowed() {
             return Task::none();
         }

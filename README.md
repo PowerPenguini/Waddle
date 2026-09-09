@@ -92,7 +92,7 @@ controls.
 | `Enter`, `Backspace` | Open the selected item or its parent folder |
 | `v` | Start or finish a Visual selection |
 | `y`, `x`, `p` | Copy, Cut, or Paste |
-| `Delete` | Move the selection to Trash |
+| `Delete` | Move the selection to Trash; in Trash, confirm permanent deletion |
 | `u`, `Ctrl+R` | Undo or Redo |
 | `/query`, `//query` | Search here or search recursively |
 | `Ctrl+L`, `Ctrl+H` | Edit the location or show hidden files |

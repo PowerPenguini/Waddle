@@ -923,6 +923,8 @@ impl App {
                 navigation_pending: self.navigation.loading(),
                 file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
+                trash_delete_allowed: self.presentation.focus_is(BrowserFocus::Entries)
+                    && self.navigation.displayed_location() == DisplayedLocation::Trash,
                 ..InputContext::default()
             },
         );
@@ -1014,6 +1016,7 @@ impl App {
                 Task::none()
             }
             InputIntent::SelectAll => {
+                self.presentation.set_focus(BrowserFocus::Entries);
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
             }
