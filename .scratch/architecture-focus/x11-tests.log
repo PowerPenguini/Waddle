@@ -1,0 +1,12 @@
+   Compiling waddle v0.0.11 (/tmp/waddle-focus-validation-y_alipqz)
+    Finished `test` profile [optimized + debuginfo] target(s) in 16.79s
+     Running unittests src/main.rs (/home/powerpenguini/Projects/Waddle/target/debug/deps/waddle-646b92804752c626)
+
+running 5 tests
+test app::native_clipboard::tests::leaving_x11_drop_staging_resets_paths_and_action ... ok
+test app::native_clipboard::tests::x11_drop_staging_deduplicates_paths_and_rejects_stale_generations ... ok
+test app::x11_clipboard::tests::incremental_chunks_end_with_the_required_empty_property ... ok
+test app::x11_clipboard::tests::two_x11_adapters_exchange_a_large_multi_entry_offer ... ok
+test app::x11_dnd::tests::real_x11_source_negotiates_move_and_serves_a_multi_entry_uri_list ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 5.03s

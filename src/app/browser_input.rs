@@ -1,7 +1,7 @@
 use super::{
     file_operation::PromptInteraction,
+    focus::FocusDirection,
     grid::{DeleteMotion, Motion},
-    presentation::FocusDirection,
 };
 
 pub(super) const HELP: &str = "\
@@ -294,7 +294,7 @@ impl BrowserInput {
         format!("{sequence}  •  {expected}")
     }
 
-    fn clear_sequence(&mut self) {
+    pub(super) fn clear_sequence(&mut self) {
         self.count = None;
         self.g_pending = false;
         self.window_pending = false;

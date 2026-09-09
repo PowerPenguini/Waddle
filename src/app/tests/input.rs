@@ -14,7 +14,7 @@ fn press_window_motion(app: &mut App, motion: &'static str) {
 #[test]
 fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
     let (mut app, _) = App::new();
-    app.presentation.set_focus(BrowserFocus::Toolbar);
+    app.focus_browser(BrowserFocus::Toolbar);
     for expected in [
         BrowserFocus::Location,
         BrowserFocus::Sidebar,
@@ -22,18 +22,18 @@ fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
         BrowserFocus::BottomBar,
         BrowserFocus::Toolbar,
     ] {
-        app.presentation.move_focus(false, true);
-        assert_eq!(app.presentation.focus(), expected);
+        app.move_browser_focus(false);
+        assert_eq!(app.focus.browser(), expected);
     }
-    app.presentation.move_focus(true, true);
-    assert_eq!(app.presentation.focus(), BrowserFocus::BottomBar);
+    app.move_browser_focus(true);
+    assert_eq!(app.focus.browser(), BrowserFocus::BottomBar);
 
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
     assert!(app.grid.open_entry_context(0, 1));
     let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
     let _ = app.handle_key(tab.clone(), tab, keyboard::Modifiers::empty(), None);
     assert_eq!(app.grid.context_menu().unwrap().focused, 1);
-    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
 
     let _ = app.update(Message::ContextFocused(0));
     assert_eq!(app.grid.context_menu().unwrap().focused, 0);
@@ -41,7 +41,7 @@ fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
     assert!(app.grid.context_menu().is_none());
-    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
 }
 
 #[test]
@@ -49,19 +49,19 @@ fn control_w_hjkl_moves_spatially_without_targeting_the_bottom_bar() {
     let (mut app, _) = App::new();
 
     press_window_motion(&mut app, "h");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
     press_window_motion(&mut app, "l");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     press_window_motion(&mut app, "k");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Location);
+    assert_eq!(app.focus.browser(), BrowserFocus::Location);
     press_window_motion(&mut app, "h");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Toolbar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Toolbar);
     press_window_motion(&mut app, "j");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
 
-    app.presentation.set_focus(BrowserFocus::BottomBar);
+    app.focus_browser(BrowserFocus::BottomBar);
     press_window_motion(&mut app, "j");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     assert_eq!(app.presentation.status(), "Focus: files");
 }
 
@@ -99,7 +99,7 @@ fn marquee_selection_takes_keyboard_focus_from_the_sidebar_before_copy() {
     app.grid.resize(iced::Size::new(820.0, 560.0));
     app.navigation
         .replace_displayed_entries(vec![entry("selected.txt")]);
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
 
     for event in [
         mouse::Event::CursorMoved {
@@ -129,7 +129,7 @@ fn marquee_selection_takes_keyboard_focus_from_the_sidebar_before_copy() {
             .paths,
         [PathBuf::from("/start/selected.txt")]
     );
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
 }
 
 #[test]
@@ -198,33 +198,33 @@ fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
     let (mut app, _) = App::new();
     app.view_preferences =
         super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
 
     app.view_preferences
         .apply_command(app.navigation.current(), false, "tree=false")
         .unwrap();
     app.sync_tree_visibility();
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     assert_eq!(app.grid.sidebar_width(), 0.0);
 
-    app.presentation.set_focus(BrowserFocus::Location);
+    app.focus_browser(BrowserFocus::Location);
     app.move_browser_focus(false);
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     app.move_browser_focus(true);
-    assert_eq!(app.presentation.focus(), BrowserFocus::Location);
+    assert_eq!(app.focus.browser(), BrowserFocus::Location);
 
-    app.presentation.set_focus(BrowserFocus::Entries);
+    app.focus_browser(BrowserFocus::Entries);
     press_window_motion(&mut app, "h");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
 
     press_window_motion(&mut app, "e");
     assert!(app.view_preferences.tree_visible());
     assert_eq!(app.grid.sidebar_width(), SIDEBAR_WIDTH);
     assert_eq!(app.presentation.status(), "Tree shown");
 
-    app.presentation.set_focus(BrowserFocus::Entries);
+    app.focus_browser(BrowserFocus::Entries);
     press_window_motion(&mut app, "h");
-    assert_eq!(app.presentation.focus(), BrowserFocus::Sidebar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn space_activates_the_focused_toolbar_control() {
         super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
     app.navigation.settle_for_test();
-    app.presentation.set_focus(BrowserFocus::Toolbar);
+    app.focus_browser(BrowserFocus::Toolbar);
     app.presentation.set_toolbar_cursor(4);
     let before = app
         .view_preferences
@@ -256,7 +256,7 @@ fn space_activates_the_focused_toolbar_control() {
             .view,
         before
     );
-    assert_eq!(app.presentation.focus(), BrowserFocus::Toolbar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Toolbar);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn counted_browser_sequences_drive_grid_and_focused_sidebar_with_feedback() {
         TreeLoadOutcome::Installed
     );
     let child_id = app.sidebar_tree.rows(app.navigation.current())[2].id;
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
     app.sidebar_tree.focus(drive_id);
 
     press(&mut app, "j");
@@ -446,7 +446,7 @@ fn focused_sidebar_can_move_above_home_to_computer() {
         .find(|row| row.kind == NodeKind::Computer)
         .unwrap()
         .id;
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
     app.sidebar_tree.focus(home_id);
 
     press(&mut app, "h");
@@ -528,11 +528,11 @@ fn copying_command_output_does_not_leave_the_bottom_bar_focused() {
     let _ = app.begin_command(':');
     app.command.change("help".to_owned());
     let _ = app.submit_command();
-    app.presentation.set_focus(BrowserFocus::Entries);
+    app.focus_browser(BrowserFocus::Entries);
 
     let _ = app.update(Message::CopyCommandReport);
 
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     assert_eq!(app.presentation.copy_feedback_intensity(false), 1.0);
 }
 
@@ -604,7 +604,10 @@ fn focused_location_input_owns_control_a_even_when_the_event_is_ignored() {
         .replace_displayed_entries(vec![entry("one"), entry("two"), entry("three")]);
     app.grid
         .select_only(Some(1), app.navigation.entries().len());
-    let focus = app.update(Message::LocationFocusChanged(true));
+    let focus = app.update(Message::LocationFocusChanged {
+        generation: 0,
+        focused: true,
+    });
     let key = keyboard::Key::Character("a".into());
 
     let _ = app.handle_event(
@@ -680,7 +683,7 @@ fn focused_sidebar_does_not_apply_file_operators_to_the_grid() {
     app.navigation.settle_for_test();
     app.navigation.replace_displayed_entries(vec![entry("one")]);
     app.grid.select_only(Some(0), 1);
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
     let root_id = app.sidebar_tree.rows(app.navigation.current())[0].id;
     app.sidebar_tree.focus(root_id);
 

@@ -42,6 +42,7 @@ fn press(app: &mut App, value: &'static str) {
 
 mod file_icon_rendering;
 mod file_operation;
+mod focus;
 mod input;
 mod navigation;
 mod presentation;

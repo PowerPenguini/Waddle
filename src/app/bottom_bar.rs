@@ -205,7 +205,7 @@ impl<'a> View<'a> {
                             .style(move |theme| {
                                 status_background_style(
                                     theme,
-                                    self.app().presentation.focus_is(BrowserFocus::BottomBar),
+                                    self.app().focus.is(BrowserFocus::BottomBar),
                                     self.app()
                                         .presentation
                                         .copy_feedback_intensity(self.app().reduced_motion()),
@@ -264,7 +264,7 @@ impl<'a> View<'a> {
             .style(move |theme| {
                 status_background_style(
                     theme,
-                    self.app().presentation.focus_is(BrowserFocus::BottomBar),
+                    self.app().focus.is(BrowserFocus::BottomBar),
                     self.app()
                         .presentation
                         .copy_feedback_intensity(self.app().reduced_motion()),

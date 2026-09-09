@@ -5,6 +5,7 @@ mod diagnostics;
 mod directory_watch;
 mod drag_hover;
 mod file_operation;
+mod focus;
 mod fonts;
 mod grid;
 mod icon_size;
@@ -64,6 +65,7 @@ use browser_input::{
 };
 use command::{CommandSession, ProcessAdapter};
 use file_operation::{FileOperationSession, View as FileOperationView, Work as FileOperationWork};
+use focus::{BrowserFocus, FocusSession};
 use fs::FileEntry;
 use grid::{
     CONTENT_GUTTER, ContextMenu, ContextNavigation, ContextOutcome, ContextTarget, DragHoverEffect,
@@ -81,7 +83,7 @@ use navigation::{
 };
 use operations::{Completion, Kind as OperationKind, Operations};
 use presentation::{
-    BrowserFocus, BrowserStatusModel, BrowserStatusPresentation, Presentation, apply_opacity,
+    BrowserStatusModel, BrowserStatusPresentation, Presentation, apply_opacity,
     browser_background_style, clears_status_notice, clip_file_name, compact_status_line,
     context_button_style, context_menu_button_style, entry_content_opacity, entry_icon_asset,
     entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, focus_container_style,
@@ -189,7 +191,10 @@ enum Message {
     Back,
     Forward,
     LocationChanged(String),
-    LocationFocusChanged(bool),
+    LocationFocusChanged {
+        generation: u64,
+        focused: bool,
+    },
     LocationSubmitted,
     TreeRow(u64),
     Scrolled {
@@ -336,7 +341,7 @@ struct App {
     browser_input: BrowserInput,
     presentation: Presentation,
     location_input: String,
-    location_input_focused: bool,
+    focus: FocusSession,
     modifiers: keyboard::Modifiers,
     icon_zoom: icon_size::WheelZoom,
     mouse_back_gesture: Option<MouseBackGesture>,
@@ -431,7 +436,7 @@ impl App {
             browser_input: BrowserInput::default(),
             presentation: Presentation::new(now, startup_error),
             location_input: current.display().to_string(),
-            location_input_focused: false,
+            focus: FocusSession::default(),
             modifiers: keyboard::Modifiers::default(),
             icon_zoom: icon_size::WheelZoom::default(),
             mouse_back_gesture: None,

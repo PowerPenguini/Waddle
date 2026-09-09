@@ -34,6 +34,10 @@ _Avoid_: Explorer state, folder tree
 The modal meaning of browser key sequences, including Vim motions and pending operators, before they act on another Waddle concept.
 _Avoid_: Shortcut handler, key map
 
+**Browser focus**:
+The current recipient of keyboard interaction together with the browser surface to return to when an editor or temporary presentation closes. Moving Browser focus keeps these two roles coordinated without discarding a suspended interaction.
+_Avoid_: Active panel, focus manager
+
 **File operation session**:
 An active rename, New Folder, or permanent-delete interaction that retains its input, entries, and failure context until completion or cancellation. A failed Trash Transfer may lead to a permanent-delete confirmation.
 _Avoid_: Prompt state, delete dialog

@@ -15,7 +15,7 @@ fn trash_keyboard_delete_opens_confirmation_for_selected_items() {
         }]);
     let _ = app.update(Message::EntryPressed(0));
     let _ = app.update(Message::EntryReleased(0));
-    assert_eq!(app.presentation.focus(), BrowserFocus::Entries);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     for key in ["\"", "_", "d", "d"] {
         press(&mut app, key);
     }
@@ -50,7 +50,7 @@ fn select_all_in_trash_moves_focus_to_entries_before_delete() {
             .collect(),
     );
     app.grid.select_only(Some(0), 2);
-    app.presentation.set_focus(BrowserFocus::Sidebar);
+    app.focus_browser(BrowserFocus::Sidebar);
     let delete = keyboard::Key::Named(keyboard::key::Named::Delete);
     let _ = app.handle_key(
         delete.clone(),

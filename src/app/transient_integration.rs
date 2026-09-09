@@ -26,13 +26,7 @@ impl App {
         task: Task<super::Message>,
     ) -> Task<super::Message> {
         self.sync_transient_presentation();
-        if self.transient_presentation().restores_input_after(previous) {
-            // Restore focus before action-specific operations such as selecting
-            // the initial filename when Rename opens.
-            self.refocus_bottom_input().chain(task)
-        } else {
-            task
-        }
+        self.finish_focus_update(previous, task)
     }
 
     pub(super) fn transient_presentation(&self) -> transient::Resolved {

@@ -187,7 +187,10 @@ fn output_does_not_take_editing_keys_from_the_visible_location_input() {
         app.navigation
             .replace_displayed_entries(vec![entry("one"), entry("two")]);
         app.grid.select_only(Some(0), 2);
-        let _ = app.update(Message::LocationFocusChanged(true));
+        let _ = app.update(Message::LocationFocusChanged {
+            generation: 0,
+            focused: true,
+        });
         app.show_command_output("Result".to_owned(), "Finished".to_owned());
         let _ = app.update(Message::Event(
             iced::Event::Keyboard(keyboard::Event::KeyPressed {

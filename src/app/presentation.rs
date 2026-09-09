@@ -21,74 +21,6 @@ const COPY_FEEDBACK_FADE: Duration = Duration::from_millis(680);
 const SPINNER_FRAME_DURATION: Duration = Duration::from_millis(100);
 const SPINNER_FRAME_COUNT: u128 = 8;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum BrowserFocus {
-    Toolbar,
-    Location,
-    Sidebar,
-    #[default]
-    Entries,
-    BottomBar,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FocusDirection {
-    Left,
-    Down,
-    Up,
-    Right,
-}
-
-impl BrowserFocus {
-    const ORDER: [Self; 5] = [
-        Self::Toolbar,
-        Self::Location,
-        Self::Sidebar,
-        Self::Entries,
-        Self::BottomBar,
-    ];
-
-    fn moved(self, reverse: bool) -> Self {
-        let index = Self::ORDER
-            .iter()
-            .position(|focus| *focus == self)
-            .unwrap_or(0);
-        let next = if reverse {
-            index.checked_sub(1).unwrap_or(Self::ORDER.len() - 1)
-        } else {
-            (index + 1) % Self::ORDER.len()
-        };
-        Self::ORDER[next]
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Toolbar => "toolbar",
-            Self::Location => "location",
-            Self::Sidebar => "sidebar",
-            Self::Entries => "files",
-            Self::BottomBar => "bottom bar",
-        }
-    }
-
-    fn moved_in(self, direction: FocusDirection, tree_visible: bool) -> Self {
-        match (self, direction) {
-            (Self::Toolbar, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::Toolbar, FocusDirection::Right) => Self::Location,
-            (Self::Toolbar, FocusDirection::Down) => Self::Entries,
-            (Self::Location, FocusDirection::Left) => Self::Toolbar,
-            (Self::Location, FocusDirection::Down) => Self::Entries,
-            (Self::Sidebar, FocusDirection::Right) => Self::Entries,
-            (Self::Entries, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::Entries, FocusDirection::Up) => Self::Location,
-            (Self::BottomBar, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::BottomBar, FocusDirection::Up) => Self::Location,
-            (Self::BottomBar, _) => Self::Entries,
-            _ => self,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BrowserStatusPresentation {
     Conflict,
@@ -158,7 +90,6 @@ impl CopyFeedback {
 
 #[derive(Clone, Debug)]
 pub(super) struct Presentation {
-    focus: BrowserFocus,
     toolbar_cursor: usize,
     bottom_cursor: usize,
     expanded_bar_height: f32,
@@ -175,7 +106,6 @@ pub(super) struct Presentation {
 impl Presentation {
     pub(super) fn new(now: Instant, notice: Option<String>) -> Self {
         Self {
-            focus: BrowserFocus::Entries,
             toolbar_cursor: 0,
             bottom_cursor: 0,
             expanded_bar_height: STATUS_HEIGHT,
@@ -193,33 +123,6 @@ impl Presentation {
                 tone: NoticeTone::Danger,
             }),
         }
-    }
-
-    pub(super) fn focus(&self) -> BrowserFocus {
-        self.focus
-    }
-
-    pub(super) fn focus_is(&self, focus: BrowserFocus) -> bool {
-        self.focus == focus
-    }
-
-    pub(super) fn set_focus(&mut self, focus: BrowserFocus) {
-        self.focus = focus;
-    }
-
-    pub(super) fn move_focus(&mut self, reverse: bool, tree_visible: bool) {
-        self.focus = self.focus.moved(reverse);
-        if !tree_visible && self.focus == BrowserFocus::Sidebar {
-            self.focus = self.focus.moved(reverse);
-        }
-    }
-
-    pub(super) fn move_focus_in(&mut self, direction: FocusDirection, tree_visible: bool) {
-        self.focus = self.focus.moved_in(direction, tree_visible);
-    }
-
-    pub(super) fn focus_label(&self) -> &'static str {
-        self.focus.label()
     }
 
     pub(super) fn toolbar_cursor(&self) -> usize {

@@ -210,17 +210,12 @@ impl App {
                 self.location_input = value;
                 Task::none()
             }
-            Message::LocationFocusChanged(focused) => {
-                self.set_location_input_focus(focused);
-                if focused {
-                    widget::operation::focus(Id::new(super::LOCATION_ID))
-                } else {
-                    Task::none()
-                }
-            }
+            Message::LocationFocusChanged {
+                generation,
+                focused,
+            } => self.observe_location_focus(generation, focused),
             Message::LocationSubmitted => {
                 self.browser_input.leave_mode();
-                self.location_input_focused = false;
                 let input = PathBuf::from(&self.location_input);
                 let requested = if input.is_absolute() {
                     input
@@ -233,13 +228,11 @@ impl App {
                         remember: true,
                         select: None,
                     }),
-                    iced::advanced::widget::operate(
-                        iced::advanced::widget::operation::focusable::unfocus(),
-                    ),
+                    self.release_location_focus(),
                 ])
             }
             Message::TreeRow(id) => {
-                self.presentation.set_focus(BrowserFocus::Sidebar);
+                self.focus_browser(BrowserFocus::Sidebar);
                 self.sidebar_tree.focus(id);
                 self.activate_tree_row(id)
             }
@@ -334,7 +327,7 @@ impl App {
                 if self.prompt_blocks_action() {
                     return Task::none();
                 }
-                self.presentation.set_focus(BrowserFocus::Entries);
+                self.focus_browser(BrowserFocus::Entries);
                 self.transfers
                     .press(index, self.grid.cursor(), self.navigation.entries().len());
                 Task::none()
@@ -345,7 +338,7 @@ impl App {
                 if self.prompt_blocks_action() {
                     return Task::none();
                 }
-                self.presentation.set_focus(BrowserFocus::Entries);
+                self.focus_browser(BrowserFocus::Entries);
                 if self
                     .grid
                     .open_entry_context(index, self.navigation.entries().len())
@@ -681,7 +674,7 @@ impl App {
                         self.mutations_allowed() && !self.file_operations.prompt_active(),
                     ) =>
             {
-                self.presentation.set_focus(BrowserFocus::Entries);
+                self.focus_browser(BrowserFocus::Entries);
                 self.refresh_status();
                 self.grid.cancel_scroll(ScrollTarget::Entries);
                 Task::none()
@@ -748,8 +741,7 @@ impl App {
                 Task::none()
             },
             if refresh_location_focus {
-                widget::operation::is_focused(Id::new(super::LOCATION_ID))
-                    .map(Message::LocationFocusChanged)
+                self.probe_location_focus()
             } else {
                 Task::none()
             },
@@ -921,9 +913,9 @@ impl App {
                 has_selection: self.grid.selected_entry().is_some(),
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
                 navigation_pending: self.navigation.loading(),
-                file_operators_allowed: self.presentation.focus_is(BrowserFocus::Entries)
+                file_operators_allowed: self.focus.is(BrowserFocus::Entries)
                     && self.navigation.folder_displayed(),
-                trash_delete_allowed: self.presentation.focus_is(BrowserFocus::Entries)
+                trash_delete_allowed: self.focus.is(BrowserFocus::Entries)
                     && self.navigation.displayed_location() == DisplayedLocation::Trash,
                 ..InputContext::default()
             },
@@ -958,11 +950,10 @@ impl App {
             }
             InputIntent::CancelOpenWith => self.cancel_open_with(),
             InputIntent::CancelLocation => {
-                self.location_input_focused = false;
                 self.location_input = self.navigation.current().display().to_string();
                 self.startup
                     .remember_directory(self.navigation.current().to_path_buf());
-                Task::none()
+                self.release_location_focus()
             }
             InputIntent::CloseCommandOutput => {
                 self.close_command_output();
@@ -989,23 +980,10 @@ impl App {
             InputIntent::BeginLocation => self.begin_location(),
             InputIntent::MoveFocus { reverse } => {
                 self.move_browser_focus(reverse);
-                if self.presentation.focus_is(BrowserFocus::Sidebar) {
-                    self.sidebar_tree
-                        .focus_current_or_first(self.navigation.current());
-                }
-                self.presentation
-                    .set_status(format!("Focus: {}", self.focus_label()));
                 Task::none()
             }
             InputIntent::MoveFocusIn(direction) => {
-                self.presentation
-                    .move_focus_in(direction, self.view_preferences.tree_visible());
-                if self.presentation.focus_is(BrowserFocus::Sidebar) {
-                    self.sidebar_tree
-                        .focus_current_or_first(self.navigation.current());
-                }
-                self.presentation
-                    .set_status(format!("Focus: {}", self.focus_label()));
+                self.move_browser_focus_in(direction);
                 Task::none()
             }
             InputIntent::CompleteCommand => {
@@ -1016,11 +994,11 @@ impl App {
                 Task::none()
             }
             InputIntent::SelectAll => {
-                self.presentation.set_focus(BrowserFocus::Entries);
+                self.focus_browser(BrowserFocus::Entries);
                 self.grid.select_all(self.navigation.entries().len());
                 self.schedule_details()
             }
-            InputIntent::ToggleActive if !self.presentation.focus_is(BrowserFocus::Entries) => {
+            InputIntent::ToggleActive if !self.focus.is(BrowserFocus::Entries) => {
                 self.activate_focused()
             }
             InputIntent::ToggleActive => {
@@ -1070,34 +1048,10 @@ impl App {
         }
     }
 
-    pub(super) fn focus_label(&self) -> &'static str {
-        self.presentation.focus_label()
-    }
-
-    fn set_location_input_focus(&mut self, focused: bool) {
-        if focused {
-            if !self.location_input_focused {
-                self.location_input = self.navigation.current().display().to_string();
-            }
-            self.browser_input.enter(InputMode::Location);
-        } else if self.location_input_focused && self.browser_input.mode() == InputMode::Location {
-            self.browser_input.leave_mode();
-            self.location_input = self.navigation.current().display().to_string();
-        }
-        self.location_input_focused = focused;
-    }
-
-    pub(super) fn move_browser_focus(&mut self, reverse: bool) {
-        self.presentation
-            .move_focus(reverse, self.view_preferences.tree_visible());
-    }
-
     pub(super) fn sync_tree_visibility(&mut self) {
         let visible = self.view_preferences.tree_visible();
         self.grid.set_sidebar_visible(visible);
-        if !visible && self.presentation.focus_is(BrowserFocus::Sidebar) {
-            self.presentation.set_focus(BrowserFocus::Entries);
-        }
+        self.reconcile_focus_visibility();
         self.update_drag_hover(self.grid.cursor());
     }
 
@@ -1118,7 +1072,7 @@ impl App {
         count: usize,
         extend: bool,
     ) -> Task<Message> {
-        match self.presentation.focus() {
+        match self.focus.browser() {
             BrowserFocus::Toolbar => {
                 let status = self.presentation.move_toolbar_cursor(motion, count);
                 self.presentation.set_status(status);
@@ -1151,7 +1105,7 @@ impl App {
     }
 
     pub(super) fn activate_focused(&mut self) -> Task<Message> {
-        match self.presentation.focus() {
+        match self.focus.browser() {
             BrowserFocus::Toolbar => {
                 let message = match self.presentation.toolbar_cursor().min(4) {
                     0 => Message::Parent,
@@ -1197,7 +1151,7 @@ impl App {
         if self.context_actions(target).is_empty() {
             return Task::none();
         }
-        self.presentation.set_focus(BrowserFocus::Entries);
+        self.focus_browser(BrowserFocus::Entries);
         if self
             .grid
             .open_background_context(self.navigation.entries().len(), self.status_height())

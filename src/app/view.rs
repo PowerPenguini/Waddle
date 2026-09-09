@@ -325,7 +325,7 @@ impl<'a> View<'a> {
             self.accent_color()
         };
         let selected = tree_row.selected;
-        let focused = self.app.presentation.focus_is(BrowserFocus::Sidebar) && tree_row.focused;
+        let focused = self.app.focus.is(BrowserFocus::Sidebar) && tree_row.focused;
         let label_color = if selected || focused {
             self.selection_text_color()
         } else {
@@ -499,8 +499,7 @@ impl<'a> View<'a> {
             Message::Parent,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.app.presentation.toolbar_cursor() == 0,
+            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 0,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
@@ -509,8 +508,7 @@ impl<'a> View<'a> {
             Message::Back,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.app.presentation.toolbar_cursor() == 1,
+            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 1,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
@@ -519,8 +517,7 @@ impl<'a> View<'a> {
             Message::Forward,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.app.presentation.toolbar_cursor() == 2,
+            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 2,
         );
         let refresh = toolbar_button(
             include_bytes!("../ui/icons/refresh.svg"),
@@ -529,8 +526,7 @@ impl<'a> View<'a> {
             Message::Refresh,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.presentation.focus_is(BrowserFocus::Toolbar)
-                && self.app.presentation.toolbar_cursor() == 3,
+            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 3,
         );
         let options = self
             .app
@@ -577,10 +573,7 @@ impl<'a> View<'a> {
             .width(Fill)
             .height(34)
             .style(move |theme| {
-                focus_container_style(
-                    theme,
-                    self.app.presentation.focus_is(BrowserFocus::Location),
-                )
+                focus_container_style(theme, self.app.focus.is(BrowserFocus::Location))
             });
         container(
             row![
@@ -599,7 +592,7 @@ impl<'a> View<'a> {
                     Message::ToggleView,
                     self.app.iced_theme().palette().text,
                     self.app.iced_theme().palette().background,
-                    self.app.presentation.focus_is(BrowserFocus::Toolbar)
+                    self.app.focus.is(BrowserFocus::Toolbar)
                         && self.app.presentation.toolbar_cursor() == 4,
                 ),
             ]
@@ -698,7 +691,7 @@ impl<'a> View<'a> {
                 grid_background_style(
                     theme,
                     current_drop_target,
-                    self.app.presentation.focus_is(BrowserFocus::Entries),
+                    self.app.focus.is(BrowserFocus::Entries),
                 )
             })
             .into()
@@ -786,11 +779,7 @@ impl<'a> View<'a> {
             .width(Fill)
             .height(Fill)
             .style(move |theme| {
-                grid_background_style(
-                    theme,
-                    false,
-                    self.app.presentation.focus_is(BrowserFocus::Entries),
-                )
+                grid_background_style(theme, false, self.app.focus.is(BrowserFocus::Entries))
             }),
         )
         .into();
@@ -983,7 +972,7 @@ impl<'a> View<'a> {
             .checked_sub(1)
             .is_some_and(|neighbor| self.app.grid.is_selected(neighbor));
         let selected_below = self.app.grid.is_selected(index.saturating_add(1));
-        let focused = self.app.presentation.focus_is(BrowserFocus::Entries)
+        let focused = self.app.focus.is(BrowserFocus::Entries)
             && self.app.grid.selected_entry() == Some(index);
         let hovered = self.app.grid.hovered() == Some(index);
         let content_opacity = entry_content_opacity(
@@ -1091,7 +1080,7 @@ impl<'a> View<'a> {
             GRID_NAME_MAX_CHARACTERS,
         ));
         let selected = self.app.grid.is_selected(index);
-        let focused = self.app.presentation.focus_is(BrowserFocus::Entries)
+        let focused = self.app.focus.is(BrowserFocus::Entries)
             && self.app.grid.selected_entry() == Some(index);
         let hovered = self.app.grid.hovered() == Some(index);
         let drop_target = entry.is_directory()

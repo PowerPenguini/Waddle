@@ -4,18 +4,15 @@ use std::{
 };
 
 use gio::prelude::*;
-use iced::{
-    Task,
-    widget::{self, Id},
-};
+use iced::Task;
 
 use crate::fs::{self, FileEntry};
 
 use super::{
-    App, Completion, DisplayedLocation, InputMode, LOCATION_ID, Message, Motion,
-    NavigationCompletion, NavigationOutcome, NavigationRequest, NavigationTransition,
-    OperationKind, SEARCH_ID, SEARCH_LIMIT, ScrollTarget, SearchUpdate, TransferAction,
-    TransferDragRelease, TreeActivation, TreeLoadRequest, TreeMoveOutcome,
+    App, Completion, DisplayedLocation, InputMode, Message, Motion, NavigationCompletion,
+    NavigationOutcome, NavigationRequest, NavigationTransition, OperationKind, SEARCH_LIMIT,
+    ScrollTarget, SearchUpdate, TransferAction, TransferDragRelease, TreeActivation,
+    TreeLoadRequest, TreeMoveOutcome,
     navigation::{Completed as NavigationCompleted, Start as NavigationStart},
     runtime::scroll_command,
     thumbnail,
@@ -324,9 +321,7 @@ impl App {
             self.cancel_rename();
         }
         self.location_input = self.navigation.current().display().to_string();
-        self.location_input_focused = true;
-        self.browser_input.enter(InputMode::Location);
-        widget::operation::focus(Id::new(LOCATION_ID))
+        self.focus_location()
     }
 
     pub(super) fn activate_entry(&mut self, index: usize, double: bool) -> Task<Message> {
@@ -721,7 +716,7 @@ impl App {
         self.change_transient(|sessions| sessions.begin_search());
         self.operations.cancel(OperationKind::Search);
         self.search.begin(&self.grid);
-        widget::operation::focus(Id::new(SEARCH_ID))
+        self.refocus_bottom_input()
     }
 
     pub(super) fn update_search(&mut self, value: String) -> Task<Message> {

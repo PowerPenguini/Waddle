@@ -1,53 +1,8 @@
-use iced::{
-    Task,
-    widget::{self, Id},
-};
-
 use crate::fs;
 
-use super::{
-    App, BrowserStatusModel, COMMAND_ID, DisplayedLocation, Message, NEW_FOLDER_ID, OPEN_WITH_ID,
-    RENAME_ID, SEARCH_ID,
-};
+use super::{App, BrowserStatusModel, DisplayedLocation};
 
 impl App {
-    fn active_bottom_input(&self) -> Option<(&'static str, bool)> {
-        self.transient_presentation().input().map(|input| {
-            use super::transient::InputTarget;
-            let id = match input.target {
-                InputTarget::Search => SEARCH_ID,
-                InputTarget::Command => COMMAND_ID,
-                InputTarget::Rename => RENAME_ID,
-                InputTarget::NewName => NEW_FOLDER_ID,
-                InputTarget::OpenWith => OPEN_WITH_ID,
-            };
-            (id, input.empty)
-        })
-    }
-
-    pub(super) fn active_bottom_input_empty(&self) -> bool {
-        self.active_bottom_input().is_some_and(|(_, empty)| empty)
-    }
-
-    pub(super) fn bottom_input_active(&self) -> bool {
-        self.active_bottom_input().is_some()
-    }
-
-    pub(super) fn refocus_bottom_input(&self) -> Task<Message> {
-        self.focus_bottom_input(false)
-    }
-
-    pub(super) fn focus_bottom_input(&self, select_all: bool) -> Task<Message> {
-        self.active_bottom_input()
-            .map_or_else(Task::none, |(id, _)| {
-                widget::operation::focus(Id::new(id)).chain(if select_all {
-                    widget::operation::select_all(Id::new(id))
-                } else {
-                    Task::none()
-                })
-            })
-    }
-
     pub(super) fn flash_copy_feedback(&mut self) {
         self.presentation.flash_copy_feedback();
     }
