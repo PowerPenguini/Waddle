@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn properties_display_special_permission_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("permissions.txt");
+        std_fs::write(&path, "fixture").unwrap();
+        for (mode, symbolic) in [
+            (0o4755, "rwsr-xr-x"),
+            (0o4644, "rwSr--r--"),
+            (0o2755, "rwxr-sr-x"),
+            (0o2644, "rw-r-Sr--"),
+            (0o1755, "rwxr-xr-t"),
+            (0o1644, "rw-r--r-T"),
+        ] {
+            std_fs::set_permissions(&path, std_fs::Permissions::from_mode(mode)).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("properties permissions.txt".into()));
+            let task = app.update(Message::CommandSubmitted);
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                super::navigation::finish_tasks(&mut app, task),
+            )
+            .await
+            .unwrap();
+
+            let output = app.command.output().expect("Properties output");
+            let expected = format!("Permissions: {symbolic} ({mode:04o})");
+            assert!(output.detail.contains(&expected), "{}", output.detail);
+        }
+    });
+}
+
+#[test]
 fn trash_keyboard_delete_opens_confirmation_for_selected_items() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();

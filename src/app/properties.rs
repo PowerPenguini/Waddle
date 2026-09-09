@@ -108,14 +108,19 @@ fn date(seconds: i64) -> String {
 
 fn permissions(mode: u32) -> String {
     let mut value = String::with_capacity(9);
-    for (read, write, execute) in [
-        (0o400, 0o200, 0o100),
-        (0o040, 0o020, 0o010),
-        (0o004, 0o002, 0o001),
+    for (read, write, execute, special, enabled, disabled) in [
+        (0o400, 0o200, 0o100, 0o4000, 's', 'S'),
+        (0o040, 0o020, 0o010, 0o2000, 's', 'S'),
+        (0o004, 0o002, 0o001, 0o1000, 't', 'T'),
     ] {
         value.push(if mode & read != 0 { 'r' } else { '-' });
         value.push(if mode & write != 0 { 'w' } else { '-' });
-        value.push(if mode & execute != 0 { 'x' } else { '-' });
+        value.push(match (mode & execute != 0, mode & special != 0) {
+            (true, true) => enabled,
+            (false, true) => disabled,
+            (true, false) => 'x',
+            (false, false) => '-',
+        });
     }
     value
 }

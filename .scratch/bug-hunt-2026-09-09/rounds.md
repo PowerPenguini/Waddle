@@ -79,3 +79,15 @@ outside this work.
 - Fix: use the location-aware refresh when a shell command does not navigate.
 - Green: the regression passed for Recent and Trash; all-target tests passed
   (601 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 7: Properties omits special permission bits
+
+- Reproduction: open `:properties` through app messages for temporary files with
+  setuid, setgid, and sticky bits, with and without the corresponding execute bit.
+- Red: `cargo test properties_display_special_permission_bits -- --nocapture`
+  displayed `rwxr-xr-x (4755)` instead of `rwsr-xr-x (4755)`.
+- Cause: symbolic permission formatting considered only read/write/execute bits.
+- Fix: display `s`/`S` and `t`/`T` for the special permission bits.
+- Green: all six permission scenarios passed through the real Properties worker;
+  all-target tests passed (602 passed, 19 ignored); Clippy with warnings denied
+  and formatting passed.
