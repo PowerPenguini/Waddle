@@ -334,7 +334,7 @@ mod tests {
         );
         let mut navigation = NavigationSession::new(current);
         let mut grid = crate::app::grid::GridInteraction::default();
-        search.begin(&grid);
+        search.begin(&navigation, &grid);
         let _ = search.update(&mut navigation, &mut grid, "/needle".to_owned());
         assert_eq!(
             monitoring.poll(&search),

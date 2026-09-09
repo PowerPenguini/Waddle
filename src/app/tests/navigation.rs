@@ -580,6 +580,57 @@ fn recursive_search_ignores_a_completed_result_queued_before_the_query_changed()
 }
 
 #[test]
+fn cancelling_search_after_refresh_restores_surviving_selected_paths() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for remove_selected in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["bravo", "delta", "omega"] {
+                std_fs::write(temp.path().join(name), name).unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.view_preferences =
+                super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.grid.select_click(0, false, false, 3);
+            app.grid.select_click(2, true, false, 3);
+            press(&mut app, "/");
+            let _ = app.update(Message::SearchChanged("delta".to_owned()));
+            std_fs::write(temp.path().join("alpha"), "new file").unwrap();
+            if remove_selected {
+                std_fs::remove_file(temp.path().join("bravo")).unwrap();
+            }
+            let refresh = app.update(Message::Refresh);
+            finish_tasks(&mut app, refresh).await;
+            let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+
+            let selected = app
+                .grid
+                .selected_items(app.navigation.entries())
+                .into_iter()
+                .map(|entry| entry.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let expected = if remove_selected {
+                vec!["omega"]
+            } else {
+                vec!["bravo", "omega"]
+            };
+            assert_eq!(selected, expected, "Escape must restore files by path");
+            assert_eq!(
+                app.navigation.entries()[app.grid.selected_entry().unwrap()].name,
+                "omega"
+            );
+        }
+    });
+}
+
+#[test]
 fn cancelling_search_restores_the_full_selection_and_active_entry() {
     for query in ["two", "/two"] {
         let (mut app, _) = App::new();
@@ -613,7 +664,7 @@ fn cancelling_search_restores_the_full_selection_and_active_entry() {
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
     app.browser_input.enter(InputMode::Search);
-    app.search.begin(&app.grid);
+    app.search.begin(&app.navigation, &app.grid);
     let _ = app
         .search
         .update(&mut app.navigation, &mut app.grid, "/needle".to_owned());

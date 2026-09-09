@@ -142,7 +142,7 @@ fn empty_folder_state_ignores_loading_and_search_results() {
 
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
     app.navigation.settle_for_test();
-    app.search.begin(&app.grid);
+    app.search.begin(&app.navigation, &app.grid);
     let _ = app
         .search
         .update(&mut app.navigation, &mut app.grid, "/missing".to_owned());

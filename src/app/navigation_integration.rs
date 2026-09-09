@@ -715,7 +715,7 @@ impl App {
     pub(super) fn begin_search(&mut self) -> Task<Message> {
         self.change_transient(|sessions| sessions.begin_search());
         self.operations.cancel(OperationKind::Search);
-        self.search.begin(&self.grid);
+        self.search.begin(&self.navigation, &self.grid);
         self.refocus_bottom_input()
     }
 

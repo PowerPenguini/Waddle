@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::fs::{FileEntry, SearchResults};
 
@@ -18,6 +18,7 @@ struct Recursive {
 struct Active {
     origin: Option<usize>,
     selection: Selection,
+    paths: Vec<PathBuf>,
     recursive: Option<Recursive>,
 }
 
@@ -42,11 +43,16 @@ pub(super) struct SearchSession {
 }
 
 impl SearchSession {
-    pub(super) fn begin(&mut self, grid: &GridInteraction) {
+    pub(super) fn begin(&mut self, navigation: &NavigationSession, grid: &GridInteraction) {
         self.revision = self.revision.wrapping_add(1);
         self.active = Some(Active {
             origin: grid.selected_entry(),
             selection: grid.capture_selection(),
+            paths: navigation
+                .entries()
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
             recursive: None,
         });
         self.query.clear();
@@ -168,7 +174,18 @@ impl SearchSession {
         if let Some(recursive) = active.recursive {
             navigation.restore_search_display(recursive.restore);
         }
-        grid.restore_selection(active.selection, navigation.entries().len());
+        let indices = navigation
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.path.as_path(), index))
+            .collect::<HashMap<_, _>>();
+        grid.restore_selection(active.selection, |index| {
+            active
+                .paths
+                .get(index)
+                .and_then(|path| indices.get(path.as_path()).copied())
+        });
         self.query.clear();
     }
 
@@ -285,7 +302,7 @@ mod tests {
     fn local_search_updates_selection_without_replacing_entries() {
         let (mut navigation, mut grid) = navigation();
         let mut search = SearchSession::default();
-        search.begin(&grid);
+        search.begin(&navigation, &grid);
 
         assert_eq!(
             search.update(&mut navigation, &mut grid, "tw".to_owned()),
@@ -299,7 +316,7 @@ mod tests {
     fn recursive_cancel_restores_entries_and_origin() {
         let (mut navigation, mut grid) = navigation();
         let mut search = SearchSession::default();
-        search.begin(&grid);
+        search.begin(&navigation, &grid);
         let Update::Search { request, .. } =
             search.update(&mut navigation, &mut grid, "/needle".to_owned())
         else {
@@ -333,7 +350,7 @@ mod tests {
     fn recursive_submit_returns_match_then_restores_directory() {
         let (mut navigation, mut grid) = navigation();
         let mut search = SearchSession::default();
-        search.begin(&grid);
+        search.begin(&navigation, &grid);
         let Update::Search { request, .. } =
             search.update(&mut navigation, &mut grid, "/needle".to_owned())
         else {
@@ -384,7 +401,7 @@ mod regressions {
         let mut grid = GridInteraction::default();
         grid.select_only(Some(0), 1);
         let mut search = SearchSession::default();
-        search.begin(&grid);
+        search.begin(&nav, &grid);
         let update = search.update(&mut nav, &mut grid, "/needle".to_owned());
         assert!(matches!(update, Update::Search { .. }));
         assert!(search.is_loading());

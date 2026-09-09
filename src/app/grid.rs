@@ -622,17 +622,19 @@ impl GridInteraction {
         }
     }
 
-    pub(super) fn restore_selection(&mut self, selection: Selection, entry_count: usize) {
-        self.selected = selection.selected.filter(|index| *index < entry_count);
+    pub(super) fn restore_selection(
+        &mut self,
+        selection: Selection,
+        mut locate: impl FnMut(usize) -> Option<usize>,
+    ) {
+        self.selected = selection.selected.and_then(&mut locate);
         self.selection = selection
             .indices
             .into_iter()
-            .filter(|index| *index < entry_count)
+            .filter_map(&mut locate)
             .collect();
-        self.visual_anchor = selection.visual_anchor.filter(|index| *index < entry_count);
-        self.selection_anchor = selection
-            .selection_anchor
-            .filter(|index| *index < entry_count);
+        self.visual_anchor = selection.visual_anchor.and_then(&mut locate);
+        self.selection_anchor = selection.selection_anchor.and_then(locate);
     }
 
     pub(super) fn selection_count(&self) -> usize {

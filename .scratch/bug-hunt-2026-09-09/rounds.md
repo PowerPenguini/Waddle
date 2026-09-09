@@ -42,3 +42,16 @@ outside this work.
 - Fix: dispatch `:refresh` through the same location-aware path as F5.
 - Green: the regression passed for Recent and Trash; all-target tests passed
   (598 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 4: Search cancellation restores wrong files after a refresh
+
+- Reproduction: select `bravo` and `omega`, search for `delta`, insert `alpha`,
+  refresh through app messages, then press Escape. Also cover removal of `bravo`.
+- Red: `cargo test cancelling_search_after_refresh_restores_surviving_selected_paths -- --nocapture`
+  selected `alpha` and `delta` instead of `bravo` and `omega`.
+- Cause: saved row indices referred to different entries after a folder refresh.
+- Fix: retain original entry paths and resolve the selection and anchors against
+  the current entries when cancelling. Entries that disappeared are not selected.
+- Green: insertion and removal scenarios passed; all-target tests passed
+  (599 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+  All seven release-mode benchmarks passed; grid/list p95 remained below 0.69 ms.
