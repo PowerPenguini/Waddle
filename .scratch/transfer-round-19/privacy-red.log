@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.19s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::saved_transfer_history_is_private_to_its_owner' (1238777) panicked at src/journal/tests.rs:2140:5:
+assertion `left == right` failed: transfer history exposes file paths and metadata to other users
+  left: 420
+ right: 384
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::saved_transfer_history_is_private_to_its_owner ... FAILED
+
+failures:
+
+failures:
+    journal::tests::saved_transfer_history_is_private_to_its_owner
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 568 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

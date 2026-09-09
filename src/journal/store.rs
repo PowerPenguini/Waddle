@@ -257,20 +257,76 @@ impl Journal {
         };
         fs::create_dir_all(directory)
             .map_err(|error| Error::io("could not create operation journal directory", error))?;
-        let temporary = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&self.stored)
             .map_err(|error| Error::json("could not encode operation journal", error))?;
         use std::io::Write;
-        let mut file = fs::File::create(&temporary)
+        let mut temporary = PendingJournalFile::create(path)
             .map_err(|error| Error::io("could not write operation journal", error))?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
+        temporary
+            .file
+            .write_all(&bytes)
+            .and_then(|()| temporary.file.sync_all())
             .map_err(|error| Error::io("could not flush operation journal", error))?;
-        fs::rename(&temporary, path)
+        fs::rename(&temporary.path, path)
             .map_err(|error| Error::io("could not commit operation journal", error))?;
         fs::File::open(directory)
             .and_then(|file| file.sync_all())
             .map_err(|error| Error::io("could not flush operation journal directory", error))
+    }
+}
+
+/// Own a fresh, private file until the atomic journal replacement. Existing
+/// temporary entries may belong to someone else, even when their name matches.
+struct PendingJournalFile {
+    path: PathBuf,
+    file: fs::File,
+}
+
+impl PendingJournalFile {
+    fn create(journal: &std::path::Path) -> io::Result<Self> {
+        use std::{
+            os::unix::fs::OpenOptionsExt,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = journal.parent().unwrap_or(std::path::Path::new("."));
+        let mut path = journal.with_extension("json.tmp");
+        for _ in 0..10_000 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(file) => return Ok(Self { path, file }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    path = directory.join(format!(
+                        ".waddle-journal-{}-{}.tmp",
+                        std::process::id(),
+                        NEXT.fetch_add(1, Ordering::Relaxed)
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve an operation journal temporary file",
+        ))
+    }
+}
+
+impl Drop for PendingJournalFile {
+    fn drop(&mut self) {
+        use std::os::unix::fs::MetadataExt;
+        // Rename consumes our path on success. On errors, only unlink the inode
+        // we created; do not remove a different entry substituted in its place.
+        if let (Ok(owned), Ok(current)) = (self.file.metadata(), fs::symlink_metadata(&self.path))
+            && owned.dev() == current.dev()
+            && owned.ino() == current.ino()
+        {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

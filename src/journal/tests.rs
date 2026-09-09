@@ -2061,3 +2061,186 @@ fn trash_and_restore_history_preserve_attribute_edits() {
         }
     }
 }
+
+#[test]
+fn recording_transfer_history_preserves_preexisting_temporary_entries() {
+    for kind in ["symlink", "hardlink", "file", "directory"] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("copy");
+        fs::write(&source, b"copied data").unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let path = temp.path().join("journal.json");
+        let temporary = path.with_extension("json.tmp");
+        let unrelated = temp.path().join("unrelated");
+        fs::write(&unrelated, b"must not be overwritten").unwrap();
+        match kind {
+            "symlink" => std::os::unix::fs::symlink(&unrelated, &temporary).unwrap(),
+            "hardlink" => fs::hard_link(&unrelated, &temporary).unwrap(),
+            "file" => fs::write(&temporary, b"must not be overwritten").unwrap(),
+            _ => fs::create_dir(&temporary).unwrap(),
+        }
+        let mut journal = Journal::open(path.clone()).unwrap();
+        let result = journal.record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source,
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        assert_eq!(
+            fs::read(&unrelated).unwrap(),
+            b"must not be overwritten",
+            "journal save followed {kind}"
+        );
+        if kind == "directory" {
+            assert!(temporary.is_dir());
+        } else {
+            assert_eq!(fs::read(&temporary).unwrap(), b"must not be overwritten");
+            if kind == "symlink" {
+                assert_eq!(fs::read_link(&temporary).unwrap(), unrelated);
+            }
+        }
+        result.expect("an occupied temporary name must not disable transfer history");
+        let mut reopened = Journal::open(path).unwrap();
+        reopened.undo().unwrap();
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
+fn saved_transfer_history_is_private_to_its_owner() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("private-source");
+    let destination = temp.path().join("copy");
+    fs::write(&source, b"private paths must stay private").unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source,
+                    destination,
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::metadata(path).unwrap().mode() & 0o777,
+        0o600,
+        "transfer history exposes file paths and metadata to other users"
+    );
+}
+
+#[test]
+#[ignore = "Child process helper for isolated journal synchronization failure"]
+fn journal_save_fault_child() {
+    let root =
+        PathBuf::from(std::env::var_os("WADDLE_JOURNAL_SAVE_FIXTURE").expect("parent fixture"));
+    let mut journal = Journal::open(root.join("state/journal.json")).unwrap();
+    let result = journal.record(
+        Action::transfer(
+            TransferKind::Copy,
+            &[crate::fs::TransferReceipt {
+                source: root.join("source"),
+                destination: root.join("copy"),
+                replaced_existing: false,
+            }],
+        )
+        .unwrap()
+        .unwrap(),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("could not flush operation journal")
+    );
+}
+
+#[test]
+fn failed_journal_sync_keeps_previous_history_and_removes_owned_temporary_file() {
+    let shim = audit_fault_library();
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let path = state.join("journal.json");
+    let older = temp.path().join("older");
+    fs::write(&older, b"older operation").unwrap();
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(Action::new_file(older.clone()).unwrap())
+        .unwrap();
+    let before = fs::read(&path).unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("copy");
+    fs::write(&source, b"new transfer").unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let armed = temp.path().join("armed");
+    fs::write(&armed, "").unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "journal::tests::journal_save_fault_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+        .env("WADDLE_JOURNAL_SAVE_FIXTURE", temp.path())
+        .env("WADDLE_AUDIT_SYNC_TARGET", &state)
+        .env("WADDLE_AUDIT_SYNC_ERRNO", libc::EIO.to_string())
+        .env("WADDLE_AUDIT_ARMED", &armed)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!armed.exists(), "fsync fault must be reached");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let mut entries = fs::read_dir(&state)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    entries.sort();
+    assert_eq!(
+        entries,
+        [
+            std::ffi::OsString::from("journal.json"),
+            "journal.lock".into()
+        ],
+        "failed save left a temporary file"
+    );
+    let mut journal = Journal::open(path).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    journal.undo().unwrap();
+    assert!(!destination.exists());
+    assert_eq!(fs::read(source).unwrap(), b"new transfer");
+    assert_eq!(fs::read(older).unwrap(), b"older operation");
+}
