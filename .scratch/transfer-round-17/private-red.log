@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.31s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'fs::tests::incomplete_private_transfers_are_not_readable_by_other_users' (1197800) panicked at src/fs/tests.rs:2880:21:
+assertion `left == right` failed: unpublished private data became accessible to group/other while copying (directory=false)
+  left: 36
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fs::tests::incomplete_private_transfers_are_not_readable_by_other_users ... FAILED
+
+failures:
+
+failures:
+    fs::tests::incomplete_private_transfers_are_not_readable_by_other_users
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

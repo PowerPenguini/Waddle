@@ -212,7 +212,10 @@ impl CopyContext<'_> {
             return Ok(());
         }
         if metadata.is_dir() {
-            fs::create_dir(destination)?;
+            use std::os::unix::fs::DirBuilderExt;
+            // Keep unpublished contents private even under a permissive umask
+            // or an inherited default ACL. Source permissions are applied last.
+            fs::DirBuilder::new().mode(0o700).create(destination)?;
             self.created = true;
             let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
             entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -267,6 +270,7 @@ impl CopyContext<'_> {
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(destination)?;
         self.created = true;
         let sparse = metadata.len() > 0 && metadata.blocks().saturating_mul(512) < metadata.len();
@@ -331,6 +335,14 @@ impl CopyContext<'_> {
         metadata: &fs::Metadata,
         symlink: bool,
     ) {
+        // Reconcile inherited ACLs while the new entry is still private.
+        // Opening the source's group mask first could briefly enable an
+        // inherited named-user entry that the source never granted.
+        record_metadata_result(
+            "extended attributes and ACLs",
+            copy_xattrs(source, destination),
+            &mut self.warnings,
+        );
         if !symlink {
             record_metadata_result(
                 "permissions",
@@ -338,11 +350,6 @@ impl CopyContext<'_> {
                 &mut self.warnings,
             );
         }
-        record_metadata_result(
-            "extended attributes and ACLs",
-            copy_xattrs(source, destination),
-            &mut self.warnings,
-        );
         record_metadata_result(
             "timestamps",
             set_times(
@@ -539,9 +546,29 @@ fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
 #[cfg(target_os = "linux")]
 fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let attributes = read_xattrs(source)?;
     let destination = CString::new(destination.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination contains NUL"))?;
-    for (name, value) in read_xattrs(source)? {
+    // Creation can inherit ACLs from the destination parent. chmod only adjusts
+    // their mask; it does not remove named users or a directory's default ACL.
+    // Absence on the source is meaningful too. Leave unrelated filesystem-
+    // assigned attributes (such as security labels) alone.
+    for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+        if !attributes
+            .iter()
+            .any(|(present, _)| present.as_c_str() == name)
+        {
+            // SAFETY: both arguments are live NUL-terminated strings. The l*
+            // variant changes this entry without following symbolic links.
+            if unsafe { libc::lremovexattr(destination.as_ptr(), name.as_ptr()) } != 0 {
+                let error = io::Error::last_os_error();
+                if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    for (name, value) in attributes {
         // SAFETY: destination, name, and value are valid for the duration of the call.
         let result = unsafe {
             libc::lsetxattr(

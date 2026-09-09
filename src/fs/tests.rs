@@ -2799,3 +2799,229 @@ fn failed_copy_preserves_existing_staging_name_files_directories_and_symlinks() 
 }
 
 include!("../../.scratch/transfer-audit-14/copy_probes.rs");
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copying_into_default_acl_directory_does_not_grant_extra_access() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    let file = source.join("private.txt");
+    fs::write(&file, b"restricted to owner and group").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+
+    let default_acl = named_user_acl(65534);
+    set_xattr(&target, "system.posix_acl_default", &default_acl).unwrap();
+    assert_eq!(
+        get_xattr(&file, "system.posix_acl_access")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ENODATA)
+    );
+
+    let report =
+        complete(TransferBatch::try_new(vec![file.clone()], target.clone(), Action::Copy).unwrap());
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    let copied = target.join("private.txt");
+    assert_eq!(fs::read(&copied).unwrap(), fs::read(&file).unwrap());
+    assert_eq!(fs::metadata(&copied).unwrap().mode() & 0o777, 0o640);
+    assert_eq!(
+        get_xattr(&copied, "system.posix_acl_access")
+            .err()
+            .and_then(|e| e.raw_os_error()),
+        Some(libc::ENODATA),
+        "copy inherited a named-user ACL absent from the source, granting extra access despite identical mode bits"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn incomplete_private_transfers_are_not_readable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for directory in [false, true] {
+        for action in [Action::Copy, Action::Move] {
+            for replace in [false, true] {
+                for inherited_acl in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let source = temp.path().join("private");
+                    let target = tempfile::tempdir_in("/dev/shm").unwrap();
+                    assert_ne!(
+                        fs::metadata(temp.path()).unwrap().dev(),
+                        fs::metadata(target.path()).unwrap().dev()
+                    );
+                    if inherited_acl {
+                        set_xattr(
+                            target.path(),
+                            "system.posix_acl_default",
+                            &named_user_acl(65534),
+                        )
+                        .unwrap();
+                    }
+                    let file = if directory {
+                        fs::create_dir(&source).unwrap();
+                        fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+                        source.join("contents")
+                    } else {
+                        source.clone()
+                    };
+                    fs::write(&file, vec![0x42; 4 * 1024 * 1024]).unwrap();
+                    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+                    let mut batch = TransferBatch::try_new(
+                        vec![source.clone()],
+                        target.path().to_owned(),
+                        action,
+                    )
+                    .unwrap();
+                    let destination = target.path().join("private");
+                    if replace {
+                        fs::write(&destination, b"original").unwrap();
+                        let TransferBatchOutcome::Conflict { batch: blocked, .. } = batch.run()
+                        else {
+                            panic!("expected conflict")
+                        };
+                        batch = blocked.resolve(ConflictChoice::Replace, false);
+                    }
+                    let mut observed = false;
+                    let outcome = batch.run_with(|| false, |progress| {
+                        if progress.completed_bytes > 0 && progress.completed_bytes < progress.total_bytes {
+                            let staging = fs::read_dir(target.path()).unwrap()
+                                .map(|entry| entry.unwrap().path())
+                                .find(|path| *path != destination).unwrap();
+                            observed = true;
+                            assert_eq!(fs::metadata(staging).unwrap().mode() & 0o077, 0,
+                                "unpublished data exposed: {action:?} directory={directory} replace={replace} inherited_acl={inherited_acl}");
+                        }
+                    });
+                    let TransferBatchOutcome::Complete(report) = outcome else {
+                        panic!("no conflict")
+                    };
+                    assert!(observed);
+                    assert!(
+                        report.failures.is_empty() && report.warnings.is_empty(),
+                        "{report:?}"
+                    );
+                    assert_eq!(source.exists(), action == Action::Copy);
+                    assert_eq!(
+                        fs::metadata(&destination).unwrap().mode() & 0o777,
+                        if directory { 0o700 } else { 0o600 }
+                    );
+                    let copied_file = if directory {
+                        destination.join("contents")
+                    } else {
+                        destination
+                    };
+                    assert_eq!(fs::read(copied_file).unwrap(), vec![0x42; 4 * 1024 * 1024]);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn named_user_acl(uid: u32) -> Vec<u8> {
+    // Linux POSIX ACL xattr v2: owner, named user (nobody), group, mask, other.
+    let mut default_acl = 2_u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (1_u16, 7_u16, u32::MAX),
+        (2, 7, uid),
+        (4, 5, u32::MAX),
+        (16, 7, u32::MAX),
+        (32, 0, u32::MAX),
+    ] {
+        default_acl.extend_from_slice(&tag.to_le_bytes());
+        default_acl.extend_from_slice(&permissions.to_le_bytes());
+        default_acl.extend_from_slice(&id.to_le_bytes());
+    }
+    default_acl
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copy_and_cross_device_move_preserve_source_acl_policy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for action in [Action::Copy, Action::Move] {
+        for replace in [false, true] {
+            for explicit_acl in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = tempfile::tempdir_in("/dev/shm").unwrap();
+                assert_ne!(
+                    fs::metadata(temp.path()).unwrap().dev(),
+                    fs::metadata(target.path()).unwrap().dev()
+                );
+                let source = temp.path().join("tree");
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("note"), b"source content").unwrap();
+                fs::set_permissions(source.join("note"), fs::Permissions::from_mode(0o640))
+                    .unwrap();
+                if explicit_acl {
+                    let acl = named_user_acl(65533);
+                    set_xattr(&source, "system.posix_acl_access", &acl).unwrap();
+                    set_xattr(&source, "system.posix_acl_default", &acl).unwrap();
+                    set_xattr(&source.join("note"), "system.posix_acl_access", &acl).unwrap();
+                }
+                let expected_root = get_xattr(&source, "system.posix_acl_access").ok();
+                let expected_default = get_xattr(&source, "system.posix_acl_default").ok();
+                let expected_file = get_xattr(&source.join("note"), "system.posix_acl_access").ok();
+                let expected_mode = fs::metadata(source.join("note")).unwrap().mode();
+                set_xattr(
+                    target.path(),
+                    "system.posix_acl_default",
+                    &named_user_acl(65534),
+                )
+                .unwrap();
+                let copied = target.path().join("tree");
+                let mut batch =
+                    TransferBatch::try_new(vec![source.clone()], target.path().to_owned(), action)
+                        .unwrap();
+                if replace {
+                    // Directory-on-directory Replace means Merge and intentionally
+                    // retains the existing directory policy. Use a file conflict
+                    // here to exercise replacement of the complete entry.
+                    fs::write(&copied, b"old content").unwrap();
+                    let TransferBatchOutcome::Conflict { batch: blocked, .. } = batch.run() else {
+                        panic!("expected conflict")
+                    };
+                    batch = blocked.resolve(ConflictChoice::Replace, false);
+                }
+                let report = complete(batch);
+                assert!(
+                    report.failures.is_empty() && report.warnings.is_empty(),
+                    "{action:?} replace={replace} explicit={explicit_acl}: {report:?}"
+                );
+                assert_eq!(
+                    get_xattr(&copied, "system.posix_acl_access").ok(),
+                    expected_root
+                );
+                assert_eq!(
+                    get_xattr(&copied, "system.posix_acl_default").ok(),
+                    expected_default
+                );
+                assert_eq!(
+                    get_xattr(&copied.join("note"), "system.posix_acl_access").ok(),
+                    expected_file
+                );
+                assert_eq!(
+                    fs::metadata(copied.join("note")).unwrap().mode(),
+                    expected_mode
+                );
+                assert_eq!(fs::read(copied.join("note")).unwrap(), b"source content");
+                assert_eq!(source.exists(), action == Action::Copy);
+                assert!(!copied.join("old").exists());
+                // Future children must inherit only the copied source's policy.
+                let child = copied.join("new-child");
+                fs::create_dir(&child).unwrap();
+                assert_eq!(
+                    get_xattr(&child, "system.posix_acl_default").ok(),
+                    expected_default
+                );
+            }
+        }
+    }
+}

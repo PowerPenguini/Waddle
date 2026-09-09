@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.15s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'fs::tests::copying_into_default_acl_directory_does_not_grant_extra_access' (1196566) panicked at src/fs/tests.rs:2846:5:
+assertion `left == right` failed: copy inherited a named-user ACL absent from the source, granting extra access despite identical mode bits
+  left: None
+ right: Some(61)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fs::tests::copying_into_default_acl_directory_does_not_grant_extra_access ... FAILED
+
+failures:
+
+failures:
+    fs::tests::copying_into_default_acl_directory_does_not_grant_extra_access
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 559 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`
