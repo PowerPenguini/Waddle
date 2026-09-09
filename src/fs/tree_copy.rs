@@ -488,7 +488,7 @@ pub(super) fn set_times(_: &Path, _: i64, _: i64, _: i64, _: i64) -> io::Result<
 type ExtendedAttributes = Vec<(std::ffi::CString, Vec<u8>)>;
 
 #[cfg(target_os = "linux")]
-fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
+pub(crate) fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let source = CString::new(source.as_os_str().as_bytes())
@@ -587,7 +587,7 @@ fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_xattrs(_: &Path) -> io::Result<ExtendedAttributes> {
+pub(crate) fn read_xattrs(_: &Path) -> io::Result<ExtendedAttributes> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "extended attributes are unsupported",

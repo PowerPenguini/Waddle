@@ -8,6 +8,7 @@ mod mutation;
 mod storage_usage;
 mod transfer_batch;
 mod tree_copy;
+pub(crate) use tree_copy::read_xattrs;
 
 #[cfg(test)]
 pub use browse::open_directory_with;

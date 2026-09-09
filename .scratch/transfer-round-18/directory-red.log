@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.03s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::resumed_copy_undo_preserves_new_directory_attributes' (1230884) panicked at src/journal/tests.rs:1846:5:
+resumed Undo silently deleted a newly annotated directory: Ok(Effect { status: "Undid Copy", changed_folders: ["/tmp/.tmpx5y2uJ"], select: Some("/tmp/.tmpx5y2uJ/source") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::resumed_copy_undo_preserves_new_directory_attributes ... FAILED
+
+failures:
+
+failures:
+    journal::tests::resumed_copy_undo_preserves_new_directory_attributes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 563 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

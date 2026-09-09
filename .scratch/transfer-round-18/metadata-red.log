@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.03s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::copy_undo_preserves_metadata_edits_after_restart' (1226629) panicked at src/journal/tests.rs:1797:5:
+Undo silently discarded metadata edited after Copy: Ok(Effect { status: "Undid Copy", changed_folders: ["/tmp/.tmp6nP52r"], select: Some("/tmp/.tmp6nP52r/source") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::copy_undo_preserves_metadata_edits_after_restart ... FAILED
+
+failures:
+
+failures:
+    journal::tests::copy_undo_preserves_metadata_edits_after_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 562 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

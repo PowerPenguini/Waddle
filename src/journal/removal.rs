@@ -24,6 +24,8 @@ struct Entry {
     inode: u64,
     kind: u32,
     contents: Option<TreeFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_attributes: Option<u64>,
 }
 
 impl RemovalPlan {
@@ -113,7 +115,12 @@ impl Entry {
             return Err(changed(path));
         }
         if let Some(contents) = &self.contents
-            && TreeFingerprint::read_without_permissions(path)? != *contents
+            && !contents.matches(path, false)?
+        {
+            return Err(changed(path));
+        }
+        if let Some(expected) = self.directory_attributes
+            && super::fingerprint::attribute_digest(path, false)? != expected
         {
             return Err(changed(path));
         }
@@ -146,6 +153,11 @@ fn capture(root: &Path, relative: &Path, entries: &mut VecDeque<Entry>) -> Resul
             None
         } else {
             Some(TreeFingerprint::read_without_permissions(&path)?)
+        },
+        directory_attributes: if metadata.is_dir() {
+            Some(super::fingerprint::attribute_digest(&path, false)?)
+        } else {
+            None
         },
     });
     Ok(())

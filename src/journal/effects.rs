@@ -452,7 +452,7 @@ fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direct
 }
 
 pub(super) fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), Error> {
-    if &TreeFingerprint::read(path)? == expected {
+    if expected.matches(path, true)? {
         Ok(())
     } else {
         Err(Error::message(format!(

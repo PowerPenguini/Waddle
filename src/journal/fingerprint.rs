@@ -41,23 +41,44 @@ pub(crate) struct Fingerprint {
 pub(super) struct TreeFingerprint {
     root: Fingerprint,
     digest: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes_digest: Option<u64>,
 }
 
 impl TreeFingerprint {
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
-        Self::read_with_permissions(path, true)
+        Self::read_with_permissions(path, true, true)
     }
 
     pub(super) fn read_without_permissions(path: &Path) -> Result<Self, Error> {
-        Self::read_with_permissions(path, false)
+        Self::read_with_permissions(path, false, true)
     }
 
-    fn read_with_permissions(path: &Path, permissions: bool) -> Result<Self, Error> {
+    pub(super) fn matches(&self, path: &Path, permissions: bool) -> Result<bool, Error> {
+        // Older journal records did not capture attributes. Keep their original
+        // checks instead of invalidating all pre-upgrade Undo/Redo operations.
+        Ok(*self
+            == Self::read_with_permissions(path, permissions, self.attributes_digest.is_some())?)
+    }
+
+    fn read_with_permissions(
+        path: &Path,
+        permissions: bool,
+        attributes: bool,
+    ) -> Result<Self, Error> {
         let mut digest = Fnv::default();
-        hash_tree(path, Path::new(""), &mut digest, permissions)?;
+        let mut attributes_digest = attributes.then(Fnv::default);
+        hash_tree(
+            path,
+            Path::new(""),
+            &mut digest,
+            permissions,
+            &mut attributes_digest,
+        )?;
         Ok(Self {
             root: Fingerprint::read(path)?,
             digest: digest.0,
+            attributes_digest: attributes_digest.map(|digest| digest.0),
         })
     }
 }
@@ -71,6 +92,11 @@ impl Default for Fnv {
 }
 
 impl Fnv {
+    fn write_field(&mut self, bytes: &[u8]) {
+        self.write(&(bytes.len() as u64).to_le_bytes());
+        self.write(bytes);
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         for byte in bytes {
             self.0 ^= u64::from(*byte);
@@ -84,11 +110,16 @@ fn hash_tree(
     relative: &Path,
     digest: &mut Fnv,
     permissions: bool,
+    attributes_digest: &mut Option<Fnv>,
 ) -> Result<(), Error> {
     use std::{io::Read, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?;
+    if let Some(attributes) = attributes_digest {
+        attributes.write_field(relative.as_os_str().as_bytes());
+        attributes.write(&attribute_digest(path, permissions)?.to_le_bytes());
+    }
     digest.write(relative.as_os_str().as_bytes());
     digest.write(
         &(if permissions {
@@ -120,6 +151,7 @@ fn hash_tree(
                 &relative.join(entry.file_name()),
                 digest,
                 permissions,
+                attributes_digest,
             )?;
         }
     } else if metadata.is_file() {
@@ -171,4 +203,34 @@ impl Fingerprint {
             modified_nanoseconds: metadata.mtime_nsec(),
         })
     }
+}
+
+/// Fingerprint only metadata that is stable across content reads and unlinking
+/// siblings. Permission-repair paths deliberately omit ACLs, just as they omit
+/// mode bits, while still protecting user attributes such as tags and comments.
+pub(super) fn attribute_digest(path: &Path, permissions: bool) -> Result<u64, Error> {
+    let attributes = match crate::fs::read_xattrs(path) {
+        Ok(attributes) => attributes,
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Vec::new(),
+        Err(error) => {
+            return Err(Error::io(
+                format!("could not fingerprint attributes of {}", path.display()),
+                error,
+            ));
+        }
+    };
+    let mut digest = Fnv::default();
+    for (name, value) in attributes {
+        if !permissions
+            && matches!(
+                name.to_bytes(),
+                b"system.posix_acl_access" | b"system.posix_acl_default"
+            )
+        {
+            continue;
+        }
+        digest.write_field(name.to_bytes());
+        digest.write_field(&value);
+    }
+    Ok(digest.0)
 }

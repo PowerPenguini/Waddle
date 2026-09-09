@@ -1740,3 +1740,324 @@ fn partial_retrashing_preserves_metadata_and_retries_after_reopen() {
 include!("../../.scratch/transfer-audit-14/history_probes.rs");
 
 include!("../../.scratch/transfer-round-16/trash_probes.rs");
+
+#[cfg(target_os = "linux")]
+fn set_test_attribute(path: &std::path::Path, name: &str, value: &[u8]) {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = CString::new(name).unwrap();
+    // SAFETY: path/name are NUL-terminated; value is live for this call.
+    assert_eq!(
+        unsafe {
+            libc::lsetxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copy_undo_preserves_metadata_edits_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("copy");
+    fs::write(&source, b"unchanged contents").unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    set_test_attribute(
+        &destination,
+        "user.comment",
+        b"new information added after copying",
+    );
+    let mut journal = Journal::open(path).unwrap();
+    let result = journal.undo();
+    assert!(
+        result.is_err(),
+        "Undo silently discarded metadata edited after Copy: {result:?}"
+    );
+    assert_eq!(fs::read(&destination).unwrap(), b"unchanged contents");
+    assert_eq!(fs::read(&source).unwrap(), b"unchanged contents");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resumed_copy_undo_preserves_new_directory_attributes() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("copy");
+    fs::create_dir_all(source.join("locked")).unwrap();
+    fs::write(source.join("locked/data"), b"keep this tree").unwrap();
+    fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o500)).unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = temp.path().join("journal.json");
+    let mut journal = Journal::open(path.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source,
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        journal.undo().is_err(),
+        "fixture must pause before deleting the locked file"
+    );
+    fs::set_permissions(
+        destination.join("locked"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    set_test_attribute(&destination, "user.comment", b"new folder annotation");
+    let mut journal = Journal::open(path).unwrap();
+    let result = journal.undo();
+    assert!(
+        result.is_err(),
+        "resumed Undo silently deleted a newly annotated directory: {result:?}"
+    );
+    assert_eq!(
+        fs::read(destination.join("locked/data")).unwrap(),
+        b"keep this tree"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn transfer_history_rejects_attribute_changes_in_both_directions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        for redo in [false, true] {
+            for change in ["file-tag", "removed-tag", "directory-tag", "acl"] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let destination = temp.path().join("result");
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("data"), b"original content").unwrap();
+                fs::set_permissions(source.join("data"), fs::Permissions::from_mode(0o640))
+                    .unwrap();
+                set_test_attribute(&source.join("data"), "user.comment", b"original annotation");
+                match kind {
+                    TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+                    TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+                }
+                let path = temp.path().join("journal.json");
+                let mut journal = Journal::open(path.clone()).unwrap();
+                journal
+                    .record(
+                        Action::transfer(
+                            kind,
+                            &[crate::fs::TransferReceipt {
+                                source: source.clone(),
+                                destination: destination.clone(),
+                                replaced_existing: false,
+                            }],
+                        )
+                        .unwrap()
+                        .unwrap(),
+                    )
+                    .unwrap();
+                if redo {
+                    journal.undo().unwrap();
+                }
+                let retained = if redo { &source } else { &destination };
+                let file = retained.join("data");
+                let before = fs::metadata(&file).unwrap();
+                match change {
+                    "file-tag" => set_test_attribute(&file, "user.comment", b"updated annotation"),
+                    "removed-tag" => {
+                        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+                        let path = CString::new(file.as_os_str().as_bytes()).unwrap();
+                        // SAFETY: both arguments are live NUL-terminated strings.
+                        assert_eq!(
+                            unsafe { libc::lremovexattr(path.as_ptr(), c"user.comment".as_ptr()) },
+                            0
+                        );
+                    }
+                    "directory-tag" => {
+                        set_test_attribute(retained, "user.comment", b"new folder annotation")
+                    }
+                    _ => {
+                        // Add named-user read access while preserving the 0640 mode.
+                        let mut acl = 2_u32.to_le_bytes().to_vec();
+                        for (tag, permissions, id) in [
+                            (1_u16, 6_u16, u32::MAX),
+                            (2, 4, 65534),
+                            (4, 4, u32::MAX),
+                            (16, 4, u32::MAX),
+                            (32, 0, u32::MAX),
+                        ] {
+                            acl.extend_from_slice(&tag.to_le_bytes());
+                            acl.extend_from_slice(&permissions.to_le_bytes());
+                            acl.extend_from_slice(&id.to_le_bytes());
+                        }
+                        set_test_attribute(&file, "system.posix_acl_access", &acl);
+                    }
+                }
+                let after = fs::metadata(&file).unwrap();
+                assert_eq!(before.mode(), after.mode());
+                assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+                let mut journal = Journal::open(path).unwrap();
+                let result = if redo { journal.redo() } else { journal.undo() };
+                assert!(
+                    result.is_err(),
+                    "{kind:?} redo={redo} ignored {change}: {result:?}"
+                );
+                assert_eq!(fs::read(file).unwrap(), b"original content");
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_transfer_fingerprints_keep_undo_redo_available() {
+    fn remove_new_fields(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.remove("attributes_digest");
+                object.remove("directory_attributes");
+                for value in object.values_mut() {
+                    remove_new_fields(value);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    remove_new_fields(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("result");
+        fs::write(&source, b"legacy contents").unwrap();
+        match kind {
+            TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+            TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+        }
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    kind,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        remove_new_fields(&mut legacy);
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.undo().unwrap();
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&source).unwrap(), b"legacy contents");
+        let mut journal = Journal::open(path).unwrap();
+        journal.redo().unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"legacy contents");
+        assert_eq!(source.exists(), matches!(kind, TransferKind::Copy));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn trash_and_restore_history_preserve_attribute_edits() {
+    for restore in [false, true] {
+        for redo in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let receipt = TrashReceipt {
+                original: temp.path().join("original"),
+                trashed: temp.path().join("Trash/files/item"),
+                info: temp.path().join("Trash/info/item.trashinfo"),
+            };
+            fs::create_dir_all(receipt.trashed.parent().unwrap()).unwrap();
+            fs::create_dir_all(receipt.info.parent().unwrap()).unwrap();
+            fs::write(
+                if restore {
+                    &receipt.original
+                } else {
+                    &receipt.trashed
+                },
+                b"keep this item",
+            )
+            .unwrap();
+            if !restore {
+                fs::write(&receipt.info, "private fixture metadata").unwrap();
+            }
+            let path = temp.path().join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            let action = if restore {
+                Action::restore(std::slice::from_ref(&receipt), false)
+            } else {
+                Action::trash(std::slice::from_ref(&receipt))
+            };
+            journal.record(action.unwrap().unwrap()).unwrap();
+            let backend_receipt = receipt.clone();
+            trash_receipt::test_backend::with(
+                move |source| {
+                    fs::rename(source, &backend_receipt.trashed).unwrap();
+                    fs::write(&backend_receipt.info, "private fixture metadata").unwrap();
+                    Ok(backend_receipt.clone())
+                },
+                || {
+                    if redo {
+                        journal.undo().unwrap();
+                    }
+                    let retained = if restore != redo {
+                        &receipt.original
+                    } else {
+                        &receipt.trashed
+                    };
+                    set_test_attribute(retained, "user.comment", b"new annotation");
+                    let mut journal = Journal::open(path).unwrap();
+                    let result = if redo { journal.redo() } else { journal.undo() };
+                    assert!(
+                        result.is_err(),
+                        "restore={restore} redo={redo} ignored updated metadata: {result:?}"
+                    );
+                    assert_eq!(fs::read(retained).unwrap(), b"keep this item");
+                },
+            );
+        }
+    }
+}
