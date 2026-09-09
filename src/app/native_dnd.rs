@@ -1595,7 +1595,9 @@ mod tests {
         };
         let svg = String::from_utf8(preview_svg(preview).expect("preview SVG")).expect("UTF-8");
         assert!(svg.contains("3 +"));
-        assert!(svg.contains("#d2d2d2"));
+        assert!(svg.contains("#567CB5"));
+        assert!(svg.contains("#fff"));
+        assert!(!svg.contains("#d2d2d2"));
         assert_eq!(
             render_icon(preview).expect("rendered preview").len(),
             (ICON_SIZE * ICON_SIZE * 4) as usize

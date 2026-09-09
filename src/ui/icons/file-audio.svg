@@ -1,5 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <path fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 17V6.5L18 5v10"/>
-  <ellipse cx="7.5" cy="17.5" rx="2.5" ry="2" fill="#000"/>
-  <ellipse cx="15.5" cy="15.5" rx="2.5" ry="2" fill="#000"/>
+  <path fill="#8870AE" d="M6 2.5h7.5l5 5V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5Z"/>
+  <g transform="translate(11.5 14) scale(0.9) translate(-11.5 -14)">
+  <path fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M10 17v-6l5-1v6"/>
+  <path fill="#fff" d="M9.25 15.5c-1.25 0-2.25.75-2.25 1.75S8 19 9.25 19 11 18.25 11 17.25v-1.5Zm5-1c-1.25 0-2.25.75-2.25 1.75S13 18 14.25 18 16 17.25 16 16.25v-1.5Z"/>
+  </g>
 </svg>

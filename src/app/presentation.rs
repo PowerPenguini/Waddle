@@ -894,12 +894,14 @@ pub(super) fn themed_svg(icon: &'static [u8], size: f32, color: Color) -> widget
 }
 
 pub(super) fn entry_svg(kind: EntryIconKind, size: f32, color: Color) -> widget::Svg<'static> {
-    let icon = entry_icon_asset(kind);
-    if kind == EntryIconKind::Pdf {
-        svg(svg::Handle::from_memory(icon)).width(size).height(size)
-    } else {
-        themed_svg(icon, size, color)
+    if kind == EntryIconKind::Folder {
+        return themed_svg(entry_icon_asset(kind), size, color);
     }
+    // File artwork carries a solid type color and contrasting white marks.
+    // A symbolic tint would flatten these into a single silhouette.
+    svg(svg::Handle::from_memory(entry_icon_asset(kind)))
+        .width(size)
+        .height(size)
 }
 
 pub(super) fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style {

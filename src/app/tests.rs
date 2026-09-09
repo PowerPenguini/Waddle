@@ -40,6 +40,7 @@ fn press(app: &mut App, value: &'static str) {
     let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(value));
 }
 
+mod file_icon_rendering;
 mod file_operation;
 mod input;
 mod navigation;

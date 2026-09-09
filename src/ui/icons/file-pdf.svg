@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <path fill="#e53935" d="M5 2h8l6 6v14H5z"/>
-  <path fill="#b71c1c" d="M13 2v6h6z"/>
-  <rect x="6.9" y="12" width="8.8" height="5.5" rx=".7" fill="#fff"/>
-  <text x="11.3" y="16.05" fill="#e53935" font-family="sans-serif" font-size="3.7" font-weight="700" letter-spacing="-.2" text-anchor="middle">PDF</text>
+  <path fill="#BF6868" d="M6 2.5h7.5l5 5V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5Z"/>
+  <g transform="translate(11.5 14) scale(0.95) translate(-11.5 -14)">
+  <path fill="none" stroke="#fff" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" d="M6 16V12.5h1a1 1 0 0 1 0 2H6m4.25-2V16H11c2 0 2-3.5 0-3.5Zm5 3.5v-3.5h2m-2 1.5H17"/>
+  </g>
 </svg>
