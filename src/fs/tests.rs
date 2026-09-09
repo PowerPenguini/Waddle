@@ -3025,3 +3025,180 @@ fn copy_and_cross_device_move_preserve_source_acl_policy() {
         }
     }
 }
+
+#[test]
+fn copy_into_an_alias_of_its_parent_creates_a_duplicate_without_conflict() {
+    use std::os::unix::fs::symlink;
+    for spelling in ["symlink", "dotdot"] {
+        for directory in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("real");
+            let alias = temp.path().join("alias");
+            fs::create_dir(&parent).unwrap();
+            symlink(&parent, &alias).unwrap();
+            let source = parent.join("item");
+            if directory {
+                fs::create_dir(&source).unwrap();
+            }
+            let contents = if directory {
+                source.join("note")
+            } else {
+                source.clone()
+            };
+            fs::write(&contents, b"keep original").unwrap();
+            let original_inode = fs::metadata(&contents).unwrap().ino();
+            let alias = if spelling == "dotdot" {
+                parent.join("..").join("real")
+            } else {
+                alias
+            };
+            let report = complete(
+                TransferBatch::try_new(vec![source.clone()], alias, Action::Copy).unwrap(),
+            );
+            assert!(report.failures.is_empty(), "{report:?}");
+            assert_eq!(report.receipts.len(), 1);
+            let duplicate = &report.receipts[0].destination;
+            assert_ne!(
+                duplicate.canonicalize().unwrap(),
+                source.canonicalize().unwrap()
+            );
+            let duplicate_contents = if directory {
+                duplicate.join("note")
+            } else {
+                duplicate.clone()
+            };
+            assert_eq!(fs::read(&duplicate_contents).unwrap(), b"keep original");
+            assert_eq!(fs::metadata(&contents).unwrap().ino(), original_inode);
+            let history = temp.path().join("history.json");
+            crate::journal::Journal::open(history.clone())
+                .unwrap()
+                .record(
+                    crate::journal::Action::transfer(
+                        crate::journal::TransferKind::Copy,
+                        &report.receipts,
+                    )
+                    .unwrap()
+                    .unwrap(),
+                )
+                .unwrap();
+            crate::journal::Journal::open(history.clone())
+                .unwrap()
+                .undo()
+                .unwrap();
+            assert!(!duplicate.exists(), "Undo must remove only the duplicate");
+            assert_eq!(fs::read(&contents).unwrap(), b"keep original");
+            crate::journal::Journal::open(history)
+                .unwrap()
+                .redo()
+                .unwrap();
+            assert_eq!(fs::read(&duplicate_contents).unwrap(), b"keep original");
+            fs::write(duplicate_contents, b"edited duplicate").unwrap();
+            assert_eq!(fs::read(contents).unwrap(), b"keep original");
+        }
+    }
+}
+
+#[test]
+fn apply_to_all_conflicts_does_not_override_copying_into_the_same_folder() {
+    for choice in [ConflictChoice::Replace, ConflictChoice::Skip] {
+        for directory in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let collision = temp.path().join("collision");
+            fs::write(&collision, b"incoming data").unwrap();
+            fs::write(target.join("collision"), b"existing data").unwrap();
+            let source = target.join("item");
+            if directory {
+                fs::create_dir(&source).unwrap();
+            }
+            let contents = if directory {
+                source.join("note")
+            } else {
+                source.clone()
+            };
+            fs::write(&contents, b"original data").unwrap();
+            let original_inode = fs::metadata(&contents).unwrap().ino();
+            let later = temp.path().join("later");
+            fs::write(&later, b"later incoming").unwrap();
+            fs::write(target.join("later"), b"later existing").unwrap();
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                TransferBatch::try_new(vec![collision, source.clone(), later], alias, Action::Copy)
+                    .unwrap()
+                    .run()
+            else {
+                panic!("expected first conflict")
+            };
+            let report = complete(batch.resolve(choice, true));
+            assert!(report.failures.is_empty(), "{report:?}");
+            assert_eq!(
+                fs::metadata(&contents).unwrap().ino(),
+                original_inode,
+                "apply-to-all replaced the original with a copy of itself"
+            );
+            let receipt = report
+                .receipts
+                .iter()
+                .find(|receipt| receipt.source == source)
+                .expect("same-folder duplication was skipped by apply-to-all");
+            assert_ne!(
+                receipt.destination, source,
+                "Copy must produce a second entry"
+            );
+            assert!(
+                !receipt.replaced_existing,
+                "duplicating an entry must not count as Replace"
+            );
+            let duplicate = if directory {
+                receipt.destination.join("note")
+            } else {
+                receipt.destination.clone()
+            };
+            assert_eq!(fs::read(&duplicate).unwrap(), b"original data");
+            fs::write(duplicate, b"edited copy").unwrap();
+            assert_eq!(fs::read(contents).unwrap(), b"original data");
+            assert_eq!(
+                fs::read(target.join("later")).unwrap(),
+                if choice == ConflictChoice::Replace {
+                    b"later incoming"
+                } else {
+                    b"later existing"
+                },
+                "same-folder duplication must not overwrite the remembered conflict choice"
+            );
+            assert_eq!(
+                fs::read(target.join("collision")).unwrap(),
+                if choice == ConflictChoice::Replace {
+                    b"incoming data".as_slice()
+                } else {
+                    b"existing data"
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn hardlinks_in_different_parents_still_require_a_conflict_decision() {
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let source = temp.path().join("item");
+        fs::write(&source, b"shared data").unwrap();
+        fs::hard_link(&source, target.join("item")).unwrap();
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            TransferBatch::try_new(vec![source.clone()], target.clone(), action)
+                .unwrap()
+                .run()
+        else {
+            panic!("distinct hardlinks are a real name conflict")
+        };
+        let report = complete(batch.resolve(ConflictChoice::Skip, false));
+        assert!(report.receipts.is_empty());
+        assert_eq!(fs::read(source).unwrap(), b"shared data");
+        assert_eq!(fs::read_dir(target).unwrap().count(), 1);
+    }
+}

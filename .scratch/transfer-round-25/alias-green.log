@@ -1,0 +1,17 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+warning: unused variable: `spelling`
+    --> src/fs/tests.rs:3032:9
+     |
+3032 |     for spelling in ["symlink", "dotdot"] {
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_spelling`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `waddle` (bin "waddle" test) generated 1 warning (run `cargo fix --bin "waddle" -p waddle --tests` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.40s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+test fs::tests::copy_into_an_alias_of_its_parent_creates_a_duplicate_without_conflict ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.00s

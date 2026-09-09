@@ -351,11 +351,28 @@ impl TransferBatch {
                                 && destination_metadata.is_dir()
                                 && !destination_metadata.file_type().is_symlink(),
                         };
+                        // Parent aliases (symlinks, bind mounts, or '..') still
+                        // refer to the same folder and must produce a duplicate.
                         let same_directory_copy = self.action == Action::Copy
-                            && blocked.source.parent() == blocked.destination.parent();
-                        if let Some(choice) = self
-                            .apply_remaining
-                            .or(same_directory_copy.then_some(ConflictChoice::KeepBoth))
+                            && blocked
+                                .source
+                                .parent()
+                                .zip(blocked.destination.parent())
+                                .is_some_and(|(source, destination)| {
+                                    source == destination
+                                        || fs::metadata(source)
+                                            .ok()
+                                            .zip(fs::metadata(destination).ok())
+                                            .is_some_and(|(source, destination)| {
+                                                source.dev() == destination.dev()
+                                                    && source.ino() == destination.ino()
+                                            })
+                                });
+                        // A prior Replace/Skip-all choice must not replace the
+                        // source with itself or suppress same-folder duplication.
+                        if let Some(choice) = same_directory_copy
+                            .then_some(ConflictChoice::KeepBoth)
+                            .or(self.apply_remaining)
                         {
                             match self.resolve_blocked(blocked.clone(), choice, &mut update_bytes) {
                                 Ok(warnings) => self.record_warnings(
