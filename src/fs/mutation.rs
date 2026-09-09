@@ -386,9 +386,15 @@ impl CheckpointFailure {
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct JournalTransfer {
     links: CopyLinks,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl JournalTransfer {
+    pub(crate) fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
     /// Persist the identity of the prepared result before its visible rename.
     pub(crate) fn apply_checkpointed(
         &mut self,
@@ -422,11 +428,18 @@ impl JournalTransfer {
             // belongs to the prepared copy, so an unrelated destination cannot
             // be reused. Save this context together with the publication intent.
             let previous_links = this.links.clone();
-            prepared.publish(&staging, destination, &mut this.links);
+            let previous_warnings = this.warnings.len();
+            this.warnings.extend(
+                prepared
+                    .publish(&staging, destination, &mut this.links)
+                    .into_iter()
+                    .map(|warning| format!("{}: {warning}", destination.display())),
+            );
             if let Err(failure) = checkpoint(&staging, this) {
                 if matches!(&failure, CheckpointFailure::Unrecorded(_)) {
                     remove_incomplete_copy(&staging);
                     this.links = previous_links;
+                    this.warnings.truncate(previous_warnings);
                 }
                 return Err(failure.into_message());
             }

@@ -84,3 +84,20 @@ int fsync(int fd) {
     }
     return real_fsync(fd);
 }
+
+/* Model a target filesystem rejecting a user attribute, only inside its fixture. */
+int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags) {
+    int (*real_set)(const char *, const char *, const void *, size_t, int) = dlsym(RTLD_NEXT, "lsetxattr");
+    const char *target = getenv("WADDLE_AUDIT_XATTR_TARGET");
+    const char *armed = getenv("WADDLE_AUDIT_XATTR_ARMED");
+    if (target && armed && !strcmp(name, "user.comment")) {
+        size_t prefix = strlen(target);
+        if (!strncmp(path, target, prefix) && path[prefix] == '/') {
+            int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+            real_unlink(armed);
+            errno = ENOTSUP;
+            return -1;
+        }
+    }
+    return real_set(path, name, value, size, flags);
+}

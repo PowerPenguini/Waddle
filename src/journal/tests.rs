@@ -2530,3 +2530,235 @@ fn restoring_from_trash_cleans_unrecorded_prepared_copies() {
         assert_eq!(fs::read_dir(inputs).unwrap().count(), 1);
     }
 }
+
+#[test]
+#[ignore = "Child process helper for isolated history metadata failure"]
+fn history_metadata_warning_child() {
+    let root = PathBuf::from(std::env::var_os("WADDLE_METADATA_FIXTURE").expect("parent fixture"));
+    let mut journal = Journal::open(root.join("journal.json")).unwrap();
+    let effect = if std::env::var_os("WADDLE_METADATA_UNDO").is_some() {
+        journal.undo()
+    } else {
+        journal.redo()
+    }
+    .unwrap();
+    fs::write(root.join("result.txt"), effect.status).unwrap();
+}
+
+#[test]
+fn redo_copy_reports_metadata_that_could_not_be_preserved() {
+    let shim = audit_fault_library();
+    for crash in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let destination = target.join("copy");
+        fs::write(&source, b"copied contents").unwrap();
+        set_test_attribute(&source, "user.comment", b"preserve this annotation");
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        journal.undo().unwrap();
+        let armed = temp.path().join("attribute-armed");
+        fs::write(&armed, "").unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        if crash {
+            let crash_armed = temp.path().join("crash-armed");
+            fs::write(&crash_armed, "").unwrap();
+            command
+                .env("WADDLE_AUDIT_COMMIT", temp.path().join("journal.json"))
+                .env("WADDLE_AUDIT_ARMED", crash_armed);
+        }
+        let output = command
+            .args([
+                "--exact",
+                "journal::tests::history_metadata_warning_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_METADATA_FIXTURE", temp.path())
+            .env("WADDLE_AUDIT_XATTR_TARGET", &target)
+            .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert!(
+            if crash {
+                output.status.code() == Some(86)
+            } else {
+                output.status.success()
+            },
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!armed.exists(), "metadata fault must be reached");
+        let status = if crash {
+            assert!(!destination.exists(), "fault must occur before publication");
+            Journal::open(temp.path().join("journal.json"))
+                .unwrap()
+                .redo()
+                .unwrap()
+                .status
+        } else {
+            fs::read_to_string(temp.path().join("result.txt")).unwrap()
+        };
+        assert_eq!(fs::read(&destination).unwrap(), b"copied contents");
+        assert!(
+            crate::fs::read_xattrs(&destination)
+                .unwrap()
+                .iter()
+                .all(|(name, _)| name.to_bytes() != b"user.comment")
+        );
+        assert!(
+            status.contains("warning") && status.contains("extended attributes"),
+            "lost metadata was reported as complete success: {status}"
+        );
+        let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+        assert!(!journal.undo().unwrap().status.contains("warning"));
+        assert!(!journal.redo().unwrap().status.contains("warning"));
+        assert!(
+            crate::fs::read_xattrs(&destination)
+                .unwrap()
+                .iter()
+                .any(|(name, value)| name.to_bytes() == b"user.comment"
+                    && value == b"preserve this annotation")
+        );
+    }
+}
+
+#[test]
+fn move_and_restore_history_report_metadata_warnings() {
+    use std::os::unix::fs::MetadataExt;
+    let shim = audit_fault_library();
+    for case in ["move-undo", "move-redo", "trash-undo", "restore-redo"] {
+        let temp = tempfile::tempdir().unwrap();
+        let inputs = temp.path().join("inputs");
+        let other = tempfile::tempdir_in("/dev/shm").unwrap();
+        if case == "restore-redo" {
+            let original_directory = other.path().join("original-location");
+            fs::create_dir(&original_directory).unwrap();
+            std::os::unix::fs::symlink(original_directory, &inputs).unwrap();
+        } else {
+            fs::create_dir(&inputs).unwrap();
+        }
+        let receipt = TrashReceipt {
+            original: inputs.join("original"),
+            trashed: other.path().join("item"),
+            info: other.path().join("item.trashinfo"),
+        };
+        fs::write(&receipt.original, b"keep file contents").unwrap();
+        set_test_attribute(&receipt.original, "user.comment", b"metadata to preserve");
+        let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+        if case != "restore-redo" {
+            crate::fs::journal_move(&receipt.original, &receipt.trashed).unwrap();
+        }
+        let action = match case {
+            "trash-undo" => {
+                fs::write(&receipt.info, "private fixture").unwrap();
+                Action::trash(std::slice::from_ref(&receipt))
+            }
+            "restore-redo" => Action::restore(std::slice::from_ref(&receipt), false),
+            _ => Action::transfer(
+                TransferKind::Move,
+                &[crate::fs::TransferReceipt {
+                    source: receipt.original.clone(),
+                    destination: receipt.trashed.clone(),
+                    replaced_existing: false,
+                }],
+            ),
+        };
+        journal.record(action.unwrap().unwrap()).unwrap();
+        if case == "move-redo" {
+            journal.undo().unwrap();
+        }
+        if case == "restore-redo" {
+            let saved = receipt.clone();
+            trash_receipt::test_backend::with(
+                move |source| {
+                    fs::rename(source, &saved.trashed).unwrap();
+                    fs::write(&saved.info, "private fixture").unwrap();
+                    Ok(saved.clone())
+                },
+                || {
+                    journal.undo().unwrap();
+                },
+            );
+            // Model a remounted original location before Restore Redo.
+            fs::remove_file(&inputs).unwrap();
+            fs::create_dir(&inputs).unwrap();
+        }
+        assert_ne!(
+            fs::metadata(&inputs).unwrap().dev(),
+            fs::metadata(other.path()).unwrap().dev()
+        );
+        let destination = if case == "move-redo" {
+            &receipt.trashed
+        } else {
+            &receipt.original
+        };
+        let source = if case == "move-redo" {
+            &receipt.original
+        } else {
+            &receipt.trashed
+        };
+        let armed = temp.path().join("attribute-armed");
+        fs::write(&armed, "").unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        if case.ends_with("-undo") {
+            command.env("WADDLE_METADATA_UNDO", "1");
+        }
+        let output = command
+            .args([
+                "--exact",
+                "journal::tests::history_metadata_warning_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_METADATA_FIXTURE", temp.path())
+            .env("WADDLE_AUDIT_XATTR_TARGET", destination.parent().unwrap())
+            .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{case}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!armed.exists(), "{case}: metadata fault not reached");
+        assert_eq!(fs::read(destination).unwrap(), b"keep file contents");
+        assert!(!source.exists());
+        let status = fs::read_to_string(temp.path().join("result.txt")).unwrap();
+        assert!(
+            status.contains("metadata warnings:") && status.contains("extended attributes"),
+            "{case}: {status}"
+        );
+        let verb = match case {
+            "move-undo" => "Undid Move",
+            "move-redo" => "Redid Move",
+            "trash-undo" => "Undid Trash",
+            _ => "Redid Restore",
+        };
+        assert!(status.starts_with(verb), "{case}: {status}");
+        assert!(
+            status.contains(destination.to_str().unwrap()),
+            "{case}: missing affected path"
+        );
+    }
+}

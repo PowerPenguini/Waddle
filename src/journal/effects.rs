@@ -34,6 +34,7 @@ pub(super) fn apply(
             rename_noreplace(source, destination)?;
             *fingerprint = Fingerprint::read(destination)?;
             Ok(Effect {
+                warnings: Vec::new(),
                 status: label.to_owned(),
                 changed_folders: parent_folders(source, destination),
                 select: Some(destination.to_path_buf()),
@@ -68,6 +69,7 @@ pub(super) fn apply(
                 fs::remove_dir(&*path)
                     .map_err(|error| Error::io("could not undo New Folder", error))?;
                 Ok(Effect {
+                    warnings: Vec::new(),
                     status: "Undid New Folder".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
                     select: None,
@@ -80,6 +82,7 @@ pub(super) fn apply(
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(DirectoryIdentity::read(path)?);
                 Ok(Effect {
+                    warnings: Vec::new(),
                     status: "Redid New Folder".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
                     select: Some(path.clone()),
@@ -92,6 +95,7 @@ pub(super) fn apply(
                 fs::remove_file(&*path)
                     .map_err(|error| Error::io("could not undo New File", error))?;
                 Ok(Effect {
+                    warnings: Vec::new(),
                     status: "Undid New File".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
                     select: None,
@@ -106,6 +110,7 @@ pub(super) fn apply(
                     .map_err(|error| Error::io("could not redo New File", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 Ok(Effect {
+                    warnings: Vec::new(),
                     status: "Redid New File".to_owned(),
                     changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
                     select: Some(path.clone()),
@@ -285,12 +290,15 @@ fn apply_trash(
         item.restore_pending = false;
         item.trash_pending = false;
     }
+    let mut effect = trash_effect(items, direction);
+    effect.warnings = transfer.take_warnings();
     *transfer = Default::default();
-    Ok(trash_effect(items, direction))
+    Ok(effect)
 }
 
 fn trash_effect(items: &[TrashItem], direction: Direction) -> Effect {
     Effect {
+        warnings: Vec::new(),
         status: match direction {
             Direction::Undo => "Undid Trash",
             Direction::Redo => "Redid Trash",
@@ -437,8 +445,10 @@ fn apply_transfer(
         items[index] = item;
         save(items, transfer, checkpoint)?;
     }
+    let mut effect = transfer_effect(kind, items, direction);
+    effect.warnings = transfer.take_warnings();
     *transfer = Default::default();
-    Ok(transfer_effect(kind, items, direction))
+    Ok(effect)
 }
 
 fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direction) -> Effect {
@@ -464,6 +474,7 @@ fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direct
         (_, Direction::Redo) => item.destination.clone(),
     });
     Effect {
+        warnings: Vec::new(),
         status: verb.to_owned(),
         changed_folders,
         select,

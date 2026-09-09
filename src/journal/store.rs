@@ -10,6 +10,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub(crate) struct Effect {
+    pub(super) warnings: Vec<String>,
     pub(crate) status: String,
     pub(crate) changed_folders: Vec<PathBuf>,
     pub(crate) select: Option<PathBuf>,
@@ -165,7 +166,7 @@ impl Journal {
     fn apply_at(&mut self, index: usize, direction: Direction) -> Result<Effect, Error> {
         let mut checkpoint = self.clone();
         let mut saved = false;
-        let effect = apply(
+        let mut effect = apply(
             &mut self.stored.entries[index].action,
             direction,
             &mut |action| {
@@ -179,7 +180,11 @@ impl Journal {
                 Ok(())
             },
         );
-        if effect.is_ok() {
+        if let Ok(effect) = &mut effect {
+            if !effect.warnings.is_empty() {
+                effect.status.push_str("; metadata warnings: ");
+                effect.status.push_str(&effect.warnings.join("; "));
+            }
             self.stored.entries[index].running = None;
         } else if saved {
             self.stored.entries[index].running = Some(direction);
