@@ -373,3 +373,19 @@ outside this work.
   when monitoring is unavailable.
 - Green: both successive external file creations appear through polling.
   All-target tests passed (618 passed, 22 ignored), along with Clippy and formatting.
+
+## Round 28: context-menu Rename targets a different file after refresh
+
+- Reproduction: open the context menu on `delta.txt`, insert an earlier-sorting
+  file, refresh, and perform Rename through app messages. Also remove the menu's
+  target before refresh and verify that Rename does nothing.
+- Red: `cargo test context_rename_keeps_its_file_target_across_refresh -- --nocapture`
+  renamed `bravo.txt` instead of `delta.txt`.
+- Cause: the context menu retained an obsolete row number even though the grid's
+  active selection was already restored by path.
+- Fix: remap the context target by path when refreshed entries are installed;
+  close it when the target disappears or navigation replaces the interaction.
+- Green: Rename affects only the original target after insertion, and a removed
+  target cannot cause another file to be renamed. All-target tests passed
+  (619 passed, 22 ignored), along with Clippy and formatting. All ten release
+  performance benchmarks passed; grid/list p95 remained below 0.78 ms.

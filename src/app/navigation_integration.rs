@@ -10,10 +10,10 @@ use iced::Task;
 use crate::fs::{self, FileEntry};
 
 use super::{
-    App, Completion, DisplayedLocation, InputMode, Message, Motion, NavigationCompletion,
-    NavigationOutcome, NavigationRequest, NavigationTransition, OperationKind, SEARCH_LIMIT,
-    ScrollTarget, SearchUpdate, TransferAction, TransferDragRelease, TreeActivation,
-    TreeLoadRequest, TreeMoveOutcome,
+    App, Completion, ContextTarget, DisplayedLocation, InputMode, Message, Motion,
+    NavigationCompletion, NavigationOutcome, NavigationRequest, NavigationTransition,
+    OperationKind, SEARCH_LIMIT, ScrollTarget, SearchUpdate, TransferAction, TransferDragRelease,
+    TreeActivation, TreeLoadRequest, TreeMoveOutcome,
     navigation::{Completed as NavigationCompleted, Start as NavigationStart},
     runtime::scroll_command,
     thumbnail,
@@ -144,6 +144,14 @@ impl App {
                 .get(index)
                 .map(|entry| entry.path.clone())
         });
+        let context_path = self.grid.context_menu().and_then(|menu| match menu.target {
+            ContextTarget::Entry(index) => self
+                .navigation
+                .entries()
+                .get(index)
+                .map(|entry| entry.path.clone()),
+            ContextTarget::Background => None,
+        });
         let NavigationCompleted {
             outcome,
             tree_load,
@@ -167,12 +175,17 @@ impl App {
                     positions.entry(entry.path.as_path()).or_insert(index);
                 }
                 let selection = selection.map(|path| positions.get(path.as_path()).copied());
+                let context_entry = context_path
+                    .as_deref()
+                    .and_then(|path| positions.get(path))
+                    .copied();
                 commit.apply_grid(
                     &mut self.grid,
                     self.navigation.entries().len(),
                     list_mode,
                     selection,
                 );
+                self.grid.remap_context_entry(context_entry);
                 self.location_input = commit.location_input().to_owned();
                 self.sync_location_monitoring();
                 self.presentation.set_status(commit.status().to_owned());

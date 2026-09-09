@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn context_rename_keeps_its_file_target_across_refresh() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for remove_target in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                for name in ["bravo.txt", "delta.txt", "omega.txt"] {
+                    std_fs::write(temp.path().join(name), name).unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                let _ = app.update(Message::EntryContext(1));
+                if remove_target {
+                    std_fs::remove_file(temp.path().join("delta.txt")).unwrap();
+                } else {
+                    std_fs::write(temp.path().join("alpha.txt"), "inserted").unwrap();
+                }
+                let task = app.update(Message::Refresh);
+                navigation::finish_tasks(&mut app, task).await;
+                let _ = app.update(Message::ContextRename);
+                if remove_target {
+                    assert!(matches!(
+                        app.file_operations.view(),
+                        FileOperationView::Idle
+                    ));
+                } else {
+                    let _ = app.update(Message::RenameChanged("renamed.txt".into()));
+                    let task = app.update(Message::RenameSubmitted);
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert_eq!(
+                        std_fs::read_to_string(temp.path().join("renamed.txt")).unwrap(),
+                        "delta.txt"
+                    );
+                    assert!(!temp.path().join("delta.txt").exists());
+                }
+                for name in ["bravo.txt", "omega.txt"] {
+                    assert_eq!(
+                        std_fs::read_to_string(temp.path().join(name)).unwrap(),
+                        name
+                    );
+                }
+            }
+        });
+}
+
+#[test]
 fn selecting_another_file_does_not_cancel_an_explicit_properties_request() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

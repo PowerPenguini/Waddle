@@ -482,6 +482,8 @@ impl GridInteraction {
             self.selected = previous_selection.selected.or(self.selected);
             self.visual_anchor = previous_selection.visual_anchor;
             self.selection_anchor = previous_selection.selection_anchor.or(self.selected);
+        } else {
+            self.close_context();
         }
         self.details = None;
         self.entry_scroll.cancel();
@@ -534,6 +536,17 @@ impl GridInteraction {
 
     pub(super) fn close_context(&mut self) {
         self.context_menu = None;
+    }
+
+    pub(super) fn remap_context_entry(&mut self, index: Option<usize>) {
+        if let Some(menu) = self.context_menu.as_mut()
+            && matches!(menu.target, ContextTarget::Entry(_))
+        {
+            match index {
+                Some(index) => menu.target = ContextTarget::Entry(index),
+                None => self.context_menu = None,
+            }
+        }
     }
 
     pub(super) fn focus_context(&mut self, index: usize, item_count: usize) {
