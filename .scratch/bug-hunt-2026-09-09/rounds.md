@@ -67,3 +67,15 @@ outside this work.
 - Fix: refresh the displayed location after applying browse settings.
 - Green: the regression passed for Recent and Trash; all-target tests passed
   (600 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 6: shell command completion leaves Recent and Trash
+
+- Reproduction: run a harmless `!true` command and deliver its completion through
+  app messages while Recent or Trash is displayed.
+- Red: `cargo test shell_command_completion_preserves_the_displayed_recent_or_trash_location -- --nocapture`
+  requested Folder instead of Recent after the command completed.
+- Cause: shell completion refreshed the previous folder instead of the displayed
+  location, independently of the built-in refresh and settings command paths.
+- Fix: use the location-aware refresh when a shell command does not navigate.
+- Green: the regression passed for Recent and Trash; all-target tests passed
+  (601 passed, 19 ignored); Clippy with warnings denied and formatting passed.

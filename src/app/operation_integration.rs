@@ -228,7 +228,7 @@ impl App {
                 }),
             ])
         } else {
-            Task::batch([tree_refresh, self.refresh(None)])
+            Task::batch([tree_refresh, self.refresh_location()])
         }
     }
 
