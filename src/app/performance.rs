@@ -65,6 +65,51 @@ fn benchmark(
 
 #[test]
 #[ignore = "release-mode performance benchmark"]
+fn benchmark_large_cut_removal_batch_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let entries = (0..10_000)
+        .map(|index| {
+            let mut entry = entry(index);
+            entry.path = source.join(&entry.name);
+            std::fs::write(&entry.path, "original").unwrap();
+            entry
+        })
+        .collect::<Vec<_>>();
+    let removed = entries.iter().map(|entry| entry.path.clone()).collect();
+    let survivor = entries[0].path.clone();
+    let (mut app, _) = App::new();
+    app.navigation = NavigationSession::new(source.clone());
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(entries);
+    app.grid.select_all(10_000);
+    let key = keyboard::Key::Character("x".into());
+    drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("x")));
+    assert_eq!(app.transfers.pending_cut_paths().len(), 10_000);
+    std::fs::remove_dir_all(&source).unwrap();
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(&survivor, "recreated").unwrap();
+
+    let budget = Duration::from_millis(100);
+    let started = StdInstant::now();
+    let task = app.update(Message::DirectoryChanged(directory_watch::Event {
+        path: source,
+        removed,
+        watch_failed: false,
+    }));
+    let elapsed = started.elapsed();
+    drop(task);
+    assert_eq!(app.transfers.pending_cut_paths(), [survivor]);
+    println!("benchmark large-cut-removal-batch: elapsed={elapsed:?} budget={budget:?}");
+    assert!(
+        elapsed <= budget,
+        "reconciling 10,000 removal notifications blocked the app for {elapsed:?}"
+    );
+}
+
+#[test]
+#[ignore = "release-mode performance benchmark"]
 fn benchmark_large_cut_and_refresh_work() {
     let mut app = app_with_entries(false);
     let entries = app.navigation.entries().to_vec();

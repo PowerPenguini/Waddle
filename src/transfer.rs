@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -354,8 +354,9 @@ impl TransferState {
             .filter(|payload| payload.action == Action::Move)?;
         let generation = payload.generation;
         let before = payload.paths.len();
+        let removed_paths: HashSet<&Path> = removed.iter().map(PathBuf::as_path).collect();
         payload.paths.retain(|path| {
-            !removed.contains(path)
+            !removed_paths.contains(path.as_path())
                 || match std::fs::symlink_metadata(path) {
                     Ok(_) => true,
                     Err(error) => error.kind() != std::io::ErrorKind::NotFound,

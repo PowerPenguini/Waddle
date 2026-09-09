@@ -303,3 +303,16 @@ outside this work.
   and keeping them hidden. All-target tests passed (614 passed, 21 ignored),
   along with Clippy and formatting. All nine release performance benchmarks
   passed, including the new Cut and refresh regression.
+
+## Round 23: a removal notification batch freezes pending Cut reconciliation
+
+- Reproduction: Cut 10,000 real temporary files, remove them, recreate one path,
+  and deliver the batched removal notification through app messages.
+- Red: `cargo test --release benchmark_large_cut_removal_batch_work -- --ignored --nocapture`
+  blocked the app thread for 6.09 seconds against a 100 ms budget.
+- Cause: each pending Cut path searched the full list of reported removals.
+- Fix: index reported paths before reconciling the clipboard, retaining the
+  filesystem check that protects paths recreated since the notification.
+- Green: reconciliation took 23–25 ms and kept the recreated file pending Cut.
+  All-target tests passed (614 passed, 22 ignored), along with Clippy and
+  formatting. All ten release performance benchmarks passed.
