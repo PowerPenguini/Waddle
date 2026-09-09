@@ -31,7 +31,8 @@ shutdown, and partial-Cut remainder in the same sessions.
 - [ ] Clipboard loss restores a pending Cut; an external partial Move leaves only failed entries.
 - [ ] A real 10,000-entry directory remains responsive while sorting, searching, navigating, and
   scrolling thumbnails.
-- [ ] Tab and Shift+Tab traverse all composite stops; prompts trap and restore focus; Enter, Space,
+- [ ] Tab and Shift+Tab switch only between files and Sidebar (staying in files when Sidebar is hidden);
+  Location uses Ctrl+L or a click, and bottom-bar prompts trap and restore keyboard interaction. Enter, Space,
   arrows, and Vim motions work without leaking into text input.
 - [ ] High contrast has visible selection, focus, drop, and error states; reduced motion has no
   spinner rotation or animated bottom-bar expansion.

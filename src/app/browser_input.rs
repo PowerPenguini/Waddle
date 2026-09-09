@@ -10,14 +10,14 @@ Keyboard navigation
   Arrow keys  Move the active entry or focused control
   Shift+Arrow  Extend the conventional selection
   Home / End  Jump to the first / last entry
-  Tab / Shift+Tab  Move focus forward / backward
+  Tab / Shift+Tab  Switch between files and sidebar
   Enter  Open an entry or activate the focused control
   Space  Toggle selection or activate the focused control
   Backspace  Go to the parent directory
   F5  Refresh the current view
   Ctrl+L  Edit the current location
   Ctrl+O / Ctrl+I  Go back / forward
-  Ctrl+W h/j/k/l  Move focus; skip the bottom bar
+  Ctrl+W h/l  Focus sidebar / files
   Ctrl+W e  Toggle the sidebar tree
 
 Vim navigation

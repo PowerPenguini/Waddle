@@ -24,11 +24,10 @@ use super::{
     LIST_TYPE_WIDTH, LIST_VIEW_TOP_INSET, LOCATION_ID, Message, SIDEBAR_SCROLL_ID, SIDEBAR_WIDTH,
     ScrollTarget, TOOLBAR_HEIGHT, TreeRow, apply_opacity, browser_background_style, clip_file_name,
     entry_content_opacity, entry_icon_asset, entry_icon_kind, entry_svg, flat_input_style,
-    focus_container_style, format_storage_usage, grid_background_style, list_row_style,
-    marquee_style, native_dnd, rgba, sidebar_style, solid_background_style, themed_svg, tile_label,
-    tile_style, toolbar_button, toolbar_button_style, transient_scrollbar_style,
-    transient_vertical_scrollbar, tree, tree_button_style, tree_icon_asset,
-    tree_unmount_button_style, with_alpha,
+    format_storage_usage, grid_background_style, list_row_style, marquee_style, native_dnd, rgba,
+    sidebar_style, solid_background_style, themed_svg, tile_label, tile_style, toolbar_button,
+    toolbar_button_style, transient_scrollbar_style, transient_vertical_scrollbar, tree,
+    tree_button_style, tree_icon_asset, tree_unmount_button_style, with_alpha,
 };
 
 const TREE_LABEL_ROOT_MAX_CHARACTERS: usize = 23;
@@ -499,7 +498,6 @@ impl<'a> View<'a> {
             Message::Parent,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 0,
         );
         let back = toolbar_button(
             include_bytes!("../ui/icons/back.svg"),
@@ -508,7 +506,6 @@ impl<'a> View<'a> {
             Message::Back,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 1,
         );
         let forward = toolbar_button(
             include_bytes!("../ui/icons/forward.svg"),
@@ -517,7 +514,6 @@ impl<'a> View<'a> {
             Message::Forward,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 2,
         );
         let refresh = toolbar_button(
             include_bytes!("../ui/icons/refresh.svg"),
@@ -526,7 +522,6 @@ impl<'a> View<'a> {
             Message::Refresh,
             self.app.iced_theme().palette().text,
             self.app.iced_theme().palette().background,
-            self.app.focus.is(BrowserFocus::Toolbar) && self.app.presentation.toolbar_cursor() == 3,
         );
         let options = self
             .app
@@ -569,12 +564,6 @@ impl<'a> View<'a> {
                 container(input).width(Fill).height(34).center_y(34).into()
             }
         };
-        let location = container(location)
-            .width(Fill)
-            .height(34)
-            .style(move |theme| {
-                focus_container_style(theme, self.app.focus.is(BrowserFocus::Location))
-            });
         container(
             row![
                 parent,
@@ -592,8 +581,6 @@ impl<'a> View<'a> {
                     Message::ToggleView,
                     self.app.iced_theme().palette().text,
                     self.app.iced_theme().palette().background,
-                    self.app.focus.is(BrowserFocus::Toolbar)
-                        && self.app.presentation.toolbar_cursor() == 4,
                 ),
             ]
             .spacing(4)

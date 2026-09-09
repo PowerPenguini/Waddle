@@ -11,7 +11,7 @@ use iced::{
 use crate::fs::FileEntry;
 
 use super::{
-    CONTENT_GUTTER, EntryIconKind, Message, Motion, SCROLLBAR_THUMB_WIDTH, SCROLLBAR_TRACK_WIDTH,
+    CONTENT_GUTTER, EntryIconKind, Message, SCROLLBAR_THUMB_WIDTH, SCROLLBAR_TRACK_WIDTH,
     STATUS_HEIGHT, TOOLBAR_ICON_SIZE, TransientPresentation, TransientPresentationKind, command,
     duration_ratio, transfer_session, tree,
 };
@@ -90,8 +90,6 @@ impl CopyFeedback {
 
 #[derive(Clone, Debug)]
 pub(super) struct Presentation {
-    toolbar_cursor: usize,
-    bottom_cursor: usize,
     expanded_bar_height: f32,
     output_expansion: Animation<bool>,
     transient: TransientPresentationKind,
@@ -106,8 +104,6 @@ pub(super) struct Presentation {
 impl Presentation {
     pub(super) fn new(now: Instant, notice: Option<String>) -> Self {
         Self {
-            toolbar_cursor: 0,
-            bottom_cursor: 0,
             expanded_bar_height: STATUS_HEIGHT,
             output_expansion: Animation::new(false)
                 .duration(Duration::from_millis(140))
@@ -122,37 +118,6 @@ impl Presentation {
                 text,
                 tone: NoticeTone::Danger,
             }),
-        }
-    }
-
-    pub(super) fn toolbar_cursor(&self) -> usize {
-        self.toolbar_cursor
-    }
-
-    pub(super) fn move_toolbar_cursor(&mut self, motion: Motion, count: usize) -> String {
-        move_composite_cursor(&mut self.toolbar_cursor, 5, motion, count);
-        format!("Toolbar control {} of 5", self.toolbar_cursor + 1)
-    }
-
-    pub(super) fn bottom_cursor(&self) -> usize {
-        self.bottom_cursor
-    }
-
-    pub(super) fn move_bottom_cursor(
-        &mut self,
-        action_count: usize,
-        motion: Motion,
-        count: usize,
-    ) -> String {
-        let available = action_count.max(1);
-        move_composite_cursor(&mut self.bottom_cursor, available, motion, count);
-        if action_count == 0 {
-            "Bottom bar has no actions".to_owned()
-        } else {
-            format!(
-                "Bottom bar action {} of {available}",
-                self.bottom_cursor + 1
-            )
         }
     }
 
@@ -315,11 +280,6 @@ impl Presentation {
     #[cfg(test)]
     pub(super) fn expansion(&self) -> (bool, f32) {
         (self.output_expansion.value(), self.expanded_bar_height)
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_toolbar_cursor(&mut self, cursor: usize) {
-        self.toolbar_cursor = cursor;
     }
 }
 
@@ -488,21 +448,6 @@ pub(super) fn clears_status_notice(event: &iced::Event) -> bool {
     )
 }
 
-pub(super) fn move_composite_cursor(cursor: &mut usize, len: usize, motion: Motion, count: usize) {
-    let last = len.saturating_sub(1);
-    let step = count.max(1);
-    *cursor = match motion {
-        Motion::Left | Motion::Up | Motion::HalfPageUp => cursor.saturating_sub(step),
-        Motion::Right | Motion::Down | Motion::HalfPageDown => {
-            cursor.saturating_add(step).min(last)
-        }
-        Motion::RowStart | Motion::First | Motion::ViewportTop => 0,
-        Motion::RowEnd | Motion::Last | Motion::ViewportBottom => last,
-        Motion::DisplayIndex(index) => index.min(last),
-        Motion::ViewportMiddle => last / 2,
-    };
-}
-
 pub(super) fn rgba(color: Color, alpha: f32) -> [u8; 4] {
     [
         (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -524,7 +469,6 @@ pub(super) fn toolbar_button(
     message: Message,
     color: Color,
     background: Color,
-    focused: bool,
 ) -> Button<'static, Message> {
     let icon = themed_svg(
         icon,
@@ -538,7 +482,7 @@ pub(super) fn toolbar_button(
         .width(26)
         .height(30)
         .padding(0)
-        .style(move |theme, status| focusable_button_style(theme, status, focused))
+        .style(toolbar_button_style)
 }
 
 pub(super) fn sidebar_style(theme: &Theme, opaque: bool) -> container::Style {
@@ -620,14 +564,6 @@ pub(super) fn transient_scrollbar_style(
     style
 }
 
-pub(super) fn focus_container_style(theme: &Theme, focused: bool) -> container::Style {
-    if focused {
-        container::Style::default().background(with_alpha(theme.palette().primary, 0.08))
-    } else {
-        container::Style::default()
-    }
-}
-
 pub(super) fn grid_background_style(
     theme: &Theme,
     drop_target: bool,
@@ -644,14 +580,10 @@ pub(super) fn grid_background_style(
     style
 }
 
-pub(super) fn status_background_style(
-    theme: &Theme,
-    focused: bool,
-    copy_feedback: f32,
-) -> container::Style {
+pub(super) fn status_background_style(theme: &Theme, copy_feedback: f32) -> container::Style {
     let background = lighter(theme.palette().background, 16);
     let mut style = container::Style::default().background(background);
-    let accent_mix = (if focused { 0.10_f32 } else { 0.0 }).max(copy_feedback * 0.22);
+    let accent_mix = copy_feedback * 0.22;
     if accent_mix > 0.0 {
         style.background = Some(Background::Color(blend_colors(
             background,
@@ -837,18 +769,6 @@ pub(super) fn tree_unmount_button_style(theme: &Theme, status: button::Status) -
         },
         ..button::Style::default()
     }
-}
-
-pub(super) fn focusable_button_style(
-    theme: &Theme,
-    status: button::Status,
-    focused: bool,
-) -> button::Style {
-    let mut style = toolbar_button_style(theme, status);
-    if focused {
-        style.background = Some(Background::Color(with_alpha(theme.palette().primary, 0.18)));
-    }
-    style
 }
 
 pub(super) fn context_button_style(

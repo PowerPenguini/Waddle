@@ -12,12 +12,9 @@ use iced::{
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum BrowserFocus {
-    Toolbar,
-    Location,
     Sidebar,
     #[default]
     Entries,
-    BottomBar,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,13 +26,7 @@ pub(super) enum FocusDirection {
 }
 
 impl BrowserFocus {
-    const ORDER: [Self; 5] = [
-        Self::Toolbar,
-        Self::Location,
-        Self::Sidebar,
-        Self::Entries,
-        Self::BottomBar,
-    ];
+    const ORDER: [Self; 2] = [Self::Sidebar, Self::Entries];
 
     fn moved(self, reverse: bool) -> Self {
         let index = Self::ORDER
@@ -52,27 +43,15 @@ impl BrowserFocus {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Toolbar => "toolbar",
-            Self::Location => "location",
             Self::Sidebar => "sidebar",
             Self::Entries => "files",
-            Self::BottomBar => "bottom bar",
         }
     }
 
     fn moved_in(self, direction: FocusDirection, tree_visible: bool) -> Self {
         match (self, direction) {
-            (Self::Toolbar, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::Toolbar, FocusDirection::Right) => Self::Location,
-            (Self::Toolbar, FocusDirection::Down) => Self::Entries,
-            (Self::Location, FocusDirection::Left) => Self::Toolbar,
-            (Self::Location, FocusDirection::Down) => Self::Entries,
             (Self::Sidebar, FocusDirection::Right) => Self::Entries,
             (Self::Entries, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::Entries, FocusDirection::Up) => Self::Location,
-            (Self::BottomBar, FocusDirection::Left) if tree_visible => Self::Sidebar,
-            (Self::BottomBar, FocusDirection::Up) => Self::Location,
-            (Self::BottomBar, _) => Self::Entries,
             _ => self,
         }
     }

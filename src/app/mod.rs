@@ -86,12 +86,12 @@ use presentation::{
     BrowserStatusModel, BrowserStatusPresentation, Presentation, apply_opacity,
     browser_background_style, clears_status_notice, clip_file_name, compact_status_line,
     context_button_style, context_menu_button_style, entry_content_opacity, entry_icon_asset,
-    entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, focus_container_style,
-    format_storage_usage, format_transfer_snapshot, grid_background_style, list_row_style,
-    marquee_style, menu_style, rgba, sidebar_style, solid_background_style,
-    status_background_style, status_input_style, themed_svg, tile_label, tile_style,
-    toolbar_button, toolbar_button_style, transient_scrollbar_style, transient_vertical_scrollbar,
-    tree_button_style, tree_icon_asset, tree_unmount_button_style, with_alpha,
+    entry_icon_kind, entry_svg, find_window_after_delay, flat_input_style, format_storage_usage,
+    format_transfer_snapshot, grid_background_style, list_row_style, marquee_style, menu_style,
+    rgba, sidebar_style, solid_background_style, status_background_style, status_input_style,
+    themed_svg, tile_label, tile_style, toolbar_button, toolbar_button_style,
+    transient_scrollbar_style, transient_vertical_scrollbar, tree_button_style, tree_icon_asset,
+    tree_unmount_button_style, with_alpha,
 };
 use search::{SearchSession, Update as SearchUpdate};
 use transfer_session::{

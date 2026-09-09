@@ -251,7 +251,6 @@ fn context_trash_starts_the_transfer_without_confirmation() {
     assert!(overview.active);
     assert_eq!(overview.active_action, Some("Moving to Trash"));
     assert!(overview.snapshot.is_some());
-    assert!(app.bottom_actions().is_empty());
     assert_ne!(app.browser_input.mode(), InputMode::Rename);
     drop(task);
 }

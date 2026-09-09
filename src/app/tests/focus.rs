@@ -203,3 +203,207 @@ fn dismissing_a_new_folder_editor_does_not_leave_location_owning_the_keyboard() 
         "dismissing New Folder must not revive a Location mode without a focused Location widget"
     );
 }
+
+#[test]
+fn tab_cycles_only_between_files_and_sidebar() {
+    let (mut app, _) = App::new();
+    for modifiers in [keyboard::Modifiers::empty(), keyboard::Modifiers::SHIFT] {
+        for expected in [BrowserFocus::Sidebar, BrowserFocus::Entries] {
+            let _ = key(
+                &mut app,
+                keyboard::Key::Named(keyboard::key::Named::Tab),
+                modifiers,
+            );
+            assert_eq!(app.focus.browser(), expected);
+            assert_eq!(app.browser_input.mode(), InputMode::Browser);
+        }
+    }
+}
+
+#[test]
+fn bottom_editors_capture_keyboard_and_return_to_the_browser_surface() {
+    use keyboard::{Key, Modifiers, key::Named};
+    for surface in [BrowserFocus::Entries, BrowserFocus::Sidebar] {
+        for editor in [
+            "colon",
+            "shell",
+            "search",
+            "rename",
+            "folder",
+            "file",
+            "open-with",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("draft.txt");
+            std_fs::write(&path, "fixture").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            let mut draft = entry("draft.txt");
+            draft.path = path;
+            app.navigation
+                .replace_displayed_entries(vec![draft, entry("two")]);
+            app.grid.select_only(Some(0), 2);
+            app.focus_browser(surface);
+            let (id, task) = match editor {
+                "colon" | "shell" => {
+                    let prefix = if editor == "colon" { ":" } else { "!" };
+                    (
+                        COMMAND_ID,
+                        key(&mut app, Key::Character(prefix.into()), Modifiers::empty()),
+                    )
+                }
+                "search" => (
+                    SEARCH_ID,
+                    key(&mut app, Key::Character("/".into()), Modifiers::empty()),
+                ),
+                "rename" => {
+                    app.grid.open_entry_context(0, 2);
+                    (RENAME_ID, app.update(Message::ContextRename))
+                }
+                "folder" => (NEW_FOLDER_ID, app.update(Message::ContextNewFolder)),
+                "file" => (NEW_FOLDER_ID, app.update(Message::ContextNewFile)),
+                "open-with" => (OPEN_WITH_ID, app.update(Message::ContextOpenWith)),
+                _ => unreachable!(),
+            };
+            let mut input = InputState::new();
+            apply_widget_task(task, id, &mut input);
+            assert!(
+                input.is_focused(),
+                "{surface:?}: {editor} must receive widget focus"
+            );
+            let mode = app.browser_input.mode();
+            for (pressed, modifiers) in [
+                (Key::Named(Named::Tab), Modifiers::empty()),
+                (Key::Named(Named::Tab), Modifiers::SHIFT),
+                (Key::Named(Named::ArrowDown), Modifiers::empty()),
+                (Key::Named(Named::Space), Modifiers::empty()),
+                (Key::Named(Named::Delete), Modifiers::empty()),
+                (Key::Character("a".into()), Modifiers::CTRL),
+                (Key::Character("w".into()), Modifiers::CTRL),
+                (Key::Character("h".into()), Modifiers::empty()),
+            ] {
+                apply_widget_task(key(&mut app, pressed, modifiers), id, &mut input);
+                assert_eq!(app.focus.browser(), surface, "{editor}");
+                assert_eq!(app.browser_input.mode(), mode, "{editor}");
+                assert_eq!(
+                    app.grid.selected_indices(),
+                    &[0].into_iter().collect(),
+                    "{editor}"
+                );
+                assert!(input.is_focused(), "{editor}");
+                assert!(!app.transfers.overview().active, "{editor}");
+            }
+            let _ = key(&mut app, Key::Named(Named::Escape), Modifiers::empty());
+            assert!(!app.bottom_input_active(), "{editor}");
+            assert_eq!(app.browser_input.mode(), InputMode::Browser, "{editor}");
+            assert_eq!(app.focus.browser(), surface, "{editor}");
+            let _ = key(&mut app, Key::Named(Named::Tab), Modifiers::empty());
+            assert_ne!(
+                app.focus.browser(),
+                surface,
+                "{editor}: navigation must resume after Escape"
+            );
+        }
+    }
+}
+
+#[test]
+fn clicking_a_bottom_editor_restores_its_widget_focus_without_switching_regions() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.focus_browser(BrowserFocus::Sidebar);
+    let _ = app.begin_command(':');
+    // Iced can release the text field while processing a mouse press. The App
+    // subscription must restore the visible editor even for captured events.
+    let mut input = InputState::new();
+    let task = app.update(Message::Event(
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        event::Status::Captured,
+    ));
+    let replies = apply_widget_task(task, COMMAND_ID, &mut input);
+    for reply in replies {
+        apply_widget_task(app.update(reply), COMMAND_ID, &mut input);
+    }
+    assert!(input.is_focused());
+    assert_eq!(app.browser_input.mode(), InputMode::Command);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
+}
+
+#[test]
+fn command_tab_completes_a_setting_without_switching_browser_focus() {
+    for surface in [BrowserFocus::Entries, BrowserFocus::Sidebar] {
+        let (mut app, _) = App::new();
+        app.navigation.settle_for_test();
+        app.focus_browser(surface);
+        let mut input = InputState::new();
+        apply_widget_task(
+            key(
+                &mut app,
+                keyboard::Key::Character(":".into()),
+                keyboard::Modifiers::empty(),
+            ),
+            COMMAND_ID,
+            &mut input,
+        );
+        let _ = app.update(Message::CommandChanged("set tree=f".into()));
+        apply_widget_task(
+            key(
+                &mut app,
+                keyboard::Key::Named(keyboard::key::Named::Tab),
+                keyboard::Modifiers::empty(),
+            ),
+            COMMAND_ID,
+            &mut input,
+        );
+        assert_eq!(app.command.text(), "set tree=false");
+        assert!(input.is_focused());
+        assert_eq!(app.focus.browser(), surface);
+    }
+}
+
+#[test]
+fn permanent_delete_prompt_traps_browser_keys_from_either_surface() {
+    use keyboard::{Key, Modifiers, key::Named};
+    for surface in [BrowserFocus::Entries, BrowserFocus::Sidebar] {
+        for answer in ["y", "n"] {
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            app.navigation
+                .replace_displayed_entries(vec![entry("one"), entry("two")]);
+            app.grid.select_only(Some(0), 2);
+            app.focus_browser(surface);
+            app.file_operations
+                .finish_trash_transfer(vec![(entry("one"), "Trash unavailable".into())]);
+            let _ = app.update(Message::Noop);
+            for pressed in [
+                Key::Named(Named::Tab),
+                Key::Named(Named::ArrowDown),
+                Key::Named(Named::Space),
+                Key::Character(":".into()),
+            ] {
+                let _ = key(&mut app, pressed, Modifiers::empty());
+                assert_eq!(app.focus.browser(), surface);
+                assert_eq!(app.grid.selected_indices(), &[0].into_iter().collect());
+                assert!(matches!(
+                    app.file_operations.view(),
+                    FileOperationView::PermanentDelete { .. }
+                ));
+                assert!(!app.file_operations.is_busy());
+                assert_eq!(app.command.prefix(), None);
+            }
+            // Inspect dispatch without running a destructive filesystem operation.
+            let task = key(&mut app, Key::Character(answer.into()), Modifiers::empty());
+            if answer == "y" {
+                assert!(app.file_operations.is_busy());
+            } else {
+                assert!(matches!(
+                    app.file_operations.view(),
+                    FileOperationView::Idle
+                ));
+            }
+            assert_eq!(app.focus.browser(), surface);
+            drop(task);
+        }
+    }
+}

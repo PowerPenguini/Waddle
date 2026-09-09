@@ -36,7 +36,7 @@ fn chevrons_keep_even_edges_when_positioned_at_fractional_scales() {
                             "back" => include_bytes!("../../ui/icons/back.svg"),
                             "forward" => include_bytes!("../../ui/icons/forward.svg"),
                             _ => include_bytes!("../../ui/icons/up.svg"),
-                        }, name, true, Message::Noop, Color::WHITE, Color::BLACK, false).into(),
+                        }, name, true, Message::Noop, Color::WHITE, Color::BLACK).into(),
                     };
                     let mut tree = Tree::new(element.as_widget());
                     let node = element.as_widget_mut().layout(&mut tree, &renderer,

@@ -35,7 +35,7 @@ The modal meaning of browser key sequences, including Vim motions and pending op
 _Avoid_: Shortcut handler, key map
 
 **Browser focus**:
-The current recipient of keyboard interaction together with the browser surface to return to when an editor or temporary presentation closes. Moving Browser focus keeps these two roles coordinated without discarding a suspended interaction.
+The current recipient of keyboard interaction together with the files or Sidebar tree to return to when an editor or temporary presentation closes. Toolbar buttons, Location editing, and the bottom bar are not browser traversal destinations. Moving Browser focus keeps these two roles coordinated without discarding a suspended interaction.
 _Avoid_: Active panel, focus manager
 
 **File operation session**:

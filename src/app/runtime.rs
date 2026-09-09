@@ -13,9 +13,9 @@ use super::{
     App, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget, DisplayedLocation,
     InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
     MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, ScrollTarget, TransientPresentationKind, TreeLoadOutcome, X11_INBOUND_ID,
-    clears_status_notice, find_window_after_delay, location_monitoring, native_clipboard,
-    scroll_motion, system_icon_task, transfer_integration, transfer_session,
+    NavigationTransition, ScrollTarget, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
+    find_window_after_delay, location_monitoring, native_clipboard, scroll_motion,
+    system_icon_task, transfer_integration, transfer_session,
 };
 
 fn is_modifier_key(key: &keyboard::Key) -> bool {
@@ -1073,12 +1073,6 @@ impl App {
         extend: bool,
     ) -> Task<Message> {
         match self.focus.browser() {
-            BrowserFocus::Toolbar => {
-                let status = self.presentation.move_toolbar_cursor(motion, count);
-                self.presentation.set_status(status);
-                Task::none()
-            }
-            BrowserFocus::Location => Task::none(),
             BrowserFocus::Sidebar => self.move_sidebar(motion, count),
             BrowserFocus::Entries if extend => {
                 self.grid.move_standard(
@@ -1093,54 +1087,17 @@ impl App {
                 ])
             }
             BrowserFocus::Entries => self.move_selection(motion, count),
-            BrowserFocus::BottomBar => {
-                let action_count = self.bottom_actions().len();
-                let status = self
-                    .presentation
-                    .move_bottom_cursor(action_count, motion, count);
-                self.presentation.set_status(status);
-                Task::none()
-            }
         }
     }
 
     pub(super) fn activate_focused(&mut self) -> Task<Message> {
         match self.focus.browser() {
-            BrowserFocus::Toolbar => {
-                let message = match self.presentation.toolbar_cursor().min(4) {
-                    0 => Message::Parent,
-                    1 => Message::Back,
-                    2 => Message::Forward,
-                    3 => Message::Refresh,
-                    _ => Message::ToggleView,
-                };
-                self.update(message)
-            }
-            BrowserFocus::Location => self.begin_location(),
             BrowserFocus::Sidebar => self
                 .sidebar_tree
                 .focused_id()
                 .map_or_else(Task::none, |id| self.activate_tree_row(id)),
             BrowserFocus::Entries => self.activate_selected(),
-            BrowserFocus::BottomBar => {
-                let actions = self.bottom_actions();
-                actions
-                    .get(
-                        self.presentation
-                            .bottom_cursor()
-                            .min(actions.len().saturating_sub(1)),
-                    )
-                    .cloned()
-                    .map_or_else(Task::none, |message| self.update(message))
-            }
         }
-    }
-
-    pub(super) fn bottom_actions(&self) -> Vec<Message> {
-        if self.transient_presentation().kind() == TransientPresentationKind::CommandOutput {
-            return vec![Message::CopyCommandReport];
-        }
-        Vec::new()
     }
 
     pub(super) fn open_background_context(&mut self) -> Task<Message> {

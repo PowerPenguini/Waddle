@@ -12,22 +12,8 @@ fn press_window_motion(app: &mut App, motion: &'static str) {
 }
 
 #[test]
-fn composite_focus_order_wraps_and_context_menu_traps_then_restores_it() {
+fn context_menu_traps_focus_then_restores_it() {
     let (mut app, _) = App::new();
-    app.focus_browser(BrowserFocus::Toolbar);
-    for expected in [
-        BrowserFocus::Location,
-        BrowserFocus::Sidebar,
-        BrowserFocus::Entries,
-        BrowserFocus::BottomBar,
-        BrowserFocus::Toolbar,
-    ] {
-        app.move_browser_focus(false);
-        assert_eq!(app.focus.browser(), expected);
-    }
-    app.move_browser_focus(true);
-    assert_eq!(app.focus.browser(), BrowserFocus::BottomBar);
-
     app.focus_browser(BrowserFocus::Sidebar);
     assert!(app.grid.open_entry_context(0, 1));
     let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
@@ -52,16 +38,10 @@ fn control_w_hjkl_moves_spatially_without_targeting_the_bottom_bar() {
     assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
     press_window_motion(&mut app, "l");
     assert_eq!(app.focus.browser(), BrowserFocus::Entries);
-    press_window_motion(&mut app, "k");
-    assert_eq!(app.focus.browser(), BrowserFocus::Location);
-    press_window_motion(&mut app, "h");
-    assert_eq!(app.focus.browser(), BrowserFocus::Toolbar);
-    press_window_motion(&mut app, "j");
-    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
-
-    app.focus_browser(BrowserFocus::BottomBar);
-    press_window_motion(&mut app, "j");
-    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
+    for direction in ["k", "j"] {
+        press_window_motion(&mut app, direction);
+        assert_eq!(app.focus.browser(), BrowserFocus::Entries);
+    }
     assert_eq!(app.presentation.status(), "Focus: files");
 }
 
@@ -207,11 +187,10 @@ fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
     assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     assert_eq!(app.grid.sidebar_width(), 0.0);
 
-    app.focus_browser(BrowserFocus::Location);
     app.move_browser_focus(false);
     assert_eq!(app.focus.browser(), BrowserFocus::Entries);
     app.move_browser_focus(true);
-    assert_eq!(app.focus.browser(), BrowserFocus::Location);
+    assert_eq!(app.focus.browser(), BrowserFocus::Entries);
 
     app.focus_browser(BrowserFocus::Entries);
     press_window_motion(&mut app, "h");
@@ -228,27 +207,20 @@ fn hidden_tree_is_skipped_by_focus_and_control_w_e_restores_it() {
 }
 
 #[test]
-fn space_activates_the_focused_toolbar_control() {
+fn clicking_toolbar_toggle_preserves_browser_focus() {
     let temp = tempfile::tempdir().unwrap();
     let (mut app, _) = App::new();
     app.view_preferences =
         super::view_preferences::Preferences::empty_at(temp.path().join("view-preferences.json"));
     app.navigation = NavigationSession::new(temp.path().to_path_buf());
     app.navigation.settle_for_test();
-    app.focus_browser(BrowserFocus::Toolbar);
-    app.presentation.set_toolbar_cursor(4);
+    app.focus_browser(BrowserFocus::Sidebar);
     let before = app
         .view_preferences
         .for_directory(app.navigation.current())
         .view;
 
-    let space = keyboard::Key::Named(keyboard::key::Named::Space);
-    let _ = app.handle_key(
-        space.clone(),
-        space,
-        keyboard::Modifiers::empty(),
-        Some(" "),
-    );
+    let _ = app.update(Message::ToggleView);
 
     assert_ne!(
         app.view_preferences
@@ -256,7 +228,7 @@ fn space_activates_the_focused_toolbar_control() {
             .view,
         before
     );
-    assert_eq!(app.focus.browser(), BrowserFocus::Toolbar);
+    assert_eq!(app.focus.browser(), BrowserFocus::Sidebar);
 }
 
 #[test]
@@ -629,26 +601,6 @@ fn focused_location_input_owns_control_a_even_when_the_event_is_ignored() {
 }
 
 #[test]
-fn captured_mouse_click_refocuses_an_active_bottom_input() {
-    let (mut app, _) = App::new();
-    let _ = app.begin_command(':');
-
-    let task = app.handle_event(
-        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-        event::Status::Captured,
-    );
-
-    assert_eq!(task.units(), 2);
-
-    let (mut browser, _) = App::new();
-    let task = browser.handle_event(
-        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-        event::Status::Captured,
-    );
-    assert_eq!(task.units(), 1);
-}
-
-#[test]
 fn iced_vim_keys_toggle_visual_mode_and_arm_cut_operator() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
@@ -763,7 +715,7 @@ fn focused_browser_surfaces_keep_an_opaque_window_background() {
 
     assert_eq!(grid.background, browser.background);
     assert!(matches!(
-        super::status_background_style(&theme, true, 0.0).background,
+        super::status_background_style(&theme, 0.0).background,
         Some(iced::Background::Color(color)) if color.a == 1.0
     ));
 }

@@ -83,7 +83,7 @@ ICED_BACKEND=tiny-skia cargo run
 
 ## Keyboard at a glance
 
-Waddle also supports standard arrows, `Ctrl+C`, `Ctrl+V`, Tab navigation, and the usual mouse
+Waddle also supports standard arrows, `Ctrl+C`, `Ctrl+V`, Tab navigation between files and the Sidebar, and the usual mouse
 controls.
 
 | Input | Action |

@@ -8,9 +8,9 @@ use iced::{
 };
 
 use super::{
-    BrowserFocus, BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu,
-    EntryIconKind, FileOperationView, InputMode, Message, NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID,
-    SEARCH_ID, TransientPresentationKind, compact_status_line, context_button_style,
+    BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu, EntryIconKind,
+    FileOperationView, InputMode, Message, NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID,
+    TransientPresentationKind, compact_status_line, context_button_style,
     context_menu_button_style, format_transfer_snapshot, menu_style, open_with,
     status_background_style, status_input_style, with_alpha,
 };
@@ -205,7 +205,6 @@ impl<'a> View<'a> {
                             .style(move |theme| {
                                 status_background_style(
                                     theme,
-                                    self.app().focus.is(BrowserFocus::BottomBar),
                                     self.app()
                                         .presentation
                                         .copy_feedback_intensity(self.app().reduced_motion()),
@@ -264,7 +263,6 @@ impl<'a> View<'a> {
             .style(move |theme| {
                 status_background_style(
                     theme,
-                    self.app().focus.is(BrowserFocus::BottomBar),
                     self.app()
                         .presentation
                         .copy_feedback_intensity(self.app().reduced_motion()),
