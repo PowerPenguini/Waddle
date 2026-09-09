@@ -22,6 +22,16 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.10" date="2026-09-09">
+      <description>
+        <ul>
+          <li>Preserve selected sources before dependent Copy and Move writes, including conflicts and retries.</li>
+          <li>Protect access permissions, metadata, hardlinks, and recoverable transfer history when filesystem operations fail.</li>
+          <li>Keep same-folder copies independent through directory aliases and apply-to-all conflict choices.</li>
+          <li>Add delicate flat file icons while keeping folders in the active theme color.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.9" date="2026-09-09">
       <description>
         <ul>
