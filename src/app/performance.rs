@@ -65,6 +65,36 @@ fn benchmark(
 
 #[test]
 #[ignore = "release-mode performance benchmark"]
+fn benchmark_large_selection_refresh_work() {
+    let mut app = app_with_entries(false);
+    let entries = app.navigation.entries().to_vec();
+    app.grid.select_all(entries.len());
+    let selected = entries.iter().map(|entry| entry.path.clone()).collect();
+    let request = app.navigation.refresh_selected(selected).request.unwrap();
+    let completion = Message::NavigationFinished {
+        request,
+        result: Ok(fs::OpenedDirectory {
+            canonical_path: app.navigation.current().to_path_buf(),
+            entries,
+            child_folders: Vec::new(),
+        }),
+    };
+
+    let budget = Duration::from_millis(100);
+    let started = StdInstant::now();
+    let task = app.update(completion);
+    let elapsed = started.elapsed();
+    drop(task);
+    assert_eq!(app.grid.selection_count(), 10_000);
+    println!("benchmark large-selection-refresh: elapsed={elapsed:?} budget={budget:?}");
+    assert!(
+        elapsed <= budget,
+        "refreshing 10,000 selected entries blocked the app for {elapsed:?}"
+    );
+}
+
+#[test]
+#[ignore = "release-mode performance benchmark"]
 fn benchmark_grid_cursor_and_view_work() {
     let mut app = app_with_entries(false);
     for size in [24, 48, 128] {

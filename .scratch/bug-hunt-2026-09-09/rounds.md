@@ -273,3 +273,18 @@ outside this work.
 - Green: both targets show inode/directory and the configured folder application;
   the link still reports its symbolic-link type and own size. All-target tests
   passed (614 passed, 19 ignored), along with Clippy and formatting.
+
+## Round 21: refreshing a large selection freezes the app
+
+- Reproduction: deliver a refreshed 10,000-entry folder through app messages with
+  every entry selected, timing only the app-thread completion work.
+- Red: `cargo test --release benchmark_large_selection_refresh_work -- --ignored --nocapture`
+  took 13.66 seconds, exceeding the new 100 ms completion budget.
+- Cause: selection membership and the path remapping added in round 18 each
+  repeatedly searched the full entry list, producing quadratic work.
+- Fix: index selected paths and refreshed entry positions with hash collections,
+  keeping selected rows in display order and preserving first-match behavior.
+- Green: the same completion took 15–16 ms and retained all 10,000 selections.
+  All-target tests passed (614 passed, 20 ignored), Clippy and formatting passed,
+  and all eight release performance benchmarks passed. The added ignored test
+  runs automatically in the existing performance benchmark script.

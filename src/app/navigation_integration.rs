@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -161,12 +162,11 @@ impl App {
                     .for_directory(self.navigation.current())
                     .view
                     == fs::ViewMode::List;
-                let selection = selection.map(|path| {
-                    self.navigation
-                        .entries()
-                        .iter()
-                        .position(|entry| entry.path == path)
-                });
+                let mut positions = HashMap::with_capacity(self.navigation.entries().len());
+                for (index, entry) in self.navigation.entries().iter().enumerate() {
+                    positions.entry(entry.path.as_path()).or_insert(index);
+                }
+                let selection = selection.map(|path| positions.get(path.as_path()).copied());
                 commit.apply_grid(
                     &mut self.grid,
                     self.navigation.entries().len(),

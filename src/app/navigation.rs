@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use crate::fs::{FileEntry, OpenedDirectory};
 
@@ -542,11 +545,7 @@ impl NavigationSession {
             Kind::Refresh => self.current = canonical,
         }
         entries.retain(|entry| !hidden_paths.iter().any(|path| path == &entry.path));
-        let selected = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| select.contains(&entry.path).then_some(index))
-            .collect();
+        let selected = selection_indices(&entries, select);
         self.display = Display {
             location: DisplayedLocation::Folder,
             entries,
@@ -577,12 +576,7 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries: Vec::new(),
         };
-        let selected = self
-            .entries()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| select.contains(&entry.path).then_some(index))
-            .collect();
+        let selected = selection_indices(self.entries(), select);
         self.commit(selected, refresh, false, DisplayedLocation::Recent)
     }
 
@@ -606,12 +600,7 @@ impl NavigationSession {
             child_folders: Vec::new(),
             trash_entries,
         };
-        let selected = self
-            .entries()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| select.contains(&entry.path).then_some(index))
-            .collect();
+        let selected = selection_indices(self.entries(), select);
         self.commit(selected, refresh, false, DisplayedLocation::Trash)
     }
 
@@ -697,6 +686,15 @@ impl NavigationSession {
         self.history = back;
         self.forward_history = forward;
     }
+}
+
+fn selection_indices(entries: &[FileEntry], paths: &[PathBuf]) -> Vec<usize> {
+    let selected: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| selected.contains(entry.path.as_path()).then_some(index))
+        .collect()
 }
 
 fn nearest_existing_ancestor(path: &Path) -> PathBuf {
