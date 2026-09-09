@@ -204,10 +204,21 @@ fn apply_trash(
                                         staging,
                                         Some(cleanup.clone()),
                                     )
-                                    .map_err(|e| e.to_string())?,
+                                    .map_err(Error::checkpoint_failure)?,
                                 );
                                 items[index] = item.clone();
-                                checkpoint(items, context).map_err(|e| e.to_string())
+                                if let Err(error) = checkpoint(items, context) {
+                                    let failure = error.checkpoint_failure();
+                                    if matches!(
+                                        &failure,
+                                        crate::fs::CheckpointFailure::Unrecorded(_)
+                                    ) {
+                                        item.restoration = None;
+                                        items[index] = item.clone();
+                                    }
+                                    return Err(failure);
+                                }
+                                Ok(())
                             },
                         );
                         items[index] = item.clone();
@@ -391,10 +402,18 @@ fn apply_transfer(
                     &mut |staging, context| {
                         item.publication = Some(
                             super::recovery::Publication::capture(staging, cleanup.clone())
-                                .map_err(|e| e.to_string())?,
+                                .map_err(Error::checkpoint_failure)?,
                         );
                         items[index] = item.clone();
-                        save(items, context, checkpoint).map_err(|e| e.to_string())
+                        if let Err(error) = save(items, context, checkpoint) {
+                            let failure = error.checkpoint_failure();
+                            if matches!(&failure, crate::fs::CheckpointFailure::Unrecorded(_)) {
+                                item.publication = None;
+                                items[index] = item.clone();
+                            }
+                            return Err(failure);
+                        }
+                        Ok(())
                     },
                 );
                 items[index] = item.clone();

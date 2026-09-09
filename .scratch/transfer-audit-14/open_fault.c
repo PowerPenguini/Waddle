@@ -71,7 +71,8 @@ int fsync(int fd) {
             if (count > 0) {
                 path[count] = 0;
                 size_t prefix = strlen(target);
-                if (!strncmp(path, target, prefix) && path[prefix] == '/') {
+                int exact = getenv("WADDLE_AUDIT_SYNC_EXACT") != NULL;
+                if (exact ? !strcmp(path, target) : (!strncmp(path, target, prefix) && path[prefix] == '/')) {
                     int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
                     real_unlink(armed);
                     const char *error = getenv("WADDLE_AUDIT_SYNC_ERRNO");

@@ -367,6 +367,21 @@ fn remove_item(path: &Path) -> io::Result<()> {
     }
 }
 
+/// A failed checkpoint must say whether the caller recorded ownership of the
+/// prepared result. An error after committing intent still requires recovery.
+pub(crate) enum CheckpointFailure {
+    Unrecorded(String),
+    Recorded(String),
+}
+
+impl CheckpointFailure {
+    fn into_message(self) -> String {
+        match self {
+            Self::Unrecorded(message) | Self::Recorded(message) => message,
+        }
+    }
+}
+
 /// Keep filesystem relationships across all entries of one history operation.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct JournalTransfer {
@@ -380,7 +395,7 @@ impl JournalTransfer {
         action: Action,
         source: &Path,
         destination: &Path,
-        checkpoint: &mut dyn FnMut(&Path, &Self) -> Result<(), String>,
+        checkpoint: &mut dyn FnMut(&Path, &Self) -> Result<(), CheckpointFailure>,
     ) -> Result<(), String> {
         use std::os::unix::fs::MetadataExt;
         let mut run = |this: &mut Self| -> Result<(), String> {
@@ -392,7 +407,7 @@ impl JournalTransfer {
                         .map_err(|e| e.to_string())?
                         .dev()
             {
-                checkpoint(source, this)?;
+                checkpoint(source, this).map_err(CheckpointFailure::into_message)?;
                 return rename_noreplace(source, destination).map_err(|e| e.to_string());
             }
             let snapshot = SourceTree::read(source).map_err(|e| e.to_string())?;
@@ -406,8 +421,15 @@ impl JournalTransfer {
             // Cache paths name the final location. Their recorded inode still
             // belongs to the prepared copy, so an unrelated destination cannot
             // be reused. Save this context together with the publication intent.
+            let previous_links = this.links.clone();
             prepared.publish(&staging, destination, &mut this.links);
-            checkpoint(&staging, this)?;
+            if let Err(failure) = checkpoint(&staging, this) {
+                if matches!(&failure, CheckpointFailure::Unrecorded(_)) {
+                    remove_incomplete_copy(&staging);
+                    this.links = previous_links;
+                }
+                return Err(failure.into_message());
+            }
             rename_noreplace(&staging, destination).map_err(|e| e.to_string())?;
             if action == Action::Move {
                 snapshot.remove_copied(source).map_err(|e| e.to_string())?;

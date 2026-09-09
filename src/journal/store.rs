@@ -171,8 +171,11 @@ impl Journal {
             &mut |action| {
                 checkpoint.stored.entries[index].action = action.clone();
                 checkpoint.stored.entries[index].running = Some(direction);
-                checkpoint.save()?;
-                saved = true;
+                let result = checkpoint.save();
+                if result.is_ok() || matches!(&result, Err(Error::Committed { .. })) {
+                    saved = true;
+                }
+                result?;
                 Ok(())
             },
         );
@@ -271,7 +274,7 @@ impl Journal {
             .map_err(|error| Error::io("could not commit operation journal", error))?;
         fs::File::open(directory)
             .and_then(|file| file.sync_all())
-            .map_err(|error| Error::io("could not flush operation journal directory", error))
+            .map_err(|source| Error::Committed { source })
     }
 }
 

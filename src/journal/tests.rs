@@ -2244,3 +2244,289 @@ fn failed_journal_sync_keeps_previous_history_and_removes_owned_temporary_file()
     assert_eq!(fs::read(source).unwrap(), b"new transfer");
     assert_eq!(fs::read(older).unwrap(), b"older operation");
 }
+
+#[test]
+fn failed_history_checkpoint_does_not_orphan_prepared_copy() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        for redo in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let inputs = temp.path().join("inputs");
+            fs::create_dir(&inputs).unwrap();
+            let source = inputs.join("source");
+            let target = tempfile::tempdir_in("/dev/shm").unwrap();
+            assert_ne!(
+                fs::metadata(&inputs).unwrap().dev(),
+                fs::metadata(target.path()).unwrap().dev()
+            );
+            let state = temp.path().join("state");
+            fs::write(&source, b"retry without leaking prepared data").unwrap();
+            let destination = target.path().join("copy");
+            match kind {
+                TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+                TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+            }
+            let path = state.join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal
+                .record(
+                    Action::transfer(
+                        kind,
+                        &[crate::fs::TransferReceipt {
+                            source: source.clone(),
+                            destination: destination.clone(),
+                            replaced_existing: false,
+                        }],
+                    )
+                    .unwrap()
+                    .unwrap(),
+                )
+                .unwrap();
+            if redo {
+                journal.undo().unwrap();
+            }
+            let input_count = fs::read_dir(&inputs).unwrap().count();
+            let target_count = fs::read_dir(target.path()).unwrap().count();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+            let failed = if redo { journal.redo() } else { journal.undo() };
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(failed.is_err());
+            assert_eq!(
+                fs::read_dir(&inputs).unwrap().count(),
+                input_count,
+                "{kind:?} redo={redo}: source staging leaked"
+            );
+            assert_eq!(
+                fs::read_dir(target.path()).unwrap().count(),
+                target_count,
+                "{kind:?} redo={redo}: destination staging leaked"
+            );
+            let mut journal = Journal::open(path).unwrap();
+            if redo {
+                journal.redo().unwrap();
+            } else {
+                journal.undo().unwrap();
+            }
+            assert_eq!(source.exists(), matches!(kind, TransferKind::Copy) || !redo);
+            assert_eq!(destination.exists(), redo);
+            let retained = if redo { &destination } else { &source };
+            assert_eq!(
+                fs::read(retained).unwrap(),
+                b"retry without leaking prepared data"
+            );
+            assert_eq!(
+                fs::read_dir(&inputs).unwrap().count(),
+                usize::from(source.exists())
+            );
+            assert_eq!(
+                fs::read_dir(target.path()).unwrap().count(),
+                usize::from(destination.exists())
+            );
+        }
+    }
+}
+
+#[test]
+fn history_checkpoint_sync_errors_distinguish_saved_and_unsaved_intent() {
+    use std::os::unix::fs::MetadataExt;
+    let shim = audit_fault_library();
+    for committed in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a"), b"prepared once").unwrap();
+        fs::hard_link(source.join("a"), source.join("b")).unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let destination = target.join("copy");
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        journal.undo().unwrap();
+        let armed = temp.path().join("armed");
+        fs::write(&armed, "").unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        if committed {
+            command.env("WADDLE_AUDIT_SYNC_EXACT", "1");
+        }
+        let output = command
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", &state)
+            .env("WADDLE_AUDIT_SYNC_TARGET", &state)
+            .env("WADDLE_AUDIT_SYNC_ERRNO", libc::EIO.to_string())
+            .env("WADDLE_AUDIT_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!armed.exists(), "sync fault must be reached");
+        assert!(
+            fs::read_to_string(state.join("result.txt"))
+                .unwrap()
+                .contains("could not flush operation journal")
+        );
+        assert!(!destination.exists());
+        let prepared = fs::read_dir(&target)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prepared.len(),
+            usize::from(committed),
+            "incorrect staging ownership after committed={committed}"
+        );
+        let prepared_inode = prepared.first().map(|p| fs::metadata(p).unwrap().ino());
+        let mut journal = Journal::open(path).unwrap();
+        if committed {
+            assert!(
+                journal.undo().is_err(),
+                "cannot cross a recorded pending Redo"
+            );
+        }
+        journal.redo().unwrap();
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+        if let Some(inode) = prepared_inode {
+            assert_eq!(
+                fs::metadata(&destination).unwrap().ino(),
+                inode,
+                "recovery must publish the existing prepared copy"
+            );
+        }
+        assert_eq!(fs::read(destination.join("a")).unwrap(), b"prepared once");
+        assert_eq!(
+            fs::metadata(destination.join("a")).unwrap().ino(),
+            fs::metadata(destination.join("b")).unwrap().ino()
+        );
+        journal.undo().unwrap();
+        assert!(!destination.exists());
+        assert_eq!(fs::read(source.join("a")).unwrap(), b"prepared once");
+    }
+}
+
+#[test]
+fn restoring_from_trash_cleans_unrecorded_prepared_copies() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for restore in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let inputs = temp.path().join("inputs");
+        fs::create_dir(&inputs).unwrap();
+        let trash = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(&inputs).unwrap().dev(),
+            fs::metadata(trash.path()).unwrap().dev()
+        );
+        if restore {
+            // Native Trash preserves the inode on its own filesystem. Start the
+            // original location there, then model a remounted destination before Redo.
+            let original_directory = trash.path().join("original-location");
+            fs::create_dir(&original_directory).unwrap();
+            fs::remove_dir(&inputs).unwrap();
+            std::os::unix::fs::symlink(&original_directory, &inputs).unwrap();
+        }
+        let receipt = TrashReceipt {
+            original: inputs.join("original"),
+            trashed: trash.path().join("item"),
+            info: trash.path().join("item.trashinfo"),
+        };
+        fs::write(
+            if restore {
+                &receipt.original
+            } else {
+                &receipt.trashed
+            },
+            b"restore without orphans",
+        )
+        .unwrap();
+        if !restore {
+            fs::write(&receipt.info, "fixture metadata").unwrap();
+        }
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        let action = if restore {
+            Action::restore(std::slice::from_ref(&receipt), false)
+        } else {
+            Action::trash(std::slice::from_ref(&receipt))
+        };
+        journal.record(action.unwrap().unwrap()).unwrap();
+        if restore {
+            let saved = receipt.clone();
+            trash_receipt::test_backend::with(
+                move |source| {
+                    crate::fs::journal_move(source, &saved.trashed).unwrap();
+                    fs::write(&saved.info, "fixture metadata").unwrap();
+                    Ok(saved.clone())
+                },
+                || {
+                    journal.undo().unwrap();
+                },
+            );
+        }
+        if restore {
+            fs::remove_file(&inputs).unwrap();
+            fs::create_dir(&inputs).unwrap();
+        }
+        assert_ne!(
+            fs::metadata(&inputs).unwrap().dev(),
+            fs::metadata(trash.path()).unwrap().dev()
+        );
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = if restore {
+            journal.redo()
+        } else {
+            journal.undo()
+        };
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        assert_eq!(
+            fs::read_dir(&inputs).unwrap().count(),
+            0,
+            "restore={restore}: unrecorded staging remains"
+        );
+        assert_eq!(
+            fs::read(&receipt.trashed).unwrap(),
+            b"restore without orphans"
+        );
+        assert!(receipt.info.exists());
+        let mut journal = Journal::open(path).unwrap();
+        if restore {
+            journal.redo().unwrap();
+        } else {
+            journal.undo().unwrap();
+        }
+        assert_eq!(
+            fs::read(&receipt.original).unwrap(),
+            b"restore without orphans"
+        );
+        assert!(!receipt.trashed.exists());
+        assert!(!receipt.info.exists());
+        assert_eq!(fs::read_dir(inputs).unwrap().count(), 1);
+    }
+}

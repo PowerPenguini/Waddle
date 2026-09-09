@@ -25,6 +25,10 @@ const MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug)]
 pub(crate) enum Error {
+    /// The journal was atomically replaced, but directory durability is uncertain.
+    Committed {
+        source: io::Error,
+    },
     Io {
         context: String,
         source: io::Error,
@@ -41,6 +45,14 @@ pub(crate) enum Error {
 }
 
 impl Error {
+    fn checkpoint_failure(self) -> crate::fs::CheckpointFailure {
+        if matches!(&self, Self::Committed { .. }) {
+            crate::fs::CheckpointFailure::Recorded(self.to_string())
+        } else {
+            crate::fs::CheckpointFailure::Unrecorded(self.to_string())
+        }
+    }
+
     fn io(context: impl Into<String>, source: io::Error) -> Self {
         Self::Io {
             context: context.into(),
@@ -73,6 +85,10 @@ impl From<String> for Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Committed { source } => write!(
+                formatter,
+                "could not flush operation journal directory: {source}"
+            ),
             Self::Io { context, source } => write!(formatter, "{context}: {source}"),
             Self::Json { context, source } => write!(formatter, "{context}: {source}"),
             Self::Desktop { context, source } => write!(formatter, "{context}: {source}"),
@@ -84,7 +100,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::Committed { source } | Self::Io { source, .. } => Some(source),
             Self::Json { source, .. } => Some(source),
             Self::Desktop { source, .. } => Some(source),
             Self::Message(_) => None,
