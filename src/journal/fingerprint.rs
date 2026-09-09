@@ -211,7 +211,15 @@ impl Fingerprint {
 pub(super) fn attribute_digest(path: &Path, permissions: bool) -> Result<u64, Error> {
     let attributes = match crate::fs::read_xattrs(path) {
         Ok(attributes) => attributes,
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Vec::new(),
+        // The Linux reader handles unsupported enumeration itself. An error
+        // after listing names means known metadata could not be verified;
+        // treating it as empty could authorize deleting an externally edited copy.
+        Err(error)
+            if cfg!(not(target_os = "linux"))
+                && error.kind() == std::io::ErrorKind::Unsupported =>
+        {
+            Vec::new()
+        }
         Err(error) => {
             return Err(Error::io(
                 format!("could not fingerprint attributes of {}", path.display()),

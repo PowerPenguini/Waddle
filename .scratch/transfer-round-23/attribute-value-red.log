@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.19s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::undo_copy_refuses_unreadable_attributes_that_were_successfully_listed' (1263096) panicked at src/journal/tests.rs:3127:9:
+Undo deleted an edited copy after lgetxattr failed with 95
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::undo_copy_refuses_unreadable_attributes_that_were_successfully_listed ... FAILED
+
+failures:
+
+failures:
+    journal::tests::undo_copy_refuses_unreadable_attributes_that_were_successfully_listed
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 582 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--bin waddle`

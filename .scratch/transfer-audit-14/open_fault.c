@@ -101,3 +101,36 @@ int lsetxattr(const char *path, const char *name, const void *value, size_t size
     }
     return real_set(path, name, value, size, flags);
 }
+
+/* Attribute enumeration can be unsupported even when hardlinks work. */
+ssize_t llistxattr(const char *path, char *list, size_t size) {
+    ssize_t (*real_list)(const char *, char *, size_t) = dlsym(RTLD_NEXT, "llistxattr");
+    const char *target = getenv("WADDLE_AUDIT_LIST_XATTR_TARGET");
+    const char *armed = getenv("WADDLE_AUDIT_LIST_XATTR_ARMED");
+    if (target && armed) {
+        size_t prefix = strlen(target);
+        if (!strncmp(path, target, prefix) && path[prefix] == '/') {
+            int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+            real_unlink(armed);
+            const char *error = getenv("WADDLE_AUDIT_LIST_XATTR_ERRNO");
+            errno = error ? atoi(error) : ENOTSUP;
+            return -1;
+        }
+    }
+    return real_list(path, list, size);
+}
+
+/* Listing an attribute succeeds, but reading its value fails. */
+ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size) {
+    ssize_t (*real_get)(const char *, const char *, void *, size_t) = dlsym(RTLD_NEXT, "lgetxattr");
+    const char *target = getenv("WADDLE_AUDIT_GET_XATTR_TARGET");
+    const char *armed = getenv("WADDLE_AUDIT_GET_XATTR_ARMED");
+    if (target && armed && !strcmp(path, target) && !strcmp(name, "user.comment")) {
+        int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+        real_unlink(armed);
+        const char *error = getenv("WADDLE_AUDIT_GET_XATTR_ERRNO");
+        errno = error ? atoi(error) : ENOTSUP;
+        return -1;
+    }
+    return real_get(path, name, value, size);
+}

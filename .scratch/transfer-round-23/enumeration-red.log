@@ -1,0 +1,37 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.40s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::transfers_preserve_hardlinks_without_attribute_enumeration' (1261469) panicked at src/journal/tests.rs:3013:5:
+
+running 1 test
+test journal::tests::attribute_enumeration_transfer_child ... FAILED
+
+failures:
+
+failures:
+    journal::tests::attribute_enumeration_transfer_child
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 581 filtered out; finished in 0.00s
+
+
+
+thread 'journal::tests::attribute_enumeration_transfer_child' (1261476) panicked at src/journal/tests.rs:2980:5:
+assertion `left == right` failed: unsupported attribute enumeration broke the hardlink relationship
+  left: 295633
+ right: 295634
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::transfers_preserve_hardlinks_without_attribute_enumeration ... FAILED
+
+failures:
+
+failures:
+    journal::tests::transfers_preserve_hardlinks_without_attribute_enumeration
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 581 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--bin waddle`

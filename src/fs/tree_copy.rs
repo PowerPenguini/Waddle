@@ -521,7 +521,15 @@ pub(crate) fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
     // SAFETY: source is a valid NUL-terminated path and the null buffer requests its size.
     let size = unsafe { libc::llistxattr(source.as_ptr(), std::ptr::null_mut(), 0) };
     if size < 0 {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        // No attribute support means there are no source attributes to copy
+        // or compare. Other failures leave the metadata unknown. Only accept
+        // this on the initial enumeration, never when reading a listed value.
+        return if error.raw_os_error() == Some(libc::ENOTSUP) {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        };
     }
     let mut names = vec![0_u8; size as usize];
     if size > 0 {

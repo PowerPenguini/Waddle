@@ -2958,3 +2958,216 @@ fn hardlinks_with_metadata_warnings_survive_history_retry_after_restart() {
         "history retry lost the hardlink after reopening"
     );
 }
+
+#[test]
+#[ignore = "Child process helper for unsupported attribute enumeration"]
+fn attribute_enumeration_transfer_child() {
+    use std::os::unix::fs::MetadataExt;
+    let root = PathBuf::from(std::env::var_os("WADDLE_ENUMERATION_FIXTURE").unwrap());
+    let target = PathBuf::from(std::env::var_os("WADDLE_ENUMERATION_DESTINATION").unwrap());
+    let action = if std::env::var_os("WADDLE_ENUMERATION_MOVE").is_some() {
+        crate::transfer::Action::Move
+    } else {
+        crate::transfer::Action::Copy
+    };
+    let enumeration_unsupported = std::env::var("WADDLE_AUDIT_LIST_XATTR_ERRNO")
+        .unwrap()
+        .parse::<i32>()
+        .unwrap()
+        == libc::ENOTSUP;
+    let batch = crate::fs::TransferBatch::try_new(
+        vec![root.join("source/a"), root.join("source/b")],
+        target.clone(),
+        action,
+    )
+    .unwrap();
+    let crate::fs::TransferBatchOutcome::Complete(report) = batch.run() else {
+        panic!("unexpected conflict")
+    };
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(fs::read(target.join("a")).unwrap(), b"shared contents");
+    assert_eq!(fs::read(target.join("b")).unwrap(), b"shared contents");
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino()
+            == fs::metadata(target.join("b")).unwrap().ino(),
+        enumeration_unsupported,
+        "unsupported attribute enumeration broke the hardlink relationship"
+    );
+    assert_eq!(
+        root.join("source/a").exists(),
+        action == crate::transfer::Action::Copy
+    );
+    assert_eq!(
+        root.join("source/b").exists(),
+        action == crate::transfer::Action::Copy
+    );
+    if !enumeration_unsupported {
+        return;
+    }
+    let kind = if action == crate::transfer::Action::Move {
+        TransferKind::Move
+    } else {
+        TransferKind::Copy
+    };
+    let path = root.join("journal.json");
+    Journal::open(path.clone())
+        .unwrap()
+        .record(Action::transfer(kind, &report.receipts).unwrap().unwrap())
+        .unwrap();
+    Journal::open(path.clone()).unwrap().undo().unwrap();
+    assert_eq!(fs::read(root.join("source/a")).unwrap(), b"shared contents");
+    assert_eq!(
+        fs::metadata(root.join("source/a")).unwrap().ino(),
+        fs::metadata(root.join("source/b")).unwrap().ino()
+    );
+    Journal::open(path).unwrap().redo().unwrap();
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino(),
+        fs::metadata(target.join("b")).unwrap().ino()
+    );
+}
+
+#[test]
+fn transfers_preserve_hardlinks_without_attribute_enumeration() {
+    let shim = audit_fault_library();
+    for moving in [false, true] {
+        for source_fault in [false, true] {
+            for error in [libc::ENOTSUP, libc::EIO, libc::EACCES] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = tempfile::tempdir_in("/dev/shm").unwrap();
+                if source_fault && error == libc::ENOTSUP {
+                    // Source without ACL support must not gain named users
+                    // inherited from the destination's default ACL.
+                    let mut acl = 2_u32.to_le_bytes().to_vec();
+                    for (tag, permissions, id) in [
+                        (1_u16, 7_u16, u32::MAX),
+                        (2, 7, 65534),
+                        (4, 5, u32::MAX),
+                        (16, 7, u32::MAX),
+                        (32, 0, u32::MAX),
+                    ] {
+                        acl.extend_from_slice(&tag.to_le_bytes());
+                        acl.extend_from_slice(&permissions.to_le_bytes());
+                        acl.extend_from_slice(&id.to_le_bytes());
+                    }
+                    set_test_attribute(target.path(), "system.posix_acl_default", &acl);
+                }
+                let source = temp.path().join("source");
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("a"), b"shared contents").unwrap();
+                fs::hard_link(source.join("a"), source.join("b")).unwrap();
+                let armed = temp.path().join("enumeration-armed");
+                fs::write(&armed, "").unwrap();
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                if moving {
+                    command.env("WADDLE_ENUMERATION_MOVE", "1");
+                }
+                let output = command
+                    .args([
+                        "--exact",
+                        "journal::tests::attribute_enumeration_transfer_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                    .env("WADDLE_ENUMERATION_FIXTURE", temp.path())
+                    .env("WADDLE_ENUMERATION_DESTINATION", target.path())
+                    .env(
+                        "WADDLE_AUDIT_LIST_XATTR_TARGET",
+                        if source_fault {
+                            source.as_path()
+                        } else {
+                            target.path()
+                        },
+                    )
+                    .env("WADDLE_AUDIT_LIST_XATTR_ERRNO", error.to_string())
+                    .env("WADDLE_AUDIT_LIST_XATTR_ARMED", &armed)
+                    .output()
+                    .unwrap();
+                assert!(!armed.exists(), "enumeration failure must be reached");
+                if source_fault && error == libc::ENOTSUP && output.status.success() {
+                    for name in ["a", "b"] {
+                        assert!(
+                            crate::fs::read_xattrs(&target.path().join(name))
+                                .unwrap()
+                                .iter()
+                                .all(|(name, _)| name.as_bytes() != b"system.posix_acl_access"),
+                            "copy inherited a named-user ACL absent from its source"
+                        );
+                    }
+                }
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn undo_copy_refuses_unreadable_attributes_that_were_successfully_listed() {
+    let shim = audit_fault_library();
+    for error in [libc::ENOTSUP, libc::EIO, libc::EACCES] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::write(&source, b"original contents").unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        // An external edit must not disappear just because its value is unreadable.
+        set_test_attribute(&destination, "user.comment", b"added after copy");
+        let armed = temp.path().join("value-armed");
+        fs::write(&armed, "").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", temp.path())
+            .env("WADDLE_AUDIT_UNDO", "1")
+            .env("WADDLE_AUDIT_GET_XATTR_TARGET", &destination)
+            .env("WADDLE_AUDIT_GET_XATTR_ARMED", &armed)
+            .env("WADDLE_AUDIT_GET_XATTR_ERRNO", error.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(!armed.exists(), "attribute read failure must be reached");
+        assert!(
+            destination.exists(),
+            "Undo deleted an edited copy after lgetxattr failed with {error}"
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"original contents");
+        assert!(
+            fs::read_to_string(temp.path().join("result.txt"))
+                .unwrap()
+                .contains("could not fingerprint attributes")
+        );
+        assert!(
+            Journal::open(temp.path().join("journal.json"))
+                .unwrap()
+                .undo()
+                .is_err(),
+            "a later readable attribute must still protect the external edit"
+        );
+    }
+}
