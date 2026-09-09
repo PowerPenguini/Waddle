@@ -170,3 +170,17 @@ outside this work.
 - Green: both filename cases preserve their exact names, return to the browser,
   and leave Undo empty; all-target tests passed (608 passed, 19 ignored), along with
   Clippy and formatting.
+
+## Round 14: delayed shell completion reverses later navigation
+
+- Reproduction: run `:true`, retain its real completion message, navigate to
+  another folder, then deliver the retained completion through app messages.
+- Red: `cargo test a_shell_command_without_cd_does_not_reverse_later_navigation -- --nocapture`
+  returned the browser to the command's original folder.
+- Cause: completion compared the shell's final directory only with the browser's
+  current folder, confusing later user navigation with a shell directory change.
+- Fix: execution suppresses a navigation request when the shell stayed in its
+  starting directory. Explicit directory changes continue to navigate.
+- Green: the regression preserves later navigation and verifies a subsequent
+  real `:cd` still works; all-target tests passed (609 passed, 19 ignored), along
+  with Clippy and formatting.

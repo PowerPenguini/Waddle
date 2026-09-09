@@ -131,7 +131,17 @@ impl Execution {
     pub(super) fn run<A: Adapter>(self, adapter: &A) -> Completion {
         match self.kind {
             ExecutionKind::Shell { prefix, command } => {
-                Completion::Shell(adapter.execute(&self.current, prefix, &command, &self.selected))
+                let result = adapter
+                    .execute(&self.current, prefix, &command, &self.selected)
+                    .map(|mut report| {
+                        // The browser may have navigated while this command ran.
+                        // Returning its original directory is not a request to go back.
+                        if report.final_directory.as_deref() == Some(self.current.as_path()) {
+                            report.final_directory = None;
+                        }
+                        report
+                    });
+                Completion::Shell(result)
             }
             ExecutionKind::Terminal => Completion::Terminal {
                 directory: self.current.clone(),

@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn a_shell_command_without_cd_does_not_reverse_later_navigation() {
+    use iced::futures::StreamExt;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original");
+        let next = temp.path().join("next");
+        std_fs::create_dir(&original).unwrap();
+        std_fs::create_dir(&next).unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(original.clone());
+        app.navigation.settle_for_test();
+        press(&mut app, ":");
+        let _ = app.update(Message::CommandChanged("true".into()));
+        let task = app.update(Message::CommandSubmitted);
+        let mut stream = iced_runtime::task::into_stream(task).unwrap();
+        let mut queued = Vec::new();
+        while let Some(action) = stream.next().await {
+            if let iced_runtime::Action::Output(message) = action {
+                queued.push(message);
+            }
+        }
+        assert_eq!(queued.len(), 1);
+
+        let _ = app.update(Message::LocationChanged(next.display().to_string()));
+        let navigation = app.update(Message::LocationSubmitted);
+        finish_tasks(&mut app, navigation).await;
+        assert_eq!(app.navigation.current(), next);
+        for message in queued {
+            let task = app.update(message);
+            finish_tasks(&mut app, task).await;
+        }
+        assert_eq!(app.navigation.current(), next);
+
+        // An explicit directory change in a subsequent command must still work.
+        press(&mut app, ":");
+        let _ = app.update(Message::CommandChanged("cd ../original".into()));
+        let task = app.update(Message::CommandSubmitted);
+        finish_tasks(&mut app, task).await;
+        assert_eq!(app.navigation.current(), original);
+    });
+}
+
+#[test]
 fn refreshing_recent_and_trash_preserves_selection_by_path_and_scroll() {
     for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
         let (mut app, _) = App::new();
