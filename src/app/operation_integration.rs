@@ -49,7 +49,7 @@ impl App {
             }
             command::CommandAction::Quit => self.quit(),
             command::CommandAction::OutputChanged => Task::none(),
-            command::CommandAction::Refresh => self.live_refresh(),
+            command::CommandAction::Refresh => self.refresh_location(),
             command::CommandAction::Diagnostics => {
                 self.command.show_diagnostics(self.diagnostics.report());
                 Task::none()

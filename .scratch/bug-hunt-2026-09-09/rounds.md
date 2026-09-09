@@ -30,3 +30,15 @@ outside this work.
   (597 passed, 19 ignored); Clippy with warnings denied and formatting passed.
   All seven release-mode performance benchmarks passed. Grid/list p95 work
   remained below 0.72 ms, within the 8 ms budget.
+
+## Round 3: `:refresh` leaves Recent and Trash
+
+- Reproduction: display Recent or Trash, submit `:refresh` through app messages,
+  inspect the requested location, and deliver its completion.
+- Red: `cargo test refresh_command_reloads_the_displayed_recent_or_trash_location -- --nocapture`
+  requested `Folder` while Recent was displayed.
+- Cause: command dispatch called the folder refresh directly, unlike F5's
+  location-aware refresh.
+- Fix: dispatch `:refresh` through the same location-aware path as F5.
+- Green: the regression passed for Recent and Trash; all-target tests passed
+  (598 passed, 19 ignored); Clippy with warnings denied and formatting passed.

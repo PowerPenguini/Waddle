@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn refresh_command_reloads_the_displayed_recent_or_trash_location() {
+    for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        let opened = match location {
+            DisplayedLocation::Recent => Message::RecentLoaded {
+                request: app.navigation.recent().request.unwrap(),
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Trash => Message::TrashLoaded {
+                request: app.navigation.trash().request.unwrap(),
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Folder => unreachable!(),
+        };
+        let _ = app.update(opened);
+        press(&mut app, ":");
+        let _ = app.update(Message::CommandChanged("refresh".to_owned()));
+        let work = app.update(Message::CommandSubmitted);
+
+        let request = app.navigation.pending_request().expect("refresh request");
+        assert_eq!(
+            request.location(),
+            location,
+            ":refresh must reload the displayed view, not the previous folder"
+        );
+        let completed = match location {
+            DisplayedLocation::Recent => Message::RecentLoaded {
+                request,
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Trash => Message::TrashLoaded {
+                request,
+                result: Some(Ok(Vec::new())),
+            },
+            DisplayedLocation::Folder => unreachable!(),
+        };
+        let _ = app.update(completed);
+        assert_eq!(app.navigation.displayed_location(), location);
+        assert!(!app.navigation.loading());
+        drop(work);
+    }
+}
+
+#[test]
 fn sidebar_returns_from_recent_and_trash_to_the_previous_folder() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
