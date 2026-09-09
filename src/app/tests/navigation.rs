@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn failed_native_monitor_startup_keeps_polling_after_each_refresh() {
+    use iced::futures::StreamExt;
+
+    const CHILD: &str = "WADDLE_INOTIFY_STARTUP_FAILURE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("inotify_failure.c");
+        let library = fixture.path().join("inotify_failure.so");
+        std_fs::write(
+            &source,
+            "#include <errno.h>\nint inotify_init1(int flags) { (void)flags; errno = EMFILE; return -1; }\n",
+        )
+        .unwrap();
+        let compiled = std::process::Command::new("cc")
+            .args(["-shared", "-fPIC", "-o"])
+            .arg(&library)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::navigation::failed_native_monitor_startup_keeps_polling_after_each_refresh",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("LD_PRELOAD", library)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(Vec::new());
+            app.sync_location_monitoring();
+            if let Some(monitoring) = app.location_monitoring.as_ref() {
+                let recipe = iced::advanced::subscription::into_recipes(monitoring.subscription())
+                    .pop()
+                    .unwrap();
+                let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+                if let Some(event) = tokio::time::timeout(Duration::from_secs(3), events.next())
+                    .await
+                    .expect("failed monitor must finish initializing")
+                {
+                    let _ = app.update(Message::DirectoryChanged(event));
+                }
+            }
+            for name in ["first.txt", "second.txt"] {
+                let path = temp.path().join(name);
+                std_fs::write(&path, "external change").unwrap();
+                let task = app.update(Message::PollSystem);
+                finish_tasks(&mut app, task).await;
+                assert!(
+                    app.navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.path == path),
+                    "polling failed to display {name} after native monitoring failed"
+                );
+            }
+        });
+}
+
+#[test]
 fn location_monitoring_refreshes_while_a_file_is_continuously_written() {
     use iced::futures::{StreamExt, stream::BoxStream};
 

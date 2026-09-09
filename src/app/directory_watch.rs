@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::CString,
     os::{
-        fd::RawFd,
+        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::ffi::{OsStrExt, OsStringExt},
     },
     path::PathBuf,
@@ -55,11 +55,21 @@ enum Command {
 
 impl Source {
     pub(super) fn new() -> Result<Self, String> {
+        // SAFETY: inotify_init1 has no borrowed arguments.
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if descriptor < 0 {
+            return Err(format!(
+                "could not start directory monitor: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: the successful call returned a new descriptor owned by this source.
+        let watcher = unsafe { OwnedFd::from_raw_fd(descriptor) };
         let (commands, command_receiver) = std_mpsc::channel();
         let (events, event_receiver) = mpsc::unbounded();
         let worker = thread::Builder::new()
             .name("waddle-directory-watch".to_owned())
-            .spawn(move || worker(command_receiver, events))
+            .spawn(move || worker(watcher, command_receiver, events))
             .map_err(|error| format!("could not start directory monitor: {error}"))?;
         drop(worker);
         Ok(Self(Arc::new(Inner {
@@ -104,12 +114,12 @@ impl Drop for Inner {
     }
 }
 
-fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<Event>) {
-    // SAFETY: inotify_init1 has no borrowed arguments.
-    let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-    if descriptor < 0 {
-        return;
-    }
+fn worker(
+    watcher: OwnedFd,
+    commands: std_mpsc::Receiver<Command>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    let descriptor = watcher.as_raw_fd();
     let mut watched = HashMap::<i32, PathBuf>::new();
     let mut pending = HashMap::<PathBuf, PendingChange>::new();
     let mut buffer = vec![0_u8; 64 * 1024];
@@ -126,14 +136,10 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
                             })
                             .is_err()
                     {
-                        close_descriptor(descriptor);
                         return;
                     }
                 }
-                Command::Shutdown => {
-                    close_descriptor(descriptor);
-                    return;
-                }
+                Command::Shutdown => return,
             }
         }
         let mut poll = libc::pollfd {
@@ -181,7 +187,6 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
                 })
                 .is_err()
             {
-                close_descriptor(descriptor);
                 return;
             }
         }
@@ -286,11 +291,6 @@ fn replace_watches(
         }
     }
     failed
-}
-
-fn close_descriptor(descriptor: RawFd) {
-    // SAFETY: the worker owns this descriptor and closes it once on exit.
-    unsafe { libc::close(descriptor) };
 }
 
 #[cfg(test)]

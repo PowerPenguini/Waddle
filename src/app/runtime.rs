@@ -145,7 +145,10 @@ impl App {
                     .location_monitoring
                     .as_ref()
                     .map(|monitoring| monitoring.poll(&self.search))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| location_monitoring::Poll {
+                        refresh_location: !self.search.is_recursive(),
+                        invalidate_tree: self.sidebar_tree.expanded_paths(),
+                    });
                 let location = if fallback.refresh_location {
                     self.refresh_location()
                 } else {

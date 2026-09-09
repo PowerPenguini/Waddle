@@ -357,3 +357,19 @@ outside this work.
 - Green: an event arrives while writes continue and the app refresh displays the
   busy file. Existing burst-debounce coverage also passes. All-target tests passed
   (617 passed, 22 ignored), along with Clippy and formatting.
+
+## Round 27: failed native monitor startup disables live refresh
+
+- Reproduction: use an isolated subprocess with an OS-boundary fault shim that
+  makes inotify initialization return EMFILE. Create files and deliver periodic
+  polling messages, repeating after the first refresh.
+- Red: `cargo test failed_native_monitor_startup_keeps_polling_after_each_refresh -- --nocapture`
+  failed to display `first.txt` after native monitoring initialization failed.
+- Cause: inotify initialization happened after successful source construction;
+  its worker silently exited on failure. The app also disabled fallback polling
+  when no native monitor existed.
+- Fix: initialize the descriptor before reporting a successful source, transfer
+  its ownership safely to the worker, and poll the location and expanded folders
+  when monitoring is unavailable.
+- Green: both successive external file creations appear through polling.
+  All-target tests passed (618 passed, 22 ignored), along with Clippy and formatting.
