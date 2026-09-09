@@ -34,8 +34,9 @@ ssize_t read(int fd, void *buffer, size_t count) {
         struct inotify_event event;
         memcpy(&event, (char *)buffer + offset, sizeof(event));
         if (event.len > (size_t)received - offset - sizeof(event)) break;
-        if (event.len >= sizeof("overflow.txt") &&
-            memcmp((char *)buffer + offset + sizeof(event), "overflow.txt", sizeof("overflow.txt")) == 0) {
+        if ((event.mask & IN_MOVE_SELF) != 0 ||
+            (event.len >= sizeof("overflow.txt") &&
+            memcmp((char *)buffer + offset + sizeof(event), "overflow.txt", sizeof("overflow.txt")) == 0)) {
             const char *marker = getenv("WADDLE_INOTIFY_OVERFLOW_MARKER");
             int proof = open(marker, O_WRONLY | O_CREAT | O_TRUNC, 0600);
             if (proof >= 0) close(proof);
@@ -85,8 +86,10 @@ ssize_t read(int fd, void *buffer, size_t count) {
         .unwrap()
         .block_on(async {
             let temp = tempfile::tempdir().unwrap();
+            let current = temp.path().join("current");
+            std_fs::create_dir(&current).unwrap();
             let (mut app, _) = App::new();
-            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation = NavigationSession::new(current.clone());
             app.navigation.settle_for_test();
             app.sidebar_tree = SidebarTree::new(Vec::new());
             app.sync_location_monitoring();
@@ -98,10 +101,10 @@ ssize_t read(int fd, void *buffer, size_t count) {
             let mut events = recipe.stream(iced::futures::stream::pending().boxed());
             let ready = tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
-                    std_fs::write(temp.path().join("ready.txt"), "ready").unwrap();
+                    std_fs::write(current.join("ready.txt"), "ready").unwrap();
                     if let Ok(Some(event)) =
                         tokio::time::timeout(Duration::from_millis(300), events.next()).await
-                        && event.path == temp.path()
+                        && event.path == current
                         && !event.watch_failed
                     {
                         return event;
@@ -113,7 +116,7 @@ ssize_t read(int fd, void *buffer, size_t count) {
             let task = app.update(Message::DirectoryChanged(ready));
             finish_tasks(&mut app, task).await;
 
-            let lost = temp.path().join("overflow.txt");
+            let lost = current.join("overflow.txt");
             std_fs::write(&lost, "created while notifications were lost").unwrap();
             let refreshed = tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
@@ -139,6 +142,34 @@ ssize_t read(int fd, void *buffer, size_t count) {
                 refreshed.is_ok(),
                 "queue overflow left the browser's file list stale"
             );
+
+            // The overflow also hides the event that would invalidate an old watch.
+            std_fs::rename(&current, temp.path().join("old-current")).unwrap();
+            std_fs::create_dir(&current).unwrap();
+            for name in ["replacement.txt", "future.txt"] {
+                let path = current.join(name);
+                std_fs::write(&path, "new directory contents").unwrap();
+                let observed = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let event = events.next().await.expect("monitor must remain active");
+                        let task = app.update(Message::DirectoryChanged(event));
+                        finish_tasks(&mut app, task).await;
+                        if app
+                            .navigation
+                            .entries()
+                            .iter()
+                            .any(|entry| entry.path == path)
+                        {
+                            return;
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    observed.is_ok(),
+                    "{name} was missed after overflow hid the folder replacement"
+                );
+            }
         });
 }
 

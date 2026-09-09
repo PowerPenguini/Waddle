@@ -152,13 +152,22 @@ fn worker(
         if ready > 0 && poll.revents & libc::POLLIN != 0 {
             // SAFETY: buffer is writable and descriptor is a nonblocking inotify fd.
             let read = unsafe { libc::read(descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
-            if read > 0 {
-                collect_changed_watches(
+            if read > 0
+                && collect_changed_watches(
                     descriptor,
                     &buffer[..read as usize],
                     &mut watched,
                     &mut pending,
-                );
+                )
+                && events
+                    .unbounded_send(Event {
+                        path: PathBuf::new(),
+                        removed: Vec::new(),
+                        watch_failed: true,
+                    })
+                    .is_err()
+            {
+                return;
             }
         }
         let ready = pending
@@ -198,8 +207,9 @@ fn collect_changed_watches(
     buffer: &[u8],
     watched: &mut HashMap<i32, PathBuf>,
     pending: &mut HashMap<PathBuf, PendingChange>,
-) {
+) -> bool {
     let mut offset = 0;
+    let mut watch_failed = false;
     while offset + std::mem::size_of::<libc::inotify_event>() <= buffer.len() {
         // SAFETY: one complete record header is in bounds; unaligned reads are supported here.
         let event = unsafe {
@@ -217,11 +227,18 @@ fn collect_changed_watches(
         if event.mask & libc::IN_Q_OVERFLOW != 0 {
             // Overflow records have no watch ID; any watched directory may be stale.
             let now = Instant::now();
-            for directory in watched.values() {
+            let mut paths = Vec::with_capacity(watched.len());
+            for (watch, directory) in watched.drain() {
                 let change = pending.entry(directory.clone()).or_default();
                 change.first_changed.get_or_insert(now);
                 change.changed = Some(now);
+                // Overflow may hide a move/delete event. Rebind watches to paths
+                // so replacements do not leave us monitoring the old inodes.
+                // SAFETY: watch was registered on this worker's descriptor.
+                unsafe { libc::inotify_rm_watch(descriptor, watch) };
+                paths.push(directory);
             }
+            watch_failed |= replace_watches(descriptor, watched, paths);
         } else if let Some(directory) = watched.get(&event.wd) {
             let change = pending.entry(directory.clone()).or_default();
             let now = Instant::now();
@@ -250,6 +267,7 @@ fn collect_changed_watches(
         }
         offset = offset.saturating_add(record_size);
     }
+    watch_failed
 }
 
 fn replace_watches(

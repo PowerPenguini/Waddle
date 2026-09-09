@@ -403,3 +403,17 @@ outside this work.
 - Green: the browser discovers the file without receiving its individual native
   notifications. All-target tests passed (620 passed, 22 ignored), along with
   Clippy and formatting.
+
+## Round 30: overflow leaves monitoring attached to a replaced folder
+
+- Reproduction: extend the native overflow fixture to hide a folder's move event,
+  replace that folder, await its rescan, then create another file in the replacement.
+- Red: `cargo test native_queue_overflow_rescans_the_displayed_folder -- --nocapture`
+  displayed the replacement's initial contents but missed `future.txt` afterward.
+- Cause: rescanning repaired the displayed entries, but the native watch remained
+  attached to the moved folder's inode because its invalidation event was lost.
+- Fix: remove and re-register watched paths when overflow is reported, preserving
+  their pending rescans. Registration failures use the existing polling fallback.
+- Green: both the replacement's contents and subsequent file creation appear.
+  All-target tests passed (620 passed, 22 ignored), along with Clippy, formatting,
+  and whitespace checks.
