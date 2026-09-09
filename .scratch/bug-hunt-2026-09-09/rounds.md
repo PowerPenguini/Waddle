@@ -156,3 +156,17 @@ outside this work.
 - Green: Recent and Trash regression scenarios passed; all-target tests passed
   (607 passed, 19 ignored); Clippy and formatting passed. All seven release-mode
   benchmarks passed; grid/list p95 stayed below 0.77 ms (8 ms budget).
+
+## Round 13: unchanged rename rewrites non-UTF-8 filenames
+
+- Reproduction: open Rename and submit without editing, for both an ordinary name
+  and a filename containing the raw byte `FF`.
+- Red: `cargo test submitting_an_unchanged_rename_preserves_the_original_filename -- --nocapture`
+  replaced the original raw byte with the Unicode replacement character.
+- Cause: the editor's display string was sent back as a filesystem rename even
+  though the user had not changed it. Ordinary unchanged names also hit a collision.
+- Fix: dismiss an unchanged Rename through the existing cancellation path before
+  scheduling filesystem work or recording Undo.
+- Green: both filename cases preserve their exact names, return to the browser,
+  and leave Undo empty; all-target tests passed (608 passed, 19 ignored), along with
+  Clippy and formatting.

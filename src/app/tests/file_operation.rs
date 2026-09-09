@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn submitting_an_unchanged_rename_preserves_the_original_filename() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for name in [
+            OsString::from_vec(b"name-\xff.txt".to_vec()),
+            "plain.txt".into(),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            std_fs::write(temp.path().join(&name), "original contents").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.grid.select_only(Some(0), 1);
+            press(&mut app, "r");
+            let task = app.update(Message::RenameSubmitted);
+            super::navigation::finish_tasks(&mut app, task).await;
+
+            assert_eq!(fs::read_directory(temp.path()).unwrap()[0].name, name);
+            assert_eq!(app.browser_input.mode(), InputMode::Browser);
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::Idle
+            ));
+            assert_eq!(
+                app.journal.undo().unwrap_err().to_string(),
+                "Nothing to undo"
+            );
+        }
+    });
+}
+
+#[test]
 fn partial_permanent_delete_refreshes_entries_and_keeps_the_error() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()

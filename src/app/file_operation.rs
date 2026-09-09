@@ -216,6 +216,14 @@ impl FileOperationSession {
         self.busy
     }
 
+    pub(super) fn rename_is_unchanged(&self) -> bool {
+        !self.busy
+            && matches!(
+                &self.state,
+                State::Rename { entry, value, .. } if *value == fs::display_name(&entry.name)
+            )
+    }
+
     pub(super) fn prompt_active(&self) -> bool {
         self.prompt_interaction().is_active()
     }

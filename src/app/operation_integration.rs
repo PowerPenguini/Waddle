@@ -406,6 +406,10 @@ impl App {
         if self.browser_input.mode() != InputMode::Rename {
             return Task::none();
         }
+        if self.file_operations.rename_is_unchanged() {
+            self.cancel_rename();
+            return Task::none();
+        }
         self.submit_file_operation_name()
     }
 
