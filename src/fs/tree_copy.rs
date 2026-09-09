@@ -227,7 +227,7 @@ impl CopyContext<'_> {
         if metadata.file_type().is_symlink() {
             copy_symlink(source, destination)?;
             self.created = true;
-            self.metadata(source, destination, &metadata, true);
+            self.metadata(source, destination, &metadata, true)?;
             self.advance(metadata.len())?;
             return Ok(());
         }
@@ -242,7 +242,7 @@ impl CopyContext<'_> {
             for entry in entries {
                 self.copy(&entry.path(), &destination.join(entry.file_name()))?;
             }
-            self.metadata(source, destination, &metadata, false);
+            self.metadata(source, destination, &metadata, false)?;
             return Ok(());
         }
         if !metadata.is_file() {
@@ -323,7 +323,7 @@ impl CopyContext<'_> {
             copy_stream(&mut input, &mut output, &mut report)?;
         }
         self.bytes = base.saturating_add(copied);
-        self.metadata(source, destination, &metadata, false);
+        self.metadata(source, destination, &metadata, false)?;
         // Buffered writes can succeed even when the device later reports ENOSPC
         // or EIO. Surface those errors while this is still an unpublished copy,
         // before Replace discards old data or Move removes the source.
@@ -359,10 +359,11 @@ impl CopyContext<'_> {
         destination: &Path,
         metadata: &fs::Metadata,
         symlink: bool,
-    ) {
+    ) -> io::Result<()> {
         // Reconcile inherited ACLs while the new entry is still private.
         // Opening the source's group mask first could briefly enable an
         // inherited named-user entry that the source never granted.
+        copy_access_control(source, destination, &mut self.warnings)?;
         record_metadata_result(
             "extended attributes and ACLs",
             copy_xattrs(source, destination),
@@ -386,6 +387,7 @@ impl CopyContext<'_> {
             ),
             &mut self.warnings,
         );
+        Ok(())
     }
 }
 
@@ -548,32 +550,97 @@ pub(crate) fn read_xattrs(source: &Path) -> io::Result<ExtendedAttributes> {
     {
         let name = CString::new(bytes)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "xattr name contains NUL"))?;
-        // SAFETY: source and name are valid and the null buffer requests the value size.
-        let value_size =
-            unsafe { libc::lgetxattr(source.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
-        if value_size < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut value = vec![0_u8; value_size as usize];
-        if value_size > 0 {
-            // SAFETY: value has the capacity reported by lgetxattr.
-            let read = unsafe {
-                libc::lgetxattr(
-                    source.as_ptr(),
-                    name.as_ptr(),
-                    value.as_mut_ptr().cast(),
-                    value.len(),
-                )
-            };
-            if read < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            value.truncate(read as usize);
-        }
+        let value = read_attribute(&source, &name)?;
         attributes.push((name, value));
     }
     attributes.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(attributes)
+}
+
+#[cfg(target_os = "linux")]
+fn read_attribute(source: &std::ffi::CStr, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
+    // SAFETY: source and name are valid and the null buffer requests the value size.
+    let value_size =
+        unsafe { libc::lgetxattr(source.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+    if value_size < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut value = vec![0_u8; value_size as usize];
+    if value_size > 0 {
+        // SAFETY: value has the capacity reported by lgetxattr.
+        let read = unsafe {
+            libc::lgetxattr(
+                source.as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+            )
+        };
+        if read < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        value.truncate(read as usize);
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_access_control(
+    source: &Path,
+    destination: &Path,
+    warnings: &mut Vec<String>,
+) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source contains NUL"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination contains NUL"))?;
+    for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+        // Query ACLs independently: an unreadable optional annotation must not
+        // prevent applying the source policy or removing inherited named users.
+        let value = match read_attribute(&source, name) {
+            Ok(value) => Some(value),
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) => {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(value) = value {
+            // SAFETY: the paths, name and value are live for this call.
+            if unsafe {
+                libc::lsetxattr(
+                    destination.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            } == 0
+            {
+                continue;
+            }
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ENOTSUP) {
+                return Err(error);
+            }
+            // A target without ACL support can still accept the content. Do
+            // not leave an inherited ACL behind if it rejects the source ACL.
+            warnings.push(format!("access control: {error}"));
+        }
+        // SAFETY: arguments are live NUL-terminated strings; l* does not follow links.
+        if unsafe { libc::lremovexattr(destination.as_ptr(), name.as_ptr()) } != 0 {
+            let error = io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copy_access_control(_: &Path, _: &Path, _: &mut Vec<String>) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -582,26 +649,13 @@ fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
     let attributes = read_xattrs(source)?;
     let destination = CString::new(destination.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination contains NUL"))?;
-    // Creation can inherit ACLs from the destination parent. chmod only adjusts
-    // their mask; it does not remove named users or a directory's default ACL.
-    // Absence on the source is meaningful too. Leave unrelated filesystem-
-    // assigned attributes (such as security labels) alone.
-    for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
-        if !attributes
-            .iter()
-            .any(|(present, _)| present.as_c_str() == name)
-        {
-            // SAFETY: both arguments are live NUL-terminated strings. The l*
-            // variant changes this entry without following symbolic links.
-            if unsafe { libc::lremovexattr(destination.as_ptr(), name.as_ptr()) } != 0 {
-                let error = io::Error::last_os_error();
-                if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
-                    return Err(error);
-                }
-            }
-        }
-    }
     for (name, value) in attributes {
+        if matches!(
+            name.to_bytes(),
+            b"system.posix_acl_access" | b"system.posix_acl_default"
+        ) {
+            continue;
+        }
         // SAFETY: destination, name, and value are valid for the duration of the call.
         let result = unsafe {
             libc::lsetxattr(

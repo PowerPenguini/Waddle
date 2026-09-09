@@ -3171,3 +3171,294 @@ fn undo_copy_refuses_unreadable_attributes_that_were_successfully_listed() {
         );
     }
 }
+
+#[test]
+#[ignore = "Child process helper for metadata faults with inherited ACLs"]
+fn metadata_fault_acl_transfer_child() {
+    let root = PathBuf::from(std::env::var_os("WADDLE_ACL_FIXTURE").unwrap());
+    let target = PathBuf::from(std::env::var_os("WADDLE_ACL_TARGET").unwrap());
+    let action = if std::env::var_os("WADDLE_ACL_MOVE").is_some() {
+        crate::transfer::Action::Move
+    } else {
+        crate::transfer::Action::Copy
+    };
+    let directory = root.join("source").is_dir();
+    let batch =
+        crate::fs::TransferBatch::try_new(vec![root.join("source")], target.clone(), action)
+            .unwrap();
+    let crate::fs::TransferBatchOutcome::Complete(report) = batch.run() else {
+        panic!("unexpected conflict")
+    };
+    if std::env::var_os("WADDLE_ACL_EXPECT_FAILURE").is_some() {
+        assert!(
+            !report.failures.is_empty(),
+            "ACL failure was ignored: {report:?}"
+        );
+        assert!(
+            root.join("source").exists(),
+            "failed Move removed the source"
+        );
+        assert!(
+            !target.join("source").exists(),
+            "published a copy with invalid access policy"
+        );
+        assert_eq!(
+            fs::read_dir(&target).unwrap().count(),
+            0,
+            "abandoned staging after ACL failure"
+        );
+        return;
+    }
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert!(!report.warnings.is_empty(), "missing metadata warning");
+    assert_eq!(
+        fs::read(target.join(if directory { "source/note" } else { "source" })).unwrap(),
+        b"private data"
+    );
+    assert_eq!(
+        root.join("source").exists(),
+        action == crate::transfer::Action::Copy
+    );
+}
+
+fn transfer_test_acl(uid: u32) -> Vec<u8> {
+    let mut acl = 2_u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (1_u16, 7_u16, u32::MAX),
+        (2, 7, uid),
+        (4, 5, u32::MAX),
+        (16, 7, u32::MAX),
+        (32, 0, u32::MAX),
+    ] {
+        acl.extend_from_slice(&tag.to_le_bytes());
+        acl.extend_from_slice(&permissions.to_le_bytes());
+        acl.extend_from_slice(&id.to_le_bytes());
+    }
+    acl
+}
+
+#[test]
+fn failed_optional_attribute_read_does_not_grant_inherited_acl_access() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let shim = audit_fault_library();
+    for moving in [false, true] {
+        for directory in [false, true] {
+            for explicit_acl in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = tempfile::tempdir_in("/dev/shm").unwrap();
+                assert_ne!(
+                    fs::metadata(temp.path()).unwrap().dev(),
+                    fs::metadata(target.path()).unwrap().dev()
+                );
+                let source = temp.path().join("source");
+                if directory {
+                    fs::create_dir(&source).unwrap();
+                }
+                fs::write(
+                    if directory {
+                        source.join("note")
+                    } else {
+                        source.clone()
+                    },
+                    b"private data",
+                )
+                .unwrap();
+                fs::set_permissions(
+                    &source,
+                    fs::Permissions::from_mode(if directory { 0o750 } else { 0o640 }),
+                )
+                .unwrap();
+                set_test_attribute(&source, "user.comment", b"annotation");
+                if explicit_acl {
+                    set_test_attribute(
+                        &source,
+                        "system.posix_acl_access",
+                        &transfer_test_acl(65533),
+                    );
+                    if directory {
+                        set_test_attribute(
+                            &source,
+                            "system.posix_acl_default",
+                            &transfer_test_acl(65533),
+                        );
+                    }
+                }
+                let acl_attributes = |path: &std::path::Path| {
+                    crate::fs::read_xattrs(path)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|(name, _)| name.to_bytes().starts_with(b"system.posix_acl_"))
+                        .collect::<Vec<_>>()
+                };
+                let expected = acl_attributes(&source);
+                let expected_child = directory.then(|| acl_attributes(&source.join("note")));
+                set_test_attribute(
+                    target.path(),
+                    "system.posix_acl_default",
+                    &transfer_test_acl(65534),
+                );
+                let armed = temp.path().join("attribute-armed");
+                fs::write(&armed, "").unwrap();
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                if moving {
+                    command.env("WADDLE_ACL_MOVE", "1");
+                }
+                let output = command
+                    .args([
+                        "--exact",
+                        "journal::tests::metadata_fault_acl_transfer_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                    .env("WADDLE_ACL_FIXTURE", temp.path())
+                    .env("WADDLE_ACL_TARGET", target.path())
+                    .env("WADDLE_AUDIT_GET_XATTR_TARGET", &source)
+                    .env("WADDLE_AUDIT_GET_XATTR_ARMED", &armed)
+                    .env("WADDLE_AUDIT_GET_XATTR_ERRNO", libc::EIO.to_string())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                assert!(!armed.exists(), "attribute read failure must be reached");
+                assert_eq!(
+                    acl_attributes(&target.path().join("source")),
+                    expected,
+                    "optional metadata failure changed the source access policy"
+                );
+                if let Some(expected) = expected_child {
+                    assert_eq!(acl_attributes(&target.path().join("source/note")), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn acl_transfer_faults_preserve_safe_results_and_recoverability() {
+    let shim = audit_fault_library();
+    for moving in [false, true] {
+        for directory in [false, true] {
+            for fault in ["read", "write", "remove", "unsupported"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = tempfile::tempdir_in("/dev/shm").unwrap();
+                let source = temp.path().join("source");
+                if directory {
+                    fs::create_dir(&source).unwrap();
+                }
+                let contents = if directory {
+                    source.join("note")
+                } else {
+                    source.clone()
+                };
+                fs::write(&contents, b"private data").unwrap();
+                if fault != "remove" {
+                    set_test_attribute(
+                        &source,
+                        "system.posix_acl_access",
+                        &transfer_test_acl(65533),
+                    );
+                }
+                set_test_attribute(
+                    target.path(),
+                    "system.posix_acl_default",
+                    &transfer_test_acl(65534),
+                );
+                let armed = temp.path().join("acl-armed");
+                fs::write(&armed, "").unwrap();
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                if moving {
+                    command.env("WADDLE_ACL_MOVE", "1");
+                }
+                if fault != "unsupported" {
+                    command.env("WADDLE_ACL_EXPECT_FAILURE", "1");
+                }
+                match fault {
+                    "read" => {
+                        command
+                            .env("WADDLE_AUDIT_GET_XATTR_TARGET", &source)
+                            .env("WADDLE_AUDIT_GET_XATTR_ARMED", &armed)
+                            .env("WADDLE_AUDIT_GET_XATTR_NAME", "system.posix_acl_access")
+                            .env("WADDLE_AUDIT_GET_XATTR_ERRNO", libc::EIO.to_string());
+                    }
+                    "remove" => {
+                        command
+                            .env("WADDLE_AUDIT_REMOVE_ACL_TARGET", target.path())
+                            .env("WADDLE_AUDIT_REMOVE_ACL_ARMED", &armed);
+                    }
+                    _ => {
+                        command
+                            .env("WADDLE_AUDIT_XATTR_TARGET", target.path())
+                            .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+                            .env("WADDLE_AUDIT_SET_XATTR_NAME", "system.posix_acl_access")
+                            .env(
+                                "WADDLE_AUDIT_SET_XATTR_ERRNO",
+                                if fault == "unsupported" {
+                                    libc::ENOTSUP
+                                } else {
+                                    libc::EACCES
+                                }
+                                .to_string(),
+                            );
+                    }
+                }
+                let output = command
+                    .args([
+                        "--exact",
+                        "journal::tests::metadata_fault_acl_transfer_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                    .env("WADDLE_ACL_FIXTURE", temp.path())
+                    .env("WADDLE_ACL_TARGET", target.path())
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{fault} move={moving} directory={directory}: {output:?}"
+                );
+                assert!(!armed.exists(), "ACL fault must be reached");
+                if fault == "unsupported" {
+                    assert!(
+                        crate::fs::read_xattrs(&target.path().join("source"))
+                            .unwrap()
+                            .iter()
+                            .all(|(name, _)| name.to_bytes() != b"system.posix_acl_access"),
+                        "unsupported source ACL left an inherited named-user grant"
+                    );
+                    continue;
+                }
+                assert_eq!(fs::read(&contents).unwrap(), b"private data");
+                let action = if moving {
+                    crate::transfer::Action::Move
+                } else {
+                    crate::transfer::Action::Copy
+                };
+                let crate::fs::TransferBatchOutcome::Complete(report) =
+                    crate::fs::TransferBatch::try_new(
+                        vec![source],
+                        target.path().to_owned(),
+                        action,
+                    )
+                    .unwrap()
+                    .run()
+                else {
+                    panic!("unexpected retry conflict")
+                };
+                assert!(
+                    report.failures.is_empty() && report.warnings.is_empty(),
+                    "{report:?}"
+                );
+                assert_eq!(
+                    fs::read(
+                        target
+                            .path()
+                            .join(if directory { "source/note" } else { "source" })
+                    )
+                    .unwrap(),
+                    b"private data"
+                );
+            }
+        }
+    }
+}

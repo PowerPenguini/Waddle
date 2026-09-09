@@ -90,12 +90,15 @@ int lsetxattr(const char *path, const char *name, const void *value, size_t size
     int (*real_set)(const char *, const char *, const void *, size_t, int) = dlsym(RTLD_NEXT, "lsetxattr");
     const char *target = getenv("WADDLE_AUDIT_XATTR_TARGET");
     const char *armed = getenv("WADDLE_AUDIT_XATTR_ARMED");
-    if (target && armed && !strcmp(name, "user.comment")) {
+    const char *attribute = getenv("WADDLE_AUDIT_SET_XATTR_NAME");
+    if (!attribute) attribute = "user.comment";
+    if (target && armed && !strcmp(name, attribute)) {
         size_t prefix = strlen(target);
         if (!strncmp(path, target, prefix) && path[prefix] == '/') {
             int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
             real_unlink(armed);
-            errno = ENOTSUP;
+            const char *error = getenv("WADDLE_AUDIT_SET_XATTR_ERRNO");
+            errno = error ? atoi(error) : ENOTSUP;
             return -1;
         }
     }
@@ -125,7 +128,9 @@ ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size) 
     ssize_t (*real_get)(const char *, const char *, void *, size_t) = dlsym(RTLD_NEXT, "lgetxattr");
     const char *target = getenv("WADDLE_AUDIT_GET_XATTR_TARGET");
     const char *armed = getenv("WADDLE_AUDIT_GET_XATTR_ARMED");
-    if (target && armed && !strcmp(path, target) && !strcmp(name, "user.comment")) {
+    const char *attribute = getenv("WADDLE_AUDIT_GET_XATTR_NAME");
+    if (!attribute) attribute = "user.comment";
+    if (target && armed && !strcmp(path, target) && !strcmp(name, attribute)) {
         int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
         real_unlink(armed);
         const char *error = getenv("WADDLE_AUDIT_GET_XATTR_ERRNO");
@@ -133,4 +138,21 @@ ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size) 
         return -1;
     }
     return real_get(path, name, value, size);
+}
+
+/* Fail reconciliation of an inherited ACL only below the test destination. */
+int lremovexattr(const char *path, const char *name) {
+    int (*real_remove)(const char *, const char *) = dlsym(RTLD_NEXT, "lremovexattr");
+    const char *target = getenv("WADDLE_AUDIT_REMOVE_ACL_TARGET");
+    const char *armed = getenv("WADDLE_AUDIT_REMOVE_ACL_ARMED");
+    if (target && armed && !strcmp(name, "system.posix_acl_access")) {
+        size_t prefix = strlen(target);
+        if (!strncmp(path, target, prefix) && path[prefix] == '/') {
+            int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
+            real_unlink(armed);
+            errno = EACCES;
+            return -1;
+        }
+    }
+    return real_remove(path, name);
 }

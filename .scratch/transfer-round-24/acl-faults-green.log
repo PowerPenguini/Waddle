@@ -1,0 +1,12 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.70s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 5 tests
+test journal::tests::metadata_fault_acl_transfer_child ... ignored, Child process helper for metadata faults with inherited ACLs
+test fs::tests::copying_into_default_acl_directory_does_not_grant_extra_access ... ok
+test fs::tests::copy_and_cross_device_move_preserve_source_acl_policy ... ok
+test journal::tests::failed_optional_attribute_read_does_not_grant_inherited_acl_access ... ok
+test journal::tests::acl_transfer_faults_preserve_safe_results_and_recoverability ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 581 filtered out; finished in 0.10s

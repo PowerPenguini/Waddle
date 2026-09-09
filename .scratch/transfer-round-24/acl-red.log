@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.54s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::failed_optional_attribute_read_does_not_grant_inherited_acl_access' (1267108) panicked at src/journal/tests.rs:3236:5:
+copy granted the destination's named user access after an unrelated attribute read failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::failed_optional_attribute_read_does_not_grant_inherited_acl_access ... FAILED
+
+failures:
+
+failures:
+    journal::tests::failed_optional_attribute_read_does_not_grant_inherited_acl_access
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 584 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--bin waddle`

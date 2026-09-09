@@ -1,0 +1,19 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.23s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'journal::tests::acl_transfer_faults_preserve_safe_results_and_recoverability' (1271497) panicked at src/journal/tests.rs:3416:17:
+read move=false directory=false: Output { status: ExitStatus(unix_wait_status(25856)), stdout: "\nrunning 1 test\ntest journal::tests::metadata_fault_acl_transfer_child ... FAILED\n\nfailures:\n\nfailures:\n    journal::tests::metadata_fault_acl_transfer_child\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 585 filtered out; finished in 0.00s\n\n", stderr: "\nthread 'journal::tests::metadata_fault_acl_transfer_child' (1271504) panicked at src/journal/tests.rs:3193:9:\nACL failure was ignored: TransferReport { copied_links: CopyLinks({}), retry: [], completed: [\"/dev/shm/.tmpUxsRq3/source\"], failures: [], retained: [], warnings: [TransferWarning { source: \"/tmp/.tmpBPbHMj/source\", destination: \"/dev/shm/.tmpUxsRq3/source\", detail: \"extended attributes and ACLs: Input/output error (os error 5)\" }], receipts: [TransferReceipt { source: \"/tmp/.tmpBPbHMj/source\", destination: \"/dev/shm/.tmpUxsRq3/source\", replaced_existing: false }], cancelled: false }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test journal::tests::acl_transfer_faults_preserve_safe_results_and_recoverability ... FAILED
+
+failures:
+
+failures:
+    journal::tests::acl_transfer_faults_preserve_safe_results_and_recoverability
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 585 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--bin waddle`
