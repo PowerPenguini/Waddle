@@ -190,6 +190,29 @@ fn folder_symlinks_use_directory_applications_and_default_associations() {
                     .as_deref(),
                 Some(APPLICATION)
             );
+
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(format!(
+                "properties {}",
+                target.display()
+            )));
+            let task = app.update(Message::CommandSubmitted);
+            super::navigation::finish_tasks(&mut app, task).await;
+            let output = app.command.output().unwrap();
+            assert!(
+                output.detail.contains(&format!(
+                    "Default application: Waddle Test Folder ({APPLICATION})"
+                )),
+                "Properties disagrees with the directory association for {}: {}",
+                target.display(),
+                output.detail
+            );
+            assert!(output.detail.contains("MIME type: inode/directory"));
+            if target == &link {
+                assert!(output.detail.contains("Type: Symbolic link"));
+                let size = gio::glib::format_size(std_fs::symlink_metadata(target).unwrap().len());
+                assert!(output.detail.contains(&format!("Size: {size}\n")));
+            }
         }
     });
 }

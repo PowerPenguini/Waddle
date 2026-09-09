@@ -13,7 +13,8 @@ pub(super) struct Info {
 pub(super) fn read(path: &Path) -> Result<Info, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
-    let content_type = content_type(path, metadata.is_dir());
+    let directory = metadata.is_dir() || (metadata.file_type().is_symlink() && path.is_dir());
+    let content_type = content_type(path, directory);
     let mime = gio::content_type_get_mime_type(&content_type)
         .map_or_else(|| content_type.to_string(), |mime| mime.to_string());
     let kind = if metadata.file_type().is_symlink() {

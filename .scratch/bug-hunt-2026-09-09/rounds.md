@@ -258,3 +258,18 @@ outside this work.
 - Green: the original Properties target is displayed after selection changes;
   stale-result coverage also passes. All-target tests passed (614 passed,
   19 ignored), along with Clippy and formatting.
+
+## Round 20: Properties shows text applications for a folder symlink
+
+- Reproduction: extend the isolated desktop-registry regression to read Properties
+  after setting the directory default application for a folder and its symlink
+  named `folder.txt`.
+- Red: `cargo test folder_symlinks_use_directory_applications_and_default_associations -- --nocapture`
+  reported text/plain and a text editor for the symlink, disagreeing with Open With.
+- Cause: Properties guessed the content type from the link name without checking
+  whether its target was a directory.
+- Fix: recognize directory targets for MIME and application lookup while retaining
+  the symlink's own metadata for the rest of Properties.
+- Green: both targets show inode/directory and the configured folder application;
+  the link still reports its symbolic-link type and own size. All-target tests
+  passed (614 passed, 19 ignored), along with Clippy and formatting.
