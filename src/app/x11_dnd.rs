@@ -798,6 +798,15 @@ impl Worker {
     }
 
     fn finish(&mut self, result: Result<Outcome, String>) {
+        // Without a drop, the target needs Leave to clear its hover state.
+        if let Some(target) = self
+            .active
+            .as_ref()
+            .filter(|active| !active.waiting_for_finish)
+            .and_then(|active| active.target)
+        {
+            let _ = self.send_client(target, self.atoms.xdnd_leave, [self.source, 0, 0, 0, 0]);
+        }
         let _ = self.connection.unmap_window(self.icon);
         let _ = self.connection.set_selection_owner(
             Window::from(AtomEnum::NONE),
@@ -864,9 +873,28 @@ mod tests {
 
     #[test]
     fn real_x11_source_negotiates_move_and_serves_a_multi_entry_uri_list() {
+        check_real_x11_drag(false, false);
+    }
+
+    #[test]
+    fn real_x11_source_negotiates_copy_and_serves_a_multi_entry_uri_list() {
+        check_real_x11_drag(true, false);
+    }
+
+    #[test]
+    fn real_x11_rejected_drop_notifies_target_that_the_drag_ended() {
+        check_real_x11_drag(false, true);
+    }
+
+    fn check_real_x11_drag(copy_only: bool, reject: bool) {
         if std::env::var_os("WADDLE_X11_TEST").is_none() {
             return;
         }
+        let action = if copy_only {
+            Action::Copy
+        } else {
+            Action::Move
+        };
         let temp = tempfile::tempdir().unwrap();
         let first = temp.path().join("one.txt");
         let second = temp.path().join("two words.txt");
@@ -910,6 +938,11 @@ mod tests {
             )
             .unwrap();
         let atoms = Atoms::intern(&connection).unwrap();
+        let action_atom = if copy_only {
+            atoms.action_copy
+        } else {
+            atoms.action_move
+        };
         connection
             .change_property32(
                 PropMode::REPLACE,
@@ -921,13 +954,23 @@ mod tests {
             .unwrap();
         connection.map_window(target).unwrap();
         connection.map_window(origin).unwrap();
-        connection
-            .warp_pointer(Window::from(AtomEnum::NONE), root, 0, 0, 0, 0, 80, 80)
-            .unwrap();
-        connection.flush().unwrap();
-        let pointer = connection.query_pointer(root).unwrap().reply().unwrap();
-        assert_eq!((pointer.root_x, pointer.root_y), (80, 80));
-        assert_eq!(pointer.child, target);
+        // A nested Xwayland server may still be mapping its host surface.
+        let pointer_ready = Instant::now();
+        loop {
+            connection
+                .warp_pointer(Window::from(AtomEnum::NONE), root, 0, 0, 0, 0, 80, 80)
+                .unwrap();
+            connection.flush().unwrap();
+            let pointer = connection.query_pointer(root).unwrap().reply().unwrap();
+            if (pointer.root_x, pointer.root_y, pointer.child) == (80, 80, target) {
+                break;
+            }
+            assert!(
+                pointer_ready.elapsed() < Duration::from_secs(3),
+                "test pointer must reach the target"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
 
         let (payload_sender, payload_receiver) = mpsc::sync_channel(1);
         let target_thread = thread::spawn(move || {
@@ -937,6 +980,7 @@ mod tests {
                 while let Some(event) = connection.poll_for_event().unwrap() {
                     match event {
                         Event::ClientMessage(event) if event.type_ == atoms.xdnd_position => {
+                            assert_eq!(event.data.as_data32()[4], action_atom);
                             let source = event.data.as_data32()[0];
                             source_window = Some(source);
                             connection
@@ -950,10 +994,10 @@ mod tests {
                                         atoms.xdnd_status,
                                         ClientMessageData::from([
                                             target,
-                                            1,
+                                            u32::from(!reject),
                                             0,
                                             0,
-                                            atoms.action_move,
+                                            action_atom,
                                         ]),
                                     ),
                                 )
@@ -963,6 +1007,7 @@ mod tests {
                             connection.flush().unwrap();
                         }
                         Event::ClientMessage(event) if event.type_ == atoms.xdnd_drop => {
+                            assert!(!reject, "a rejected target must not receive a drop");
                             connection
                                 .convert_selection(
                                     target,
@@ -1002,13 +1047,7 @@ mod tests {
                                         32,
                                         source,
                                         atoms.xdnd_finished,
-                                        ClientMessageData::from([
-                                            target,
-                                            1,
-                                            atoms.action_move,
-                                            0,
-                                            0,
-                                        ]),
+                                        ClientMessageData::from([target, 1, action_atom, 0, 0]),
                                     ),
                                 )
                                 .unwrap()
@@ -1018,10 +1057,18 @@ mod tests {
                             let _ = payload_sender.send(payload);
                             return;
                         }
+                        Event::ClientMessage(event) if event.type_ == atoms.xdnd_leave => {
+                            assert!(reject, "an accepted drop must finish normally");
+                            let _ = payload_sender.send(Vec::new());
+                            return;
+                        }
                         _ => {}
                     }
                 }
-                assert!(started.elapsed() < Duration::from_secs(12));
+                assert!(
+                    started.elapsed() < Duration::from_secs(3),
+                    "target never received the end of the drag"
+                );
                 thread::sleep(Duration::from_millis(5));
             }
         });
@@ -1033,31 +1080,39 @@ mod tests {
                 Preview {
                     icon: include_bytes!("../ui/icons/file.svg"),
                     count: 2,
-                    copy: false,
+                    copy: copy_only,
                     background: [20, 30, 40, 255],
                     icon_color: [220, 230, 240, 255],
                     accent: [40, 140, 220, 255],
                     badge_text: [255, 255, 255, 255],
                 },
-                false,
+                copy_only,
                 true,
             )
             .unwrap();
         let release_source = source.clone();
-        assert_eq!(source.incoming_action(), Action::Move);
+        assert_eq!(source.incoming_action(), action);
         let release_thread = thread::spawn(move || {
             thread::sleep(Duration::from_millis(1_200));
             release_source.release_synthetic_hold();
         });
         assert_eq!(
             executor::block_on(completion).unwrap(),
-            Outcome::Dropped(Action::Move)
+            if reject {
+                Outcome::Cancelled
+            } else {
+                Outcome::Dropped(action)
+            }
         );
         let payload = payload_receiver
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
-        let paths = transfer_formats::decode_uri_list(&payload).unwrap();
-        assert_eq!(paths, [first, second]);
+            .recv_timeout(Duration::from_secs(3))
+            .expect("target must receive a drop or leave");
+        if reject {
+            assert!(payload.is_empty());
+        } else {
+            let paths = transfer_formats::decode_uri_list(&payload).unwrap();
+            assert_eq!(paths, [first, second]);
+        }
         target_thread.join().unwrap();
         release_thread.join().unwrap();
         Adapter::shutdown(&source);

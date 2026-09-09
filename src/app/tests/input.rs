@@ -113,6 +113,64 @@ fn marquee_selection_takes_keyboard_focus_from_the_sidebar_before_copy() {
 }
 
 #[test]
+fn trash_marquee_selects_entries_in_grid_and_list_views() {
+    for list in [false, true] {
+        let (mut app, _) = App::new();
+        app.navigation.install_trash_entries(
+            ["one.txt", "two.txt"]
+                .into_iter()
+                .map(|name| super::trash::Entry {
+                    file: entry(name),
+                    receipt: crate::journal::TrashReceipt {
+                        original: PathBuf::from("/original").join(name),
+                        trashed: PathBuf::from("/start").join(name),
+                        info: PathBuf::from("/info").join(format!("{name}.trashinfo")),
+                    },
+                })
+                .collect(),
+        );
+        app.grid.resize(iced::Size::new(820.0, 560.0));
+        app.grid.set_sidebar_visible(true);
+        app.grid.set_icon_size(48);
+        app.grid.set_list_mode(list);
+        app.focus_browser(BrowserFocus::Sidebar);
+        for event in [
+            mouse::Event::CursorMoved {
+                position: iced::Point::new(700.0, 300.0),
+            },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::CursorMoved {
+                position: iced::Point::new(
+                    SIDEBAR_WIDTH + 1.0,
+                    TOOLBAR_HEIGHT
+                        + TOOLBAR_DIVIDER_HEIGHT
+                        + LIST_VIEW_TOP_INSET
+                        + LIST_HEADER_HEIGHT,
+                ),
+            },
+        ] {
+            let _ = app.update(Message::Event(
+                iced::Event::Mouse(event),
+                event::Status::Ignored,
+            ));
+        }
+        assert!(app.grid.marquee_drag_active(), "Trash marquee, list={list}");
+        assert_eq!(
+            app.grid.selected_indices(),
+            &std::collections::BTreeSet::from([0, 1]),
+            "Trash selection, list={list}",
+        );
+        assert_eq!(app.focus.browser(), BrowserFocus::Entries);
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            event::Status::Ignored,
+        ));
+        assert!(!app.grid.marquee_drag_active());
+        assert_eq!(app.grid.selection_count(), 2);
+    }
+}
+
+#[test]
 fn right_clicking_one_of_multiple_selected_entries_keeps_the_selection() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();

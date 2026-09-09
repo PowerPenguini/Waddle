@@ -671,7 +671,12 @@ impl App {
                         self.grid.cursor(),
                         self.navigation.entries().len(),
                         self.status_height(),
-                        self.mutations_allowed() && !self.file_operations.prompt_active(),
+                        // Selecting entries is also valid in Trash and Recent.
+                        !self.foreground_operation_active()
+                            && self.transfers.overview().conflict_prompt.is_none()
+                            && !self.navigation.loading()
+                            && !self.search.is_recursive()
+                            && !self.file_operations.prompt_active(),
                     ) =>
             {
                 self.focus_browser(BrowserFocus::Entries);
@@ -684,10 +689,16 @@ impl App {
             {
                 self.open_background_context()
             }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if self.grid.finish_marquee() =>
-            {
-                self.schedule_details()
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if self.grid.finish_marquee() {
+                    self.schedule_details()
+                } else if let Some(index) = self.transfers.overview().pointer_drag.index() {
+                    // Entry mouse areas only emit release while hovered. Finish
+                    // active drags anywhere, including over captured widgets.
+                    self.finish_entry_press(index)
+                } else {
+                    Task::none()
+                }
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)) => {
                 self.press_mouse_back()

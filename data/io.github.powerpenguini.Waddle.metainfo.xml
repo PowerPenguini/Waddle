@@ -22,6 +22,16 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.12" date="2026-09-09">
+      <description>
+        <ul>
+          <li>Limit Tab navigation to files and Sidebar and restore keyboard focus after editing.</li>
+          <li>Keep marquee selection aligned with visible files after resizing and allow selection in Trash.</li>
+          <li>Finish file drags when released over empty space or toolbar widgets without duplicating transfers.</li>
+          <li>Clear the target hover state when an X11 drag is cancelled or rejected.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.11" date="2026-09-09">
       <description>
         <ul>

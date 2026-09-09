@@ -1590,12 +1590,9 @@ fn notify_viewport<Message>(
     content_bounds: Rectangle,
     shell: &mut Shell<'_, Message>,
 ) -> bool {
-    if content_bounds.width <= bounds.width
-        && content_bounds.height <= bounds.height
-    {
-        return false;
-    }
-
+    // Resizing or shrinking content can clamp the visible offset to zero.
+    // Report that viewport too, so pointer hit testing does not retain the
+    // previous scroll offset. The comparison below suppresses repeat reports.
     let viewport = Viewport {
         offset_x: state.offset_x,
         offset_y: state.offset_y,
@@ -2446,6 +2443,49 @@ pub fn default(theme: &Theme, status: Status) -> Style {
 #[cfg(test)]
 mod waddle_scrollbar_tests {
     use super::*;
+
+    #[test]
+    fn viewport_reports_zero_offset_when_content_stops_overflowing() {
+        let bounds = Rectangle::with_size(Size::new(300.0, 200.0));
+        let content = Rectangle::with_size(Size::new(300.0, 400.0));
+        // Both a larger viewport and shorter content can remove overflow.
+        for (fitting_bounds, fitting_content) in
+            [(content, content), (bounds, bounds)]
+        {
+            let mut state = State::new();
+            state.scroll_to(AbsoluteOffset {
+                x: None,
+                y: Some(100.0),
+            });
+            let on_scroll: Option<Box<dyn Fn(Viewport) -> Viewport>> =
+                Some(Box::new(|viewport| viewport));
+            let mut messages = Vec::new();
+            assert!(notify_viewport(
+                &mut state,
+                &on_scroll,
+                bounds,
+                content,
+                &mut Shell::new(&mut messages),
+            ));
+            assert_eq!(messages.last().unwrap().absolute_offset().y, 100.0);
+            assert!(notify_viewport(
+                &mut state,
+                &on_scroll,
+                fitting_bounds,
+                fitting_content,
+                &mut Shell::new(&mut messages),
+            ));
+            assert_eq!(messages.last().unwrap().absolute_offset().y, 0.0);
+            assert!(!notify_viewport(
+                &mut state,
+                &on_scroll,
+                fitting_bounds,
+                fitting_content,
+                &mut Shell::new(&mut messages),
+            ));
+            assert_eq!(messages.len(), 2);
+        }
+    }
 
     #[test]
     fn minimum_thumb_stays_inside_track_and_dragging_preserves_position() {

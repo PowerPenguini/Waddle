@@ -1,0 +1,10 @@
+   Compiling iced_widget v0.14.2 (/home/powerpenguini/Projects/Waddle/vendor/iced_widget)
+   Compiling iced v0.14.0
+   Compiling waddle v0.0.12 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.48s
+     Running unittests src/main.rs (target/debug/deps/waddle-17800bdc7bff0337)
+
+running 1 test
+test app::view::grid_layout::marquee_selects_the_tiles_inside_the_rendered_rectangle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 613 filtered out; finished in 0.06s

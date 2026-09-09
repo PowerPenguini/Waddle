@@ -4,6 +4,10 @@ use std::path::Path;
 #[path = "tests/chevron_rendering.rs"]
 mod chevron_rendering;
 
+#[cfg(test)]
+#[path = "tests/grid_layout.rs"]
+mod grid_layout;
+
 use iced::{
     Alignment, Element, Fill, Length, Padding,
     time::Instant,

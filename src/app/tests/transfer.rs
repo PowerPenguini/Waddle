@@ -532,6 +532,207 @@ fn entry_drag_activates_after_six_pixels_and_selects_the_grabbed_item() {
 }
 
 #[test]
+fn entry_drag_finishes_when_released_over_empty_space() {
+    for list in [false, true] {
+        assert_entry_drag_finishes_on_release(
+            list,
+            iced::Point::new(790.0, 400.0),
+            event::Status::Ignored,
+        );
+    }
+}
+
+#[test]
+fn entry_drag_finishes_when_a_toolbar_widget_captures_release() {
+    for list in [false, true] {
+        assert_entry_drag_finishes_on_release(
+            list,
+            iced::Point::new(300.0, 20.0),
+            event::Status::Captured,
+        );
+    }
+}
+
+fn assert_entry_drag_finishes_on_release(
+    list: bool,
+    destination: iced::Point,
+    status: event::Status,
+) {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.grid.resize(iced::Size::new(820.0, 560.0));
+    app.grid.set_list_mode(list);
+    app.navigation
+        .replace_displayed_entries(vec![entry("document.txt")]);
+    app.grid.move_cursor(
+        iced::Point::new(300.0, 150.0),
+        app.navigation.entries().len(),
+    );
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: destination,
+        }),
+        event::Status::Ignored,
+    );
+    assert!(app.transfers.overview().pointer_drag.is_active());
+    assert!(view::View::drag_preview_layer(&app).is_some());
+
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        status,
+    );
+    assert!(!app.transfers.overview().pointer_drag.is_active());
+    assert!(view::View::drag_preview_layer(&app).is_none());
+    let _ = app.handle_event(
+        iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(780.0, 400.0),
+        }),
+        event::Status::Ignored,
+    );
+    assert!(!app.transfers.overview().pointer_drag.is_active());
+}
+
+#[test]
+fn entry_drag_release_transfers_once_with_or_without_an_entry_release_message() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for list in [false, true] {
+                for copy in [false, true] {
+                    // The window release must also work when the hovered entry
+                    // emits its own message, in either delivery order.
+                    for entry_release_first in [None, Some(false), Some(true)] {
+                        let temp = tempfile::tempdir().unwrap();
+                        let source = temp.path().join("document.txt");
+                        let destination = temp.path().join("folder");
+                        std_fs::write(&source, "dragged content").unwrap();
+                        std_fs::create_dir(&destination).unwrap();
+                        let (mut app, _) = App::new();
+                        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                        app.navigation.settle_for_test();
+                        app.transfers = TransferSession::open(temp.path().join("transfers.json"));
+                        app.view_preferences = super::view_preferences::Preferences::empty_at(
+                            temp.path().join("waddlerc"),
+                        );
+                        app.grid.resize(iced::Size::new(820.0, 560.0));
+                        app.grid.set_list_mode(list);
+                        let mut folder = entry("folder");
+                        folder.path = destination.clone();
+                        folder.directory = true;
+                        let mut file = entry("document.txt");
+                        file.path = source.clone();
+                        app.navigation.replace_displayed_entries(vec![folder, file]);
+                        app.grid.move_cursor(iced::Point::new(400.0, 180.0), 2);
+                        let _ = app.update(Message::EntryPressed(1));
+                        let target = iced::Point::new(
+                            250.0,
+                            TOOLBAR_HEIGHT
+                                + TOOLBAR_DIVIDER_HEIGHT
+                                + LIST_VIEW_TOP_INSET
+                                + LIST_HEADER_HEIGHT
+                                + CONTENT_GUTTER
+                                + 8.0,
+                        );
+                        assert_eq!(
+                            app.drop_destination_at(target, false),
+                            Some(destination.clone())
+                        );
+                        let _ = app.update(Message::Event(
+                            iced::Event::Mouse(mouse::Event::CursorMoved { position: target }),
+                            event::Status::Ignored,
+                        ));
+                        assert!(app.transfers.overview().pointer_drag.is_active());
+                        app.modifiers = if copy {
+                            keyboard::Modifiers::CTRL
+                        } else {
+                            keyboard::Modifiers::empty()
+                        };
+                        let mut tasks = Vec::new();
+                        if entry_release_first == Some(true) {
+                            tasks.push(app.update(Message::EntryReleased(0)));
+                        }
+                        tasks.push(app.update(Message::Event(
+                            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                            event::Status::Captured,
+                        )));
+                        if entry_release_first == Some(false) {
+                            tasks.push(app.update(Message::EntryReleased(0)));
+                        }
+                        assert!(!app.transfers.overview().pointer_drag.is_active());
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            super::navigation::finish_tasks(&mut app, Task::batch(tasks)),
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(
+                            std_fs::read_to_string(destination.join("document.txt")).unwrap(),
+                            "dragged content"
+                        );
+                        assert_eq!(source.exists(), copy);
+                        assert_eq!(app.transfers.overview().history.len(), 1);
+                    }
+                }
+            }
+        });
+}
+
+#[test]
+fn external_drag_start_failure_clears_preview_and_allows_another_drag() {
+    for exit in [
+        mouse::Event::CursorLeft,
+        mouse::Event::CursorMoved {
+            position: iced::Point::new(821.0, 200.0),
+        },
+    ] {
+        let (mut app, _) = App::new();
+        app.navigation.settle_for_test();
+        app.navigation
+            .replace_displayed_entries(vec![entry("document.txt")]);
+        app.grid.resize(iced::Size::new(820.0, 560.0));
+        app.grid.move_cursor(iced::Point::new(300.0, 150.0), 1);
+        let _ = app.update(Message::EntryPressed(0));
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::new(310.0, 150.0),
+            }),
+            event::Status::Ignored,
+        ));
+        assert!(app.transfers.overview().pointer_drag.is_active());
+        // App::new has no native adapter until NativeReady arrives.
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(exit),
+            event::Status::Ignored,
+        ));
+        assert!(!app.transfers.overview().pointer_drag.is_active());
+        assert!(!app.transfers.overview().native_active);
+        assert!(view::View::drag_preview_layer(&app).is_none());
+        assert!(
+            app.presentation
+                .status()
+                .contains("Could not start external drag-and-drop")
+        );
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::new(300.0, 150.0),
+            }),
+            event::Status::Ignored,
+        ));
+        let _ = app.update(Message::EntryPressed(0));
+        let _ = app.update(Message::Event(
+            iced::Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::new(310.0, 150.0),
+            }),
+            event::Status::Ignored,
+        ));
+        assert!(app.transfers.overview().pointer_drag.is_active());
+    }
+}
+
+#[test]
 fn mouse_navigation_cancels_an_interrupted_entry_drag() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();

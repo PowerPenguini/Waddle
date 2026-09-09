@@ -759,6 +759,7 @@ mod tests {
         targets: Targets,
         finished: Arc<Mutex<Vec<u64>>>,
         starts: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+        copy_flags: Arc<Mutex<Vec<bool>>>,
     }
 
     impl Adapter for MemoryAdapter {
@@ -766,9 +767,10 @@ mod tests {
             &self,
             paths: Vec<PathBuf>,
             _: Preview,
-            _: bool,
+            copy_only: bool,
         ) -> Result<AdapterCompletion, String> {
             self.starts.lock().unwrap().push(paths);
+            self.copy_flags.lock().unwrap().push(copy_only);
             Ok(Box::pin(async { Ok(Outcome::Cancelled) }))
         }
 
@@ -913,6 +915,50 @@ mod tests {
             [vec![PathBuf::from("/start/item")]]
         );
         assert!(state.is_native_active());
+    }
+
+    #[test]
+    fn outgoing_active_drag_hands_off_sources_and_unlocks_after_every_outcome() {
+        for copy_only in [false, true] {
+            for outcome in [
+                Ok(Outcome::Dropped(Action::Move)),
+                Ok(Outcome::Dropped(Action::Copy)),
+                Ok(Outcome::Cancelled),
+                Err("native source stopped".to_owned()),
+            ] {
+                let adapter = MemoryAdapter::default();
+                let mut state = TransferState::default();
+                let entries = [
+                    entry("/source/one", false),
+                    entry("/source/two words", false),
+                ];
+                state.press(0, Point::ORIGIN, entries.len());
+                state.move_pointer(Point::new(7.0, 0.0));
+                state.capture_drag_entries(&entries, &BTreeSet::from([0, 1]));
+                let (count, _) = state
+                    .start_outgoing_active(&adapter, copy_only, preview)
+                    .unwrap();
+                assert_eq!(count, 2);
+                assert_eq!(
+                    adapter.starts.lock().unwrap().as_slice(),
+                    [vec![entries[0].path.clone(), entries[1].path.clone()]]
+                );
+                assert_eq!(adapter.copy_flags.lock().unwrap().as_slice(), [copy_only]);
+                assert!(state.is_native_active());
+                assert!(state.active_drag_index().is_none());
+                // A late window release must not duplicate the native Transfer.
+                assert!(matches!(state.release(0), Release::None));
+                state.press(0, Point::ORIGIN, entries.len());
+                assert!(state.move_pointer(Point::new(7.0, 0.0)).is_none());
+
+                let dropped = matches!(outcome, Ok(Outcome::Dropped(_)));
+                let consequences = state.finish_outgoing(outcome);
+                assert_eq!(consequences.refresh, dropped);
+                assert!(!state.is_native_active());
+                state.press(0, Point::ORIGIN, entries.len());
+                assert_eq!(state.move_pointer(Point::new(7.0, 0.0)), Some(0));
+            }
+        }
     }
 
     #[test]
