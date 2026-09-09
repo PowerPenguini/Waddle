@@ -1,0 +1,25 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.60s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 18 tests
+test journal::tests::hardlink_metadata_fault_child ... ignored, Child process helper for hardlinks on metadata-limited filesystems
+test fs::tests::copy_preserves_sparse_hardlink_symlink_timestamp_permission_and_xattr_metadata ... ok
+test fs::tests::hardlink_copy_uses_current_xattrs_after_conflict ... ok
+test fs::tests::audit_hardlink_copy_uses_current_source_permissions_after_conflict ... ok
+test app::transfer_session::queue::tests::restore_retry_preserves_hardlinks_to_already_restored_files ... ok
+test app::transfer_session::queue::tests::retry_preserves_hardlinks_to_files_completed_before_cancellation ... ok
+test fs::tests::hardlink_retry_does_not_reuse_a_changed_source_or_completed_copy ... ok
+test fs::tests::hunt_merge_copy_preserves_hardlinks_between_siblings ... ok
+test fs::tests::merged_cross_device_move_preserves_hardlinks_across_conflicts ... ok
+test journal::tests::audit_redo_copy_preserves_hardlinks_between_selected_files ... ok
+test journal::tests::undo_trash_across_filesystems_preserves_selected_hardlinks ... ok
+test fs::tests::hardlink_retry_preserves_current_bytes_when_size_and_mtime_match_old_copy ... ok
+test journal::tests::audit_undo_cross_device_move_preserves_hardlinks ... ok
+test journal::tests::trash_undo_preserves_hardlinks_after_cleanup_failure_and_journal_reopen ... ok
+test journal::tests::partial_history_retry_preserves_hardlinks_after_reopening_the_journal ... ok
+test fs::tests::cancel_during_hardlink_content_verification_preserves_both_sides ... ok
+test journal::tests::hardlinks_with_metadata_warnings_survive_history_retry_after_restart ... ok
+test journal::tests::copying_hardlinks_preserves_relationship_when_attributes_are_unsupported ... ok
+
+test result: ok. 17 passed; 0 failed; 1 ignored; 0 measured; 562 filtered out; finished in 0.06s

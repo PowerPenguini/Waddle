@@ -2762,3 +2762,199 @@ fn move_and_restore_history_report_metadata_warnings() {
         );
     }
 }
+
+#[test]
+#[ignore = "Child process helper for hardlinks on metadata-limited filesystems"]
+fn hardlink_metadata_fault_child() {
+    use std::os::unix::fs::MetadataExt;
+    let root = PathBuf::from(
+        std::env::var_os("WADDLE_HARDLINK_METADATA_FIXTURE").expect("parent fixture"),
+    );
+    let target = PathBuf::from(std::env::var_os("WADDLE_HARDLINK_TARGET").unwrap());
+    let action = if std::env::var_os("WADDLE_HARDLINK_MOVE").is_some() {
+        crate::transfer::Action::Move
+    } else {
+        crate::transfer::Action::Copy
+    };
+    let change = std::env::var("WADDLE_HARDLINK_CHANGE").unwrap();
+    let batch = crate::fs::TransferBatch::try_new(
+        vec![root.join("source/a"), root.join("source/b")],
+        target.clone(),
+        action,
+    )
+    .unwrap();
+    fs::write(target.join("b"), b"conflict").unwrap();
+    let crate::fs::TransferBatchOutcome::Conflict { batch, .. } = batch.run() else {
+        panic!("expected conflict on the second hardlink")
+    };
+    let report = batch.cancel();
+    assert!(
+        !report.warnings.is_empty(),
+        "unsupported metadata must still be reported"
+    );
+    fs::remove_file(target.join("b")).unwrap();
+    let changed = match change.as_str() {
+        "source" => Some(root.join("source/b")),
+        "destination" => Some(target.join("a")),
+        _ => None,
+    };
+    if let Some(path) = changed {
+        set_test_attribute(&path, "user.edit", b"external edit");
+    }
+    let crate::fs::TransferBatchOutcome::Complete(report) =
+        report.retry_plan().into_batch(action).unwrap().run()
+    else {
+        panic!("unexpected conflict on retry")
+    };
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(fs::read(target.join("a")).unwrap(), b"shared contents");
+    assert_eq!(fs::read(target.join("b")).unwrap(), b"shared contents");
+    assert_eq!(
+        fs::metadata(target.join("a")).unwrap().ino()
+            == fs::metadata(target.join("b")).unwrap().ino(),
+        change == "none",
+        "unsupported attributes broke the source hardlink relationship"
+    );
+}
+
+#[test]
+fn copying_hardlinks_preserves_relationship_when_attributes_are_unsupported() {
+    let shim = audit_fault_library();
+    for moving in [false, true] {
+        for change in ["none", "source", "destination"] {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir_in("/dev/shm").unwrap();
+            let source = temp.path().join("source");
+            let target = destination.path();
+            assert_ne!(
+                std::os::unix::fs::MetadataExt::dev(&fs::metadata(temp.path()).unwrap()),
+                std::os::unix::fs::MetadataExt::dev(&fs::metadata(target).unwrap())
+            );
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("a"), b"shared contents").unwrap();
+            fs::hard_link(source.join("a"), source.join("b")).unwrap();
+            set_test_attribute(&source.join("a"), "user.comment", b"source metadata");
+            let armed = temp.path().join("attribute-armed");
+            fs::write(&armed, "").unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            if moving {
+                command.env("WADDLE_HARDLINK_MOVE", "1");
+            }
+            let output = command
+                .args([
+                    "--exact",
+                    "journal::tests::hardlink_metadata_fault_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                .env("WADDLE_HARDLINK_METADATA_FIXTURE", temp.path())
+                .env("WADDLE_HARDLINK_TARGET", target)
+                .env("WADDLE_HARDLINK_CHANGE", change)
+                .env("WADDLE_AUDIT_XATTR_TARGET", target)
+                .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+                .output()
+                .unwrap();
+            assert!(!armed.exists(), "attribute failure must be reached");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn hardlinks_with_metadata_warnings_survive_history_retry_after_restart() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let shim = audit_fault_library();
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target");
+    fs::create_dir_all(target.join("first")).unwrap();
+    fs::create_dir_all(target.join("second")).unwrap();
+    let first = temp.path().join("a");
+    let second = temp.path().join("b");
+    let first_target = target.join("first/a");
+    let second_target = target.join("second/b");
+    fs::write(&first, b"linked history data").unwrap();
+    fs::hard_link(&first, &second).unwrap();
+    set_test_attribute(&first, "user.comment", b"source metadata");
+    let mut transfer = crate::fs::JournalTransfer::default();
+    let receipts =
+        [(&first, &first_target), (&second, &second_target)].map(|(source, destination)| {
+            transfer
+                .apply(crate::transfer::Action::Copy, source, destination)
+                .unwrap();
+            crate::fs::TransferReceipt {
+                source: source.clone(),
+                destination: destination.clone(),
+                replaced_existing: false,
+            }
+        });
+    let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+    journal
+        .record(
+            Action::transfer(TransferKind::Copy, &receipts)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    journal.undo().unwrap();
+    let armed = temp.path().join("attribute-armed");
+    fs::write(&armed, "").unwrap();
+    fs::set_permissions(target.join("second"), fs::Permissions::from_mode(0o500)).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "journal::tests::audit_history_fault_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+        .env("WADDLE_AUDIT_CHILD_ROOT", temp.path())
+        .env("WADDLE_AUDIT_XATTR_TARGET", &target)
+        .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+        .output()
+        .unwrap();
+    fs::set_permissions(target.join("second"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!armed.exists(), "attribute failure must be reached");
+    assert!(
+        fs::read_to_string(temp.path().join("result.txt"))
+            .unwrap()
+            .contains("Permission denied")
+    );
+    assert!(first_target.exists());
+    assert!(!second_target.exists());
+    // A fresh process must reuse the persisted destination even though its
+    // missing user.comment no longer matches the source's metadata.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "journal::tests::history_metadata_warning_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+        .env("WADDLE_METADATA_FIXTURE", temp.path())
+        .env("WADDLE_AUDIT_XATTR_TARGET", &target)
+        .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        fs::read_to_string(temp.path().join("result.txt"))
+            .unwrap()
+            .contains("metadata warnings")
+    );
+    assert_eq!(fs::read(&first_target).unwrap(), b"linked history data");
+    assert_eq!(fs::read(&second_target).unwrap(), b"linked history data");
+    assert_eq!(
+        fs::metadata(first_target).unwrap().ino(),
+        fs::metadata(second_target).unwrap().ino(),
+        "history retry lost the hardlink after reopening"
+    );
+}

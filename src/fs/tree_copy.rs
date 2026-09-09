@@ -39,6 +39,15 @@ struct CopiedLink {
     source_changed: Option<(i64, i64)>,
     #[serde(default)]
     changed: Option<(i64, i64)>,
+    #[serde(default)]
+    source_metadata: Option<LinkSourceMetadata>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LinkSourceMetadata {
+    modified: (i64, i64),
+    mode: u32,
+    attributes: Option<ExtendedAttributes>,
 }
 
 impl CopiedLink {
@@ -51,12 +60,23 @@ impl CopiedLink {
         let Ok(destination) = fs::symlink_metadata(&self.path) else {
             return Ok(false);
         };
+        // A filesystem can preserve the data while dropping attributes or
+        // rounding timestamps. Compare each side to its own captured state.
+        // Older journals only captured destination metadata; keep their
+        // conservative requirement that both sides match that snapshot.
+        let (source_mode, source_modified, source_attributes) = self
+            .source_metadata
+            .as_ref()
+            .map(|snapshot| (snapshot.mode, snapshot.modified, &snapshot.attributes))
+            .unwrap_or((self.mode, self.modified, &self.attributes));
         let metadata_match = self.size == source.len()
-            && self.mode == source.mode()
-            && self.modified == (source.mtime(), source.mtime_nsec())
-            && self.attributes.as_ref().is_some_and(|attributes| {
+            && source_mode == source.mode()
+            && source_modified == (source.mtime(), source.mtime_nsec())
+            && source_attributes.as_ref().is_some_and(|attributes| {
                 read_xattrs(source_path).is_ok_and(|current| current == *attributes)
-                    && read_xattrs(&self.path).is_ok_and(|current| current == *attributes)
+            })
+            && self.attributes.as_ref().is_some_and(|attributes| {
+                read_xattrs(&self.path).is_ok_and(|current| current == *attributes)
             })
             && destination.is_file()
             && destination.dev() == self.device
@@ -322,6 +342,11 @@ impl CopyContext<'_> {
                     attributes: read_xattrs(destination).ok(),
                     source_changed: Some(change_time(&metadata)),
                     changed: Some(change_time(&copied)),
+                    source_metadata: Some(LinkSourceMetadata {
+                        modified: (metadata.mtime(), metadata.mtime_nsec()),
+                        mode: metadata.mode(),
+                        attributes: read_xattrs(source).ok(),
+                    }),
                 },
             );
         }
