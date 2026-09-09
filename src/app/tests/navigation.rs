@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn folder_refresh_preserves_the_active_file_and_shift_selection_anchor() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for deselect_active in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                for name in ["bravo", "delta", "omega"] {
+                    std_fs::write(temp.path().join(name), "fixture").unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                for (index, modifiers) in [
+                    (0, keyboard::Modifiers::empty()),
+                    (2, keyboard::Modifiers::CTRL),
+                ] {
+                    app.modifiers = modifiers;
+                    let _ = app.update(Message::EntryPressed(index));
+                    let _ = app.update(Message::EntryReleased(index));
+                }
+                if deselect_active {
+                    let _ = app.update(Message::EntryPressed(2));
+                    let _ = app.update(Message::EntryReleased(2));
+                }
+                let selected_paths = |app: &App| {
+                    app.selected_entries()
+                        .into_iter()
+                        .map(|entry| entry.path)
+                        .collect::<Vec<_>>()
+                };
+                let selected = selected_paths(&app);
+                std_fs::write(temp.path().join("alpha"), "new").unwrap();
+                let task = app.update(Message::Refresh);
+                finish_tasks(&mut app, task).await;
+
+                assert_eq!(selected_paths(&app), selected);
+                let active = app.grid.selected_entry().unwrap();
+                assert_eq!(
+                    app.navigation.entries()[active].path,
+                    temp.path().join("omega")
+                );
+                app.modifiers = keyboard::Modifiers::SHIFT;
+                let _ = app.update(Message::EntryPressed(2));
+                let _ = app.update(Message::EntryReleased(2));
+                assert_eq!(
+                    selected_paths(&app),
+                    [temp.path().join("delta"), temp.path().join("omega")]
+                );
+            }
+        });
+}
+
+#[test]
 fn a_shell_command_without_cd_does_not_reverse_later_navigation() {
     use iced::futures::StreamExt;
 
@@ -106,6 +163,11 @@ fn refreshing_recent_and_trash_preserves_selection_by_path_and_scroll() {
         assert_eq!(
             selected,
             [PathBuf::from("/start/bravo"), PathBuf::from("/start/omega")]
+        );
+        let active = app.grid.selected_entry().unwrap();
+        assert_eq!(
+            app.navigation.entries()[active].path,
+            PathBuf::from("/start/omega")
         );
         assert_eq!(app.grid.scroll_offset(), 173.0);
         drop(work);

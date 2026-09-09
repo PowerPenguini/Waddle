@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 
 use crate::fs::{FileEntry, OpenedDirectory};
 
-use super::{grid::GridInteraction, trash, tree::LoadRequest};
+use super::{
+    grid::{GridInteraction, Selection},
+    trash,
+    tree::LoadRequest,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Kind {
@@ -122,8 +126,15 @@ impl Commit {
         grid: &mut GridInteraction,
         entry_count: usize,
         list_mode: bool,
+        previous_selection: Selection,
     ) {
-        grid.install_navigation(&self.selected, entry_count, list_mode, self.reset_scroll);
+        grid.install_navigation(
+            &self.selected,
+            entry_count,
+            list_mode,
+            self.reset_scroll,
+            previous_selection,
+        );
     }
 
     pub(super) fn location(&self) -> DisplayedLocation {
@@ -1229,7 +1240,8 @@ mod tests {
             panic!("navigation did not commit");
         };
         let mut grid = GridInteraction::default();
-        commit.apply_grid(&mut grid, session.entries().len(), false);
+        let selection = grid.capture_selection();
+        commit.apply_grid(&mut grid, session.entries().len(), false, selection);
 
         assert_eq!(
             session

@@ -173,11 +173,22 @@ impl Marquee {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Selection {
-    selected: Option<usize>,
-    indices: BTreeSet<usize>,
-    visual_anchor: Option<usize>,
-    selection_anchor: Option<usize>,
+pub(super) struct Selection<T = usize> {
+    selected: Option<T>,
+    entries: BTreeSet<T>,
+    visual_anchor: Option<T>,
+    selection_anchor: Option<T>,
+}
+
+impl<T> Selection<T> {
+    pub(super) fn map<U: Ord>(self, mut locate: impl FnMut(T) -> Option<U>) -> Selection<U> {
+        Selection {
+            selected: self.selected.and_then(&mut locate),
+            entries: self.entries.into_iter().filter_map(&mut locate).collect(),
+            visual_anchor: self.visual_anchor.and_then(&mut locate),
+            selection_anchor: self.selection_anchor.and_then(locate),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -461,9 +472,17 @@ impl GridInteraction {
         entry_count: usize,
         list_mode: bool,
         reset_scroll: bool,
+        previous_selection: Selection,
     ) {
         self.list_mode = list_mode;
         self.select_indices(selected, entry_count);
+        // File operations can request a different selection during a refresh.
+        // Preserve the active entry and anchors when the selected set survives.
+        if !reset_scroll && self.selection == previous_selection.entries {
+            self.selected = previous_selection.selected.or(self.selected);
+            self.visual_anchor = previous_selection.visual_anchor;
+            self.selection_anchor = previous_selection.selection_anchor.or(self.selected);
+        }
         self.details = None;
         self.entry_scroll.cancel();
         if reset_scroll {
@@ -616,7 +635,7 @@ impl GridInteraction {
     pub(super) fn capture_selection(&self) -> Selection {
         Selection {
             selected: self.selected,
-            indices: self.selection.clone(),
+            entries: self.selection.clone(),
             visual_anchor: self.visual_anchor,
             selection_anchor: self.selection_anchor,
         }
@@ -625,16 +644,13 @@ impl GridInteraction {
     pub(super) fn restore_selection(
         &mut self,
         selection: Selection,
-        mut locate: impl FnMut(usize) -> Option<usize>,
+        locate: impl FnMut(usize) -> Option<usize>,
     ) {
-        self.selected = selection.selected.and_then(&mut locate);
-        self.selection = selection
-            .indices
-            .into_iter()
-            .filter_map(&mut locate)
-            .collect();
-        self.visual_anchor = selection.visual_anchor.and_then(&mut locate);
-        self.selection_anchor = selection.selection_anchor.and_then(locate);
+        let selection = selection.map(locate);
+        self.selected = selection.selected;
+        self.selection = selection.entries;
+        self.visual_anchor = selection.visual_anchor;
+        self.selection_anchor = selection.selection_anchor;
     }
 
     pub(super) fn selection_count(&self) -> usize {

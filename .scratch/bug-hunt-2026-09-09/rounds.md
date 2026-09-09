@@ -228,3 +228,19 @@ outside this work.
 - Green: newer help and Properties output and status survive both successful
   and unsuccessful stale reads. All-target tests passed (612 passed, 19 ignored),
   along with Clippy and formatting.
+
+## Round 18: refreshing resets the active file and selection anchors
+
+- Reproduction: select `bravo` and `omega`, insert `alpha`, then refresh and
+  Shift-click `delta`. Repeat with the active `omega` row deselected by Ctrl-click.
+- Red: `cargo test folder_refresh_preserves_the_active_file_and_shift_selection_anchor -- --nocapture`
+  changed the active file from `omega` to `bravo` during the refresh.
+- Cause: installing refreshed entries retained the selected set but reset the
+  active row and anchors to its first member.
+- Fix: map the previous selection and anchors through entry paths. When a refresh
+  preserves the selected set, retain its surviving active row and anchors;
+  requests for a different selection still install the requested selection.
+- Green: the active row and subsequent Shift-click range survive insertions and
+  deselection. Recent and Trash refresh assertions also pass. All-target tests
+  passed (613 passed, 19 ignored), along with Clippy and formatting. All seven
+  release performance benchmarks passed; grid/list p95 remained below 0.77 ms.

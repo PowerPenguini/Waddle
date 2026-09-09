@@ -137,6 +137,12 @@ impl App {
         completion: NavigationCompletion,
     ) -> Task<Message> {
         let hidden_paths = self.transfers.pending_cut_paths().to_vec();
+        let selection = self.grid.capture_selection().map(|index| {
+            self.navigation
+                .entries()
+                .get(index)
+                .map(|entry| entry.path.clone())
+        });
         let NavigationCompleted {
             outcome,
             tree_load,
@@ -155,7 +161,18 @@ impl App {
                     .for_directory(self.navigation.current())
                     .view
                     == fs::ViewMode::List;
-                commit.apply_grid(&mut self.grid, self.navigation.entries().len(), list_mode);
+                let selection = selection.map(|path| {
+                    self.navigation
+                        .entries()
+                        .iter()
+                        .position(|entry| entry.path == path)
+                });
+                commit.apply_grid(
+                    &mut self.grid,
+                    self.navigation.entries().len(),
+                    list_mode,
+                    selection,
+                );
                 self.location_input = commit.location_input().to_owned();
                 self.sync_location_monitoring();
                 self.presentation.set_status(commit.status().to_owned());
