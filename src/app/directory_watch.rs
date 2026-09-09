@@ -214,7 +214,15 @@ fn collect_changed_watches(
         if offset.saturating_add(record_size) > buffer.len() {
             break;
         }
-        if let Some(directory) = watched.get(&event.wd) {
+        if event.mask & libc::IN_Q_OVERFLOW != 0 {
+            // Overflow records have no watch ID; any watched directory may be stale.
+            let now = Instant::now();
+            for directory in watched.values() {
+                let change = pending.entry(directory.clone()).or_default();
+                change.first_changed.get_or_insert(now);
+                change.changed = Some(now);
+            }
+        } else if let Some(directory) = watched.get(&event.wd) {
             let change = pending.entry(directory.clone()).or_default();
             let now = Instant::now();
             change.first_changed.get_or_insert(now);

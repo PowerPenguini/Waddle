@@ -389,3 +389,17 @@ outside this work.
   target cannot cause another file to be renamed. All-target tests passed
   (619 passed, 22 ignored), along with Clippy and formatting. All ten release
   performance benchmarks passed; grid/list p95 remained below 0.78 ms.
+
+## Round 29: queue overflow leaves displayed entries stale
+
+- Reproduction: an isolated OS-boundary fixture replaces a new file's native
+  notifications with IN_Q_OVERFLOW, then the app consumes the monitoring stream.
+- Red: `cargo test native_queue_overflow_rescans_the_displayed_folder -- --nocapture`
+  confirmed injection but did not discover the new file within three seconds.
+- Cause: overflow records use watch descriptor -1, so the directory lookup ignored
+  them. This contract is documented in [inotify(7)](https://man7.org/linux/man-pages/man7/inotify.7.html).
+- Fix: mark every watched directory for rescan when overflow is reported, keeping
+  the existing notification batching and refresh behavior.
+- Green: the browser discovers the file without receiving its individual native
+  notifications. All-target tests passed (620 passed, 22 ignored), along with
+  Clippy and formatting.

@@ -1,6 +1,148 @@
 use super::*;
 
 #[test]
+fn native_queue_overflow_rescans_the_displayed_folder() {
+    use iced::futures::StreamExt;
+
+    const MARKER: &str = "WADDLE_INOTIFY_OVERFLOW_MARKER";
+    let Some(marker) = std::env::var_os(MARKER) else {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("inotify_overflow.c");
+        let library = fixture.path().join("inotify_overflow.so");
+        std_fs::write(&source, r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/inotify.h>
+#include <unistd.h>
+
+ssize_t read(int fd, void *buffer, size_t count) {
+    ssize_t (*next_read)(int, void *, size_t) = dlsym(RTLD_NEXT, "read");
+    ssize_t received = next_read(fd, buffer, count);
+    if (received < (ssize_t)sizeof(struct inotify_event)) return received;
+    char fd_path[64], target[64];
+    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    ssize_t length = readlink(fd_path, target, sizeof(target) - 1);
+    if (length < 0) return received;
+    target[length] = 0;
+    if (strcmp(target, "anon_inode:inotify") != 0) return received;
+    size_t offset = 0;
+    while ((size_t)received - offset >= sizeof(struct inotify_event)) {
+        struct inotify_event event;
+        memcpy(&event, (char *)buffer + offset, sizeof(event));
+        if (event.len > (size_t)received - offset - sizeof(event)) break;
+        if (event.len >= sizeof("overflow.txt") &&
+            memcmp((char *)buffer + offset + sizeof(event), "overflow.txt", sizeof("overflow.txt")) == 0) {
+            const char *marker = getenv("WADDLE_INOTIFY_OVERFLOW_MARKER");
+            int proof = open(marker, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (proof >= 0) close(proof);
+            struct inotify_event overflow = { .wd = -1, .mask = IN_Q_OVERFLOW };
+            memcpy(buffer, &overflow, sizeof(overflow));
+            return sizeof(overflow);
+        }
+        offset += sizeof(event) + event.len;
+    }
+    return received;
+}
+"#).unwrap();
+        let compiled = std::process::Command::new("cc")
+            .args(["-shared", "-fPIC", "-o"])
+            .arg(&library)
+            .arg(&source)
+            .arg("-ldl")
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::navigation::native_queue_overflow_rescans_the_displayed_folder",
+                "--nocapture",
+            ])
+            .env(MARKER, fixture.path().join("injected"))
+            .env("LD_PRELOAD", library)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    };
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(Vec::new());
+            app.sync_location_monitoring();
+            let recipe = iced::advanced::subscription::into_recipes(
+                app.location_monitoring.as_ref().unwrap().subscription(),
+            )
+            .pop()
+            .unwrap();
+            let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+            let ready = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    std_fs::write(temp.path().join("ready.txt"), "ready").unwrap();
+                    if let Ok(Some(event)) =
+                        tokio::time::timeout(Duration::from_millis(300), events.next()).await
+                        && event.path == temp.path()
+                        && !event.watch_failed
+                    {
+                        return event;
+                    }
+                }
+            })
+            .await
+            .expect("native watch should become ready");
+            let task = app.update(Message::DirectoryChanged(ready));
+            finish_tasks(&mut app, task).await;
+
+            let lost = temp.path().join("overflow.txt");
+            std_fs::write(&lost, "created while notifications were lost").unwrap();
+            let refreshed = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let event = events.next().await.expect("monitor must remain active");
+                    let task = app.update(Message::DirectoryChanged(event));
+                    finish_tasks(&mut app, task).await;
+                    if app
+                        .navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.path == lost)
+                    {
+                        return;
+                    }
+                }
+            })
+            .await;
+            assert!(
+                PathBuf::from(marker).is_file(),
+                "overflow fixture must intercept the native event"
+            );
+            assert!(
+                refreshed.is_ok(),
+                "queue overflow left the browser's file list stale"
+            );
+        });
+}
+
+#[test]
 fn failed_native_monitor_startup_keeps_polling_after_each_refresh() {
     use iced::futures::StreamExt;
 
