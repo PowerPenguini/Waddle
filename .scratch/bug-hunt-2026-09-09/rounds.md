@@ -184,3 +184,18 @@ outside this work.
 - Green: the regression preserves later navigation and verifies a subsequent
   real `:cd` still works; all-target tests passed (609 passed, 19 ignored), along
   with Clippy and formatting.
+
+## Round 15: folder symlinks use the wrong application association
+
+- Reproduction: use a temporary desktop application registry in an isolated test
+  process, then run Open With and default-app commands for a folder and a symlink
+  to it named `folder.txt`.
+- Red: `cargo test folder_symlinks_use_directory_applications_and_default_associations -- --nocapture`
+  offered the fixture file manager for the folder but not its symlink.
+- Cause: application lookup and default-app changes classified the symlink itself
+  with a filename guess instead of recognizing its directory target.
+- Fix: follow the link for type classification while keeping its original path
+  for launching the chosen application.
+- Green: both targets offer the directory application and update inode/directory
+  without assigning that application to text/plain. All-target tests passed
+  (610 passed, 19 ignored); Clippy and formatting passed.

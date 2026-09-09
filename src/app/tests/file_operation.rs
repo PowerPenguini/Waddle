@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn folder_symlinks_use_directory_applications_and_default_associations() {
+    use gio::prelude::AppInfoExt;
+
+    const CHILD_ROOT: &str = "WADDLE_FOLDER_SYMLINK_TEST_ROOT";
+    const APPLICATION: &str = "waddle-test-folder.desktop";
+    let Ok(root) = std::env::var(CHILD_ROOT) else {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        let config = temp.path().join("config");
+        std_fs::create_dir_all(data.join("applications")).unwrap();
+        std_fs::create_dir_all(&config).unwrap();
+        std_fs::write(
+            data.join("applications").join(APPLICATION),
+            "[Desktop Entry]\nType=Application\nName=Waddle Test Folder\nExec=/bin/true %u\nMimeType=inode/directory;\n",
+        )
+        .unwrap();
+        std_fs::write(
+            data.join("applications/mimeinfo.cache"),
+            format!("[MIME Cache]\ninode/directory={APPLICATION};\n"),
+        )
+        .unwrap();
+        std_fs::write(
+            config.join("mimeapps.list"),
+            format!("[Added Associations]\ninode/directory={APPLICATION};\n"),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::file_operation::folder_symlinks_use_directory_applications_and_default_associations",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, temp.path())
+            .env("XDG_DATA_HOME", data)
+            .env("XDG_CONFIG_HOME", config)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+
+    let root = PathBuf::from(root);
+    let folder = root.join("folder");
+    let link = root.join("folder.txt");
+    std_fs::create_dir(&folder).unwrap();
+    std::os::unix::fs::symlink(&folder, &link).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for target in [&folder, &link] {
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(root.clone());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(format!(
+                "open-with -- {}",
+                target.display()
+            )));
+            let _ = app.update(Message::CommandSubmitted);
+            assert!(
+                matches!(
+                    app.open_with.view(),
+                    open_with::View::Open { applications, .. }
+                        if applications.iter().any(|application| application.id == APPLICATION)
+                ),
+                "{} must offer the directory application",
+                target.display()
+            );
+
+            let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(format!(
+                "default-app {APPLICATION} -- {}",
+                target.display()
+            )));
+            let task = app.update(Message::CommandSubmitted);
+            super::navigation::finish_tasks(&mut app, task).await;
+            assert_eq!(
+                gio::AppInfo::default_for_type("inode/directory", false)
+                    .and_then(|application| application.id())
+                    .as_deref(),
+                Some(APPLICATION)
+            );
+            assert_ne!(
+                gio::AppInfo::default_for_type("text/plain", false)
+                    .and_then(|application| application.id())
+                    .as_deref(),
+                Some(APPLICATION)
+            );
+        }
+    });
+}
+
+#[test]
 fn submitting_an_unchanged_rename_preserves_the_original_filename() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 

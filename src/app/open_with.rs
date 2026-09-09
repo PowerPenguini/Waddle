@@ -129,7 +129,7 @@ impl Session {
 }
 
 pub(super) fn applications_for(path: &Path) -> Result<Vec<Application>, String> {
-    let metadata = fs::symlink_metadata(path)
+    let metadata = fs::metadata(path)
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
     Ok(applications_for_type(&content_type(
         path,
@@ -164,7 +164,7 @@ pub(super) fn applications_for_type(content_type: &str) -> Vec<Application> {
 }
 
 pub(super) fn launch(path: PathBuf, requested: &str, make_default: bool) -> Result<String, String> {
-    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
     let content_type = content_type(&path, metadata.is_dir());
     let requested = requested.trim();
     if requested.is_empty() {
