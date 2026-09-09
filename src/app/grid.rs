@@ -1148,17 +1148,10 @@ impl GridInteraction {
     }
 
     pub(super) fn selected_items<T: Clone>(&self, items: &[T]) -> Vec<T> {
-        if self.selection.len() > 1 {
-            self.selection
-                .iter()
-                .filter_map(|index| items.get(*index).cloned())
-                .collect()
-        } else {
-            self.selected
-                .and_then(|index| items.get(index).cloned())
-                .into_iter()
-                .collect()
-        }
+        self.selection
+            .iter()
+            .filter_map(|index| items.get(*index).cloned())
+            .collect()
     }
 
     fn selection_start_allowed(

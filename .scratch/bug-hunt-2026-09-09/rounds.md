@@ -199,3 +199,17 @@ outside this work.
 - Green: both targets offer the directory application and update inode/directory
   without assigning that application to text/plain. All-target tests passed
   (610 passed, 19 ignored); Clippy and formatting passed.
+
+## Round 16: Copy acts on a deselected file
+
+- Reproduction: select two files through pointer messages, Ctrl-click the second
+  to deselect it, and copy. Then deselect the remaining file and copy again.
+- Red: `cargo test copy_respects_ctrl_click_deselection_including_an_empty_selection -- --nocapture`
+  copied `deselected.txt` instead of the remaining selected file, `keep.txt`.
+- Cause: the shared file-operation selection collector used the active row when
+  fewer than two files were selected, even if that row was deselected.
+- Fix: collect the selected set for every selection count, including zero.
+- Green: Copy uses the remaining selection and leaves the clipboard untouched
+  when no files are selected. All-target tests passed (611 passed, 19 ignored),
+  along with Clippy and formatting. All seven release performance benchmarks
+  passed; grid/list p95 work remained below 0.77 ms against the 8 ms budget.

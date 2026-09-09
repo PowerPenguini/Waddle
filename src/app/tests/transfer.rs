@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn copy_respects_ctrl_click_deselection_including_an_empty_selection() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation
+        .replace_displayed_entries(vec![entry("keep.txt"), entry("deselected.txt")]);
+    for (index, modifiers) in [
+        (0, keyboard::Modifiers::empty()),
+        (1, keyboard::Modifiers::CTRL),
+        (1, keyboard::Modifiers::CTRL),
+    ] {
+        app.modifiers = modifiers;
+        let _ = app.update(Message::EntryPressed(index));
+        let _ = app.update(Message::EntryReleased(index));
+    }
+    let _ = app.update(Message::Copy);
+    let copied = app.transfers.clipboard_payload().unwrap();
+    assert_eq!(copied.paths, [PathBuf::from("/start/keep.txt")]);
+
+    app.modifiers = keyboard::Modifiers::CTRL;
+    let _ = app.update(Message::EntryPressed(0));
+    let _ = app.update(Message::EntryReleased(0));
+    let _ = app.update(Message::Copy);
+    assert_eq!(
+        app.transfers.clipboard_payload(),
+        Some(copied),
+        "Copy with no selected files must leave the clipboard untouched"
+    );
+}
+
+#[test]
 fn metadata_only_transfer_problem_opens_a_warning_acknowledgement() {
     let (mut app, _) = App::new();
     let message = "Copied 6 item(s), but some metadata could not be preserved".to_owned();
