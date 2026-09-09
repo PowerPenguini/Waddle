@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+#[ignore = "release-mode performance benchmark"]
+fn benchmark_large_trash_selection_opens_delete_confirmation_promptly() {
+    const COUNT: usize = 10_000;
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.install_trash_entries(
+        (0..COUNT)
+            .map(|index| {
+                let name = format!("item-{index:05}.txt");
+                crate::app::trash::Entry {
+                    file: entry(&name),
+                    receipt: crate::journal::TrashReceipt {
+                        original: PathBuf::from("/original").join(&name),
+                        trashed: PathBuf::from("/start").join(&name),
+                        info: PathBuf::from("/info").join(format!("{name}.trashinfo")),
+                    },
+                }
+            })
+            .collect(),
+    );
+    let select_all = keyboard::Key::Character("a".into());
+    let _ = app.handle_key(
+        select_all.clone(),
+        select_all,
+        keyboard::Modifiers::CTRL,
+        Some("a"),
+    );
+    app.modifiers = keyboard::Modifiers::CTRL;
+    let _ = app.update(Message::EntryPressed(COUNT - 1));
+    let _ = app.update(Message::EntryReleased(COUNT - 1));
+    assert_eq!(app.grid.selection_count(), COUNT - 1);
+
+    let delete = keyboard::Key::Named(keyboard::key::Named::Delete);
+    let started = std::time::Instant::now();
+    let _ = app.handle_key(delete.clone(), delete, keyboard::Modifiers::empty(), None);
+    let elapsed = started.elapsed();
+    assert!(matches!(
+        app.file_operations.view(),
+        FileOperationView::PermanentDelete { message, .. }
+            if message == "Permanently delete 9999 selected Trash items?"
+    ));
+    eprintln!(
+        "Trash Delete confirmation for {} selected items: {elapsed:?}",
+        COUNT - 1
+    );
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "opening Delete confirmation blocked the UI for {elapsed:?}"
+    );
+}
+
+#[test]
 fn context_rename_keeps_its_file_target_across_refresh() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

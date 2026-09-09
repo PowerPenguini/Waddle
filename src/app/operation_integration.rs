@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use iced::Task;
 
@@ -456,7 +456,7 @@ impl App {
             .selected_items(self.navigation.entries())
             .into_iter()
             .map(|entry| entry.path)
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
         self.navigation
             .trash_entries()
             .iter()

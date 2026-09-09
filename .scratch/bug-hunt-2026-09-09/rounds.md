@@ -417,3 +417,17 @@ outside this work.
 - Green: both the replacement's contents and subsequent file creation appear.
   All-target tests passed (620 passed, 22 ignored), along with Clippy, formatting,
   and whitespace checks.
+
+## Round 31: large Trash selections freeze Delete confirmation
+
+- Reproduction: load 10,000 Trash entries, select all through the keyboard,
+  deselect one through a Ctrl-click, then measure opening Delete confirmation.
+- Red: `cargo test --release benchmark_large_trash_selection_opens_delete_confirmation_promptly -- --ignored --nocapture`
+  took 5.94 seconds on the UI thread, exceeding the 250 ms budget.
+- Cause: collecting selected Trash receipts linearly searched the entire selected
+  path list for every Trash entry, producing quadratic work.
+- Fix: use a path set for selection membership while retaining Trash entry order.
+- Green: the same confirmation selected 9,999 items and opened in 12.6 ms
+  (9.6 ms in the full benchmark run). All-target tests passed (620 passed,
+  23 ignored), all eleven release benchmarks passed, and Clippy, formatting,
+  and whitespace checks passed.
