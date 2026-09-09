@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn queued_entry_details_cannot_overwrite_newer_details_for_the_same_path() {
+    use iced::futures::StreamExt;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("changing.txt");
+        std_fs::write(&path, "old").unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        app.navigation
+            .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+        app.grid.select_only(Some(0), 1);
+        let task = app.update(Message::MetadataFinished(Ok("Permissions changed".into())));
+        let mut stream = iced_runtime::task::into_stream(task).unwrap();
+        let mut queued = Vec::new();
+        while let Some(action) = stream.next().await {
+            if let iced_runtime::Action::Output(message) = action {
+                queued.push(message);
+            }
+        }
+        assert_eq!(queued.len(), 1);
+
+        std_fs::write(&path, "new size").unwrap();
+        let refresh = app.update(Message::Refresh);
+        finish_tasks(&mut app, refresh).await;
+        assert!(app.presentation.status().contains("8 B"));
+        for message in queued {
+            let _ = app.update(message);
+        }
+        assert!(
+            app.presentation.status().contains("8 B"),
+            "old metadata replaced the current file details: {}",
+            app.presentation.status()
+        );
+    });
+}
+
+#[test]
 fn shell_command_completion_preserves_the_displayed_recent_or_trash_location() {
     for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
         let temp = tempfile::tempdir().unwrap();

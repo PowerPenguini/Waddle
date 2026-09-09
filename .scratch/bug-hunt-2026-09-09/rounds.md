@@ -104,3 +104,15 @@ outside this work.
 - Green: the regression passed through app messages and real filesystem work;
   all-target tests passed (603 passed, 19 ignored); Clippy with warnings denied
   and formatting passed. The existing failure test now expects a refresh.
+
+## Round 9: queued metadata replaces newer details for the same file
+
+- Reproduction: retain a completed details message for a three-byte file, change
+  it to eight bytes, finish a refresh, then deliver the retained message.
+- Red: `cargo test queued_entry_details_cannot_overwrite_newer_details_for_the_same_path -- --nocapture`
+  changed the status bar from `8 B` back to `3 B`.
+- Cause: metadata completion checked only the selected path. Cancelling a worker
+  cannot retract a completion that is already queued.
+- Fix: assign revisions to details requests and reject superseded completions.
+- Green: the regression passed with real metadata workers; all-target tests
+  passed (604 passed, 19 ignored); Clippy with warnings denied and formatting passed.

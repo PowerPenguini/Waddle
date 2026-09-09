@@ -413,12 +413,17 @@ impl App {
             Message::NavigationCancelled(request) => {
                 self.finish_navigation(request, NavigationCompletion::Cancelled)
             }
-            Message::DetailsFinished { path, result } => {
-                if self
-                    .grid
-                    .selected_entry()
-                    .and_then(|index| self.navigation.entries().get(index))
-                    .is_some_and(|entry| entry.path == path)
+            Message::DetailsFinished {
+                request,
+                path,
+                result,
+            } => {
+                if request == self.details_revision
+                    && self
+                        .grid
+                        .selected_entry()
+                        .and_then(|index| self.navigation.entries().get(index))
+                        .is_some_and(|entry| entry.path == path)
                 {
                     self.grid.set_details(result.ok());
                     if !self.transfers.overview().native_active {

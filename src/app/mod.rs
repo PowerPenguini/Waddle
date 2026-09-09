@@ -249,6 +249,7 @@ enum Message {
     },
     NavigationCancelled(NavigationRequest),
     DetailsFinished {
+        request: u64,
         path: PathBuf,
         result: Result<String, String>,
     },
@@ -341,6 +342,7 @@ struct App {
     drag_preview: native_dnd::PreviewCache,
     thumbnails: thumbnail::Cache,
     grid: GridInteraction,
+    details_revision: u64,
     browser_input: BrowserInput,
     presentation: Presentation,
     location_input: String,
@@ -436,6 +438,7 @@ impl App {
             drag_preview: native_dnd::PreviewCache::default(),
             thumbnails: thumbnail::Cache::default(),
             grid,
+            details_revision: 0,
             browser_input: BrowserInput::default(),
             presentation: Presentation::new(now, startup_error),
             location_input: current.display().to_string(),

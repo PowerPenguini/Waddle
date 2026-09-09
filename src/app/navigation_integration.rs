@@ -449,6 +449,8 @@ impl App {
     }
 
     pub(super) fn schedule_details(&mut self) -> Task<Message> {
+        self.details_revision = self.details_revision.wrapping_add(1);
+        let request = self.details_revision;
         self.operations.cancel(OperationKind::Details);
         self.grid.clear_details();
         let Some(entry) = self
@@ -469,6 +471,7 @@ impl App {
             ),
             move |completion| match completion {
                 Completion::Finished(result) => Message::DetailsFinished {
+                    request,
                     path: entry.path,
                     result,
                 },
