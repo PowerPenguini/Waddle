@@ -255,7 +255,10 @@ enum Message {
     ThumbnailLoaded(thumbnail::Loaded),
     SearchChanged(String),
     SearchSubmitted,
-    SearchFinished(Result<fs::SearchResults, String>),
+    SearchFinished {
+        request: u64,
+        result: Result<fs::SearchResults, String>,
+    },
     CommandChanged(String),
     CommandSubmitted,
     CommandFinished(Result<command::Completion, String>),

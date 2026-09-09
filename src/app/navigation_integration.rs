@@ -730,11 +730,20 @@ impl App {
                 self.operations.cancel(OperationKind::Search);
                 Task::none()
             }
-            SearchUpdate::Search { root, query } => self.schedule_recursive_search(root, query),
+            SearchUpdate::Search {
+                request,
+                root,
+                query,
+            } => self.schedule_recursive_search(request, root, query),
         }
     }
 
-    pub(super) fn schedule_recursive_search(&self, root: PathBuf, query: String) -> Task<Message> {
+    pub(super) fn schedule_recursive_search(
+        &self,
+        request: u64,
+        root: PathBuf,
+        query: String,
+    ) -> Task<Message> {
         let show_hidden = self.view_preferences.for_directory(&root).show_hidden;
         Task::perform(
             self.operations.run_after(
@@ -751,8 +760,8 @@ impl App {
                     .map_err(|error| error.to_string())
                 },
             ),
-            |completion| match completion {
-                Completion::Finished(result) => Message::SearchFinished(result),
+            move |completion| match completion {
+                Completion::Finished(result) => Message::SearchFinished { request, result },
                 Completion::Cancelled => Message::Noop,
             },
         )

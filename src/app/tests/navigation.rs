@@ -489,6 +489,50 @@ fn clipboard_ownership_loss_keeps_the_internal_cut_pending() {
 }
 
 #[test]
+fn recursive_search_ignores_a_completed_result_queued_before_the_query_changed() {
+    use iced::futures::StreamExt;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        std_fs::write(temp.path().join("old-match.txt"), "old").unwrap();
+        std_fs::write(temp.path().join("new-match.txt"), "new").unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        app.view_preferences =
+            super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        press(&mut app, "/");
+        let old_task = app.update(Message::SearchChanged("/old-match".to_owned()));
+        let mut stream = iced_runtime::task::into_stream(old_task).unwrap();
+        let mut queued = Vec::new();
+        while let Some(action) = stream.next().await {
+            if let iced_runtime::Action::Output(message) = action {
+                queued.push(message);
+            }
+        }
+        assert_eq!(queued.len(), 1);
+
+        let current = app.update(Message::SearchChanged("new-match".to_owned()));
+        for message in queued {
+            let _ = app.update(message);
+        }
+        assert!(
+            app.search.is_loading(),
+            "a queued result for the old query must not finish the current search"
+        );
+        assert!(app.navigation.entries().is_empty());
+        finish_tasks(&mut app, current).await;
+        assert!(!app.search.is_loading());
+        assert_eq!(app.navigation.entries().len(), 1);
+        assert_eq!(app.navigation.entries()[0].name, "new-match.txt");
+    });
+}
+
+#[test]
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
     app.browser_input.enter(InputMode::Search);

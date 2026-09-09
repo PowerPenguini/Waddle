@@ -25,11 +25,16 @@ pub(super) enum Update {
     None,
     SelectionChanged,
     CancelPending,
-    Search { root: PathBuf, query: String },
+    Search {
+        request: u64,
+        root: PathBuf,
+        query: String,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct SearchSession {
+    revision: u64,
     active: Option<Active>,
     query: String,
     last_query: String,
@@ -37,6 +42,7 @@ pub(super) struct SearchSession {
 
 impl SearchSession {
     pub(super) fn begin(&mut self, grid: &GridInteraction) {
+        self.revision = self.revision.wrapping_add(1);
         self.active = Some(Active {
             origin: grid.selected_entry(),
             recursive: None,
@@ -53,6 +59,7 @@ impl SearchSession {
         let Some(active) = self.active.as_mut() else {
             return Update::None;
         };
+        self.revision = self.revision.wrapping_add(1);
         if active.recursive.is_none() && value.starts_with('/') {
             value.remove(0);
             active.recursive = Some(Recursive {
@@ -74,6 +81,7 @@ impl SearchSession {
             navigation.install_search_entries(Vec::new());
             grid.select_only(None, 0);
             return Update::Search {
+                request: self.revision,
                 root: navigation.current().to_path_buf(),
                 query: self.query.clone(),
             };
@@ -93,10 +101,15 @@ impl SearchSession {
 
     pub(super) fn complete(
         &mut self,
+        request: u64,
         navigation: &mut NavigationSession,
         grid: &mut GridInteraction,
         result: Result<SearchResults, String>,
     ) -> Result<(), String> {
+        // Worker cancellation cannot retract a completion already queued by the UI.
+        if request != self.revision {
+            return Ok(());
+        }
         let Some(recursive) = self
             .active
             .as_mut()
@@ -285,12 +298,14 @@ mod tests {
         let (mut navigation, mut grid) = navigation();
         let mut search = SearchSession::default();
         search.begin(&grid);
-        assert!(matches!(
-            search.update(&mut navigation, &mut grid, "/needle".to_owned()),
-            Update::Search { .. }
-        ));
+        let Update::Search { request, .. } =
+            search.update(&mut navigation, &mut grid, "/needle".to_owned())
+        else {
+            panic!("expected recursive search");
+        };
         search
             .complete(
+                request,
                 &mut navigation,
                 &mut grid,
                 Ok(SearchResults {
@@ -317,7 +332,11 @@ mod tests {
         let (mut navigation, mut grid) = navigation();
         let mut search = SearchSession::default();
         search.begin(&grid);
-        let _ = search.update(&mut navigation, &mut grid, "/needle".to_owned());
+        let Update::Search { request, .. } =
+            search.update(&mut navigation, &mut grid, "/needle".to_owned())
+        else {
+            panic!("expected recursive search");
+        };
         let match_entry = FileEntry {
             path: PathBuf::from("/start/nested/needle"),
             name: OsString::from("needle"),
@@ -326,6 +345,7 @@ mod tests {
         };
         search
             .complete(
+                request,
                 &mut navigation,
                 &mut grid,
                 Ok(SearchResults {

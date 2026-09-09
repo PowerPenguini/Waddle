@@ -433,10 +433,10 @@ impl App {
             }
             Message::SearchChanged(value) => self.update_search(value),
             Message::SearchSubmitted => self.submit_search(),
-            Message::SearchFinished(result) => {
+            Message::SearchFinished { request, result } => {
                 if let Err(error) =
                     self.search
-                        .complete(&mut self.navigation, &mut self.grid, result)
+                        .complete(request, &mut self.navigation, &mut self.grid, result)
                 {
                     self.presentation.set_status(error);
                 }
