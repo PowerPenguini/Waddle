@@ -16,7 +16,7 @@ struct Recursive {
 
 #[derive(Clone, Debug)]
 struct Active {
-    origin: Option<usize>,
+    origin: Option<PathBuf>,
     selection: Selection,
     paths: Vec<PathBuf>,
     recursive: Option<Recursive>,
@@ -46,7 +46,10 @@ impl SearchSession {
     pub(super) fn begin(&mut self, navigation: &NavigationSession, grid: &GridInteraction) {
         self.revision = self.revision.wrapping_add(1);
         self.active = Some(Active {
-            origin: grid.selected_entry(),
+            origin: grid
+                .selected_entry()
+                .and_then(|index| navigation.entries().get(index))
+                .map(|entry| entry.path.clone()),
             selection: grid.capture_selection(),
             paths: navigation
                 .entries()
@@ -96,8 +99,14 @@ impl SearchSession {
         }
 
         let previous = grid.selected_entry();
+        let origin = active.origin.as_ref().and_then(|path| {
+            navigation
+                .entries()
+                .iter()
+                .position(|entry| &entry.path == path)
+        });
         grid.select_only(
-            find_match(navigation.entries(), &self.query, active.origin, false),
+            find_match(navigation.entries(), &self.query, origin, false),
             navigation.entries().len(),
         );
         if previous == grid.selected_entry() {

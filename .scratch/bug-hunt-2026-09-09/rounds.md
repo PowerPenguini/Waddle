@@ -316,3 +316,16 @@ outside this work.
 - Green: reconciliation took 23–25 ms and kept the recreated file pending Cut.
   All-target tests passed (614 passed, 22 ignored), along with Clippy and
   formatting. All ten release performance benchmarks passed.
+
+## Round 24: refining Search after refresh uses the wrong starting file
+
+- Reproduction: start Search from `delta.txt`, match `omega.txt`, insert
+  `alpha.txt`, refresh, and refine the query through app messages.
+- Red: `cargo test refining_search_after_refresh_keeps_its_starting_file_by_path -- --nocapture`
+  jumped back to `delta.txt` instead of continuing to match `omega.txt`.
+- Cause: the Search session retained its original row number, which referred to
+  a different file after refreshed entries were inserted before it.
+- Fix: retain the starting file's path and resolve its current row on query edits.
+- Green: query refinement stays anchored to the original starting file after
+  refresh. All-target tests passed (615 passed, 22 ignored), along with Clippy
+  and formatting.

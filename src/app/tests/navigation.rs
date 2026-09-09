@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn refining_search_after_refresh_keeps_its_starting_file_by_path() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["bravo.txt", "delta.txt", "omega.txt"] {
+                std_fs::write(temp.path().join(name), "fixture").unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.grid.select_only(Some(1), 3);
+            press(&mut app, "/");
+            let task = app.update(Message::SearchChanged("tx".into()));
+            finish_tasks(&mut app, task).await;
+            let active_path = |app: &App| {
+                app.navigation.entries()[app.grid.selected_entry().unwrap()]
+                    .path
+                    .clone()
+            };
+            assert_eq!(active_path(&app), temp.path().join("omega.txt"));
+
+            std_fs::write(temp.path().join("alpha.txt"), "inserted").unwrap();
+            let task = app.update(Message::Refresh);
+            finish_tasks(&mut app, task).await;
+            assert_eq!(active_path(&app), temp.path().join("omega.txt"));
+            let task = app.update(Message::SearchChanged("txt".into()));
+            finish_tasks(&mut app, task).await;
+            assert_eq!(active_path(&app), temp.path().join("omega.txt"));
+        });
+}
+
+#[test]
 fn folder_refresh_preserves_the_active_file_and_shift_selection_anchor() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
