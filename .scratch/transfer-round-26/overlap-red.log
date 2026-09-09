@@ -1,0 +1,21 @@
+   Compiling waddle v0.0.9 (/home/powerpenguini/Projects/Waddle)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.40s
+     Running unittests src/main.rs (target/debug/deps/waddle-5901d92ae6ef98e7)
+
+running 1 test
+
+thread 'fs::tests::multi_source_copy_reads_selected_data_before_overwriting_its_path' (1283731) panicked at src/fs/tests.rs:3250:9:
+assertion `left == right` failed: an earlier transfer replaced the selected source before it was copied
+  left: [105, 110, 99, 111, 109, 105, 110, 103, 32, 100, 97, 116, 97]
+ right: [115, 101, 108, 101, 99, 116, 101, 100, 32, 111, 114, 105, 103, 105, 110, 97, 108]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fs::tests::multi_source_copy_reads_selected_data_before_overwriting_its_path ... FAILED
+
+failures:
+
+failures:
+    fs::tests::multi_source_copy_reads_selected_data_before_overwriting_its_path
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin waddle`

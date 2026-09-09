@@ -101,6 +101,7 @@ pub struct TransferBatch {
     entry_bytes: BTreeMap<PathBuf, u64>,
     links: CopyLinks,
     merged_directories: BTreeMap<PathBuf, MergeDirectory>,
+    source_dependencies: Vec<Vec<usize>>,
     progressed_roots: BTreeSet<usize>,
     cancelled: bool,
 }
@@ -205,6 +206,7 @@ impl TransferBatch {
             entry_bytes: BTreeMap::new(),
             links: CopyLinks::default(),
             merged_directories: BTreeMap::new(),
+            source_dependencies: Vec::new(),
             cancelled: false,
         }
     }
@@ -230,6 +232,7 @@ impl TransferBatch {
                 .map(|root| tree_bytes(&root.source).unwrap_or_default())
                 .collect();
             self.copied_bytes = vec![0; self.roots.len()];
+            self.order_source_dependencies();
         }
         self.publish_progress(&mut progress);
         while let Some(pending) = self.pending.pop_front() {
@@ -448,6 +451,82 @@ impl TransferBatch {
         TransferBatchOutcome::Complete(self.report())
     }
 
+    fn order_source_dependencies(&mut self) {
+        // Resolve parent aliases without following the selected leaf: copying
+        // a symlink reads the link itself, not the entry it points at.
+        let resolve =
+            |path: &Path| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?));
+        let sources: Vec<_> = self
+            .roots
+            .iter()
+            .map(|root| resolve(&root.source))
+            .collect();
+        let mut readers: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+        for (index, source) in sources.iter().enumerate() {
+            if let Some(source) = source {
+                readers.entry(source.clone()).or_default().push(index);
+            }
+        }
+        let mut prerequisites = vec![0_usize; self.roots.len()];
+        self.source_dependencies = vec![Vec::new(); self.roots.len()];
+        let mut dependants = vec![Vec::new(); self.roots.len()];
+        for (writer, root) in self.roots.iter().enumerate() {
+            let Some(destination) = resolve(&root.destination) else {
+                continue;
+            };
+            if self.action == Action::Copy
+                && sources[writer]
+                    .as_ref()
+                    .is_some_and(|source| source.parent() == destination.parent())
+            {
+                // Same-folder Copy always chooses an unused duplicate name.
+                continue;
+            }
+            for (_, indices) in readers
+                .range(destination.clone()..)
+                .take_while(|(source, _)| source.starts_with(&destination))
+            {
+                for &reader in indices {
+                    if reader != writer {
+                        prerequisites[writer] += 1;
+                        dependants[reader].push(writer);
+                        self.source_dependencies[writer].push(reader);
+                    }
+                }
+            }
+        }
+        // Keep the user's order whenever no source depends on another entry.
+        let mut ready: BTreeSet<_> = prerequisites
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect();
+        let mut order = Vec::new();
+        while let Some(index) = ready.pop_first() {
+            order.push(index);
+            for &dependant in &dependants[index] {
+                prerequisites[dependant] -= 1;
+                if prerequisites[dependant] == 0 {
+                    ready.insert(dependant);
+                }
+            }
+        }
+        let mut entries: Vec<_> = std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.pending
+            .extend(order.into_iter().filter_map(|index| entries[index].take()));
+        for (index, entry) in entries.into_iter().enumerate() {
+            if entry.is_some() {
+                self.fail(index, self.roots[index].source.clone(), io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "these transfer paths overwrite each other's sources; transfer them through a separate folder",
+                ));
+            }
+        }
+    }
+
     pub fn resolve(mut self, choice: ConflictChoice, remaining: bool) -> Self {
         if remaining {
             self.apply_remaining = Some(choice);
@@ -489,6 +568,25 @@ impl TransferBatch {
                     ),
                 ));
             }
+        }
+        if choice == ConflictChoice::Replace
+            && self
+                .source_dependencies
+                .get(blocked.root)
+                .is_some_and(|dependencies| {
+                    dependencies.iter().any(|dependency| {
+                        self.failed_roots.contains(dependency)
+                            || self.retained_roots.contains(dependency)
+                    })
+                })
+        {
+            return Err((
+                blocked.source,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "could not preserve another selected source before overwriting it; retry after resolving its transfer",
+                ),
+            ));
         }
         match choice {
             ConflictChoice::Skip => {

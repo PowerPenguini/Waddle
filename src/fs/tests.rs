@@ -3202,3 +3202,174 @@ fn hardlinks_in_different_parents_still_require_a_conflict_decision() {
         assert_eq!(fs::read_dir(target).unwrap().count(), 1);
     }
 }
+
+#[test]
+fn multi_source_copy_reads_selected_data_before_overwriting_its_path() {
+    for action in [Action::Copy, Action::Move] {
+        for nested in [false, true] {
+            if action == Action::Move && !nested {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let incoming = temp.path().join("incoming");
+            let target = temp.path().join("target");
+            fs::create_dir(&incoming).unwrap();
+            fs::create_dir(&target).unwrap();
+            let first = incoming.join("item");
+            let existing = target.join("item");
+            if nested {
+                fs::create_dir(&first).unwrap();
+                fs::create_dir(&existing).unwrap();
+            }
+            let first_contents = if nested {
+                first.join("note")
+            } else {
+                first.clone()
+            };
+            let selected = if nested {
+                existing.join("note")
+            } else {
+                existing.clone()
+            };
+            fs::write(first_contents, b"incoming data").unwrap();
+            fs::write(&selected, b"selected original").unwrap();
+            let mut outcome =
+                TransferBatch::try_new(vec![first, selected.clone()], target.clone(), action)
+                    .unwrap()
+                    .run();
+            let report = loop {
+                match outcome {
+                    TransferBatchOutcome::Conflict { batch, .. } => {
+                        outcome = batch.resolve(ConflictChoice::Replace, true).run();
+                    }
+                    TransferBatchOutcome::Complete(report) => break report,
+                }
+            };
+            assert!(report.failures.is_empty(), "{report:?}");
+            let receipt = report
+                .receipts
+                .iter()
+                .find(|receipt| receipt.source == selected)
+                .unwrap();
+            assert_eq!(
+                fs::read(&receipt.destination).unwrap(),
+                b"selected original",
+                "an earlier transfer replaced the selected source before it was copied"
+            );
+            assert_eq!(fs::read(selected).unwrap(), b"incoming data");
+        }
+    }
+}
+
+#[test]
+fn failed_source_preservation_blocks_a_later_overwrite() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let incoming = temp.path().join("item");
+    let target = temp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let selected = target.join("item");
+    fs::write(&incoming, b"incoming").unwrap();
+    fs::write(&selected, b"selected original").unwrap();
+    let batch =
+        TransferBatch::try_new(vec![incoming, selected.clone()], target, Action::Copy).unwrap();
+    fs::set_permissions(&selected, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut outcome = batch.run();
+    let report = loop {
+        match outcome {
+            TransferBatchOutcome::Conflict { batch, .. } => {
+                outcome = batch.resolve(ConflictChoice::Replace, true).run()
+            }
+            TransferBatchOutcome::Complete(report) => break report,
+        }
+    };
+    fs::set_permissions(&selected, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        fs::read(&selected).unwrap(),
+        b"selected original",
+        "a failed attempt to preserve selected data must not authorize its overwrite"
+    );
+    assert_eq!(report.failures.len(), 2);
+    let mut outcome = report.retry_plan().into_batch(Action::Copy).unwrap().run();
+    let report = loop {
+        match outcome {
+            TransferBatchOutcome::Conflict { batch, .. } => {
+                outcome = batch.resolve(ConflictChoice::Replace, true).run()
+            }
+            TransferBatchOutcome::Complete(report) => break report,
+        }
+    };
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(
+        fs::read(selected.with_file_name("item copy")).unwrap(),
+        b"selected original"
+    );
+    assert_eq!(fs::read(selected).unwrap(), b"incoming");
+}
+
+#[test]
+fn a_failed_dependency_still_allows_keep_both_without_overwriting_it() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    let temp = tempfile::tempdir().unwrap();
+    let incoming = temp.path().join("item");
+    let target = temp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let selected = target.join("item");
+    fs::write(&incoming, b"incoming").unwrap();
+    fs::write(&selected, b"selected original").unwrap();
+    let batch = TransferBatch::try_new(
+        vec![incoming, selected.clone()],
+        target.clone(),
+        Action::Copy,
+    )
+    .unwrap();
+    fs::set_permissions(&selected, fs::Permissions::from_mode(0o000)).unwrap();
+    let TransferBatchOutcome::Conflict { batch, .. } = batch.run() else {
+        panic!("the other source must still allow a non-overwriting conflict choice")
+    };
+    let report = complete(batch.resolve(ConflictChoice::KeepBoth, false));
+    fs::set_permissions(&selected, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(fs::read(selected).unwrap(), b"selected original");
+    assert_eq!(fs::read(target.join("item copy")).unwrap(), b"incoming");
+}
+
+#[test]
+fn cyclic_source_overwrites_leave_data_intact_and_allow_unrelated_transfers() {
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir_all(target.join("left")).unwrap();
+        fs::create_dir_all(target.join("right")).unwrap();
+        let first = target.join("left/right");
+        let second = target.join("right/left");
+        let unrelated = temp.path().join("unrelated");
+        fs::write(&first, b"first selected data").unwrap();
+        fs::write(&second, b"second selected data").unwrap();
+        fs::write(&unrelated, b"unrelated data").unwrap();
+        let report = complete(
+            TransferBatch::try_new(
+                vec![first.clone(), second.clone(), unrelated],
+                target.clone(),
+                action,
+            )
+            .unwrap(),
+        );
+        assert_eq!(report.failures.len(), 2);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.error.contains("overwrite each other's sources"))
+        );
+        assert_eq!(report.receipts.len(), 1);
+        assert_eq!(fs::read(first).unwrap(), b"first selected data");
+        assert_eq!(fs::read(second).unwrap(), b"second selected data");
+        assert_eq!(
+            fs::read(target.join("unrelated")).unwrap(),
+            b"unrelated data"
+        );
+    }
+}
