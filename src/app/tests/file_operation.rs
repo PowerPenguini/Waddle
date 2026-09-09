@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn partial_permanent_delete_refreshes_entries_and_keeps_the_error() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["deleted.txt", "disappeared.txt"] {
+            std_fs::write(temp.path().join(name), "fixture").unwrap();
+        }
+        let entries = fs::read_directory(temp.path()).unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        app.navigation.replace_displayed_entries(entries.clone());
+        app.file_operations.finish_trash_transfer(
+            entries
+                .into_iter()
+                .map(|entry| (entry, "Trash unavailable".to_owned()))
+                .collect(),
+        );
+        let _ = app.update(Message::Noop);
+        // Another process removes one of the entries before confirmation.
+        std_fs::remove_file(temp.path().join("disappeared.txt")).unwrap();
+        let task = app.update(Message::PromptConfirm);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            super::navigation::finish_tasks(&mut app, task),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            app.navigation.entries().is_empty(),
+            "the browser still displays entries removed during a partial failure"
+        );
+        assert!(matches!(
+            app.file_operations.view(),
+            FileOperationView::Error { message } if message.contains("disappeared.txt")
+        ));
+    });
+}
+
+#[test]
 fn properties_display_special_permission_bits() {
     use std::os::unix::fs::PermissionsExt;
 

@@ -91,3 +91,16 @@ outside this work.
 - Green: all six permission scenarios passed through the real Properties worker;
   all-target tests passed (602 passed, 19 ignored); Clippy with warnings denied
   and formatting passed.
+
+## Round 8: partial permanent deletion leaves stale entries
+
+- Reproduction: confirm permanent deletion after a failed Trash Transfer for two
+  temporary files, one of which another process removes before confirmation.
+- Red: `cargo test partial_permanent_delete_refreshes_entries_and_keeps_the_error -- --nocapture`
+  left both removed files displayed after the real deletion worker completed.
+- Cause: any permanent-delete failure suppressed refresh, even when other entries
+  or part of a directory had already been removed.
+- Fix: refresh after failed permanent deletion while retaining the failure prompt.
+- Green: the regression passed through app messages and real filesystem work;
+  all-target tests passed (603 passed, 19 ignored); Clippy with warnings denied
+  and formatting passed. The existing failure test now expects a refresh.

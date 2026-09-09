@@ -446,7 +446,11 @@ impl FileOperationSession {
                     self.state = State::Error {
                         message: failure_detail(&failures),
                     };
-                    StateConsequences::default()
+                    // Other entries, or part of a directory, may already be gone.
+                    StateConsequences {
+                        refresh: true,
+                        ..StateConsequences::default()
+                    }
                 }
             }
             CompletionKind::TrashDelete(_) => {
@@ -665,7 +669,7 @@ mod tests {
             (failed, "Permission denied".to_owned()),
         ])));
 
-        assert!(!effects.refresh);
+        assert!(effects.refresh);
         assert!(matches!(
             session.view(),
             View::Error { message } if message.contains("Permission denied")
