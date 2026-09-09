@@ -127,3 +127,18 @@ outside this work.
 - Fix: derive the marker from Unix mode bits, including sockets, FIFOs, and devices.
 - Green: socket and FIFO regressions passed; all-target tests passed
   (605 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 11: monitoring stays attached to a replaced directory
+
+- Reproduction: consume real monitoring events through app messages, move the
+  current folder away, create a replacement at the same path, then modify it.
+- Red: `cargo test location_monitoring_follows_a_replaced_current_folder -- --nocapture`
+  twice timed out waiting for changes to `current/after.txt`; initial monitoring
+  and the refresh after replacement had succeeded.
+- Cause: inotify watches follow inodes, but the registry retained moved/deleted
+  watches under their original paths and skipped registering replacements.
+- Fix: retire watches on move-self, delete-self, and ignored events. Close moved
+  watches explicitly, then allow refresh to register the replacement directory.
+- Green: the native monitoring regression passed in under one second; all-target
+  tests passed (606 passed, 19 ignored); Clippy with warnings denied and formatting
+  passed.

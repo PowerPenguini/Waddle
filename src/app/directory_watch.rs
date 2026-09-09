@@ -145,7 +145,12 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
             // SAFETY: buffer is writable and descriptor is a nonblocking inotify fd.
             let read = unsafe { libc::read(descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
             if read > 0 {
-                collect_changed_watches(&buffer[..read as usize], &watched, &mut pending);
+                collect_changed_watches(
+                    descriptor,
+                    &buffer[..read as usize],
+                    &mut watched,
+                    &mut pending,
+                );
             }
         }
         let ready = pending
@@ -178,8 +183,9 @@ fn worker(commands: std_mpsc::Receiver<Command>, events: mpsc::UnboundedSender<E
 }
 
 fn collect_changed_watches(
+    descriptor: RawFd,
     buffer: &[u8],
-    watched: &HashMap<i32, PathBuf>,
+    watched: &mut HashMap<i32, PathBuf>,
     pending: &mut HashMap<PathBuf, PendingChange>,
 ) {
     let mut offset = 0;
@@ -209,6 +215,16 @@ fn collect_changed_watches(
             if name_length > 0 && event.mask & (libc::IN_MOVED_FROM | libc::IN_DELETE) != 0 {
                 let name = std::ffi::OsString::from_vec(name_bytes[..name_length].to_vec());
                 change.removed.insert(directory.join(name));
+            }
+            if event.mask & (libc::IN_MOVE_SELF | libc::IN_DELETE_SELF | libc::IN_IGNORED) != 0 {
+                // Watches follow inodes. A replacement at the same path needs
+                // a fresh watch when the browser resynchronizes after this event.
+                watched.remove(&event.wd);
+                if event.mask & libc::IN_MOVE_SELF != 0 {
+                    // SAFETY: this worker owns the descriptor and the reported watch.
+                    // Deleted/ignored watches are already removed by the kernel.
+                    unsafe { libc::inotify_rm_watch(descriptor, event.wd) };
+                }
             }
         }
         offset = offset.saturating_add(record_size);

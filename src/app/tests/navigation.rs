@@ -1,6 +1,71 @@
 use super::*;
 
 #[test]
+fn location_monitoring_follows_a_replaced_current_folder() {
+    use iced::futures::{StreamExt, stream::BoxStream};
+
+    async fn write_until_changed(
+        events: &mut BoxStream<'static, super::directory_watch::Event>,
+        path: &Path,
+    ) -> super::directory_watch::Event {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                std_fs::write(path, "fixture").unwrap();
+                if let Ok(Some(event)) =
+                    tokio::time::timeout(Duration::from_millis(300), events.next()).await
+                    && event.path == path.parent().unwrap()
+                    && !event.watch_failed
+                {
+                    return event;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("changes to {} must reach the browser", path.display()))
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("current");
+        std_fs::create_dir(&current).unwrap();
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(current.clone());
+        app.navigation.settle_for_test();
+        app.sidebar_tree = SidebarTree::new(Vec::new());
+        app.sync_location_monitoring();
+        let subscription = app.location_monitoring.as_ref().unwrap().subscription();
+        let recipe = iced::advanced::subscription::into_recipes(subscription)
+            .pop()
+            .unwrap();
+        let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+
+        let event = write_until_changed(&mut events, &current.join("before.txt")).await;
+        let task = app.update(Message::DirectoryChanged(event));
+        finish_tasks(&mut app, task).await;
+        assert_eq!(app.navigation.entries()[0].name, "before.txt");
+
+        std_fs::rename(&current, temp.path().join("old-current")).unwrap();
+        std_fs::create_dir(&current).unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(3), events.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let task = app.update(Message::DirectoryChanged(event));
+        finish_tasks(&mut app, task).await;
+        assert!(app.navigation.entries().is_empty());
+
+        let event = write_until_changed(&mut events, &current.join("after.txt")).await;
+        let task = app.update(Message::DirectoryChanged(event));
+        finish_tasks(&mut app, task).await;
+        assert_eq!(app.navigation.entries()[0].name, "after.txt");
+    });
+}
+
+#[test]
 fn queued_entry_details_cannot_overwrite_newer_details_for_the_same_path() {
     use iced::futures::StreamExt;
 
