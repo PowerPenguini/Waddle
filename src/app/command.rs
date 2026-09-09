@@ -351,11 +351,24 @@ impl CommandSession {
         })
     }
 
-    pub(super) fn complete(
+    pub(super) fn complete_request(
         &mut self,
+        request: u64,
         completion: Result<Completion, String>,
         current: &Path,
     ) -> Consequences {
+        if request == self.output_revision {
+            return self.complete(completion, current);
+        }
+        // Obsolete output can still represent filesystem changes. Resolve its
+        // effects in a temporary session, preserving the current presentation.
+        let mut consequences = Self::default().complete(completion, current);
+        consequences.status = None;
+        consequences.error = None;
+        consequences
+    }
+
+    fn complete(&mut self, completion: Result<Completion, String>, current: &Path) -> Consequences {
         self.output_revision = self.output_revision.wrapping_add(1);
         match completion {
             Ok(Completion::Terminal { directory, result }) => match result {

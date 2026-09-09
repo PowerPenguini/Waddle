@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn queued_shell_results_preserve_newer_help_while_refreshing_changed_files() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for command in [
+                "printf old-output; touch created.txt",
+                "touch created.txt; false",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, "!");
+                let _ = app.update(Message::CommandChanged(command.into()));
+                let task = app.update(Message::CommandSubmitted);
+                let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                assert_eq!(queued.len(), 1);
+                assert!(temp.path().join("created.txt").is_file());
+                assert!(app.navigation.entries().is_empty());
+
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged("help".into()));
+                let _ = app.update(Message::CommandSubmitted);
+                let help = app.command.output().cloned().unwrap();
+                assert!(help.summary.starts_with(":help"));
+                for message in queued {
+                    let task = app.update(message);
+                    finish_tasks(&mut app, task).await;
+                }
+                assert_eq!(app.command.output(), Some(&help));
+                assert!(
+                    app.navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| { entry.path == temp.path().join("created.txt") })
+                );
+            }
+        });
+}
+
+#[test]
 fn refining_search_after_refresh_keeps_its_starting_file_by_path() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -339,9 +390,10 @@ fn shell_command_completion_preserves_the_displayed_recent_or_trash_location() {
         };
         let _ = app.update(initial);
         let report = super::shell::execute(temp.path(), '!', "true", &[]).unwrap();
-        let work = app.update(Message::CommandFinished(Ok(
-            super::command::Completion::Shell(Ok(report)),
-        )));
+        let work = app.update(Message::CommandFinished {
+            request: app.command.output_revision(),
+            result: Ok(super::command::Completion::Shell(Ok(report))),
+        });
 
         let request = app.navigation.pending_request().expect("refresh request");
         assert_eq!(request.location(), location);

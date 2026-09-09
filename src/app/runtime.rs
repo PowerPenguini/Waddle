@@ -452,7 +452,7 @@ impl App {
                 Task::none()
             }
             Message::CommandSubmitted => self.submit_command(),
-            Message::CommandFinished(result) => self.finish_command(result),
+            Message::CommandFinished { request, result } => self.finish_command(request, result),
             Message::VolumeFinished(result) => {
                 match result {
                     Ok(status) => {

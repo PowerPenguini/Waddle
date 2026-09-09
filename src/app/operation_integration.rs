@@ -184,14 +184,17 @@ impl App {
                         .collect(),
                 );
                 self.presentation.set_status(execution.status());
+                let request = self.command.output_revision();
                 let adapter = self.command_adapter;
                 Task::perform(
                     self.operations
                         .run_foreground(OperationKind::Command, move |_| {
                             Ok(execution.run(&adapter))
                         }),
-                    |completion| match completion {
-                        Completion::Finished(result) => Message::CommandFinished(result),
+                    move |completion| match completion {
+                        Completion::Finished(result) => {
+                            Message::CommandFinished { request, result }
+                        }
                         Completion::Cancelled => Message::Noop,
                     },
                 )
@@ -201,12 +204,15 @@ impl App {
 
     pub(super) fn finish_command(
         &mut self,
+        request: u64,
         result: Result<command::Completion, String>,
     ) -> Task<Message> {
         if let Some((summary, detail)) = command_failure_report(&result) {
             self.diagnostics.record(summary, detail);
         }
-        let consequences = self.command.complete(result, self.navigation.current());
+        let consequences =
+            self.command
+                .complete_request(request, result, self.navigation.current());
         if let Some(error) = consequences.error {
             self.show_error(error);
             return Task::none();

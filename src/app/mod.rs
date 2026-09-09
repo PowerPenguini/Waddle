@@ -262,7 +262,10 @@ enum Message {
     },
     CommandChanged(String),
     CommandSubmitted,
-    CommandFinished(Result<command::Completion, String>),
+    CommandFinished {
+        request: u64,
+        result: Result<command::Completion, String>,
+    },
     VolumeFinished(Result<String, String>),
     RecentLoaded {
         request: NavigationRequest,

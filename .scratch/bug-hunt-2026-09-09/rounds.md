@@ -329,3 +329,17 @@ outside this work.
 - Green: query refinement stays anchored to the original starting file after
   refresh. All-target tests passed (615 passed, 22 ignored), along with Clippy
   and formatting.
+
+## Round 25: queued shell output replaces a newer command presentation
+
+- Reproduction: run a real shell command that creates a file, retain its completed
+  result, open `:help`, and then deliver the retained result through app messages.
+  Cover both printed output and an unsuccessful command with no output.
+- Red: `cargo test queued_shell_results_preserve_newer_help_while_refreshing_changed_files -- --nocapture`
+  replaced help with the older shell command's output.
+- Cause: shell completions lacked the output revision already used by Properties.
+- Fix: tag command completions with their output revision. Resolve obsolete
+  completions without changing the current presentation, while retaining their
+  filesystem refresh and navigation effects and existing diagnostic recording.
+- Green: help survives both cases and the created file appears after refresh.
+  All-target tests passed (616 passed, 22 ignored), along with Clippy and formatting.
