@@ -173,6 +173,14 @@ impl Marquee {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct Selection {
+    selected: Option<usize>,
+    indices: BTreeSet<usize>,
+    visual_anchor: Option<usize>,
+    selection_anchor: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct GridInteraction {
     window_size: Size,
     sidebar_width: f32,
@@ -603,6 +611,28 @@ impl GridInteraction {
 
     pub(super) fn selected_indices(&self) -> &BTreeSet<usize> {
         &self.selection
+    }
+
+    pub(super) fn capture_selection(&self) -> Selection {
+        Selection {
+            selected: self.selected,
+            indices: self.selection.clone(),
+            visual_anchor: self.visual_anchor,
+            selection_anchor: self.selection_anchor,
+        }
+    }
+
+    pub(super) fn restore_selection(&mut self, selection: Selection, entry_count: usize) {
+        self.selected = selection.selected.filter(|index| *index < entry_count);
+        self.selection = selection
+            .indices
+            .into_iter()
+            .filter(|index| *index < entry_count)
+            .collect();
+        self.visual_anchor = selection.visual_anchor.filter(|index| *index < entry_count);
+        self.selection_anchor = selection
+            .selection_anchor
+            .filter(|index| *index < entry_count);
     }
 
     pub(super) fn selection_count(&self) -> usize {

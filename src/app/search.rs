@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::fs::{FileEntry, SearchResults};
 
 use super::{
-    grid::GridInteraction,
+    grid::{GridInteraction, Selection},
     navigation::{NavigationSession, SearchDisplay},
 };
 
@@ -17,6 +17,7 @@ struct Recursive {
 #[derive(Clone, Debug)]
 struct Active {
     origin: Option<usize>,
+    selection: Selection,
     recursive: Option<Recursive>,
 }
 
@@ -45,6 +46,7 @@ impl SearchSession {
         self.revision = self.revision.wrapping_add(1);
         self.active = Some(Active {
             origin: grid.selected_entry(),
+            selection: grid.capture_selection(),
             recursive: None,
         });
         self.query.clear();
@@ -166,7 +168,7 @@ impl SearchSession {
         if let Some(recursive) = active.recursive {
             navigation.restore_search_display(recursive.restore);
         }
-        grid.select_only(active.origin, navigation.entries().len());
+        grid.restore_selection(active.selection, navigation.entries().len());
         self.query.clear();
     }
 

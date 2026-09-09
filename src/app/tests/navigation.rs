@@ -533,6 +533,36 @@ fn recursive_search_ignores_a_completed_result_queued_before_the_query_changed()
 }
 
 #[test]
+fn cancelling_search_restores_the_full_selection_and_active_entry() {
+    for query in ["two", "/two"] {
+        let (mut app, _) = App::new();
+        app.navigation = NavigationSession::new(PathBuf::from("/start"));
+        app.navigation
+            .install_folder_entries(vec![entry("one"), entry("two"), entry("three")]);
+        app.grid.select_click(0, false, false, 3);
+        app.grid.select_click(2, true, false, 3);
+        press(&mut app, "/");
+        let _ = app.update(Message::SearchChanged(query.to_owned()));
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+
+        assert_eq!(app.browser_input.mode(), InputMode::Browser);
+        assert_eq!(app.grid.selected_entry(), Some(2));
+        let selected = app
+            .grid
+            .selected_items(app.navigation.entries())
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected,
+            ["one", "three"],
+            "cancelling {query:?} must restore all previously selected files"
+        );
+    }
+}
+
+#[test]
 fn captured_escape_leaves_the_recursive_search_input() {
     let (mut app, _) = App::new();
     app.browser_input.enter(InputMode::Search);

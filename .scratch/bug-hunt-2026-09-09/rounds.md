@@ -16,3 +16,17 @@ outside this work.
 - Fix: Search sessions assign revisions to requests and ignore obsolete results.
 - Green: the same regression passed; `cargo test --all-targets --quiet` passed
   (596 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 2: Search session cancellation loses a multi-file selection
+
+- Reproduction: select two nonadjacent entries, search, then press Escape through
+  the app's keyboard boundary. Repeat for local and recursive searches.
+- Red: `cargo test cancelling_search_restores_the_full_selection_and_active_entry -- --nocapture`
+  retained only `three` instead of the original `one` and `three` selection.
+- Cause: the Search session saved only the active entry and cancellation selected
+  that one entry, discarding the rest of the selection.
+- Fix: retain and restore the selected set, active entry, and selection anchors.
+- Green: the same regression passed in both searches; all-target tests passed
+  (597 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+  All seven release-mode performance benchmarks passed. Grid/list p95 work
+  remained below 0.72 ms, within the 8 ms budget.
