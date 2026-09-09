@@ -288,3 +288,18 @@ outside this work.
   All-target tests passed (614 passed, 20 ignored), Clippy and formatting passed,
   and all eight release performance benchmarks passed. The added ignored test
   runs automatically in the existing performance benchmark script.
+
+## Round 22: a large pending Cut freezes selection and refresh
+
+- Reproduction: press `x` with 10,000 entries selected, then deliver a refreshed
+  listing through app messages while those entries remain pending Cut.
+- Red: `cargo test --release benchmark_large_cut_and_refresh_work -- --ignored --nocapture`
+  measured 6.46 seconds for Cut and 6.38 seconds for refresh, exceeding the
+  100 ms app-thread budget for each operation.
+- Cause: both hiding Cut entries immediately and filtering a refreshed listing
+  compared every entry against the entire pending Cut path list.
+- Fix: share indexed path filtering between the initial Cut and refresh paths.
+- Green: Cut took 12–15 ms and refresh 7–8 ms, retaining all 10,000 pending paths
+  and keeping them hidden. All-target tests passed (614 passed, 21 ignored),
+  along with Clippy and formatting. All nine release performance benchmarks
+  passed, including the new Cut and refresh regression.

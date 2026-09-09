@@ -544,7 +544,7 @@ impl NavigationSession {
             }
             Kind::Refresh => self.current = canonical,
         }
-        entries.retain(|entry| !hidden_paths.iter().any(|path| path == &entry.path));
+        exclude_paths(&mut entries, hidden_paths);
         let selected = selection_indices(&entries, select);
         self.display = Display {
             location: DisplayedLocation::Folder,
@@ -639,9 +639,7 @@ impl NavigationSession {
     }
 
     pub(super) fn hide_paths(&mut self, paths: &[PathBuf]) {
-        self.display
-            .entries
-            .retain(|entry| !paths.iter().any(|path| path == &entry.path));
+        exclude_paths(&mut self.display.entries, paths);
     }
 
     #[cfg(test)]
@@ -686,6 +684,11 @@ impl NavigationSession {
         self.history = back;
         self.forward_history = forward;
     }
+}
+
+fn exclude_paths(entries: &mut Vec<FileEntry>, paths: &[PathBuf]) {
+    let hidden: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    entries.retain(|entry| !hidden.contains(entry.path.as_path()));
 }
 
 fn selection_indices(entries: &[FileEntry], paths: &[PathBuf]) -> Vec<usize> {

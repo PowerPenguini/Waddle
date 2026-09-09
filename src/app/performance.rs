@@ -65,6 +65,46 @@ fn benchmark(
 
 #[test]
 #[ignore = "release-mode performance benchmark"]
+fn benchmark_large_cut_and_refresh_work() {
+    let mut app = app_with_entries(false);
+    let entries = app.navigation.entries().to_vec();
+    app.grid.select_all(entries.len());
+
+    let budget = Duration::from_millis(100);
+    let key = keyboard::Key::Character("x".into());
+    let started = StdInstant::now();
+    let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("x"));
+    let cut_elapsed = started.elapsed();
+    drop(task);
+    assert!(app.navigation.entries().is_empty());
+    assert_eq!(app.transfers.pending_cut_paths().len(), 10_000);
+
+    let request = app.navigation.refresh(None).request.unwrap();
+    let completion = Message::NavigationFinished {
+        request,
+        result: Ok(fs::OpenedDirectory {
+            canonical_path: app.navigation.current().to_path_buf(),
+            entries,
+            child_folders: Vec::new(),
+        }),
+    };
+    let started = StdInstant::now();
+    let task = app.update(completion);
+    let refresh_elapsed = started.elapsed();
+    drop(task);
+    assert!(app.navigation.entries().is_empty());
+    assert_eq!(app.transfers.pending_cut_paths().len(), 10_000);
+    println!(
+        "benchmark large-cut: cut={cut_elapsed:?} refresh={refresh_elapsed:?} budget={budget:?}"
+    );
+    assert!(
+        cut_elapsed <= budget && refresh_elapsed <= budget,
+        "10,000 pending Cut entries blocked the app: cut={cut_elapsed:?}, refresh={refresh_elapsed:?}"
+    );
+}
+
+#[test]
+#[ignore = "release-mode performance benchmark"]
 fn benchmark_large_selection_refresh_work() {
     let mut app = app_with_entries(false);
     let entries = app.navigation.entries().to_vec();
