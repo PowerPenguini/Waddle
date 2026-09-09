@@ -37,7 +37,6 @@ pub(super) enum NodeKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarSection {
-    Computer,
     Places,
     Utilities,
     Devices,
@@ -45,8 +44,7 @@ pub(super) enum SidebarSection {
 
 pub(super) fn sidebar_section(kind: NodeKind) -> SidebarSection {
     match kind {
-        NodeKind::Computer => SidebarSection::Computer,
-        NodeKind::Drive => SidebarSection::Devices,
+        NodeKind::Computer | NodeKind::Drive => SidebarSection::Devices,
         NodeKind::Recent | NodeKind::Trash => SidebarSection::Utilities,
         NodeKind::Folder
         | NodeKind::Home
@@ -332,7 +330,7 @@ impl SidebarTree {
             }
         }
         self.roots.retain(|root| root.kind != NodeKind::Drive);
-        self.roots.extend(reconciled);
+        self.roots.splice(1..1, reconciled);
         self.retain_valid_cursor();
         true
     }
@@ -359,18 +357,15 @@ impl SidebarTree {
                     | NodeKind::Trash
             )
         });
-        for (index, place) in (1..).zip(places) {
+        for place in places {
             let id = self.allocate_node_id();
-            self.roots.insert(
-                index,
-                FolderNode::location(
-                    id,
-                    place.path,
-                    place.label,
-                    place.kind,
-                    place.favorite_index,
-                ),
-            );
+            self.roots.push(FolderNode::location(
+                id,
+                place.path,
+                place.label,
+                place.kind,
+                place.favorite_index,
+            ));
         }
         self.retain_valid_cursor();
     }
@@ -1104,15 +1099,33 @@ mod tests {
             label: "Unmounted".to_owned(),
             can_unmount: false,
         };
-        let tree = SidebarTree::new(vec![mounted, unmounted]);
+        let mut tree = SidebarTree::new(vec![mounted.clone(), unmounted.clone()]);
+        let places = vec![places::Entry {
+            path: PathBuf::from("/home/example"),
+            label: "Home".to_owned(),
+            kind: NodeKind::Home,
+            favorite_index: None,
+        }];
+        tree.install_places(places);
 
         assert_eq!(
             tree.row_heights(Path::new("/elsewhere")),
             [
                 STORAGE_ROW_HEIGHT,
-                SECTION_SEPARATOR_HEIGHT + STORAGE_ROW_HEIGHT,
-                COMPACT_ROW_HEIGHT
+                STORAGE_ROW_HEIGHT,
+                COMPACT_ROW_HEIGHT,
+                SECTION_SEPARATOR_HEIGHT + COMPACT_ROW_HEIGHT,
             ]
+        );
+        let mut mounted = mounted;
+        mounted.label = "Renamed disk".to_owned();
+        assert!(tree.reconcile_volumes(vec![mounted, unmounted]));
+        assert_eq!(
+            tree.rows(Path::new("/elsewhere"))
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Computer", "Renamed disk", "Unmounted", "Home"],
         );
     }
 

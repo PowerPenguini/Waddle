@@ -1181,24 +1181,24 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_sections_separate_computer_places_utilities_and_devices() {
+    fn sidebar_sections_group_computer_and_disks_before_places_and_utilities() {
         assert_eq!(
             [
                 tree::NodeKind::Computer,
+                tree::NodeKind::Drive,
                 tree::NodeKind::Home,
                 tree::NodeKind::Favorite,
                 tree::NodeKind::Recent,
                 tree::NodeKind::Trash,
-                tree::NodeKind::Drive,
             ]
             .map(tree::sidebar_section),
             [
-                tree::SidebarSection::Computer,
-                tree::SidebarSection::Places,
-                tree::SidebarSection::Places,
-                tree::SidebarSection::Utilities,
-                tree::SidebarSection::Utilities,
                 tree::SidebarSection::Devices,
+                tree::SidebarSection::Devices,
+                tree::SidebarSection::Places,
+                tree::SidebarSection::Places,
+                tree::SidebarSection::Utilities,
+                tree::SidebarSection::Utilities,
             ]
         );
     }
