@@ -22,6 +22,17 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.13" date="2026-09-09">
+      <description>
+        <ul>
+          <li>Preserve search selections, context-menu targets, and Recent and Trash views across refreshes.</li>
+          <li>Keep newer command and Properties output when earlier requests finish.</li>
+          <li>Recover folder monitoring after replacements, notification overflow, and startup failures.</li>
+          <li>Keep large selections, Cut operations, and Trash confirmation responsive.</li>
+          <li>Improve symbolic-link handling, permission details, partial-delete feedback, and sidebar disk ordering.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.12" date="2026-09-09">
       <description>
         <ul>
