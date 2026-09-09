@@ -244,3 +244,17 @@ outside this work.
   deselection. Recent and Trash refresh assertions also pass. All-target tests
   passed (613 passed, 19 ignored), along with Clippy and formatting. All seven
   release performance benchmarks passed; grid/list p95 remained below 0.77 ms.
+
+## Round 19: selecting another file cancels explicit Properties
+
+- Reproduction: submit Properties for a temporary file, retain the pending task,
+  and select another file through pointer messages before running the tasks.
+- Red: `cargo test selecting_another_file_does_not_cancel_an_explicit_properties_request -- --nocapture`
+  showed no Properties and reported "Properties request was replaced".
+- Cause: explicit Properties and passive selection details shared a cancellation
+  group. Scheduling selection details cancelled the user's Properties request.
+- Fix: run Properties outside the selection-details cancellation group. The
+  Command session output revision continues to reject superseded results.
+- Green: the original Properties target is displayed after selection changes;
+  stale-result coverage also passes. All-target tests passed (614 passed,
+  19 ignored), along with Clippy and formatting.

@@ -285,8 +285,10 @@ impl App {
         self.presentation
             .set_status("Reading Properties…".to_owned());
         Task::perform(
+            // Selection details must not cancel this explicit request.
+            // The Command session revision handles superseded Properties output.
             self.operations
-                .run_foreground(OperationKind::Details, move |_| properties::read(&path)),
+                .run_foreground(OperationKind::Background, move |_| properties::read(&path)),
             move |completion| Message::PropertiesFinished {
                 request,
                 result: match completion {

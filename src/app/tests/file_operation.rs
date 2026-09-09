@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn selecting_another_file_does_not_cancel_an_explicit_properties_request() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["requested.txt", "selected.txt"] {
+                std_fs::write(temp.path().join(name), "fixture").unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("properties requested.txt".into()));
+            let properties = app.update(Message::CommandSubmitted);
+
+            // A pointer selection queues status details while Properties is pending.
+            app.modifiers = keyboard::Modifiers::CTRL;
+            let _ = app.update(Message::EntryPressed(1));
+            let details = app.update(Message::EntryReleased(1));
+            navigation::finish_tasks(&mut app, details).await;
+            navigation::finish_tasks(&mut app, properties).await;
+
+            assert_eq!(app.grid.selected_entry(), Some(1));
+            assert!(
+                app.command
+                    .output()
+                    .is_some_and(|output| { output.summary == "Properties  •  requested.txt" }),
+                "Properties disappeared after selecting another file: {}",
+                app.presentation.status()
+            );
+        });
+}
+
+#[test]
 fn queued_properties_results_cannot_replace_newer_command_output() {
     use iced::futures::StreamExt;
 
