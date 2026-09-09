@@ -555,7 +555,7 @@ pub fn read_entry_details(path: &Path) -> Result<String, FsError> {
         .map_err(|error| FsError::new("inspect", path, io::Error::other(error.to_string())))?;
 
     let permissions = if info.has_attribute("unix::mode") {
-        format_permissions(info.attribute_uint32("unix::mode"), info.file_type())
+        format_permissions(info.attribute_uint32("unix::mode"))
     } else {
         "permissions unknown".to_owned()
     };
@@ -580,10 +580,14 @@ pub fn read_entry_details(path: &Path) -> Result<String, FsError> {
     Ok(format!("{permissions}  •  {size}  •  {user}:{group}"))
 }
 
-fn format_permissions(mode: u32, file_type: gio::FileType) -> String {
-    let kind = match file_type {
-        gio::FileType::Directory => 'd',
-        gio::FileType::SymbolicLink => 'l',
+fn format_permissions(mode: u32) -> String {
+    let kind = match mode & libc::S_IFMT {
+        libc::S_IFDIR => 'd',
+        libc::S_IFLNK => 'l',
+        libc::S_IFIFO => 'p',
+        libc::S_IFSOCK => 's',
+        libc::S_IFCHR => 'c',
+        libc::S_IFBLK => 'b',
         _ => '-',
     };
     let mut value = String::with_capacity(10);

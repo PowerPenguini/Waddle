@@ -910,6 +910,29 @@ fn reads_child_folders_hidden_filtered_and_sorted() {
 
 #[cfg(unix)]
 #[test]
+fn entry_details_identify_named_pipes_and_unix_sockets() {
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixListener},
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("socket");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let pipe = temp.path().join("pipe");
+    let pipe_c = CString::new(pipe.as_os_str().as_bytes()).unwrap();
+    // SAFETY: pipe_c is a live NUL-terminated path inside the temporary directory.
+    assert_eq!(unsafe { libc::mkfifo(pipe_c.as_ptr(), 0o600) }, 0);
+
+    for (path, expected) in [(socket, "srw-------"), (pipe, "prw-------")] {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let details = read_entry_details(&path).unwrap();
+        assert!(details.starts_with(expected), "{details}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn reads_permissions_size_and_owner_for_status() {
     use std::os::unix::fs::PermissionsExt;
 

@@ -116,3 +116,14 @@ outside this work.
 - Fix: assign revisions to details requests and reject superseded completions.
 - Green: the regression passed with real metadata workers; all-target tests
   passed (604 passed, 19 ignored); Clippy with warnings denied and formatting passed.
+
+## Round 10: status details identify special files as regular files
+
+- Reproduction: read status details for a real temporary Unix socket and FIFO.
+- Red: `cargo test entry_details_identify_named_pipes_and_unix_sockets -- --nocapture`
+  showed `-rw-------` for the socket instead of `srw-------`.
+- Cause: file-type formatting distinguished only folders and symbolic links;
+  every other kind used the regular-file marker.
+- Fix: derive the marker from Unix mode bits, including sockets, FIFOs, and devices.
+- Green: socket and FIFO regressions passed; all-target tests passed
+  (605 passed, 19 ignored); Clippy with warnings denied and formatting passed.
