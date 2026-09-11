@@ -474,6 +474,7 @@ pub(super) fn delete(entries: Vec<Entry>) -> DeleteReport {
         match crate::fs::delete_permanently(&entry.receipt.trashed) {
             Ok(()) => match fs::remove_file(&entry.receipt.info) {
                 Ok(()) => report.deleted += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => report.deleted += 1,
                 Err(error) => report.failures.push((
                     entry.file,
                     format!("item deleted, but Trash metadata remains: {error}"),

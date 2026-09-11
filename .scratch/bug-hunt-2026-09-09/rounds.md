@@ -667,3 +667,17 @@ outside this work.
   the next click dismisses it. The test uses an isolated physical Trash fixture.
   All-target tests passed (636 passed, 23 ignored), along with Clippy, formatting,
   and whitespace checks.
+
+## Round 48: already-removed Trash metadata causes a false deletion failure (2026-09-11)
+
+- Reproduction: open permanent-delete confirmation for a Trash item, remove its
+  metadata externally, then confirm deletion while the item itself still exists.
+- Red: `cargo test trash_deletion_succeeds_when_metadata_disappears_after_confirmation_opens -- --nocapture`
+  deleted the item but reported zero deleted and one failed.
+- Cause: metadata cleanup treated NotFound as a failure even though both the item
+  and its metadata were gone after the operation.
+- Fix: count already-absent metadata as successful cleanup after deleting the item;
+  other metadata errors retain their existing failure handling.
+- Green: the real item is deleted, the status reports one success, no error report
+  opens, and Trash refreshes to empty. All-target tests passed (637 passed,
+  23 ignored), along with Clippy, formatting, and whitespace checks.
