@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn queued_copy_completion_preserves_the_newly_opened_trash_view() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std_fs::create_dir(&source_directory).unwrap();
+            std_fs::create_dir(&destination).unwrap();
+            let source = source_directory.join("copied.txt");
+            std_fs::write(&source, "copied contents").unwrap();
+            let mut transfer = TransferState::default();
+            transfer
+                .copy(&fs::read_directory(&source_directory).unwrap())
+                .unwrap();
+            let request = transfer.paste(destination.clone()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(destination.clone());
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(temp.path().join("Trash"));
+            let mut stream = iced_runtime::task::into_stream(app.start_transfer(request)).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert!(!app.foreground_operation_active());
+            let opened = app.open_trash();
+            navigation::finish_tasks(&mut app, opened).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash
+            );
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, completion).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash,
+                "Copy completion replaced Trash with the previous folder"
+            );
+            assert!(app.navigation.entries().is_empty());
+            assert_eq!(
+                std_fs::read_to_string(destination.join("copied.txt")).unwrap(),
+                "copied contents"
+            );
+            assert!(source.exists());
+        });
+}
+
+#[test]
 fn queued_copy_completion_preserves_pending_parent_navigation() {
     use iced::futures::StreamExt;
 

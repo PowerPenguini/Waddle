@@ -723,3 +723,17 @@ outside this work.
 - Green: Parent navigation completes, the parent lists the destination, and both
   source and copied file remain intact. All-target tests passed (640 passed,
   23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 52: Copy completion leaves a newly opened Trash view (2026-09-11)
+
+- Reproduction: complete a real Copy worker while retaining its result, open Trash,
+  then deliver the queued completion.
+- Red: `cargo test queued_copy_completion_preserves_the_newly_opened_trash_view -- --nocapture`
+  replaced the already-open Trash view with the previous folder.
+- Cause: Transfer entry refreshes always requested an ordinary folder listing,
+  even when the displayed location was Recent or Trash.
+- Fix: refresh the displayed virtual location when no folder is displayed, while
+  retaining normal folder selection and pending-navigation behavior.
+- Green: Trash stays open and empty while the copied file and source remain
+  intact. All-target tests passed (641 passed, 23 ignored), along with Clippy,
+  formatting, and whitespace checks.

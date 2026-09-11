@@ -437,6 +437,8 @@ impl App {
             transfer_session::Refresh::Entries(select) => {
                 if self.navigation.defer_refresh() {
                     Task::none()
+                } else if !self.navigation.folder_displayed() {
+                    self.refresh_location()
                 } else {
                     self.refresh_selected(select)
                 }
