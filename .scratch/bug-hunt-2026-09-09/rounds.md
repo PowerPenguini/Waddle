@@ -695,3 +695,17 @@ outside this work.
 - Green: metadata is removed, deletion reports success without an error report,
   and Trash is empty. All-target tests passed (638 passed, 23 ignored), along with
   Clippy, formatting, and whitespace checks.
+
+## Round 50: queued Restore completion reopens Trash after navigation (2026-09-11)
+
+- Reproduction: complete a real Restore worker while retaining its result, use
+  the Back button to return from Trash to the previous folder, then deliver the
+  queued result through the app.
+- Red: `cargo test queued_restore_completion_does_not_reopen_trash_after_back_navigation -- --nocapture`
+  reopened Trash even though Back had already finished displaying the folder.
+- Cause: Restore completion requested opening Trash instead of refreshing the
+  location currently displayed.
+- Fix: route Restore's refresh through the existing current-location refresh.
+- Green: the restored file remains visible in the folder chosen with Back, and
+  Restore removes its Trash metadata. All-target tests passed (639 passed,
+  23 ignored), along with Clippy, formatting, and whitespace checks.

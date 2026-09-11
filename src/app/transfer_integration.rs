@@ -435,7 +435,7 @@ impl App {
         let refresh = match completion.refresh {
             transfer_session::Refresh::None => Task::none(),
             transfer_session::Refresh::Entries(select) => self.refresh_selected(select),
-            transfer_session::Refresh::Trash => self.open_trash(),
+            transfer_session::Refresh::Trash => self.refresh_location(),
         };
         Task::batch([tree, refresh])
     }

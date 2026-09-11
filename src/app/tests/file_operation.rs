@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn queued_restore_completion_does_not_reopen_trash_after_back_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let folder = temp.path().join("folder");
+            let root = temp.path().join("Trash");
+            std_fs::create_dir(&folder).unwrap();
+            std_fs::create_dir_all(root.join("files")).unwrap();
+            std_fs::create_dir_all(root.join("info")).unwrap();
+            let original = folder.join("restored.txt");
+            let trashed = root.join("files/restored.txt");
+            let info = root.join("info/restored.txt.trashinfo");
+            std_fs::write(&trashed, "restored contents").unwrap();
+            std_fs::write(
+                &info,
+                format!("[Trash Info]\nPath={}\n", original.display()),
+            )
+            .unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(folder.clone());
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(root);
+            app.navigation
+                .install_trash_entries(app.trash.entries().unwrap());
+            app.grid.select_only(Some(0), 1);
+            let mut stream =
+                iced_runtime::task::into_stream(app.update(Message::ContextRestore)).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert_eq!(
+                std_fs::read_to_string(&original).unwrap(),
+                "restored contents"
+            );
+            assert!(!trashed.exists());
+
+            let back = app.update(Message::Back);
+            navigation::finish_tasks(&mut app, back).await;
+            assert!(app.navigation.folder_displayed());
+            for message in queued {
+                let completed = app.update(message);
+                navigation::finish_tasks(&mut app, completed).await;
+            }
+            assert!(
+                app.navigation.folder_displayed(),
+                "The queued Restore completion reopened Trash after Back"
+            );
+            assert_eq!(app.navigation.current(), folder);
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(app.navigation.entries()[0].path, original);
+            assert!(!info.exists());
+        });
+}
+
+#[test]
 fn trash_deletion_cleans_metadata_when_the_item_disappears_before_confirmation() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
