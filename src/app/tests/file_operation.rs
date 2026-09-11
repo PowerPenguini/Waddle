@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn queued_undo_completion_does_not_cancel_a_newer_folder_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let next = temp.path().join("next");
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir(&next).unwrap();
+            let file = original.join("undo.txt");
+            std_fs::write(&file, "").unwrap();
+            std_fs::write(next.join("destination.txt"), "new location").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            app.journal
+                .record(journal::Action::new_file(file.clone()).unwrap())
+                .unwrap();
+
+            let key = keyboard::Key::Character("u".into());
+            let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("u"));
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert!(!file.exists());
+            let _ = app.update(Message::LocationChanged(next.display().to_string()));
+            let navigation = app.update(Message::LocationSubmitted);
+            assert!(app.navigation.loading());
+            assert_eq!(app.navigation.current(), original);
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, Task::batch([navigation, completion])).await;
+            assert_eq!(
+                app.navigation.current(),
+                next,
+                "Undo cancelled the newer navigation"
+            );
+            assert!(
+                app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == next.join("destination.txt"))
+            );
+            assert!(!app.navigation.loading());
+        });
+}
+
+#[test]
 fn queued_undo_completion_preserves_a_newer_recent_or_trash_location() {
     use iced::futures::StreamExt;
 

@@ -460,3 +460,18 @@ outside this work.
 - Green: both Recent and Trash remain displayed through the queued completion
   and subsequent refresh. All-target tests passed (622 passed, 23 ignored),
   along with Clippy, formatting, and whitespace checks.
+
+## Round 34: queued Undo cancels a newer pending navigation (2026-09-11)
+
+- Reproduction: complete a real New File Undo but retain its UI result, submit
+  another folder through Location, then deliver the Undo result before that
+  folder's navigation task finishes.
+- Red: `cargo test queued_undo_completion_does_not_cancel_a_newer_folder_navigation -- --nocapture`
+  stayed in the original folder instead of opening the requested destination.
+- Cause: the journal refresh replaced the pending Navigation session request and
+  cancelled its work, even though the user's navigation was newer than Undo.
+- Fix: defer the journal refresh while a navigation request is pending, using
+  the existing Navigation session refresh coalescing behavior.
+- Green: the requested folder opens and displays its destination file. All-target
+  tests passed (623 passed, 23 ignored), along with Clippy, formatting, and
+  whitespace checks.
