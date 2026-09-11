@@ -622,3 +622,19 @@ outside this work.
 - Green: the menu contains the supported actions and selecting Properties opens
   real file properties. All-target tests passed (633 passed, 23 ignored), along
   with Clippy, formatting, and whitespace checks.
+
+## Round 45: Open With hides an active recursive search after cancellation (2026-09-11)
+
+- Reproduction: open Open With from a recursive-search result, then press Escape.
+  The chooser closes, but the search stays active with its input hidden in Browser
+  mode, preventing the usual Escape exit from search.
+- Red: `cargo test cancelling_open_with_restores_the_recursive_search_input -- --nocapture`
+  returned Browser mode instead of restoring the Search input.
+- Cause: Open With replaced the underlying browser mode, even though transient
+  presentation already resolves the chooser as an overlay.
+- Fix: retain the underlying mode when opening or submitting the chooser, and
+  do not clear that mode when Escape dismisses the Open With overlay.
+- Green: the first Escape restores the query and search results; the second exits
+  search and restores the full folder. Existing Open With checks still pass.
+  All-target tests passed (634 passed, 23 ignored), along with Clippy, formatting,
+  and whitespace checks.

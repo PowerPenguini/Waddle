@@ -558,7 +558,7 @@ fn open_with_context_shows_compatible_options_and_a_manual_input() {
 
     let _ = app.update(Message::ContextOpenWith);
 
-    assert_eq!(app.browser_input.mode(), InputMode::OpenWith);
+    assert_eq!(app.transient_presentation().mode(), InputMode::OpenWith);
     assert!(matches!(
         app.open_with.view(),
         open_with::View::Open {

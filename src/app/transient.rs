@@ -82,19 +82,16 @@ impl<'a> Sessions<'a> {
     pub(super) fn begin_open_with(&mut self, path: PathBuf) -> Result<(), String> {
         self.command.close_output();
         self.open_with.begin(path)?;
-        self.browser.enter(Mode::OpenWith);
         Ok(())
     }
 
     pub(super) fn choose_open_with(&mut self, application: &str) -> Option<open_with::Request> {
         let request = self.open_with.choose(application)?;
-        self.browser.leave_mode();
         Some(request)
     }
 
     pub(super) fn submit_open_with(&mut self) -> Option<open_with::Request> {
         let request = self.open_with.submit_custom()?;
-        self.browser.leave_mode();
         Some(request)
     }
 

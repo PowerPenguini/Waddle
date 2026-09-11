@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn cancelling_open_with_restores_the_recursive_search_input() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["match.txt", "other.txt"] {
+                std_fs::write(temp.path().join(name), name).unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.sync_location_monitoring();
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/match".into()));
+            navigation::finish_tasks(&mut app, search).await;
+            let context = app.update(Message::EntryContext(0));
+            navigation::finish_tasks(&mut app, context).await;
+            let open = app.update(Message::ContextOpenWith);
+            navigation::finish_tasks(&mut app, open).await;
+            assert!(app.open_with.is_open());
+
+            let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let cancel = app.handle_key(
+                escape.clone(),
+                escape.clone(),
+                keyboard::Modifiers::empty(),
+                None,
+            );
+            navigation::finish_tasks(&mut app, cancel).await;
+            assert!(!app.open_with.is_open());
+            assert_eq!(
+                app.transient_presentation().mode(),
+                InputMode::Search,
+                "Open With left a hidden recursive search in browser mode"
+            );
+            assert!(app.bottom_input_active());
+            assert_eq!(app.search.query(), "match");
+            assert_eq!(app.navigation.entries().len(), 1);
+
+            let cancel = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+            navigation::finish_tasks(&mut app, cancel).await;
+            assert!(!app.search.is_active());
+            assert_eq!(app.browser_input.mode(), InputMode::Browser);
+            assert_eq!(app.navigation.entries().len(), 2);
+        });
+}
+
+#[test]
 fn escape_dismisses_visible_output_before_the_hidden_file_prompt() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();

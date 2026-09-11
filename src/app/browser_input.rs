@@ -386,7 +386,9 @@ impl BrowserInput {
                 }
                 Mode::Rename => Intent::None,
                 Mode::OpenWith => {
-                    self.leave_mode();
+                    if self.mode() == Mode::OpenWith {
+                        self.leave_mode();
+                    }
                     Intent::CancelOpenWith
                 }
                 Mode::Location => {
