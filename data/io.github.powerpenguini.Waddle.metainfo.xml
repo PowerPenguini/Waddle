@@ -22,6 +22,18 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.15" date="2026-09-11">
+      <description>
+        <ul>
+          <li>Preserve recursive-search selections and restore search input after closing Open With.</li>
+          <li>Refresh the original folder when opening a recursive-search match.</li>
+          <li>Hide unavailable mutation actions in Recent and recursive-search menus.</li>
+          <li>Keep deletion confirmations and partial-copy errors visible through refreshes.</li>
+          <li>Clean up Trash metadata correctly when items or metadata disappear during confirmation.</li>
+          <li>Preserve current views and pending navigation when Copy or Restore completes.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.14" date="2026-09-11">
       <description>
         <ul>
