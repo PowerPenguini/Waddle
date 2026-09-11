@@ -1144,6 +1144,15 @@ impl App {
     }
 
     pub(super) fn context_actions(&self, target: ContextTarget) -> Vec<(String, Message)> {
+        if self.search.is_recursive() {
+            return match target {
+                ContextTarget::Background => Vec::new(),
+                ContextTarget::Entry(_) => vec![
+                    ("Properties".to_owned(), Message::ContextProperties),
+                    ("Open With…".to_owned(), Message::ContextOpenWith),
+                ],
+            };
+        }
         match (self.navigation.displayed_location(), target) {
             (DisplayedLocation::Trash, ContextTarget::Background) => {
                 vec![("Empty Trash".to_owned(), Message::ContextEmptyTrash)]

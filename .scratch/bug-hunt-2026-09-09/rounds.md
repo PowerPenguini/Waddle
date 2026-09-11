@@ -607,3 +607,18 @@ outside this work.
 - Green: the selected matches and active file survive insertion ahead of them,
   and a subsequent Shift-click uses the original anchor. All-target tests passed
   (632 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 44: recursive search menus offer actions that do nothing (2026-09-11)
+
+- Reproduction: run recursive search and right-click a result. The menu offers
+  New Folder, New Empty File, Rename, and Move to Trash, but their handlers reject
+  mutations during recursive search.
+- Red: `cargo test recursive_search_menus_offer_only_available_actions -- --nocapture`
+  returned all six folder actions instead of the two supported result actions.
+- Cause: menu construction considered the displayed location but not the active
+  recursive search, unlike the mutation guard.
+- Fix: offer Properties and Open With for recursive results and no background
+  mutation actions.
+- Green: the menu contains the supported actions and selecting Properties opens
+  real file properties. All-target tests passed (633 passed, 23 ignored), along
+  with Clippy, formatting, and whitespace checks.

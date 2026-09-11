@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn recursive_search_menus_offer_only_available_actions() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            std_fs::write(temp.path().join("match.txt"), "fixture").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/match".into()));
+            navigation::finish_tasks(&mut app, search).await;
+            let context = app.update(Message::EntryContext(0));
+            navigation::finish_tasks(&mut app, context).await;
+            let menu = app.grid.context_menu().unwrap();
+            let actions = app.context_actions(menu.target);
+            let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
+            assert_eq!(
+                labels,
+                ["Properties", "Open With…"],
+                "Recursive search offered mutation actions whose handlers reject them"
+            );
+            assert!(app.context_actions(ContextTarget::Background).is_empty());
+            let (_, properties) = actions.into_iter().next().unwrap();
+            let inspected = app.update(properties);
+            navigation::finish_tasks(&mut app, inspected).await;
+            assert!(app.command.output().is_some());
+        });
+}
+
 fn press_window_motion(app: &mut App, motion: &'static str) {
     let control_w = keyboard::Key::Character("w".into());
     let _ = app.handle_key(
