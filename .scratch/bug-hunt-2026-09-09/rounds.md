@@ -681,3 +681,17 @@ outside this work.
 - Green: the real item is deleted, the status reports one success, no error report
   opens, and Trash refreshes to empty. All-target tests passed (637 passed,
   23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 49: an externally deleted Trash item leaves orphaned metadata (2026-09-11)
+
+- Reproduction: open permanent-delete confirmation, remove the item externally
+  while leaving its metadata, then confirm.
+- Red: `cargo test trash_deletion_cleans_metadata_when_the_item_disappears_before_confirmation -- --nocapture`
+  left the item's metadata behind after the failed attempt to inspect it.
+- Cause: item-deletion errors stopped cleanup even when the item was already gone.
+- Fix: after an item-deletion error, check the item with symlink metadata. Continue
+  metadata cleanup only if absence is confirmed; retain errors for existing or
+  inaccessible items.
+- Green: metadata is removed, deletion reports success without an error report,
+  and Trash is empty. All-target tests passed (638 passed, 23 ignored), along with
+  Clippy, formatting, and whitespace checks.

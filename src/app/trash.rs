@@ -471,16 +471,20 @@ pub(super) fn finish_restore(
 pub(super) fn delete(entries: Vec<Entry>) -> DeleteReport {
     let mut report = DeleteReport::default();
     for entry in entries {
-        match crate::fs::delete_permanently(&entry.receipt.trashed) {
-            Ok(()) => match fs::remove_file(&entry.receipt.info) {
-                Ok(()) => report.deleted += 1,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => report.deleted += 1,
-                Err(error) => report.failures.push((
-                    entry.file,
-                    format!("item deleted, but Trash metadata remains: {error}"),
-                )),
-            },
-            Err(error) => report.failures.push((entry.file, error.to_string())),
+        if let Err(error) = crate::fs::delete_permanently(&entry.receipt.trashed)
+            && !fs::symlink_metadata(&entry.receipt.trashed)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            report.failures.push((entry.file, error.to_string()));
+            continue;
+        }
+        match fs::remove_file(&entry.receipt.info) {
+            Ok(()) => report.deleted += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => report.deleted += 1,
+            Err(error) => report.failures.push((
+                entry.file,
+                format!("item deleted, but Trash metadata remains: {error}"),
+            )),
         }
     }
     report
