@@ -1,6 +1,136 @@
 use super::*;
 
 #[test]
+fn opening_a_recursive_search_match_restores_current_folder_contents() {
+    use gio::prelude::AppInfoExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    const CHILD_ROOT: &str = "WADDLE_SEARCH_OPEN_TEST_ROOT";
+    const APPLICATION: &str = "waddle-test-search.desktop";
+    let Ok(root) = std::env::var(CHILD_ROOT) else {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        let config = temp.path().join("config");
+        std_fs::create_dir_all(data.join("applications")).unwrap();
+        std_fs::create_dir_all(&config).unwrap();
+        let launcher = temp.path().join("record-open");
+        std_fs::write(
+            &launcher,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WADDLE_SEARCH_OPEN_TEST_ROOT/opened\"\n",
+        )
+        .unwrap();
+        std_fs::set_permissions(&launcher, std_fs::Permissions::from_mode(0o755)).unwrap();
+        std_fs::write(
+            data.join("applications").join(APPLICATION),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Waddle Test Search\nExec={} %f\nMimeType=text/plain;\n",
+                launcher.display()
+            ),
+        )
+        .unwrap();
+        std_fs::write(
+            data.join("applications/mimeinfo.cache"),
+            format!("[MIME Cache]\ntext/plain={APPLICATION};\n"),
+        )
+        .unwrap();
+        std_fs::write(
+            config.join("mimeapps.list"),
+            format!("[Default Applications]\ntext/plain={APPLICATION};\n"),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::navigation::opening_a_recursive_search_match_restores_current_folder_contents",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, temp.path())
+            .env("XDG_DATA_HOME", data)
+            .env("XDG_CONFIG_HOME", config)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+
+    assert_eq!(
+        gio::AppInfo::default_for_type("text/plain", false)
+            .and_then(|application| application.id())
+            .as_deref(),
+        Some(APPLICATION),
+        "the child process must use the isolated test application"
+    );
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = PathBuf::from(root);
+            let folder = root.join("files");
+            std_fs::create_dir(&folder).unwrap();
+            let matched = folder.join("match.txt");
+            let old = folder.join("old.txt");
+            let new = folder.join("new.txt");
+            std_fs::write(&matched, "matched contents").unwrap();
+            std_fs::write(&old, "old contents").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(folder.clone());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(&folder).unwrap());
+            app.sync_location_monitoring();
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/match".into()));
+            finish_tasks(&mut app, search).await;
+
+            std_fs::remove_file(&old).unwrap();
+            std_fs::write(&new, "new contents").unwrap();
+            let refresh = app.update(Message::DirectoryChanged(directory_watch::Event {
+                path: folder.clone(),
+                removed: vec![old],
+                watch_failed: false,
+            }));
+            finish_tasks(&mut app, refresh).await;
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(app.navigation.entries()[0].path, matched);
+            assert_eq!(app.grid.selected_entry(), Some(0));
+
+            let submitted = app.update(Message::SearchSubmitted);
+            finish_tasks(&mut app, submitted).await;
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if std_fs::read_to_string(root.join("opened"))
+                        .is_ok_and(|opened| opened.trim() == matched.to_str().unwrap())
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the default application did not receive the matched file");
+            assert_eq!(app.browser_input.mode(), InputMode::Browser);
+            assert!(!app.search.is_active());
+            let paths: Vec<_> = app
+                .navigation
+                .entries()
+                .iter()
+                .map(|entry| &entry.path)
+                .collect();
+            assert_eq!(
+                paths,
+                [&matched, &new],
+                "Opening the match restored stale folder contents"
+            );
+        });
+}
+
+#[test]
 fn submitting_an_empty_recursive_search_restores_current_folder_contents() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

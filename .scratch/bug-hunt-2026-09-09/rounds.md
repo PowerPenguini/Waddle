@@ -577,3 +577,18 @@ outside this work.
 - Fix: refresh the restored location when recursive submission has no entry to open.
 - Green: Enter closes search and displays the current file. All-target tests
   passed (630 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 42: opening a recursive search match restores stale files (2026-09-11)
+
+- Reproduction: find a file recursively, replace another file in the original
+  folder, consume its directory notification in search, then open the match.
+- Red: `cargo test opening_a_recursive_search_match_restores_current_folder_contents -- --nocapture`
+  opened the correct file but restored the deleted file and hid the new one.
+  A subprocess with isolated desktop associations records the real application
+  launch without changing the user's defaults or launching their editor.
+- Cause: submission restored the search snapshot and launched the selected file
+  without refreshing the original location.
+- Fix: batch opening the file with refreshing the restored location.
+- Green: the default application receives the matched file, search closes, and
+  the browser displays the current folder contents. All-target tests passed
+  (631 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.

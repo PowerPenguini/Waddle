@@ -826,7 +826,7 @@ impl App {
                     select: None,
                 })
             } else {
-                self.open_entry(entry)
+                Task::batch([self.open_entry(entry), self.refresh_location()])
             };
         }
         if refresh {
