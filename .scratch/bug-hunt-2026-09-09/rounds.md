@@ -550,3 +550,18 @@ outside this work.
 - Green: the removed entry disappears while its inspection failure remains visible;
   the next click reveals the surviving file's refreshed details. All-target tests
   passed (628 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 40: cancelling recursive search restores stale files (2026-09-11)
+
+- Reproduction: start recursive search, delete one file and create another, deliver
+  the directory notification, and let search update. Then press Escape.
+- Red: `cargo test cancelling_recursive_search_refreshes_changes_made_during_the_search -- --nocapture`
+  correctly updated search results, but Escape restored the deleted file and hid
+  the newly created one.
+- Cause: cancellation restored the original folder snapshot and only refreshed
+  selected-file details; directory changes consumed during search were lost.
+- Fix: refresh the restored location after recursive cancellation, preserving the
+  restored selection through the existing location refresh behavior.
+- Green: Escape displays the current files and retains the originally selected
+  surviving file. All-target tests passed (629 passed, 23 ignored), along with
+  Clippy, formatting, and whitespace checks.

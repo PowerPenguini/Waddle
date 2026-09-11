@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn cancelling_recursive_search_refreshes_changes_made_during_the_search() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["keep.txt", "old.txt"] {
+                std_fs::write(temp.path().join(name), name).unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.sync_location_monitoring();
+            app.grid.select_only(Some(0), 2);
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/txt".into()));
+            finish_tasks(&mut app, search).await;
+
+            let old = temp.path().join("old.txt");
+            let new = temp.path().join("new.txt");
+            std_fs::remove_file(&old).unwrap();
+            std_fs::write(&new, "added during search").unwrap();
+            let refresh = app.update(Message::DirectoryChanged(directory_watch::Event {
+                path: temp.path().to_path_buf(),
+                removed: vec![old.clone()],
+                watch_failed: false,
+            }));
+            finish_tasks(&mut app, refresh).await;
+            assert!(
+                app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == new)
+            );
+            assert!(
+                !app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == old)
+            );
+
+            let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let cancel = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
+            finish_tasks(&mut app, cancel).await;
+            assert!(!app.search.is_active());
+            let names: Vec<_> = app
+                .navigation
+                .entries()
+                .iter()
+                .map(|entry| entry.name.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                ["keep.txt", "new.txt"],
+                "Escape restored stale folder contents"
+            );
+            assert_eq!(
+                app.navigation.entries()[app.grid.selected_entry().unwrap()].path,
+                temp.path().join("keep.txt")
+            );
+        });
+}
+
+#[test]
 fn native_queue_overflow_rescans_the_displayed_folder() {
     use iced::futures::StreamExt;
 

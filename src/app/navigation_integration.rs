@@ -832,9 +832,15 @@ impl App {
     }
 
     pub(super) fn cancel_search(&mut self) -> Task<Message> {
+        let refresh = self.search.is_recursive();
         self.operations.cancel(OperationKind::Search);
         self.search.cancel(&mut self.navigation, &mut self.grid);
-        self.schedule_details()
+        if refresh {
+            // Recursive search restores a snapshot that may predate filesystem events.
+            self.refresh_location()
+        } else {
+            self.schedule_details()
+        }
     }
 
     pub(super) fn cancel_search_state(&mut self) {
