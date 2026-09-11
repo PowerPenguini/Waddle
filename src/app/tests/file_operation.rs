@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn permission_success_feedback_survives_details_refresh_until_next_input() {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["first.txt", "second.txt"] {
+                let path = temp.path().join(name);
+                std_fs::write(&path, name).unwrap();
+                std_fs::set_permissions(path, std_fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.grid.select_only(Some(0), 2);
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(
+                "chmod 640 first.txt second.txt".into(),
+            ));
+            let task = app.update(Message::CommandSubmitted);
+            navigation::finish_tasks(&mut app, task).await;
+
+            assert_eq!(
+                app.browser_status_model().text,
+                "Changed permissions on 2 items to 0640"
+            );
+            assert!(!app.presentation.notice_is_danger());
+            for name in ["first.txt", "second.txt"] {
+                assert_eq!(
+                    std_fs::metadata(temp.path().join(name))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o7777,
+                    0o640
+                );
+            }
+            let task = app.update(Message::Event(
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                event::Status::Captured,
+            ));
+            navigation::finish_tasks(&mut app, task).await;
+            assert!(
+                app.browser_status_model().text.contains("rw-r-----"),
+                "new input should reveal the refreshed permission details: {}",
+                app.browser_status_model().text
+            );
+        });
+}
+
+#[test]
 fn queued_permission_results_preserve_newer_command_output() {
     use iced::futures::StreamExt;
     use std::os::unix::fs::PermissionsExt;

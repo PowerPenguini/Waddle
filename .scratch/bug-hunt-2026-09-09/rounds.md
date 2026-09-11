@@ -522,3 +522,18 @@ outside this work.
   requested permissions are applied and file contents remain intact. All-target
   tests passed (626 passed, 23 ignored), along with Clippy, formatting, and
   whitespace checks.
+
+## Round 38: permission success feedback vanishes during refresh (2026-09-11)
+
+- Reproduction: change two files' permissions through `:chmod`, consume completion
+  and detail-refresh tasks, and inspect the browser's visible status.
+- Red: `cargo test permission_success_feedback_survives_details_refresh_until_next_input -- --nocapture`
+  showed only the selected file's details instead of the operation confirmation.
+- Cause: the completion set a status message, then immediately scheduled details,
+  whose status update replaced that message before the next frame.
+- Fix: use the existing neutral status notice for successful metadata actions so
+  details can refresh without erasing the confirmation.
+- Green: the success message survives refreshed details; the next click dismisses
+  it and reveals the new permissions. Both files have the requested mode.
+  All-target tests passed (627 passed, 23 ignored), along with Clippy, formatting,
+  and whitespace checks.
