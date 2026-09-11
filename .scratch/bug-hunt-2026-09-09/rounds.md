@@ -592,3 +592,18 @@ outside this work.
 - Green: the default application receives the matched file, search closes, and
   the browser displays the current folder contents. All-target tests passed
   (631 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 43: recursive search refresh resets selected matches (2026-09-11)
+
+- Reproduction: recursively search for three files, select two matches with
+  clicks, add an earlier-sorting match, and deliver its directory notification.
+- Red: `cargo test recursive_search_refresh_preserves_selected_matches_by_path -- --nocapture`
+  replaced the two selected matches with the newly added first result.
+- Cause: rerunning an unchanged recursive query cleared selection and always
+  selected the first result, just as when editing the query.
+- Fix: retain selection by path for an unchanged query, including the active file
+  and selection anchors. Preserve that snapshot while a refresh is pending and
+  discard it when the query changes; remap surviving paths on completion.
+- Green: the selected matches and active file survive insertion ahead of them,
+  and a subsequent Shift-click uses the original anchor. All-target tests passed
+  (632 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.

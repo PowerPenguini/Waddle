@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn recursive_search_refresh_preserves_selected_matches_by_path() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            for name in ["bravo.txt", "delta.txt", "omega.txt"] {
+                std_fs::write(temp.path().join(name), "fixture").unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.sync_location_monitoring();
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/txt".into()));
+            finish_tasks(&mut app, search).await;
+            for (index, modifiers) in [
+                (0, keyboard::Modifiers::empty()),
+                (2, keyboard::Modifiers::CTRL),
+            ] {
+                app.modifiers = modifiers;
+                let _ = app.update(Message::EntryPressed(index));
+                let clicked = app.update(Message::EntryReleased(index));
+                finish_tasks(&mut app, clicked).await;
+            }
+            let selected_paths = |app: &App| {
+                app.selected_entries()
+                    .into_iter()
+                    .map(|entry| entry.path)
+                    .collect::<Vec<_>>()
+            };
+            let selected = vec![temp.path().join("bravo.txt"), temp.path().join("omega.txt")];
+            assert_eq!(selected_paths(&app), selected);
+
+            std_fs::write(temp.path().join("alpha.txt"), "new match").unwrap();
+            let refresh = app.update(Message::DirectoryChanged(directory_watch::Event {
+                path: temp.path().to_path_buf(),
+                removed: Vec::new(),
+                watch_failed: false,
+            }));
+            finish_tasks(&mut app, refresh).await;
+            assert_eq!(app.navigation.entries().len(), 4);
+            assert_eq!(
+                selected_paths(&app),
+                selected,
+                "Refresh changed the selected matches"
+            );
+            assert_eq!(
+                app.navigation.entries()[app.grid.selected_entry().unwrap()].path,
+                temp.path().join("omega.txt")
+            );
+            app.modifiers = keyboard::Modifiers::SHIFT;
+            let _ = app.update(Message::EntryPressed(2));
+            let clicked = app.update(Message::EntryReleased(2));
+            finish_tasks(&mut app, clicked).await;
+            assert_eq!(
+                selected_paths(&app),
+                [temp.path().join("delta.txt"), temp.path().join("omega.txt")],
+                "Refresh lost the selection anchor"
+            );
+        });
+}
+
+#[test]
 fn opening_a_recursive_search_match_restores_current_folder_contents() {
     use gio::prelude::AppInfoExt;
     use std::os::unix::fs::PermissionsExt;

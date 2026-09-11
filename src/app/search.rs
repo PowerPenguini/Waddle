@@ -12,6 +12,7 @@ struct Recursive {
     loading: bool,
     truncated: bool,
     restore: SearchDisplay,
+    refresh_selection: Option<Selection<PathBuf>>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,12 +72,25 @@ impl SearchSession {
             return Update::None;
         };
         self.revision = self.revision.wrapping_add(1);
+        if let Some(recursive) = active.recursive.as_mut() {
+            if self.query != value {
+                recursive.refresh_selection = None;
+            } else if !recursive.loading {
+                recursive.refresh_selection = Some(grid.capture_selection().map(|index| {
+                    navigation
+                        .entries()
+                        .get(index)
+                        .map(|entry| entry.path.clone())
+                }));
+            }
+        }
         if active.recursive.is_none() && value.starts_with('/') {
             value.remove(0);
             active.recursive = Some(Recursive {
                 loading: false,
                 truncated: false,
                 restore: navigation.capture_search_display(),
+                refresh_selection: None,
             });
         }
         self.query = value;
@@ -139,10 +153,21 @@ impl SearchSession {
             Ok(results) => {
                 recursive.truncated = results.truncated;
                 navigation.install_search_entries(results.entries);
-                grid.select_only(
-                    (!navigation.entries().is_empty()).then_some(0),
-                    navigation.entries().len(),
-                );
+                if let Some(selection) = recursive.refresh_selection.take() {
+                    let positions: HashMap<_, _> = navigation
+                        .entries()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| (entry.path.as_path(), index))
+                        .collect();
+                    let selection = selection.map(|path| positions.get(path.as_path()).copied());
+                    grid.restore_selection(selection, Some);
+                } else {
+                    grid.select_only(
+                        (!navigation.entries().is_empty()).then_some(0),
+                        navigation.entries().len(),
+                    );
+                }
                 Ok(())
             }
             Err(error) => Err(error),
