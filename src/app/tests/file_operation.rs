@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn queued_permission_results_preserve_newer_command_output() {
+    use iced::futures::StreamExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for partial_failure in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let file = temp.path().join("changed.txt");
+                std_fs::write(&file, "preserve contents").unwrap();
+                std_fs::set_permissions(&file, std_fs::Permissions::from_mode(0o600)).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.select_only(Some(0), 1);
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged(if partial_failure {
+                    "chmod 644 changed.txt missing.txt".into()
+                } else {
+                    "chmod 644 changed.txt".into()
+                }));
+                let mut stream =
+                    iced_runtime::task::into_stream(app.update(Message::CommandSubmitted)).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                assert_eq!(queued.len(), 1);
+                assert_eq!(
+                    std_fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+                    0o644
+                );
+
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged("help".into()));
+                let task = app.update(Message::CommandSubmitted);
+                navigation::finish_tasks(&mut app, task).await;
+                let help = app.command.output().cloned().expect("newer help output");
+                let task = app.update(queued.pop().unwrap());
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    app.command.output(),
+                    Some(&help),
+                    "old permission result replaced help"
+                );
+                assert_eq!(std_fs::read_to_string(&file).unwrap(), "preserve contents");
+            }
+        });
+}
+
+#[test]
 fn queued_rename_results_do_not_replace_a_newer_rename_editor() {
     use iced::futures::StreamExt;
 

@@ -327,13 +327,14 @@ impl App {
         }
         self.presentation
             .set_status("Changing permissions…".to_owned());
+        let request = self.command.output_revision();
         Task::perform(
             self.operations
                 .run_foreground(OperationKind::Mutation, move |_| {
                     properties::chmod(targets, &mode)
                 }),
-            |completion| match completion {
-                Completion::Finished(result) => Message::MetadataFinished(result),
+            move |completion| match completion {
+                Completion::Finished(result) => Message::MetadataFinished { request, result },
                 Completion::Cancelled => Message::Noop,
             },
         )
@@ -401,12 +402,13 @@ impl App {
         } else {
             OperationKind::Background
         };
+        let request = self.command.output_revision();
         Task::perform(
             self.operations.run_foreground(operation, move |_| {
                 open_with::launch(path, &application, make_default)
             }),
-            |completion| match completion {
-                Completion::Finished(result) => Message::MetadataFinished(result),
+            move |completion| match completion {
+                Completion::Finished(result) => Message::MetadataFinished { request, result },
                 Completion::Cancelled => Message::Noop,
             },
         )

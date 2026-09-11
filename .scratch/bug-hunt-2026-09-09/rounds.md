@@ -507,3 +507,18 @@ outside this work.
   renames the second file, and both successful operations remain undoable.
   All-target tests passed (625 passed, 23 ignored), along with Clippy, formatting,
   and whitespace checks.
+
+## Round 37: old permission failures overwrite newer command output (2026-09-11)
+
+- Reproduction: run a real permission change, retain its result, open Help, and
+  then deliver the result. Include a missing second target to cause partial failure.
+- Red: `cargo test queued_permission_results_preserve_newer_command_output -- --nocapture`
+  replaced Help with the older "File action failed" report.
+- Cause: permission and Open With completions shared an unversioned metadata
+  result message, so they could replace output from a newer Command session.
+- Fix: tag these results with their originating command output revision and only
+  present matching results. Keep file-detail refreshes after completed operations.
+- Green: Help survives successful and partially failed permission changes; the
+  requested permissions are applied and file contents remain intact. All-target
+  tests passed (626 passed, 23 ignored), along with Clippy, formatting, and
+  whitespace checks.

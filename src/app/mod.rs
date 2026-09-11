@@ -279,7 +279,10 @@ enum Message {
         request: u64,
         result: Result<properties::Info, String>,
     },
-    MetadataFinished(Result<String, String>),
+    MetadataFinished {
+        request: u64,
+        result: Result<String, String>,
+    },
     AnimationFrame(Instant),
     RenameChanged(String),
     RenameSubmitted,

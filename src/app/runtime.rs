@@ -492,11 +492,13 @@ impl App {
                 }
                 Task::none()
             }
-            Message::MetadataFinished(result) => {
-                match result {
-                    Ok(status) => self.presentation.set_status(status),
-                    Err(error) => {
-                        self.show_command_output("File action failed".to_owned(), error);
+            Message::MetadataFinished { request, result } => {
+                if request == self.command.output_revision() {
+                    match result {
+                        Ok(status) => self.presentation.set_status(status),
+                        Err(error) => {
+                            self.show_command_output("File action failed".to_owned(), error);
+                        }
                     }
                 }
                 self.schedule_details()

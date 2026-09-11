@@ -665,7 +665,10 @@ fn queued_entry_details_cannot_overwrite_newer_details_for_the_same_path() {
         app.navigation
             .install_folder_entries(fs::read_directory(temp.path()).unwrap());
         app.grid.select_only(Some(0), 1);
-        let task = app.update(Message::MetadataFinished(Ok("Permissions changed".into())));
+        let task = app.update(Message::MetadataFinished {
+            request: app.command.output_revision(),
+            result: Ok("Permissions changed".into()),
+        });
         let mut stream = iced_runtime::task::into_stream(task).unwrap();
         let mut queued = Vec::new();
         while let Some(action) = stream.next().await {
