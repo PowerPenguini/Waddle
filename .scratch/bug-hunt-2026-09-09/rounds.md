@@ -490,3 +490,20 @@ outside this work.
 - Green: the new folder opens and displays its file; Undo restores the original
   filename and contents. All-target tests passed (624 passed, 23 ignored), along
   with Clippy, formatting, and whitespace checks.
+
+## Round 36: old Rename results overwrite a newer editor (2026-09-11)
+
+- Reproduction: complete a Rename's filesystem work but retain its result, open
+  Rename for another file from the context menu, type a new name, then deliver the
+  older result. Exercise both successful and failed first operations.
+- Red: `cargo test queued_rename_results_do_not_replace_a_newer_rename_editor -- --nocapture`
+  showed that the older successful result closed the newer Rename editor.
+- Cause: file-operation completions had no interaction identity, so an old result
+  updated the current session and could close its editor or assign it an old error.
+- Fix: carry the originating interaction revision through work and completion.
+  Superseded completions retain filesystem refresh and journal effects while
+  preserving the current editor, selection, error, and busy state.
+- Green: both cases preserve the new input without an old error; submitting it
+  renames the second file, and both successful operations remain undoable.
+  All-target tests passed (625 passed, 23 ignored), along with Clippy, formatting,
+  and whitespace checks.

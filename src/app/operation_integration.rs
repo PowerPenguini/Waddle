@@ -560,7 +560,7 @@ impl App {
             Ok(None) => {}
         }
         if effects.refresh {
-            if !self.navigation.folder_displayed() {
+            if effects.preserve_interaction || !self.navigation.folder_displayed() {
                 self.refresh_location()
             } else {
                 let refresh = if self.navigation.defer_refresh() {

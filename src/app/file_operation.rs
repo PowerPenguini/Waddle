@@ -78,7 +78,7 @@ impl PromptInteraction {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Work(WorkKind);
+pub(super) struct Work(u64, WorkKind);
 
 #[derive(Clone, Debug)]
 enum WorkKind {
@@ -93,7 +93,7 @@ enum WorkKind {
 
 impl Work {
     pub(super) fn run(self) -> Completion {
-        let kind = match self.0 {
+        let kind = match self.1 {
             WorkKind::Name {
                 current,
                 operation,
@@ -123,7 +123,7 @@ impl Work {
                 CompletionKind::TrashDelete(super::trash::delete(entries))
             }
         };
-        Completion::prepare(kind)
+        Completion::prepare(self.0, kind)
     }
 }
 
@@ -156,14 +156,16 @@ enum CompletionKind {
 
 #[derive(Clone, Debug)]
 pub(super) struct Completion {
+    request: u64,
     kind: CompletionKind,
     journal_action: Result<Option<journal::Action>, String>,
 }
 
 impl Completion {
-    fn prepare(kind: CompletionKind) -> Self {
+    fn prepare(request: u64, kind: CompletionKind) -> Self {
         let journal_action = journal_action(&kind).map_err(|error| error.to_string());
         Self {
+            request,
             kind,
             journal_action,
         }
@@ -171,6 +173,7 @@ impl Completion {
 }
 
 pub(super) struct CompletionEffects {
+    pub(super) preserve_interaction: bool,
     pub(super) status: Option<String>,
     pub(super) detail: Option<String>,
     pub(super) journal_action: Result<Option<journal::Action>, String>,
@@ -181,6 +184,7 @@ pub(super) struct CompletionEffects {
 
 #[derive(Clone, Debug)]
 pub(super) struct FileOperationSession {
+    revision: u64,
     state: State,
     busy: bool,
 }
@@ -188,6 +192,7 @@ pub(super) struct FileOperationSession {
 impl Default for FileOperationSession {
     fn default() -> Self {
         Self {
+            revision: 0,
             state: State::Idle,
             busy: false,
         }
@@ -250,6 +255,7 @@ impl FileOperationSession {
     }
 
     pub(super) fn begin_rename(&mut self, entry: FileEntry) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::Rename {
             value: fs::display_name(&entry.name),
@@ -259,6 +265,7 @@ impl FileOperationSession {
     }
 
     pub(super) fn begin_new_folder(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::NewFolder {
             value: String::new(),
@@ -267,6 +274,7 @@ impl FileOperationSession {
     }
 
     pub(super) fn begin_new_file(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::NewFile {
             value: String::new(),
@@ -296,6 +304,7 @@ impl FileOperationSession {
             format!("Permanently delete {} selected Trash items?", entries.len())
         };
         self.busy = false;
+        self.revision = self.revision.wrapping_add(1);
         self.state = State::TrashDelete {
             entries,
             message,
@@ -349,11 +358,14 @@ impl FileOperationSession {
             return None;
         }
         self.busy = true;
-        Some(Work(WorkKind::Name {
-            current,
-            operation,
-            value,
-        }))
+        Some(Work(
+            self.revision,
+            WorkKind::Name {
+                current,
+                operation,
+                value,
+            },
+        ))
     }
 
     pub(super) fn confirm(&mut self, current: PathBuf) -> Option<Work> {
@@ -365,11 +377,14 @@ impl FileOperationSession {
             State::NewFile { .. } => self.submit_name(current),
             State::PermanentDelete { entries, .. } => {
                 self.busy = true;
-                Some(Work(WorkKind::PermanentDelete(entries.clone())))
+                Some(Work(
+                    self.revision,
+                    WorkKind::PermanentDelete(entries.clone()),
+                ))
             }
             State::TrashDelete { entries, .. } => {
                 self.busy = true;
-                Some(Work(WorkKind::TrashDelete(entries.clone())))
+                Some(Work(self.revision, WorkKind::TrashDelete(entries.clone())))
             }
             State::Error { .. } | State::Warning { .. } => {
                 self.state = State::Idle;
@@ -383,21 +398,25 @@ impl FileOperationSession {
         if self.busy {
             return false;
         }
+        self.revision = self.revision.wrapping_add(1);
         self.state = State::Idle;
         true
     }
 
     pub(super) fn show_error(&mut self, message: String) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::Error { message };
     }
 
     pub(super) fn show_warning(&mut self, message: String) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::Warning { message };
     }
 
     pub(super) fn finish_trash_transfer(&mut self, failures: Vec<(FileEntry, String)>) {
+        self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         if failures.is_empty() {
             self.state = State::Idle;
@@ -416,8 +435,24 @@ impl FileOperationSession {
     }
 
     pub(super) fn complete(&mut self, completion: Completion) -> CompletionEffects {
+        if completion.request != self.revision {
+            // A completed operation still needs refresh and Undo bookkeeping,
+            // but cannot modify a newer editor, error, or busy operation.
+            let mut previous = Self {
+                revision: completion.request,
+                ..Self::default()
+            };
+            let mut effects = previous.complete(completion);
+            effects.preserve_interaction = true;
+            effects.status = None;
+            effects.detail = None;
+            effects.select = None;
+            effects.renamed = false;
+            return effects;
+        }
         self.busy = false;
         let Completion {
+            request: _,
             kind,
             journal_action,
         } = completion;
@@ -470,6 +505,7 @@ impl FileOperationSession {
             }
         };
         CompletionEffects {
+            preserve_interaction: false,
             status,
             detail,
             journal_action,
@@ -571,12 +607,15 @@ mod tests {
 
         session.change_name("new.txt".to_owned());
         assert!(session.submit_name(PathBuf::from("/work")).is_some());
-        let effects = session.complete(Completion::prepare(CompletionKind::Name {
-            kind: NameKind::Rename {
-                source: PathBuf::from("/work/old.txt"),
+        let effects = session.complete(Completion::prepare(
+            session.revision,
+            CompletionKind::Name {
+                kind: NameKind::Rename {
+                    source: PathBuf::from("/work/old.txt"),
+                },
+                result: Err("collision".to_owned()),
             },
-            result: Err("collision".to_owned()),
-        }));
+        ));
         assert!(!effects.refresh);
         assert!(effects.select.is_none());
         assert!(!effects.renamed);
@@ -673,9 +712,10 @@ mod tests {
 
         session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
         assert!(session.confirm(PathBuf::from("/work")).is_some());
-        let effects = session.complete(Completion::prepare(CompletionKind::PermanentDelete(vec![
-            (failed, "Permission denied".to_owned()),
-        ])));
+        let effects = session.complete(Completion::prepare(
+            session.revision,
+            CompletionKind::PermanentDelete(vec![(failed, "Permission denied".to_owned())]),
+        ));
 
         assert!(effects.refresh);
         assert!(matches!(
@@ -688,12 +728,13 @@ mod tests {
     fn trash_delete_feedback_is_interpreted_inside_the_session() {
         let failed = entry("failed.txt");
         let mut session = FileOperationSession::default();
-        let effects = session.complete(Completion::prepare(CompletionKind::TrashDelete(
-            crate::app::trash::DeleteReport {
+        let effects = session.complete(Completion::prepare(
+            session.revision,
+            CompletionKind::TrashDelete(crate::app::trash::DeleteReport {
                 deleted: 2,
                 failures: vec![(failed, "Permission denied".to_owned())],
-            },
-        )));
+            }),
+        ));
 
         assert_eq!(
             effects.status.as_deref(),

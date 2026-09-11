@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn queued_rename_results_do_not_replace_a_newer_rename_editor() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for first_succeeds in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                for name in ["first.txt", "second.txt"] {
+                    std_fs::write(temp.path().join(name), name).unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.select_only(Some(0), 2);
+                press(&mut app, "r");
+                let _ = app.update(Message::RenameChanged(if first_succeeds {
+                    "first-renamed.txt".into()
+                } else {
+                    "second.txt".into()
+                }));
+                let mut stream =
+                    iced_runtime::task::into_stream(app.update(Message::RenameSubmitted)).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                assert_eq!(queued.len(), 1);
+                assert_eq!(
+                    temp.path().join("first-renamed.txt").exists(),
+                    first_succeeds
+                );
+
+                let _ = app.update(Message::EntryContext(1));
+                let _ = app.update(Message::ContextRename);
+                let _ = app.update(Message::RenameChanged("second-renamed.txt".into()));
+                let task = app.update(queued.pop().unwrap());
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    app.browser_input.mode(),
+                    InputMode::Rename,
+                    "old completion closed the newer editor"
+                );
+                assert!(
+                    matches!(app.file_operations.view(), FileOperationView::Rename { value, error }
+                    if value == "second-renamed.txt" && error.is_empty()),
+                    "old completion changed the newer Rename input or error"
+                );
+
+                let task = app.update(Message::RenameSubmitted);
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    std_fs::read_to_string(temp.path().join("second-renamed.txt")).unwrap(),
+                    "second.txt"
+                );
+                app.journal.undo().unwrap();
+                assert_eq!(
+                    std_fs::read_to_string(temp.path().join("second.txt")).unwrap(),
+                    "second.txt"
+                );
+                if first_succeeds {
+                    app.journal
+                        .undo()
+                        .expect("the old completed Rename must also retain Undo");
+                }
+                assert_eq!(
+                    std_fs::read_to_string(temp.path().join("first.txt")).unwrap(),
+                    "first.txt"
+                );
+            }
+        });
+}
+
+#[test]
 fn queued_rename_completion_does_not_cancel_a_newer_folder_navigation() {
     use iced::futures::StreamExt;
 
