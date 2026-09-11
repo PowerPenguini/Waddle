@@ -1,6 +1,71 @@
 use super::*;
 
 #[test]
+fn queued_rename_completion_does_not_cancel_a_newer_folder_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let next = temp.path().join("next");
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir(&next).unwrap();
+            std_fs::write(original.join("before.txt"), "rename contents").unwrap();
+            std_fs::write(next.join("destination.txt"), "new location").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(&original).unwrap());
+            app.grid.select_only(Some(0), 1);
+            press(&mut app, "r");
+            let _ = app.update(Message::RenameChanged("after.txt".to_owned()));
+            let mut stream = iced_runtime::task::into_stream(app.update(Message::RenameSubmitted))
+                .expect("Rename should start");
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert_eq!(
+                std_fs::read_to_string(original.join("after.txt")).unwrap(),
+                "rename contents"
+            );
+
+            let _ = app.update(Message::LocationChanged(next.display().to_string()));
+            let navigation = app.update(Message::LocationSubmitted);
+            assert!(app.navigation.loading());
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, Task::batch([navigation, completion])).await;
+            assert_eq!(
+                app.navigation.current(),
+                next,
+                "Rename cancelled the newer navigation"
+            );
+            assert!(
+                app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == next.join("destination.txt"))
+            );
+            assert!(!app.navigation.loading());
+            app.journal
+                .undo()
+                .expect("the completed Rename must retain Undo");
+            assert_eq!(
+                std_fs::read_to_string(original.join("before.txt")).unwrap(),
+                "rename contents"
+            );
+        });
+}
+
+#[test]
 fn queued_undo_completion_does_not_cancel_a_newer_folder_navigation() {
     use iced::futures::StreamExt;
 

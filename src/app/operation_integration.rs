@@ -563,9 +563,14 @@ impl App {
             if !self.navigation.folder_displayed() {
                 self.refresh_location()
             } else {
+                let refresh = if self.navigation.defer_refresh() {
+                    Task::none()
+                } else {
+                    self.refresh(effects.select)
+                };
                 Task::batch([
                     self.invalidate_tree(vec![self.navigation.current().to_path_buf()]),
-                    self.refresh(effects.select),
+                    refresh,
                 ])
             }
         } else {

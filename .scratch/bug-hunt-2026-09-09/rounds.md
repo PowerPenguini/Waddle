@@ -475,3 +475,18 @@ outside this work.
 - Green: the requested folder opens and displays its destination file. All-target
   tests passed (623 passed, 23 ignored), along with Clippy, formatting, and
   whitespace checks.
+
+## Round 35: queued Rename cancels a newer pending navigation (2026-09-11)
+
+- Reproduction: complete an inline Rename's real filesystem work, retain its UI
+  result, submit another folder through Location, then deliver the Rename result
+  before the new navigation task finishes.
+- Red: `cargo test queued_rename_completion_does_not_cancel_a_newer_folder_navigation -- --nocapture`
+  renamed the file successfully but stayed in the original folder.
+- Cause: File operation session completion replaced the newer navigation with
+  its own refresh. Rename permits this navigation while its result is queued.
+- Fix: defer the file-list refresh while navigation is pending, retaining the
+  Sidebar tree refresh and completed operation's journal record.
+- Green: the new folder opens and displays its file; Undo restores the original
+  filename and contents. All-target tests passed (624 passed, 23 ignored), along
+  with Clippy, formatting, and whitespace checks.
