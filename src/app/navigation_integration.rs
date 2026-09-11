@@ -272,10 +272,7 @@ impl App {
         if self.navigation.folder_displayed() {
             return self.live_refresh();
         }
-        if self.prompt_blocks_action()
-            || self.foreground_operation_active()
-            || self.navigation.loading()
-        {
+        if self.foreground_operation_active() || self.navigation.loading() {
             return Task::none();
         }
         let selected = self

@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn partial_copy_failure_remains_visible_when_trash_refreshes() {
+    use iced::futures::StreamExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std_fs::create_dir(&source_directory).unwrap();
+            std_fs::create_dir(&destination).unwrap();
+            std_fs::write(source_directory.join("copied.txt"), "copied contents").unwrap();
+            let blocked = source_directory.join("unreadable.txt");
+            std_fs::write(&blocked, "retained contents").unwrap();
+            let mut transfer = TransferState::default();
+            transfer
+                .copy(&fs::read_directory(&source_directory).unwrap())
+                .unwrap();
+            let request = transfer.paste(destination.clone()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(destination.clone());
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(temp.path().join("Trash"));
+            let task = app.start_transfer(request);
+            std_fs::set_permissions(&blocked, std_fs::Permissions::from_mode(0o000)).unwrap();
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            std_fs::set_permissions(&blocked, std_fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(queued.len(), 1);
+            assert!(destination.join("copied.txt").exists());
+            assert!(!destination.join("unreadable.txt").exists());
+            let opened = app.open_trash();
+            navigation::finish_tasks(&mut app, opened).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash
+            );
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, completion).await;
+            assert!(
+                matches!(app.file_operations.view(), FileOperationView::Error { message }
+                    if message.contains("unreadable.txt") && message.contains("some failed")),
+                "The automatic Trash refresh dismissed the Copy failure"
+            );
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash
+            );
+            assert!(app.navigation.entries().is_empty());
+            assert_eq!(
+                std_fs::read_to_string(&blocked).unwrap(),
+                "retained contents"
+            );
+        });
+}
+
+#[test]
 fn queued_copy_completion_preserves_the_newly_opened_trash_view() {
     use iced::futures::StreamExt;
 

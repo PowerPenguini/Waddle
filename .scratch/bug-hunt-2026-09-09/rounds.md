@@ -737,3 +737,18 @@ outside this work.
 - Green: Trash stays open and empty while the copied file and source remain
   intact. All-target tests passed (641 passed, 23 ignored), along with Clippy,
   formatting, and whitespace checks.
+
+## Round 53: virtual-location refresh dismisses a partial Copy failure (2026-09-11)
+
+- Reproduction: prepare a two-file Copy, revoke access to one source after
+  preflight, let the other file copy, then open Trash before delivering the result.
+- Red: `cargo test partial_copy_failure_remains_visible_when_trash_refreshes -- --nocapture`
+  lost the partial-copy error during the resulting Trash refresh.
+- Cause: refreshing a virtual location called the action-blocking policy, which
+  dismisses nonbusy prompts, including the failure just presented.
+- Fix: allow the listing to refresh behind the prompt without dismissing it;
+  active foreground work and pending navigation still suppress this refresh.
+- Green: the error identifies the unreadable source, Trash remains open and
+  refreshed, and the failed source remains intact. The permissions regression ran
+  as a non-root user. All-target tests passed (642 passed, 23 ignored), along with
+  Clippy, formatting, and whitespace checks.
