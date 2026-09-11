@@ -431,3 +431,18 @@ outside this work.
   (9.6 ms in the full benchmark run). All-target tests passed (620 passed,
   23 ignored), all eleven release benchmarks passed, and Clippy, formatting,
   and whitespace checks passed.
+
+## Round 32: partial Undo leaves deleted entries visible (2026-09-11)
+
+- Reproduction: record two real file copies in the journal, make one destination
+  parent read-only, then invoke Undo through the keyboard. Undo removes the copy
+  in the displayed folder before failing to remove the other copy.
+- Red: `cargo test partial_undo_refreshes_removed_entries_and_retains_the_failure -- --nocapture`
+  confirmed the partial filesystem change but still displayed the removed file.
+- Cause: the app's journal completion handler returned no refresh on failure,
+  even though Undo/Redo can have partial effects.
+- Fix: refresh the displayed location and expanded Sidebar tree folders after
+  journal failures. Present the error as a notice so refresh status cannot hide it.
+- Green: the removed file disappears from the browser while the permission error
+  stays visible and the blocked copy remains intact. All-target tests passed
+  (621 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.

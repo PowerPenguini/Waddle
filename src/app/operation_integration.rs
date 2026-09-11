@@ -618,8 +618,11 @@ impl App {
                 Task::batch([tree, refresh])
             }
             Err(error) => {
-                self.presentation.set_status(error);
-                Task::none()
+                // Undo/Redo can fail after applying some filesystem changes.
+                // Keep the failure visible while refreshing the affected views.
+                self.presentation.set_notice(error);
+                let tree = self.invalidate_tree(self.sidebar_tree.expanded_paths());
+                Task::batch([tree, self.refresh_location()])
             }
         }
     }

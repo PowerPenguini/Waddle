@@ -1,6 +1,71 @@
 use super::*;
 
 #[test]
+fn partial_undo_refreshes_removed_entries_and_retains_the_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let blocked = temp.path().join("blocked");
+            let displayed = temp.path().join("displayed");
+            let mut receipts = Vec::new();
+            for (index, directory) in [&blocked, &displayed].into_iter().enumerate() {
+                std_fs::create_dir(directory).unwrap();
+                let source = temp.path().join(format!("source-{index}.txt"));
+                let destination = directory.join("copy.txt");
+                std_fs::write(&source, "original contents").unwrap();
+                std_fs::copy(&source, &destination).unwrap();
+                receipts.push(fs::TransferReceipt {
+                    source,
+                    destination,
+                    replaced_existing: false,
+                });
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(displayed.clone());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(&displayed).unwrap());
+            app.journal
+                .record(
+                    journal::Action::transfer(journal::TransferKind::Copy, &receipts)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+
+            // Undo removes the last copy first, then cannot remove the other one.
+            std_fs::set_permissions(&blocked, std_fs::Permissions::from_mode(0o500)).unwrap();
+            let key = keyboard::Key::Character("u".into());
+            let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("u"));
+            navigation::finish_tasks(&mut app, task).await;
+            std_fs::set_permissions(&blocked, std_fs::Permissions::from_mode(0o700)).unwrap();
+
+            assert!(
+                !displayed.join("copy.txt").exists(),
+                "Undo must have partial effects"
+            );
+            assert_eq!(
+                std_fs::read_to_string(blocked.join("copy.txt")).unwrap(),
+                "original contents"
+            );
+            let status = app.presentation.browser_status(None, false, false);
+            assert!(status.text.contains("Permission denied"), "{}", status.text);
+            assert!(
+                app.navigation.entries().is_empty(),
+                "the browser still displays the file removed by a partially failed Undo"
+            );
+        });
+}
+
+#[test]
 #[ignore = "release-mode performance benchmark"]
 fn benchmark_large_trash_selection_opens_delete_confirmation_promptly() {
     const COUNT: usize = 10_000;
