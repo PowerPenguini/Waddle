@@ -651,3 +651,19 @@ outside this work.
 - Green: the menu contains supported actions, Properties inspects the real file,
   and Recent stays open. All-target tests passed (635 passed, 23 ignored), along
   with Clippy, formatting, and whitespace checks.
+
+## Round 47: Trash refresh erases permanent-deletion confirmation (2026-09-11)
+
+- Reproduction: confirm Empty Trash, let the deletion worker finish, and consume
+  its resulting Trash refresh.
+- Red: `cargo test empty_trash_confirmation_survives_the_resulting_refresh -- --nocapture`
+  deleted the file and its metadata but replaced the success result with the
+  ordinary empty-Trash status.
+- Cause: file-operation completion wrote the deletion result into transient
+  status text, which navigation completion immediately overwrites.
+- Fix: retain the completion status as a notice, using the existing next-input
+  dismissal behavior.
+- Green: real deletion and refresh finish while the confirmation remains visible;
+  the next click dismisses it. The test uses an isolated physical Trash fixture.
+  All-target tests passed (636 passed, 23 ignored), along with Clippy, formatting,
+  and whitespace checks.

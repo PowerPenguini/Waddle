@@ -1,6 +1,61 @@
 use super::*;
 
 #[test]
+fn empty_trash_confirmation_survives_the_resulting_refresh() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("Trash");
+            std_fs::create_dir_all(root.join("files")).unwrap();
+            std_fs::create_dir_all(root.join("info")).unwrap();
+            let trashed = root.join("files/discarded.txt");
+            let info = root.join("info/discarded.txt.trashinfo");
+            std_fs::write(&trashed, "discarded contents").unwrap();
+            std_fs::write(&info, "[Trash Info]\nPath=/original/discarded.txt\n").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(root);
+            app.navigation
+                .install_trash_entries(app.trash.entries().unwrap());
+            app.sync_location_monitoring();
+
+            let _ = app.update(Message::ContextEmptyTrash);
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::PermanentDelete { .. }
+            ));
+            let confirmed = app.update(Message::PromptConfirm);
+            navigation::finish_tasks(&mut app, confirmed).await;
+            assert!(!trashed.exists());
+            assert!(!info.exists());
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash
+            );
+            assert!(app.navigation.entries().is_empty());
+            assert_eq!(
+                app.browser_status_model().text,
+                "Permanently deleted 1  •  0 failed",
+                "The automatic Trash refresh hid the deletion result"
+            );
+
+            let clicked = app.update(Message::Event(
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                event::Status::Captured,
+            ));
+            navigation::finish_tasks(&mut app, clicked).await;
+            assert!(
+                !app.browser_status_model()
+                    .text
+                    .contains("Permanently deleted")
+            );
+        });
+}
+
+#[test]
 fn properties_failure_survives_an_automatic_directory_refresh() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

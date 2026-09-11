@@ -171,7 +171,7 @@ impl Trash {
     }
 
     #[cfg(test)]
-    fn at(root: PathBuf) -> Self {
+    pub(super) fn at(root: PathBuf) -> Self {
         Self {
             physical_root: Some(root),
         }

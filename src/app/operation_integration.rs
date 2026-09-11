@@ -544,7 +544,7 @@ impl App {
         let effects =
             self.change_transient(|sessions| sessions.complete_file_operation(completion));
         if let Some(status) = effects.status {
-            self.presentation.set_status(status);
+            self.presentation.set_status_notice(status);
         }
         match effects.journal_action {
             Ok(Some(action)) => {
