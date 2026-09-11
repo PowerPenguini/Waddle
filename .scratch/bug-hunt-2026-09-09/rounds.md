@@ -565,3 +565,15 @@ outside this work.
 - Green: Escape displays the current files and retains the originally selected
   surviving file. All-target tests passed (629 passed, 23 ignored), along with
   Clippy, formatting, and whitespace checks.
+
+## Round 41: submitting a recursive search without matches restores stale files (2026-09-11)
+
+- Reproduction: finish a recursive search with no matches, replace a file while
+  search remains open, deliver its directory notification, then submit with Enter.
+- Red: `cargo test submitting_an_empty_recursive_search_restores_current_folder_contents -- --nocapture`
+  closed search but restored the deleted file instead of the newly created one.
+- Cause: submitting without a selected recursive match restored the saved folder
+  snapshot and returned without refreshing it.
+- Fix: refresh the restored location when recursive submission has no entry to open.
+- Green: Enter closes search and displays the current file. All-target tests
+  passed (630 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.

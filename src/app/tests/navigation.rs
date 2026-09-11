@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn submitting_an_empty_recursive_search_restores_current_folder_contents() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let old = temp.path().join("old.txt");
+            let new = temp.path().join("new.txt");
+            std_fs::write(&old, "old contents").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.sync_location_monitoring();
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/no-matching-file".into()));
+            finish_tasks(&mut app, search).await;
+            assert!(app.navigation.entries().is_empty());
+
+            std_fs::remove_file(&old).unwrap();
+            std_fs::write(&new, "new contents").unwrap();
+            let refresh = app.update(Message::DirectoryChanged(directory_watch::Event {
+                path: temp.path().to_path_buf(),
+                removed: vec![old],
+                watch_failed: false,
+            }));
+            finish_tasks(&mut app, refresh).await;
+            assert!(app.navigation.entries().is_empty());
+            assert!(!app.search.is_loading());
+
+            let submitted = app.update(Message::SearchSubmitted);
+            finish_tasks(&mut app, submitted).await;
+            assert_eq!(app.browser_input.mode(), InputMode::Browser);
+            assert!(!app.search.is_active());
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(
+                app.navigation.entries()[0].path,
+                new,
+                "Enter restored the deleted file from the search snapshot"
+            );
+        });
+}
+
+#[test]
 fn cancelling_recursive_search_refreshes_changes_made_during_the_search() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

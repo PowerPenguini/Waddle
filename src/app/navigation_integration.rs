@@ -815,6 +815,7 @@ impl App {
         if self.search.is_loading() {
             return Task::none();
         }
+        let refresh = self.search.is_recursive();
         self.browser_input.leave_mode();
         self.operations.cancel(OperationKind::Search);
         if let Some(entry) = self.search.submit(&mut self.navigation, &mut self.grid) {
@@ -828,7 +829,11 @@ impl App {
                 self.open_entry(entry)
             };
         }
-        Task::none()
+        if refresh {
+            self.refresh_location()
+        } else {
+            Task::none()
+        }
     }
 
     pub(super) fn cancel_search(&mut self) -> Task<Message> {
