@@ -379,7 +379,6 @@ impl App {
                 Task::none()
             }
             Message::OpenWithSubmitted => self.submit_open_with(),
-            Message::OpenWithSelected(application) => self.choose_open_with(application),
             Message::ContextRename => {
                 let index = self.grid.take_context_entry();
                 if let Some(index) = index {
@@ -906,7 +905,9 @@ impl App {
         };
         let cancel_bottom_input = self.bottom_input_active()
             && (named == InputNamedKey::Escape
-                || named == InputNamedKey::Backspace && self.active_bottom_input_empty());
+                || named == InputNamedKey::Backspace
+                    && self.active_bottom_input_empty()
+                    && self.transient_presentation().mode() != InputMode::OpenWith);
         if self.grid.context_menu().is_some() && !cancel_bottom_input {
             return self.handle_context_key(named, modifiers.shift());
         }
@@ -972,6 +973,12 @@ impl App {
                 self.cancel_rename();
                 Task::none()
             }
+            InputIntent::BeginOpenWith => self.begin_open_with(),
+            InputIntent::MoveOpenWith(delta) => {
+                self.open_with.move_selection(delta);
+                Task::none()
+            }
+            InputIntent::SubmitOpenWith => self.submit_open_with(),
             InputIntent::CancelOpenWith => self.cancel_open_with(),
             InputIntent::CancelLocation => {
                 self.location_input = self.navigation.current().display().to_string();
@@ -1151,7 +1158,7 @@ impl App {
                 ContextTarget::Background => Vec::new(),
                 ContextTarget::Entry(_) => vec![
                     ("Properties".to_owned(), Message::ContextProperties),
-                    ("Open With…".to_owned(), Message::ContextOpenWith),
+                    ("Open-with…".to_owned(), Message::ContextOpenWith),
                 ],
             };
         }
@@ -1167,7 +1174,7 @@ impl App {
                 ),
                 ("Empty Trash".to_owned(), Message::ContextEmptyTrash),
                 ("Properties".to_owned(), Message::ContextProperties),
-                ("Open With…".to_owned(), Message::ContextOpenWith),
+                ("Open-with…".to_owned(), Message::ContextOpenWith),
             ],
             (DisplayedLocation::Folder, ContextTarget::Background) => vec![
                 ("New Folder".to_owned(), Message::ContextNewFolder),
@@ -1178,7 +1185,7 @@ impl App {
                 ("New Folder".to_owned(), Message::ContextNewFolder),
                 ("New Empty File".to_owned(), Message::ContextNewFile),
                 ("Properties".to_owned(), Message::ContextProperties),
-                ("Open With…".to_owned(), Message::ContextOpenWith),
+                ("Open-with…".to_owned(), Message::ContextOpenWith),
                 ("Rename".to_owned(), Message::ContextRename),
                 ("Move to Trash".to_owned(), Message::ContextTrash),
             ],

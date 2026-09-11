@@ -1,4 +1,8 @@
 use super::view::View;
+
+#[cfg(test)]
+#[path = "tests/open_with_layout.rs"]
+mod open_with_layout;
 use iced::{
     Alignment, Color, Element, Fill, Length, Padding,
     widget::{
@@ -10,9 +14,9 @@ use iced::{
 use super::{
     BrowserStatusPresentation, COMMAND_ID, CONTENT_GUTTER, ContextMenu, EntryIconKind,
     FileOperationView, InputMode, Message, NEW_FOLDER_ID, OPEN_WITH_ID, RENAME_ID, SEARCH_ID,
-    TransientPresentationKind, compact_status_line, context_button_style,
-    context_menu_button_style, format_transfer_snapshot, menu_style, open_with,
-    status_background_style, status_input_style, with_alpha,
+    TransientPresentationKind, compact_status_line, context_menu_button_style,
+    format_transfer_snapshot, menu_style, open_with, status_background_style, status_input_style,
+    with_alpha,
 };
 
 pub(super) fn command_output_action_spacing() -> f32 {
@@ -20,12 +24,15 @@ pub(super) fn command_output_action_spacing() -> f32 {
 }
 
 impl<'a> View<'a> {
+    fn bottom_bar_text<'b>(
+        self,
+        value: impl iced::advanced::text::IntoFragment<'b>,
+    ) -> iced::widget::Text<'b> {
+        self.text(value).font(self.fonts().mono)
+    }
+
     fn transfer_shortcut<'b>(self, label: &'b str, color: Color) -> Element<'b, Message> {
-        self.text(label)
-            .font(self.fonts().mono)
-            .size(11)
-            .color(color)
-            .into()
+        self.bottom_bar_text(label).size(11).color(color).into()
     }
     pub(super) fn status_bar(self) -> Element<'a, Message> {
         let height = self.app().status_height();
@@ -34,7 +41,7 @@ impl<'a> View<'a> {
         let transient = resolved.kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
-                self.text(status_model.text)
+                self.bottom_bar_text(status_model.text)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .color(self.accent_color())
@@ -49,17 +56,15 @@ impl<'a> View<'a> {
                 .output()
                 .expect("command output transient must have output");
             let header = row![
-                self.text(&output.summary)
+                self.bottom_bar_text(&output.summary)
                     .font(self.fonts().mono_semibold())
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .width(Fill),
-                self.text("y copy")
-                    .font(self.fonts().mono)
+                self.bottom_bar_text("y copy")
                     .size(11)
                     .color(self.secondary_text_color()),
-                self.text("Esc close")
-                    .font(self.fonts().mono)
+                self.bottom_bar_text("Esc close")
                     .size(11)
                     .color(self.secondary_text_color()),
             ]
@@ -69,8 +74,7 @@ impl<'a> View<'a> {
             let output = column![
                 header,
                 scrollable(
-                    self.text(&output.detail)
-                        .font(self.fonts().mono)
+                    self.bottom_bar_text(&output.detail)
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(with_alpha(self.app().iced_theme().palette().text, 0.84))
@@ -106,7 +110,7 @@ impl<'a> View<'a> {
                         "/"
                     };
                     row![
-                        self.text(prefix)
+                        self.bottom_bar_text(prefix)
                             .size(12)
                             .line_height(iced::Pixels(15.0))
                             .color(self.accent_color()),
@@ -127,7 +131,7 @@ impl<'a> View<'a> {
                     .into()
                 }
                 InputMode::Command => row![
-                    self.text(self.app().command.prefix().unwrap_or(':').to_string())
+                    self.bottom_bar_text(self.app().command.prefix().unwrap_or(':').to_string())
                         .size(12)
                         .line_height(iced::Pixels(15.0))
                         .color(self.accent_color()),
@@ -153,21 +157,20 @@ impl<'a> View<'a> {
                             if self.app().foreground_operation_active() {
                                 self.app().spinner(13.0).into()
                             } else if error.is_empty() {
-                                self.text("Enter save  ·  Esc cancel")
+                                self.bottom_bar_text("Enter save  ·  Esc cancel")
                                     .size(11)
                                     .line_height(iced::Pixels(13.0))
                                     .color(self.secondary_text_color())
                                     .into()
                             } else {
-                                self.text(error)
+                                self.bottom_bar_text(error)
                                     .size(11)
                                     .line_height(iced::Pixels(13.0))
                                     .color(self.app().iced_theme().palette().danger)
                                     .into()
                             };
                         row![
-                            self.text("rename")
-                                .font(self.fonts().mono)
+                            self.bottom_bar_text("rename")
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
                                 .color(self.accent_color()),
@@ -223,7 +226,7 @@ impl<'a> View<'a> {
                     let mut line = Row::new()
                         .push(indicator)
                         .push(
-                            self.text(status_model.text)
+                            self.bottom_bar_text(status_model.text)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
                                 .color(if self.app().presentation.notice_is_danger() {
@@ -278,19 +281,17 @@ impl<'a> View<'a> {
             line = line
                 .push(self.app().spinner(13.0))
                 .push(
-                    self.text(format_transfer_snapshot(
+                    self.bottom_bar_text(format_transfer_snapshot(
                         transfers.active_action.unwrap_or("Transfer"),
                         &snapshot,
                     ))
-                    .font(self.fonts().mono)
                     .size(11)
                     .width(Fill),
                 )
                 .push(self.transfer_shortcut("Esc cancel", self.secondary_text_color()));
         } else {
             line = line.push(
-                self.text("Transfer finished with retained entries")
-                    .font(self.fonts().mono)
+                self.bottom_bar_text("Transfer finished with retained entries")
                     .size(11)
                     .width(Fill),
             );
@@ -306,7 +307,7 @@ impl<'a> View<'a> {
         let transfers = self.app().transfers.overview();
         let mut header = Row::new()
             .push(
-                self.text("transfers")
+                self.bottom_bar_text("transfers")
                     .font(self.fonts().mono_semibold())
                     .size(11)
                     .width(Fill),
@@ -344,8 +345,7 @@ impl<'a> View<'a> {
             column![
                 header,
                 scrollable(
-                    self.text(detail)
-                        .font(self.fonts().mono)
+                    self.bottom_bar_text(detail)
                         .size(11)
                         .line_height(iced::Pixels(14.0))
                         .width(Fill),
@@ -376,12 +376,12 @@ impl<'a> View<'a> {
             }
             FileOperationView::PermanentDelete { message, detail } => {
                 let header = row![
-                    self.text("delete permanently")
+                    self.bottom_bar_text("delete permanently")
                         .font(self.fonts().mono_semibold())
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
-                    self.text(message).size(11).width(Fill),
-                    self.text("Y/n")
+                    self.bottom_bar_text(message).size(11).width(Fill),
+                    self.bottom_bar_text("Y/n")
                         .font(self.fonts().mono_semibold())
                         .size(11)
                         .color(self.app().iced_theme().palette().danger),
@@ -393,8 +393,7 @@ impl<'a> View<'a> {
                     column![
                         header,
                         scrollable(
-                            self.text(detail)
-                                .font(self.fonts().mono)
+                            self.bottom_bar_text(detail)
                                 .size(11)
                                 .line_height(iced::Pixels(14.0))
                                 .color(self.secondary_text_color())
@@ -434,13 +433,12 @@ impl<'a> View<'a> {
         message: &'a str,
     ) -> Element<'a, Message> {
         let header = row![
-            self.text(label)
+            self.bottom_bar_text(label)
                 .font(self.fonts().mono_semibold())
                 .size(11)
                 .color(label_color),
             Space::new().width(Fill),
-            self.text("Esc close")
-                .font(self.fonts().mono)
+            self.bottom_bar_text("Esc close")
                 .size(11)
                 .color(self.secondary_text_color()),
         ]
@@ -450,8 +448,7 @@ impl<'a> View<'a> {
             column![
                 header,
                 scrollable(
-                    self.text(message)
-                        .font(self.fonts().mono)
+                    self.bottom_bar_text(message)
                         .size(11)
                         .line_height(iced::Pixels(14.0))
                         .color(self.secondary_text_color())
@@ -477,6 +474,8 @@ impl<'a> View<'a> {
         let open_with::View::Open {
             target_name,
             applications,
+            selected,
+            editing,
             custom,
             error,
         } = self.app().open_with.view()
@@ -485,16 +484,15 @@ impl<'a> View<'a> {
         };
 
         let header = row![
-            self.text("open with")
+            self.bottom_bar_text("open-with")
                 .font(self.fonts().mono_semibold())
                 .size(11)
                 .color(self.accent_color()),
-            self.text(target_name)
+            self.bottom_bar_text(target_name)
                 .size(11)
                 .line_height(iced::Pixels(13.0))
                 .width(Fill),
-            self.text("Esc cancel")
-                .font(self.fonts().mono)
+            self.bottom_bar_text(if editing { "Esc back" } else { "Esc cancel" })
                 .size(11)
                 .color(self.secondary_text_color()),
         ]
@@ -502,85 +500,118 @@ impl<'a> View<'a> {
         .height(25)
         .align_y(Alignment::Center);
 
-        let options: Element<'_, Message> = if applications.is_empty() {
+        let mut rows = Column::new().spacing(1).width(Fill);
+        if applications.is_empty() {
+            rows = rows.push(
+                container(
+                    self.bottom_bar_text("No compatible applications found")
+                        .size(11)
+                        .color(self.secondary_text_color()),
+                )
+                .padding(Padding::from([4, 6])),
+            );
+        }
+        // Keep the keyboard selection visible in the five-row viewport.
+        let first = selected
+            .saturating_sub(4)
+            .min(applications.len().saturating_sub(5));
+        for (index, application) in applications.iter().enumerate().skip(first).take(5) {
+            let default: Element<'_, Message> = if application.default {
+                self.bottom_bar_text("default")
+                    .size(10)
+                    .color(self.accent_color())
+                    .into()
+            } else {
+                Space::new().width(0).into()
+            };
+            let content = row![
+                self.bottom_bar_text(&application.name)
+                    .size(12)
+                    .line_height(iced::Pixels(14.0))
+                    .width(Length::FillPortion(2)),
+                self.bottom_bar_text(&application.id)
+                    .size(10)
+                    .color(self.secondary_text_color())
+                    .wrapping(iced::advanced::text::Wrapping::None)
+                    .width(Length::FillPortion(3)),
+                // Reserve the badge column even when this is not the default app.
+                container(default).width(60).align_x(Alignment::End),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            rows = rows.push(
+                container(content)
+                    .padding(Padding::from([4, 6]))
+                    .width(Fill)
+                    .style(move |theme: &iced::Theme| container::Style {
+                        background: (selected == index)
+                            .then(|| with_alpha(theme.palette().primary, 0.18).into()),
+                        ..container::Style::default()
+                    }),
+            );
+        }
+        rows = rows.push(
             container(
-                self.text("No compatible applications found — enter one below")
-                    .size(11)
-                    .color(self.secondary_text_color()),
+                self.bottom_bar_text("Custom app...")
+                    .size(12)
+                    .line_height(iced::Pixels(14.0)),
             )
-            .height(Fill)
-            .align_y(Alignment::Center)
-            .into()
-        } else {
-            let mut rows = Column::new().spacing(1);
-            for application in applications {
-                let default: Element<'_, Message> = if application.default {
-                    self.text("default")
-                        .font(self.fonts().mono)
-                        .size(10)
-                        .color(self.accent_color())
-                        .into()
-                } else {
-                    Space::new().width(0).into()
-                };
-                let content = row![
-                    self.text(&application.name)
-                        .size(12)
-                        .line_height(iced::Pixels(14.0))
-                        .width(Length::FillPortion(2)),
-                    self.text(&application.id)
-                        .font(self.fonts().mono)
-                        .size(10)
-                        .color(self.secondary_text_color())
-                        .wrapping(iced::advanced::text::Wrapping::None)
-                        .width(Length::FillPortion(3)),
-                    default,
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center);
-                rows = rows.push(
-                    button(content)
-                        .on_press(Message::OpenWithSelected(application.id.clone()))
-                        .padding(Padding::from([4, 6]))
-                        .style(|theme, status| context_button_style(theme, status, false))
-                        .width(Fill),
-                );
-            }
-            scrollable(rows).height(Fill).into()
-        };
+            .padding(Padding::from([4, 6]))
+            .width(Fill)
+            .style(move |theme: &iced::Theme| container::Style {
+                background: (selected == applications.len())
+                    .then(|| with_alpha(theme.palette().primary, 0.18).into()),
+                ..container::Style::default()
+            }),
+        );
+        let options = scrollable(rows).height(Fill);
 
         let feedback: Element<'_, Message> = if error.is_empty() {
-            self.text("Enter open")
-                .font(self.fonts().mono)
+            self.bottom_bar_text("Enter open")
                 .size(11)
                 .color(self.secondary_text_color())
                 .into()
         } else {
-            self.text(error)
+            self.bottom_bar_text(error)
                 .size(11)
                 .color(self.app().iced_theme().palette().danger)
                 .into()
         };
-        let custom = row![
-            self.text("custom")
-                .font(self.fonts().mono)
-                .size(11)
-                .color(self.accent_color()),
-            text_input("Application name or desktop ID", custom)
-                .id(Id::new(OPEN_WITH_ID))
-                .on_input(Message::OpenWithChanged)
-                .on_submit(Message::OpenWithSubmitted)
-                .font(self.fonts().mono)
-                .size(12)
-                .line_height(iced::Pixels(15.0))
-                .padding(0)
-                .style(status_input_style)
-                .width(Fill),
-            feedback,
-        ]
-        .spacing(7)
-        .height(27)
-        .align_y(Alignment::Center);
+        let custom_content: Element<'_, Message> = if editing {
+            row![
+                self.bottom_bar_text("application")
+                    .size(11)
+                    .color(self.accent_color()),
+                text_input("Application name, desktop ID, or executable path", custom)
+                    .id(Id::new(OPEN_WITH_ID))
+                    .on_input(Message::OpenWithChanged)
+                    .on_submit(Message::OpenWithSubmitted)
+                    .font(self.fonts().mono)
+                    .size(12)
+                    .line_height(iced::Pixels(15.0))
+                    .padding(0)
+                    .style(status_input_style)
+                    .width(Fill),
+                feedback,
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                Space::new().width(Fill),
+                self.bottom_bar_text("j/k choose · Enter select")
+                    .size(11)
+                    .color(self.secondary_text_color()),
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center)
+            .into()
+        };
+        let custom = container(custom_content)
+            .padding(Padding::from([4, 6]))
+            .height(27)
+            .width(Fill);
 
         container(column![header, options, custom].spacing(3))
             .width(Fill)
@@ -603,13 +634,12 @@ impl<'a> View<'a> {
         let feedback: Element<'_, Message> = if self.app().foreground_operation_active() {
             self.app().spinner(13.0).into()
         } else if error.is_empty() {
-            self.text("Enter create  ·  Esc cancel")
-                .font(self.fonts().mono)
+            self.bottom_bar_text("Enter create  ·  Esc cancel")
                 .size(11)
                 .color(self.secondary_text_color())
                 .into()
         } else {
-            self.text(error)
+            self.bottom_bar_text(error)
                 .size(11)
                 .line_height(iced::Pixels(13.0))
                 .color(self.app().iced_theme().palette().danger)
@@ -617,8 +647,7 @@ impl<'a> View<'a> {
         };
         compact_status_line(
             row![
-                self.text(label)
-                    .font(self.fonts().mono)
+                self.bottom_bar_text(label)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .color(self.accent_color()),
@@ -660,7 +689,7 @@ impl<'a> View<'a> {
         } else {
             format!("{} matches", self.app().navigation.entries().len())
         };
-        self.text(label)
+        self.bottom_bar_text(label)
             .size(11)
             .line_height(iced::Pixels(13.0))
             .color(self.secondary_text_color())

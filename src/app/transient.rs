@@ -85,13 +85,8 @@ impl<'a> Sessions<'a> {
         Ok(())
     }
 
-    pub(super) fn choose_open_with(&mut self, application: &str) -> Option<open_with::Request> {
-        let request = self.open_with.choose(application)?;
-        Some(request)
-    }
-
     pub(super) fn submit_open_with(&mut self) -> Option<open_with::Request> {
-        let request = self.open_with.submit_custom()?;
+        let request = self.open_with.submit()?;
         Some(request)
     }
 
@@ -221,7 +216,12 @@ impl Sources<'_> {
         } else if let Some(height) = self.open_with.preferred_height() {
             resolved.kind = Kind::OpenWith;
             resolved.expanded_height = Some(height);
-            if let open_with::View::Open { custom, .. } = self.open_with.view() {
+            if let open_with::View::Open {
+                custom,
+                editing: true,
+                ..
+            } = self.open_with.view()
+            {
                 resolved.input = Some(Input {
                     target: InputTarget::OpenWith,
                     empty: custom.is_empty(),

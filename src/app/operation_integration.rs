@@ -31,7 +31,7 @@ impl App {
             self.presentation.set_status(error);
             return Task::none();
         }
-        self.refocus_bottom_input()
+        self.release_location_focus()
     }
 
     pub(super) fn submit_command(&mut self) -> Task<Message> {
@@ -361,23 +361,19 @@ impl App {
             .map(|entry| entry.path.clone())
     }
 
-    pub(super) fn choose_open_with(&mut self, application: String) -> Task<Message> {
-        let Some(request) =
-            self.change_transient(|sessions| sessions.choose_open_with(&application))
-        else {
-            return Task::none();
-        };
-        self.finish_open_with(request)
-    }
-
     pub(super) fn submit_open_with(&mut self) -> Task<Message> {
         let Some(request) = self.change_transient(|sessions| sessions.submit_open_with()) else {
-            return Task::none();
+            return self.refocus_bottom_input();
         };
         self.finish_open_with(request)
     }
 
     pub(super) fn cancel_open_with(&mut self) -> Task<Message> {
+        if self.open_with.leave_custom() {
+            return iced::advanced::widget::operate(
+                iced::advanced::widget::operation::focusable::unfocus(),
+            );
+        }
         self.change_transient(|sessions| sessions.dismiss(Dismiss::OpenWith));
         Task::none()
     }

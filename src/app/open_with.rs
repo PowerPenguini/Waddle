@@ -25,6 +25,8 @@ pub(super) enum View<'a> {
     Open {
         target_name: &'a str,
         applications: &'a [Application],
+        selected: usize,
+        editing: bool,
         custom: &'a str,
         error: &'a str,
     },
@@ -35,6 +37,8 @@ struct State {
     path: PathBuf,
     target_name: String,
     applications: Vec<Application>,
+    selected: usize,
+    editing: bool,
     custom: String,
     error: String,
 }
@@ -45,6 +49,13 @@ pub(super) struct Session {
 }
 
 impl Session {
+    #[cfg(test)]
+    pub(super) fn with_applications(path: PathBuf, applications: Vec<Application>) -> Self {
+        let mut session = Self::default();
+        session.open(path, applications);
+        session
+    }
+
     pub(super) fn begin(&mut self, path: PathBuf) -> Result<(), String> {
         let applications = applications_for(&path)?;
         self.open(path, applications);
@@ -57,6 +68,8 @@ impl Session {
             .map_or(View::Closed, |state| View::Open {
                 target_name: &state.target_name,
                 applications: &state.applications,
+                selected: state.selected,
+                editing: state.editing,
                 custom: &state.custom,
                 error: &state.error,
             })
@@ -73,33 +86,46 @@ impl Session {
         })
     }
 
+    pub(super) fn move_selection(&mut self, delta: i32) {
+        if let Some(state) = self.state.as_mut().filter(|state| !state.editing) {
+            state.selected = state
+                .selected
+                .saturating_add_signed(delta as isize)
+                .min(state.applications.len());
+            state.error.clear();
+        }
+    }
+
+    pub(super) fn leave_custom(&mut self) -> bool {
+        if let Some(state) = self.state.as_mut().filter(|state| state.editing) {
+            state.editing = false;
+            state.error.clear();
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn change_custom(&mut self, value: String) {
-        if let Some(state) = self.state.as_mut() {
+        if let Some(state) = self.state.as_mut().filter(|state| state.editing) {
             state.custom = value;
             state.error.clear();
         }
     }
 
-    pub(super) fn choose(&mut self, application: &str) -> Option<Request> {
-        let state = self.state.as_ref()?;
-        let application = state
-            .applications
-            .iter()
-            .find(|candidate| candidate.id == application)?
-            .id
-            .clone();
-        let state = self.state.take()?;
-        Some(Request {
-            path: state.path,
-            application,
-        })
-    }
-
-    pub(super) fn submit_custom(&mut self) -> Option<Request> {
+    pub(super) fn submit(&mut self) -> Option<Request> {
         let state = self.state.as_mut()?;
-        let application = state.custom.trim().to_owned();
+        if !state.editing && state.selected == state.applications.len() {
+            state.editing = true;
+            return None;
+        }
+        let application = if state.editing {
+            state.custom.trim().to_owned()
+        } else {
+            state.applications.get(state.selected)?.id.clone()
+        };
         if application.is_empty() {
-            state.error = "Enter an application name or desktop ID".to_owned();
+            state.error = "Enter an application name, desktop ID, or executable path".to_owned();
             return None;
         }
         let state = self.state.take()?;
@@ -122,6 +148,8 @@ impl Session {
             path,
             target_name,
             applications,
+            selected: 0,
+            editing: false,
             custom: String::new(),
             error: String::new(),
         });
@@ -168,7 +196,7 @@ pub(super) fn launch(path: PathBuf, requested: &str, make_default: bool) -> Resu
     let content_type = content_type(&path, metadata.is_dir());
     let requested = requested.trim();
     if requested.is_empty() {
-        return Err("application name or desktop ID is required".to_owned());
+        return Err("application name, desktop ID, or executable path is required".to_owned());
     }
     let matches = |application: &gio::AppInfo| {
         app_id(application).eq_ignore_ascii_case(requested)
@@ -177,8 +205,23 @@ pub(super) fn launch(path: PathBuf, requested: &str, make_default: bool) -> Resu
     let application = gio::AppInfo::all_for_type(&content_type)
         .into_iter()
         .find(matches)
-        .or_else(|| gio::AppInfo::all().into_iter().find(matches))
-        .ok_or_else(|| format!("application not found: {requested}"))?;
+        .or_else(|| gio::AppInfo::all().into_iter().find(matches));
+    let Some(application) = application else {
+        if make_default {
+            return Err("Setting a default requires an installed application".to_owned());
+        }
+        let mut child = std::process::Command::new(application_path(&path, requested))
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not launch {requested}: {error}"))?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(format!("Opened with {requested}"));
+    };
     if make_default {
         application
             .set_as_default_for_type(&content_type)
@@ -196,6 +239,18 @@ pub(super) fn launch(path: PathBuf, requested: &str, make_default: bool) -> Resu
             )
             .map_err(|error| format!("Could not launch {}: {error}", application.name()))?;
         Ok(format!("Opened with {}", application.name()))
+    }
+}
+
+fn application_path(target: &Path, requested: &str) -> PathBuf {
+    if let Some(relative) = requested.strip_prefix("~/") {
+        return gio::glib::home_dir().join(relative);
+    }
+    let path = PathBuf::from(requested);
+    if path.is_relative() && requested.contains('/') {
+        target.parent().unwrap_or(Path::new(".")).join(path)
+    } else {
+        path
     }
 }
 
@@ -225,6 +280,115 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_selection_includes_custom_last_and_preserves_its_input() {
+        let mut session = Session::with_applications(
+            "/work/file.txt".into(),
+            vec![
+                application("editor.desktop", "Editor", true),
+                application("viewer.desktop", "Viewer", false),
+            ],
+        );
+        session.move_selection(-1);
+        assert!(matches!(session.view(), View::Open { selected: 0, .. }));
+        session.move_selection(1);
+        assert_eq!(
+            session.clone().submit().unwrap().application,
+            "viewer.desktop"
+        );
+        session.move_selection(10);
+        assert!(matches!(
+            session.view(),
+            View::Open {
+                selected: 2,
+                editing: false,
+                ..
+            }
+        ));
+        assert!(session.submit().is_none());
+        session.change_custom("/opt/my editor".into());
+        session.move_selection(-1);
+        assert!(matches!(
+            session.view(),
+            View::Open {
+                selected: 2,
+                editing: true,
+                ..
+            }
+        ));
+        assert!(session.leave_custom());
+        session.move_selection(-1);
+        session.move_selection(1);
+        assert!(session.submit().is_none());
+        assert_eq!(
+            session.submit().unwrap(),
+            Request {
+                path: "/work/file.txt".into(),
+                application: "/opt/my editor".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn empty_application_list_still_offers_custom() {
+        let mut session = Session::with_applications("/work/file.txt".into(), vec![]);
+        session.move_selection(1);
+        session.move_selection(-1);
+        assert!(session.submit().is_none());
+        assert!(matches!(
+            session.view(),
+            View::Open {
+                selected: 0,
+                editing: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn executable_path_with_spaces_receives_target_as_one_literal_argument() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("my editor");
+        let target = directory.path().join("file ; $HOME.txt");
+        fs::write(&target, "example").unwrap();
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s' \"$1\" > \"$0.received\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        launch(target.clone(), "./my editor", false).unwrap();
+        let received = directory.path().join("my editor.received");
+        for _ in 0..100 {
+            if fs::read_to_string(&received).ok().as_deref() == target.to_str() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("executable did not receive the literal target path");
+    }
+
+    #[test]
+    fn application_paths_expand_home_and_resolve_relative_to_target_folder() {
+        assert_eq!(
+            application_path(Path::new("/work/file.txt"), "~/bin/editor"),
+            gio::glib::home_dir().join("bin/editor")
+        );
+        assert_eq!(
+            application_path(Path::new("/work/file.txt"), "./editor"),
+            PathBuf::from("/work/./editor")
+        );
+        assert_eq!(
+            application_path(Path::new("/work/file.txt"), "editor"),
+            PathBuf::from("editor")
+        );
+        assert_eq!(
+            application_path(Path::new("/work/file.txt"), "/opt/editor"),
+            PathBuf::from("/opt/editor")
+        );
+    }
+
+    #[test]
     fn session_exposes_options_and_keeps_a_manual_application_input() {
         let mut session = Session::default();
         session.open(
@@ -240,6 +404,7 @@ mod tests {
             applications,
             custom,
             error,
+            ..
         } = session.view()
         else {
             panic!("Open With session should be visible");
@@ -249,9 +414,11 @@ mod tests {
         assert_eq!(custom, "");
         assert_eq!(error, "");
 
+        session.move_selection(2);
+        assert!(session.submit().is_none());
         session.change_custom("org.example.Custom.desktop".to_owned());
         assert_eq!(
-            session.submit_custom(),
+            session.submit(),
             Some(Request {
                 path: PathBuf::from("/work/document.txt"),
                 application: "org.example.Custom.desktop".to_owned(),
@@ -261,23 +428,26 @@ mod tests {
     }
 
     #[test]
-    fn known_option_uses_the_retained_target_and_empty_custom_input_stays_open() {
+    fn typed_option_uses_the_retained_target_and_empty_input_stays_open() {
         let mut session = Session::default();
         session.open(
             PathBuf::from("/work/image.png"),
             vec![application("org.example.Viewer.desktop", "Viewer", false)],
         );
 
-        assert!(session.submit_custom().is_none());
+        session.move_selection(1);
+        assert!(session.submit().is_none());
+        assert!(session.submit().is_none());
         assert!(matches!(
             session.view(),
             View::Open { error, .. } if !error.is_empty()
         ));
+        session.change_custom("  Viewer  ".to_owned());
         assert_eq!(
-            session.choose("org.example.Viewer.desktop"),
+            session.submit(),
             Some(Request {
                 path: PathBuf::from("/work/image.png"),
-                application: "org.example.Viewer.desktop".to_owned(),
+                application: "Viewer".to_owned(),
             })
         );
     }

@@ -22,6 +22,18 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.16" date="2026-09-11">
+      <description>
+        <ul>
+          <li>Choose open-with applications using j/k or arrow keys and Enter, with Custom app as the final list row.</li>
+          <li>Add the ow keyboard shortcut and :ow command alias.</li>
+          <li>Accept application names, desktop IDs, and executable paths in the custom application field.</li>
+          <li>Keep Backspace inside open-with and preserve custom input when returning to the application list.</li>
+          <li>Align application columns and use monospace text throughout the bottom bar.</li>
+          <li>Dim hidden sidebar folders and icons while preserving interaction and reduced-transparency visibility.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.15" date="2026-09-11">
       <description>
         <ul>

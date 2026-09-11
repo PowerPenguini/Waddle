@@ -50,10 +50,18 @@ Search
   Enter  Open the current match
   Esc  Cancel search and restore the previous view
 
+Open-with
+  ow  Open the application chooser for the selected entry
+  j/k or Up/Down  Choose an application; Custom is last
+  Enter  Open the selected app, or edit Custom
+  Custom  Enter an app name, desktop ID, or executable path
+  Esc  Return from Custom to the choices; close the choices
+  Backspace  Edit Custom without closing Open-with
+
 Prompts and transfers
   y / Enter  Confirm a deletion prompt
   n / Esc  Cancel a deletion prompt
-  Backspace  Cancel an empty bottom input
+  Backspace  Cancel an empty bottom input except Open-with
   r / s / k  Replace / skip / keep both for one conflict
   R / S / K  Apply the choice to remaining entries
   Esc / c  Cancel an active transfer
@@ -173,7 +181,10 @@ pub(super) enum Intent {
     CancelSearch,
     CancelCommand,
     CancelRename,
+    BeginOpenWith,
     CancelOpenWith,
+    MoveOpenWith(i32),
+    SubmitOpenWith,
     CancelLocation,
     CloseCommandOutput,
     CopyCommandOutput,
@@ -217,6 +228,7 @@ pub(super) struct BrowserInput {
     count: Option<usize>,
     g_pending: bool,
     window_pending: bool,
+    open_with_pending: bool,
     delete_pending: Option<(usize, Option<usize>, bool)>,
     black_hole_stage: u8,
 }
@@ -262,6 +274,8 @@ impl BrowserInput {
             } else {
                 "\"_".to_owned()
             })
+        } else if self.open_with_pending {
+            Some("o".to_owned())
         } else if self.window_pending {
             Some("Ctrl+W".to_owned())
         } else if self.g_pending {
@@ -284,6 +298,8 @@ impl BrowserInput {
             "awaiting _"
         } else if self.black_hole_stage == 2 {
             "awaiting d or x"
+        } else if self.open_with_pending {
+            "awaiting w to open-with"
         } else if self.window_pending {
             "awaiting h, j, k, l, or e"
         } else if self.g_pending {
@@ -298,6 +314,7 @@ impl BrowserInput {
         self.count = None;
         self.g_pending = false;
         self.window_pending = false;
+        self.open_with_pending = false;
         self.delete_pending = None;
         self.black_hole_stage = 0;
     }
@@ -362,12 +379,28 @@ impl BrowserInput {
             };
         }
 
+        if mode == Mode::OpenWith
+            && context.bottom_input == BottomInput::Inactive
+            && !press.control
+            && !press.alt
+            && !press.logo
+        {
+            match (press.named, press.text.as_deref()) {
+                (NamedKey::ArrowDown, _) | (_, Some("j")) => return Intent::MoveOpenWith(1),
+                (NamedKey::ArrowUp, _) | (_, Some("k")) => return Intent::MoveOpenWith(-1),
+                (NamedKey::Enter, _) => return Intent::SubmitOpenWith,
+                _ => {}
+            }
+        }
+
         if mode != Mode::Browser {
             if mode == Mode::Command && press.named == NamedKey::Tab {
                 return Intent::CompleteCommand;
             }
             let cancel = press.named == NamedKey::Escape
-                || press.named == NamedKey::Backspace && context.bottom_input.is_empty();
+                || mode != Mode::OpenWith
+                    && press.named == NamedKey::Backspace
+                    && context.bottom_input.is_empty();
             if !cancel {
                 return Intent::None;
             }
@@ -488,6 +521,7 @@ impl BrowserInput {
             let count = self.count.take().unwrap_or(1);
             self.g_pending = false;
             self.window_pending = false;
+            self.open_with_pending = false;
             self.delete_pending = None;
             self.black_hole_stage = 0;
             return match text.map(str::to_ascii_lowercase).as_deref() {
@@ -508,6 +542,14 @@ impl BrowserInput {
                 }
                 _ => Intent::None,
             };
+        }
+
+        if self.open_with_pending {
+            if text == Some("w") && !press.alt && !press.logo {
+                self.clear_sequence();
+                return Intent::BeginOpenWith;
+            }
+            return self.invalid_sequence(text.unwrap_or("key"));
         }
 
         let standard_motion = match press.named {
@@ -622,6 +664,10 @@ impl BrowserInput {
             Some("R") if context.transfer_retry => Intent::RetryTransfer,
             Some("t") if context.transfer_history_available => Intent::ToggleTransferHistory,
             Some("r") => Intent::Rename,
+            Some("o") if !press.alt && !press.logo => {
+                self.open_with_pending = true;
+                Intent::Pending(self.pending_status())
+            }
             Some("y") if context.file_operators_allowed => Intent::Copy,
             Some("p") => Intent::Paste,
             Some("v") => Intent::ToggleVisual,
@@ -693,6 +739,39 @@ fn delete_motion(text: &str) -> Option<DeleteMotion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ow_opens_the_chooser_and_pending_o_can_be_cancelled_or_rejected() {
+        let mut input = BrowserInput::default();
+        assert!(matches!(
+            input.handle(text("o"), selected()),
+            Intent::Pending(_)
+        ));
+        assert_eq!(input.pending_sequence().as_deref(), Some("o"));
+        assert_eq!(input.handle(text("w"), selected()), Intent::BeginOpenWith);
+        assert!(input.pending_sequence().is_none());
+
+        input.handle(text("o"), selected());
+        input.handle(
+            Press {
+                named: NamedKey::Escape,
+                ..Press::default()
+            },
+            selected(),
+        );
+        assert!(input.pending_sequence().is_none());
+        assert_ne!(input.handle(text("w"), selected()), Intent::BeginOpenWith);
+
+        input.handle(text("o"), selected());
+        assert!(matches!(
+            input.handle(text("x"), selected()),
+            Intent::InvalidSequence(_)
+        ));
+        assert!(input.pending_sequence().is_none());
+        input.enter(Mode::Command);
+        assert_eq!(input.handle(text("o"), selected()), Intent::None);
+        assert_eq!(input.handle(text("w"), selected()), Intent::None);
+    }
 
     fn text(value: &str) -> Press {
         Press {

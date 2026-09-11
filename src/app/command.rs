@@ -19,7 +19,8 @@ Commands
   :volume mount|unmount|eject NAME  Manage a volume
   :properties, :props [PATH]  Inspect an entry
   :chmod MODE [PATH ...]  Change permissions
-  :open-with [APP_ID] [-- PATH]  Choose or open an application
+  :open-with [APP] [-- PATH]  Choose or open an app by name, ID, or executable path
+  :ow [APP] [-- PATH]  Alias for :open-with
   :default-app APP_ID [-- PATH]  Set the default application
   :cd PATH  Change Waddle's current directory
   :q  Quit Waddle
@@ -28,7 +29,7 @@ Commands
   $selected  Selected paths in Bash; use outside quotes
 
   Targets default to selection; relative paths use this folder
-  Quote paths with spaces; put -- before Open With paths
+  Quote paths with spaces; put -- before Open-with paths
 
 Command prompt
   Tab         Complete a command name
@@ -330,8 +331,13 @@ impl CommandSession {
             && let Some((command, application)) = trimmed
                 .split_once(char::is_whitespace)
                 .or(Some((trimmed, "")))
-            && matches!(command, "open-with" | "default-app")
+            && matches!(command, "open-with" | "ow" | "default-app")
         {
+            let command = if command == "ow" {
+                "open-with"
+            } else {
+                command
+            };
             return match parse_open_with_arguments(&current, command, application.trim()) {
                 Ok((application, target)) => CommandAction::OpenWith {
                     application,
@@ -583,7 +589,7 @@ fn parse_open_with_arguments(
     arguments: &str,
 ) -> Result<(String, Option<PathBuf>), String> {
     let Some(words) = shlex::split(arguments) else {
-        return Err("Could not parse Open With arguments: unmatched quote".to_owned());
+        return Err("Could not parse Open-with arguments: unmatched quote".to_owned());
     };
     let Some(separator) = words.iter().position(|word| word == "--") else {
         let application = match words.as_slice() {
@@ -788,6 +794,35 @@ mod tests {
                 target: Some(target),
             } if application.is_empty() && target.as_path() == Path::new("/work/notes.txt")
         ));
+    }
+
+    #[test]
+    fn ow_alias_accepts_the_same_application_and_target_as_open_with() {
+        for arguments in [
+            "",
+            " -- notes.txt",
+            " Editor -- \"notes from today.txt\"",
+            " \"/opt/my editor\"",
+        ] {
+            let mut session = CommandSession::default();
+            session.begin(':');
+            session.change(format!("open-with{arguments}"));
+            let expected = session.submit(PathBuf::from("/work"));
+            session.begin(':');
+            session.change(format!("ow{arguments}"));
+            let fields = |action| match action {
+                CommandAction::OpenWith {
+                    application,
+                    default,
+                    target,
+                } => (application, default, target),
+                other => panic!("expected open-with action, got {other:?}"),
+            };
+            assert_eq!(
+                fields(session.submit(PathBuf::from("/work"))),
+                fields(expected)
+            );
+        }
     }
 
     #[test]

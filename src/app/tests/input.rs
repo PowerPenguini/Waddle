@@ -27,7 +27,7 @@ fn recent_entry_menu_offers_only_available_actions() {
             let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
             assert_eq!(
                 labels,
-                ["Properties", "Open With…"],
+                ["Properties", "Open-with…"],
                 "Recent offered mutation actions whose handlers reject this location"
             );
             let (_, properties) = actions.into_iter().next().unwrap();
@@ -65,7 +65,7 @@ fn recursive_search_menus_offer_only_available_actions() {
             let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
             assert_eq!(
                 labels,
-                ["Properties", "Open With…"],
+                ["Properties", "Open-with…"],
                 "Recursive search offered mutation actions whose handlers reject them"
             );
             assert!(app.context_actions(ContextTarget::Background).is_empty());
@@ -575,7 +575,7 @@ fn context_menu_does_not_offer_template_files() {
             "New Folder",
             "New Empty File",
             "Properties",
-            "Open With…",
+            "Open-with…",
             "Rename",
             "Move to Trash",
         ]
@@ -611,6 +611,10 @@ fn open_with_context_shows_compatible_options_and_a_manual_input() {
     assert!(app.command.output().is_none());
     assert!(app.grid.context_menu().is_none());
 
+    assert!(!app.bottom_input_active());
+    app.open_with.move_selection(i32::MAX);
+    let _ = app.update(Message::OpenWithSubmitted);
+    assert!(app.bottom_input_active());
     let _ = app.update(Message::OpenWithChanged(
         "org.example.Custom.desktop".to_owned(),
     ));
@@ -623,6 +627,14 @@ fn open_with_context_shows_compatible_options_and_a_manual_input() {
     ));
 
     let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let _ = app.handle_key(
+        escape.clone(),
+        escape.clone(),
+        keyboard::Modifiers::empty(),
+        None,
+    );
+    assert!(app.open_with.is_open());
+    assert!(!app.bottom_input_active());
     let _ = app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None);
     assert_eq!(app.browser_input.mode(), InputMode::Browser);
     assert!(!app.open_with.is_open());
@@ -883,4 +895,125 @@ fn icon_zoom_keyboard_wheel_and_command_share_the_same_preference() {
     assert_eq!(app.grid.icon_size(), 96.0);
     assert_eq!(app.grid.selected_entry(), Some(1));
     assert!(!app.navigation.loading());
+}
+
+#[test]
+fn open_with_keyboard_navigation_and_custom_backspace_stay_in_the_chooser() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.open_with = open_with::Session::with_applications(
+        "/work/file.txt".into(),
+        vec![
+            open_with::Application {
+                id: "editor.desktop".into(),
+                name: "Editor".into(),
+                default: true,
+            },
+            open_with::Application {
+                id: "viewer.desktop".into(),
+                name: "Viewer".into(),
+                default: false,
+            },
+        ],
+    );
+    let named = |app: &mut App, name| {
+        let key = keyboard::Key::Named(name);
+        let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None);
+    };
+    assert!(!app.bottom_input_active());
+    named(&mut app, keyboard::key::Named::Backspace);
+    assert!(app.open_with.is_open());
+    press(&mut app, "j");
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open { selected: 1, .. }
+    ));
+    press(&mut app, "k");
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open { selected: 0, .. }
+    ));
+    named(&mut app, keyboard::key::Named::ArrowDown);
+    press(&mut app, "j");
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            selected: 2,
+            editing: false,
+            ..
+        }
+    ));
+    named(&mut app, keyboard::key::Named::Enter);
+    assert!(app.bottom_input_active());
+    named(&mut app, keyboard::key::Named::Backspace);
+    assert!(app.open_with.is_open());
+    assert!(app.bottom_input_active());
+    press(&mut app, "k");
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            selected: 2,
+            editing: true,
+            ..
+        }
+    ));
+    let _ = app.update(Message::OpenWithChanged("/opt/jk editor".into()));
+    named(&mut app, keyboard::key::Named::Escape);
+    assert!(app.open_with.is_open());
+    assert!(!app.bottom_input_active());
+    named(&mut app, keyboard::key::Named::Enter);
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            editing: true,
+            custom: "/opt/jk editor",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn empty_command_and_search_inputs_still_close_on_backspace() {
+    for prefix in [":", "!", "/"] {
+        let (mut app, _) = App::new();
+        app.navigation.settle_for_test();
+        press(&mut app, prefix);
+        assert!(app.bottom_input_active(), "{prefix}");
+        let key = keyboard::Key::Named(keyboard::key::Named::Backspace);
+        let _ = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None);
+        assert!(!app.bottom_input_active(), "{prefix}");
+        assert_eq!(
+            app.transient_presentation().mode(),
+            InputMode::Browser,
+            "{prefix}"
+        );
+    }
+}
+
+#[test]
+fn ow_opens_the_application_chooser_for_the_selected_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("document.txt");
+    std_fs::write(&path, "hello").unwrap();
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(vec![FileEntry {
+        path,
+        name: "document.txt".into(),
+        directory: false,
+        metadata: Default::default(),
+    }]);
+    app.grid.select_only(Some(0), 1);
+    press(&mut app, "o");
+    assert!(!app.open_with.is_open());
+    press(&mut app, "w");
+    assert!(matches!(
+        app.open_with.view(),
+        open_with::View::Open {
+            target_name: "document.txt",
+            editing: false,
+            ..
+        }
+    ));
+    assert!(app.browser_input.pending_sequence().is_none());
 }

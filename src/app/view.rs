@@ -104,9 +104,14 @@ impl<'a> View<'a> {
         kind: tree::NodeKind,
         size: f32,
         color: iced::Color,
+        opacity: f32,
     ) -> Element<'static, Message> {
-        self.system_icon(super::system_icons::Kind::Tree(kind), size, 1.0, color)
-            .unwrap_or_else(|| themed_svg(tree_icon_asset(kind), size, color).into())
+        self.system_icon(super::system_icons::Kind::Tree(kind), size, opacity, color)
+            .unwrap_or_else(|| {
+                themed_svg(tree_icon_asset(kind), size, color)
+                    .opacity(opacity)
+                    .into()
+            })
     }
 
     fn system_icon(
@@ -329,6 +334,15 @@ impl<'a> View<'a> {
         };
         let selected = tree_row.selected;
         let focused = self.app.focus.is(BrowserFocus::Sidebar) && tree_row.focused;
+        let content_opacity = entry_content_opacity(
+            tree_row
+                .path
+                .as_deref()
+                .and_then(std::path::Path::file_name)
+                .is_some_and(|name| name.as_encoded_bytes().first() == Some(&b'.')),
+            selected || focused || drop_target,
+            self.app.reduced_transparency(),
+        );
         let label_color = if selected || focused {
             self.selection_text_color()
         } else {
@@ -343,14 +357,14 @@ impl<'a> View<'a> {
             } else {
                 icon_color
             };
-            line = line.push(self.tree_icon(tree_row.kind, 17.0, color));
+            line = line.push(self.tree_icon(tree_row.kind, 17.0, color, content_opacity));
         }
         line = line.push(
             container(
                 self.text(label)
                     .size(13)
                     .line_height(iced::Pixels(16.0))
-                    .color(label_color)
+                    .color(apply_opacity(label_color, content_opacity))
                     .wrapping(iced::advanced::text::Wrapping::None),
             )
             .width(Fill)

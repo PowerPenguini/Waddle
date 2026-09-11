@@ -263,7 +263,11 @@ fn bottom_editors_capture_keyboard_and_return_to_the_browser_surface() {
                 }
                 "folder" => (NEW_FOLDER_ID, app.update(Message::ContextNewFolder)),
                 "file" => (NEW_FOLDER_ID, app.update(Message::ContextNewFile)),
-                "open-with" => (OPEN_WITH_ID, app.update(Message::ContextOpenWith)),
+                "open-with" => {
+                    let _ = app.update(Message::ContextOpenWith);
+                    app.open_with.move_selection(i32::MAX);
+                    (OPEN_WITH_ID, app.update(Message::OpenWithSubmitted))
+                }
                 _ => unreachable!(),
             };
             let mut input = InputState::new();
@@ -298,6 +302,14 @@ fn bottom_editors_capture_keyboard_and_return_to_the_browser_surface() {
             assert!(!app.bottom_input_active(), "{editor}");
             assert_eq!(app.browser_input.mode(), InputMode::Browser, "{editor}");
             assert_eq!(app.focus.browser(), surface, "{editor}");
+            if editor == "open-with" {
+                assert!(
+                    app.open_with.is_open(),
+                    "Escape returns to application choices"
+                );
+                let _ = key(&mut app, Key::Named(Named::Escape), Modifiers::empty());
+                assert!(!app.open_with.is_open());
+            }
             let _ = key(&mut app, Key::Named(Named::Tab), Modifiers::empty());
             assert_ne!(
                 app.focus.browser(),
