@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn recent_entry_menu_offers_only_available_actions() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            std_fs::write(temp.path().join("recent.txt"), "fixture").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            let request = app.navigation.recent().request.unwrap();
+            let loaded = app.update(Message::RecentLoaded {
+                request,
+                result: Some(Ok(fs::read_directory(temp.path()).unwrap())),
+            });
+            navigation::finish_tasks(&mut app, loaded).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Recent
+            );
+            let context = app.update(Message::EntryContext(0));
+            navigation::finish_tasks(&mut app, context).await;
+            let actions = app.context_actions(app.grid.context_menu().unwrap().target);
+            let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
+            assert_eq!(
+                labels,
+                ["Properties", "Open With…"],
+                "Recent offered mutation actions whose handlers reject this location"
+            );
+            let (_, properties) = actions.into_iter().next().unwrap();
+            let inspected = app.update(properties);
+            navigation::finish_tasks(&mut app, inspected).await;
+            assert!(app.command.output().is_some());
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Recent
+            );
+        });
+}
+
+#[test]
 fn recursive_search_menus_offer_only_available_actions() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

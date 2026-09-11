@@ -638,3 +638,16 @@ outside this work.
   search and restores the full folder. Existing Open With checks still pass.
   All-target tests passed (634 passed, 23 ignored), along with Clippy, formatting,
   and whitespace checks.
+
+## Round 46: Recent menus offer unsupported mutation actions (2026-09-11)
+
+- Reproduction: open Recent and right-click a file. New Folder, New Empty File,
+  Rename, and Move to Trash appear, but their handlers reject the Recent view.
+- Red: `cargo test recent_entry_menu_offers_only_available_actions -- --nocapture`
+  returned the six folder actions instead of Properties and Open With.
+- Cause: entry menus treated Recent as an ordinary folder while the mutation
+  guard requires an actual folder to be displayed.
+- Fix: use the existing menu for views without mutation actions in Recent too.
+- Green: the menu contains supported actions, Properties inspects the real file,
+  and Recent stays open. All-target tests passed (635 passed, 23 ignored), along
+  with Clippy, formatting, and whitespace checks.

@@ -1144,7 +1144,9 @@ impl App {
     }
 
     pub(super) fn context_actions(&self, target: ContextTarget) -> Vec<(String, Message)> {
-        if self.search.is_recursive() {
+        if self.search.is_recursive()
+            || self.navigation.displayed_location() == DisplayedLocation::Recent
+        {
             return match target {
                 ContextTarget::Background => Vec::new(),
                 ContextTarget::Entry(_) => vec![
