@@ -1,6 +1,61 @@
 use super::*;
 
 #[test]
+fn properties_failure_survives_an_automatic_directory_refresh() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let missing = temp.path().join("gone.txt");
+            std_fs::write(&missing, "removed before inspection").unwrap();
+            std_fs::write(temp.path().join("survivor.txt"), "still present").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.sync_location_monitoring();
+            app.grid.select_only(Some(1), 2);
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("properties gone.txt".into()));
+            let properties = app.update(Message::CommandSubmitted);
+            std_fs::remove_file(&missing).unwrap();
+            navigation::finish_tasks(&mut app, properties).await;
+            assert!(
+                app.browser_status_model()
+                    .text
+                    .contains("Could not inspect")
+            );
+
+            // The native directory notification arrives after the explicit failure.
+            let refresh = app.update(Message::DirectoryChanged(directory_watch::Event {
+                path: temp.path().to_path_buf(),
+                removed: vec![missing],
+                watch_failed: false,
+            }));
+            navigation::finish_tasks(&mut app, refresh).await;
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(app.navigation.entries()[0].name, "survivor.txt");
+            let status = app.browser_status_model();
+            assert!(
+                status.text.contains("Could not inspect") && status.text.contains("gone.txt"),
+                "automatic refresh hid the Properties failure: {}",
+                status.text
+            );
+            assert!(app.presentation.notice_is_danger());
+
+            let task = app.update(Message::Event(
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                event::Status::Captured,
+            ));
+            navigation::finish_tasks(&mut app, task).await;
+            assert!(app.browser_status_model().text.contains("survivor.txt"));
+        });
+}
+
+#[test]
 fn permission_success_feedback_survives_details_refresh_until_next_input() {
     use std::os::unix::fs::PermissionsExt;
 

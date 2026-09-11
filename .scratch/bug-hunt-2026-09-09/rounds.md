@@ -537,3 +537,16 @@ outside this work.
   it and reveals the new permissions. Both files have the requested mode.
   All-target tests passed (627 passed, 23 ignored), along with Clippy, formatting,
   and whitespace checks.
+
+## Round 39: automatic refresh hides a Properties failure (2026-09-11)
+
+- Reproduction: request Properties for a file, remove it before inspection, then
+  deliver its directory-removal notification after the inspection fails.
+- Red: `cargo test properties_failure_survives_an_automatic_directory_refresh -- --nocapture`
+  replaced the Properties error with the surviving file's ordinary details.
+- Cause: Properties failures used transient status text, which routine folder and
+  selection-detail refreshes overwrite.
+- Fix: retain the error in the existing failure notice, dismissed by the next input.
+- Green: the removed entry disappears while its inspection failure remains visible;
+  the next click reveals the surviving file's refreshed details. All-target tests
+  passed (628 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.

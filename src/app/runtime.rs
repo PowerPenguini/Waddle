@@ -488,7 +488,7 @@ impl App {
                             info.detail,
                         );
                     }
-                    Err(error) => self.presentation.set_status(error),
+                    Err(error) => self.presentation.set_notice(error),
                 }
                 Task::none()
             }
