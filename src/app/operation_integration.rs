@@ -614,7 +614,11 @@ impl App {
             Ok(effect) => {
                 self.presentation.set_status(effect.status);
                 let tree = self.invalidate_tree(effect.changed_folders);
-                let refresh = self.refresh(effect.select);
+                let refresh = if self.navigation.folder_displayed() {
+                    self.refresh(effect.select)
+                } else {
+                    self.refresh_location()
+                };
                 Task::batch([tree, refresh])
             }
             Err(error) => {

@@ -446,3 +446,17 @@ outside this work.
 - Green: the removed file disappears from the browser while the permission error
   stays visible and the blocked copy remains intact. All-target tests passed
   (621 passed, 23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 33: queued Undo completion replaces Recent or Trash (2026-09-11)
+
+- Reproduction: run a real New File Undo, retain its completion message, and
+  switch the displayed location to Recent or Trash before delivering that message.
+- Red: `cargo test queued_undo_completion_preserves_a_newer_recent_or_trash_location -- --nocapture`
+  found that the completion requested a Folder refresh instead of Recent.
+- Cause: successful journal completion always refreshed the current filesystem
+  folder, even when a newer navigation had switched to a virtual location.
+- Fix: refresh the displayed Recent or Trash location when appropriate; retain
+  the existing selection behavior when a folder is displayed.
+- Green: both Recent and Trash remain displayed through the queued completion
+  and subsequent refresh. All-target tests passed (622 passed, 23 ignored),
+  along with Clippy, formatting, and whitespace checks.

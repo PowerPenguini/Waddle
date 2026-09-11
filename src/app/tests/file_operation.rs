@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn queued_undo_completion_preserves_a_newer_recent_or_trash_location() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for location in [DisplayedLocation::Recent, DisplayedLocation::Trash] {
+                let temp = tempfile::tempdir().unwrap();
+                let file = temp.path().join("undo.txt");
+                std_fs::write(&file, "").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.journal
+                    .record(journal::Action::new_file(file.clone()).unwrap())
+                    .unwrap();
+
+                let key = keyboard::Key::Character("u".into());
+                let task =
+                    app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("u"));
+                let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                assert_eq!(queued.len(), 1);
+                assert!(!file.exists());
+                assert!(!app.foreground_operation_active());
+
+                // Deliver the new location's filesystem response before Undo's result.
+                let loaded = match location {
+                    DisplayedLocation::Recent => Message::RecentLoaded {
+                        request: app.navigation.recent().request.unwrap(),
+                        result: Some(Ok(Vec::new())),
+                    },
+                    DisplayedLocation::Trash => Message::TrashLoaded {
+                        request: app.navigation.trash().request.unwrap(),
+                        result: Some(Ok(Vec::new())),
+                    },
+                    DisplayedLocation::Folder => unreachable!(),
+                };
+                let _ = app.update(loaded);
+                let refresh = app.update(queued.pop().unwrap());
+                let request = app
+                    .navigation
+                    .pending_request()
+                    .expect("refresh after Undo");
+                assert_eq!(
+                    request.location(),
+                    location,
+                    "Undo requested the old folder"
+                );
+                let loaded = match location {
+                    DisplayedLocation::Recent => Message::RecentLoaded {
+                        request,
+                        result: Some(Ok(Vec::new())),
+                    },
+                    DisplayedLocation::Trash => Message::TrashLoaded {
+                        request,
+                        result: Some(Ok(Vec::new())),
+                    },
+                    DisplayedLocation::Folder => unreachable!(),
+                };
+                let _ = app.update(loaded);
+                drop(refresh);
+                assert_eq!(app.navigation.displayed_location(), location);
+            }
+        });
+}
+
+#[test]
 fn partial_undo_refreshes_removed_entries_and_retains_the_failure() {
     use std::os::unix::fs::PermissionsExt;
 
