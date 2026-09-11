@@ -22,6 +22,16 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.14" date="2026-09-11">
+      <description>
+        <ul>
+          <li>Refresh browser entries after partially failed Undo or Redo and preserve Recent, Trash, and pending navigation when operations finish.</li>
+          <li>Keep newer editors and command output when earlier file actions complete.</li>
+          <li>Keep file-action confirmations and Properties failures visible through automatic refreshes.</li>
+          <li>Refresh the original folder when recursive search is cancelled or submitted without matches.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.13" date="2026-09-09">
       <description>
         <ul>
