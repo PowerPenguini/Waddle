@@ -709,3 +709,17 @@ outside this work.
 - Green: the restored file remains visible in the folder chosen with Back, and
   Restore removes its Trash metadata. All-target tests passed (639 passed,
   23 ignored), along with Clippy, formatting, and whitespace checks.
+
+## Round 51: queued Copy completion cancels newer Parent navigation (2026-09-11)
+
+- Reproduction: finish a real Copy worker while retaining its completion, start
+  Parent navigation, then deliver the queued Copy result before navigation settles.
+- Red: `cargo test queued_copy_completion_preserves_pending_parent_navigation -- --nocapture`
+  cancelled Parent navigation and left the browser in the Copy destination.
+- Cause: Transfer completion started a folder refresh without checking whether
+  newer navigation was pending.
+- Fix: use the existing deferred-refresh behavior before requesting the Transfer's
+  entry refresh.
+- Green: Parent navigation completes, the parent lists the destination, and both
+  source and copied file remain intact. All-target tests passed (640 passed,
+  23 ignored), along with Clippy, formatting, and whitespace checks.

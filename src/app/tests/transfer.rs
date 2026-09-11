@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn queued_copy_completion_preserves_pending_parent_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            std_fs::create_dir(&source_directory).unwrap();
+            std_fs::create_dir(&destination).unwrap();
+            let source = source_directory.join("copied.txt");
+            std_fs::write(&source, "copied contents").unwrap();
+            let mut transfer = TransferState::default();
+            transfer
+                .copy(&fs::read_directory(&source_directory).unwrap())
+                .unwrap();
+            let request = transfer.paste(destination.clone()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(destination.clone());
+            app.navigation.settle_for_test();
+            let mut stream = iced_runtime::task::into_stream(app.start_transfer(request)).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            let copied = destination.join("copied.txt");
+            assert_eq!(std_fs::read_to_string(&copied).unwrap(), "copied contents");
+            let parent = app.update(Message::Parent);
+            assert!(app.navigation.loading());
+            assert_eq!(app.navigation.pending_path(), Some(temp.path()));
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, Task::batch([parent, completion])).await;
+            assert_eq!(
+                app.navigation.current(),
+                temp.path(),
+                "The queued Copy result cancelled the newer Parent navigation"
+            );
+            assert!(!app.navigation.loading());
+            assert!(
+                app.navigation
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.path == destination)
+            );
+            assert!(source.exists());
+            assert!(copied.exists());
+        });
+}
+
+#[test]
 fn copy_respects_ctrl_click_deselection_including_an_empty_selection() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
