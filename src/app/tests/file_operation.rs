@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn restore_confirmation_survives_the_resulting_trash_refresh() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("Trash");
+            std_fs::create_dir_all(root.join("files")).unwrap();
+            std_fs::create_dir_all(root.join("info")).unwrap();
+            let original = temp.path().join("restored.txt");
+            let trashed = root.join("files/restored.txt");
+            let info = root.join("info/restored.txt.trashinfo");
+            std_fs::write(&trashed, "restored contents").unwrap();
+            std_fs::write(
+                &info,
+                format!("[Trash Info]\nPath={}\n", original.display()),
+            )
+            .unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(root);
+            app.navigation
+                .install_trash_entries(app.trash.entries().unwrap());
+            app.grid.select_only(Some(0), 1);
+
+            let restore = app.update(Message::ContextRestore);
+            navigation::finish_tasks(&mut app, restore).await;
+            assert_eq!(
+                std_fs::read_to_string(&original).unwrap(),
+                "restored contents"
+            );
+            assert!(!trashed.exists());
+            assert!(!info.exists());
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Trash
+            );
+            assert!(app.navigation.entries().is_empty());
+            assert_eq!(
+                app.browser_status_model().text,
+                "Restored 1  •  0 failed  •  0 kept",
+                "The automatic Trash refresh hid the Restore result"
+            );
+
+            let clicked = app.update(Message::Event(
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                event::Status::Captured,
+            ));
+            navigation::finish_tasks(&mut app, clicked).await;
+            assert!(!app.browser_status_model().text.contains("Restored"));
+        });
+}
+
+#[test]
 fn queued_restore_completion_does_not_reopen_trash_after_back_navigation() {
     use iced::futures::StreamExt;
 

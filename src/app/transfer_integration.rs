@@ -415,6 +415,9 @@ impl App {
         }
         match completion.presentation {
             transfer_session::CompletionPresentation::Status(status) => {
+                if !self.presentation.notice_is_danger() {
+                    self.presentation.set_status_notice(status.clone());
+                }
                 self.presentation.set_status(status);
             }
             transfer_session::CompletionPresentation::Warning(warning) => {

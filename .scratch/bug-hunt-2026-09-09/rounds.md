@@ -752,3 +752,19 @@ outside this work.
   refreshed, and the failed source remains intact. The permissions regression ran
   as a non-root user. All-target tests passed (642 passed, 23 ignored), along with
   Clippy, formatting, and whitespace checks.
+
+## Round 54: Restore result disappears during the resulting refresh (2026-09-14)
+
+- Reproduction: restore a real file through `ContextRestore`, drain the app's
+  completion and refresh tasks, and inspect the browser status.
+- Red: `cargo test restore_confirmation_survives_the_resulting_trash_refresh -- --nocapture`
+  showed `0 items  •  Trash` instead of the Restore counts, despite restoring the
+  file and removing its Trash metadata successfully.
+- Cause: Transfer completion stored the counts in the temporary status, which
+  navigation overwrote during refresh.
+- Fix: retain completion status as a neutral notice until user interaction.
+  Existing danger notices, including Undo failures, retain precedence.
+- Green: the regression passed, including dismissal on the next click. Clippy,
+  formatting, and whitespace checks passed. The full suite had 651 passes,
+  24 ignored tests, and one separate failure in the unchanged `:help` width
+  check. That failure also reproduces in isolation and is the next round.
