@@ -847,3 +847,18 @@ outside this work.
   supply their real identities. All-target tests passed with 656 tests and
   24 opt-in tests ignored, including conflict, retry, and partial Restore tests.
   Clippy, formatting, whitespace checks, and all eleven benchmarks passed.
+
+## Round 60: Undo and Redo results disappear during refresh (2026-09-14)
+
+- Reproduction: undo and redo a real New File action through keyboard input,
+  drain each operation's refresh tasks, and inspect the browser status.
+- Red: `cargo test undo_and_redo_results_survive_the_resulting_folder_refresh -- --nocapture`
+  displayed the folder's item count instead of `Undid New File` after Undo.
+- Cause: journal completion stored its result in the temporary status, which
+  the ensuing navigation refresh overwrote.
+- Fix: retain the result as a neutral notice until user interaction. Existing
+  danger notices retain precedence.
+- Green: the regression verifies both Undo and Redo, the file and listing
+  changes, and dismissal on the next click. All-target tests passed with
+  657 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
+  checks passed.

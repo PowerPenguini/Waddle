@@ -615,6 +615,9 @@ impl App {
         self.journal = journal;
         match result {
             Ok(effect) => {
+                if !self.presentation.notice_is_danger() {
+                    self.presentation.set_status_notice(effect.status.clone());
+                }
                 self.presentation.set_status(effect.status);
                 let tree = self.invalidate_tree(effect.changed_folders);
                 let refresh = if self.navigation.defer_refresh() {

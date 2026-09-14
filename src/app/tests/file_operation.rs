@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn undo_and_redo_results_survive_the_resulting_folder_refresh() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join("created.txt");
+            std_fs::write(&file, "").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.journal
+                .record(journal::Action::new_file(file.clone()).unwrap())
+                .unwrap();
+
+            for (key, modifiers, exists, expected) in [
+                ("u", keyboard::Modifiers::empty(), false, "Undid New File"),
+                ("r", keyboard::Modifiers::CTRL, true, "Redid New File"),
+            ] {
+                let named = keyboard::Key::Character(key.into());
+                let task = app.handle_key(named.clone(), named, modifiers, Some(key));
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(file.exists(), exists);
+                assert_eq!(
+                    app.navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.path == file),
+                    exists
+                );
+                assert_eq!(
+                    app.browser_status_model().text,
+                    expected,
+                    "The automatic folder refresh hid the journal result"
+                );
+                let clicked = app.update(Message::Event(
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    event::Status::Captured,
+                ));
+                navigation::finish_tasks(&mut app, clicked).await;
+                assert_ne!(app.browser_status_model().text, expected);
+            }
+        });
+}
+
+#[test]
 fn queued_restore_does_not_move_a_replacement_trash_item() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
