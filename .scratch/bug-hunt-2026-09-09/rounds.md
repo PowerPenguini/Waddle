@@ -768,3 +768,17 @@ outside this work.
   formatting, and whitespace checks passed. The full suite had 651 passes,
   24 ignored tests, and one separate failure in the unchanged `:help` width
   check. That failure also reproduces in isolation and is the next round.
+
+## Round 55: Open With help exceeds the narrow output panel (2026-09-14)
+
+- Reproduction: the existing `help_is_interpreted_inside_the_session` regression
+  failed both in the full suite and when run alone.
+- Red: `cargo test help_is_interpreted_inside_the_session -- --nocapture`
+  failed its 64-character help-line limit.
+- Cause: release 0.0.16 expanded the Open With description onto one overlong
+  line. The help-section separators and width limit were unchanged.
+- Fix: put the accepted application identifiers on an indented continuation
+  line, retaining the command syntax and all supported argument forms.
+- Green: the existing regression passed. All-target tests passed with 652 tests
+  and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.
+  This also completes the full-suite validation of round 54.

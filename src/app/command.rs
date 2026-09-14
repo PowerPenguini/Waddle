@@ -19,7 +19,8 @@ Commands
   :volume mount|unmount|eject NAME  Manage a volume
   :properties, :props [PATH]  Inspect an entry
   :chmod MODE [PATH ...]  Change permissions
-  :open-with [APP] [-- PATH]  Choose or open an app by name, ID, or executable path
+  :open-with [APP] [-- PATH]  Choose or open an application
+    APP accepts an app name, desktop ID, or executable path
   :ow [APP] [-- PATH]  Alias for :open-with
   :default-app APP_ID [-- PATH]  Set the default application
   :cd PATH  Change Waddle's current directory
