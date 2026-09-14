@@ -563,6 +563,8 @@ impl App {
             } else {
                 let refresh = if self.navigation.defer_refresh() {
                     Task::none()
+                } else if self.search.is_recursive() {
+                    self.refresh_location()
                 } else {
                     self.refresh(effects.select)
                 };

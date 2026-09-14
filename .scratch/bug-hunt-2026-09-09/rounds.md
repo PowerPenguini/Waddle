@@ -862,3 +862,20 @@ outside this work.
   changes, and dismissal on the next click. All-target tests passed with
   657 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
   checks passed.
+
+## Round 61: queued Rename completion replaces a newer recursive search (2026-09-14)
+
+- Reproduction: finish a real Rename worker while retaining its result, navigate
+  to Parent, start recursive search, add a new match, then deliver Rename's result.
+- Red: `cargo test queued_rename_completion_refreshes_a_newer_recursive_search -- --nocapture`
+  replaced the nested matches with the parent folder's directory listing.
+  After an interrupted build caused a linker error, rebuilding Waddle's own
+  development artifacts allowed the behavioral failure to reproduce.
+- Cause: file-operation completion requested an ordinary folder refresh without
+  checking the newer recursive Search session.
+- Fix: refresh the active recursive search while retaining pending-navigation
+  precedence and Sidebar tree invalidation.
+- Green: the regression retains the original match, discovers the new match,
+  stays at Parent, and verifies Undo restores the renamed file. All-target tests
+  passed with 658 tests and 24 opt-in tests ignored. Clippy, formatting, and
+  whitespace checks passed.

@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn queued_rename_completion_refreshes_a_newer_recursive_search() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let next = temp.path().to_path_buf();
+            let nested = next.join("nested");
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir_all(&nested).unwrap();
+            let before = original.join("before.bin");
+            let after = original.join("after.bin");
+            std_fs::write(&before, "rename contents").unwrap();
+            let matched = nested.join("match.txt");
+            std_fs::write(&matched, "search match").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(&original).unwrap());
+            app.grid.select_only(Some(0), 1);
+            press(&mut app, "r");
+            let _ = app.update(Message::RenameChanged("after.bin".into()));
+            let mut stream =
+                iced_runtime::task::into_stream(app.update(Message::RenameSubmitted)).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert_eq!(std_fs::read_to_string(&after).unwrap(), "rename contents");
+            let navigation = app.update(Message::Parent);
+            navigation::finish_tasks(&mut app, navigation).await;
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/txt".into()));
+            navigation::finish_tasks(&mut app, search).await;
+            let paths = |app: &App| {
+                app.navigation
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(paths(&app), std::slice::from_ref(&matched));
+            let added = nested.join("new.txt");
+            std_fs::write(&added, "new match").unwrap();
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, completion).await;
+            assert_eq!(
+                paths(&app),
+                [matched, added],
+                "The old Rename completion replaced recursive matches with the folder listing"
+            );
+            assert!(app.search.is_recursive());
+            assert_eq!(app.navigation.current(), next);
+            app.journal.undo().unwrap();
+            assert_eq!(std_fs::read_to_string(&before).unwrap(), "rename contents");
+            assert!(!after.exists());
+        });
+}
+
+#[test]
 fn undo_and_redo_results_survive_the_resulting_folder_refresh() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
