@@ -22,6 +22,19 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.17" date="2026-09-14">
+      <description>
+        <ul>
+          <li>Keep recursive-search results current when queued Copy, Rename, or Undo completes.</li>
+          <li>Keep Transfer, Undo, and Redo results visible through automatic refreshes.</li>
+          <li>Preserve replacement Trash entries when a queued Restore or stale deletion confirmation runs.</li>
+          <li>Preserve replacement files and folders when replaying operation history.</li>
+          <li>Keep folder Copy and Rename history usable after undone child operations.</li>
+          <li>Update dependent history when journal operations recreate items, including cross-filesystem Move Undo.</li>
+          <li>Wrap Open With help to fit the narrow output panel.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.16" date="2026-09-11">
       <description>
         <ul>
