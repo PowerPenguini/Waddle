@@ -701,6 +701,7 @@ mod tests {
         fs::write(&source, "recover me").unwrap();
         fs::write(&info, "metadata").unwrap();
         let entry = trash::Entry {
+            identity: None,
             file: FileEntry {
                 path: source.clone(),
                 name: "item".into(),
@@ -869,6 +870,7 @@ mod tests {
                 let metadata = info.join(format!("{name}.trashinfo"));
                 fs::write(&metadata, "fixture metadata").unwrap();
                 trash::Entry {
+                    identity: None,
                     file: FileEntry {
                         path: files.join(name),
                         name: name.into(),
@@ -1292,6 +1294,7 @@ mod regressions {
         fs::write(source.join("restored.txt"), "restored").unwrap();
         fs::write(original.join("preexisting.txt"), "must remain").unwrap();
         let entry = trash::Entry {
+            identity: None,
             file: crate::fs::FileEntry {
                 path: source.clone(),
                 name: "folder".into(),
@@ -1358,6 +1361,7 @@ mod regressions {
         fs::write(source.join("b"), "incoming b").unwrap();
         fs::write(original.join("a"), "existing a").unwrap();
         let entries = vec![trash::Entry {
+            identity: None,
             file: FileEntry {
                 path: source.clone(),
                 name: "tree".into(),
@@ -1466,6 +1470,7 @@ mod regressions {
             }
             fs::write(source.join("b"), "incoming b").unwrap();
             let entries = vec![trash::Entry {
+                identity: None,
                 file: FileEntry {
                     path: source.clone(),
                     name: "tree".into(),

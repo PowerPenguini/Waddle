@@ -812,3 +812,19 @@ outside this work.
 - Green: the regression retains the original match and discovers the new one;
   the undone file remains absent. All-target tests passed with 654 tests and
   24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.
+
+## Round 58: stale Trash confirmation deletes a replacement item (2026-09-14)
+
+- Reproduction: open permanent-delete confirmation for a real Trash item, move
+  that item elsewhere, replace its Trash path and metadata, then confirm.
+- Red: `cargo test trash_delete_confirmation_does_not_delete_a_replacement_item -- --nocapture`
+  deleted the replacement item through the confirmation for the original item.
+- Cause: deletion retained a path but no identity for the listed Trash item.
+- Fix: retain the device and inode from the metadata already read during Trash
+  listing. Before deletion, reject a different or unidentifiable existing item
+  and preserve its metadata. Existing missing-item cleanup still works.
+- Green: the regression preserves the replacement file, its metadata, and the
+  recovered original, and reports one failed deletion. All-target tests passed
+  with 655 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
+  checks passed. All eleven performance benchmarks passed; opening confirmation
+  for 9,999 selected Trash items took 9.3 ms.

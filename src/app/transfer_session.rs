@@ -1007,6 +1007,7 @@ mod tests {
         std::fs::write(&trashed, "content").unwrap();
         std::fs::write(&info, "[Trash Info]").unwrap();
         trash::Entry {
+            identity: None,
             file: entry(trashed.clone()),
             receipt: journal::TrashReceipt {
                 original,

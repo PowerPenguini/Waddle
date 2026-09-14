@@ -884,6 +884,7 @@ mod tests {
     fn trash_entry(path: &str, original: &str) -> trash::Entry {
         let file = entry(path);
         trash::Entry {
+            identity: None,
             receipt: crate::journal::TrashReceipt {
                 original: PathBuf::from(original),
                 trashed: file.path.clone(),

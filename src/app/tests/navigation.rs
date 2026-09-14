@@ -838,6 +838,7 @@ fn refreshing_recent_and_trash_preserves_selection_by_path_and_scroll() {
                 result: Some(Ok(entries
                     .into_iter()
                     .map(|file| super::trash::Entry {
+                        identity: None,
                         receipt: crate::journal::TrashReceipt {
                             original: PathBuf::from("/original").join(&file.name),
                             trashed: file.path.clone(),
@@ -2040,6 +2041,7 @@ fn displayed_locations_install_watches_from_the_newly_displayed_entries() {
     let _ = app.update(Message::TrashLoaded {
         request,
         result: Some(Ok(vec![super::trash::Entry {
+            identity: None,
             file: FileEntry {
                 path: trashed.clone(),
                 name: "trashed.txt".into(),

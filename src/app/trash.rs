@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs,
-    os::unix::ffi::OsStringExt,
+    os::unix::{ffi::OsStringExt, fs::MetadataExt},
     path::{Path, PathBuf},
 };
 
@@ -18,6 +18,7 @@ use super::{places, tree::NodeKind};
 pub(super) struct Entry {
     pub(super) file: FileEntry,
     pub(super) receipt: journal::TrashReceipt,
+    pub(super) identity: Option<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -258,6 +259,7 @@ fn physical_entries(root: &Path) -> Result<Vec<Entry>, String> {
             Some((
                 metadata.metadata().ok()?.modified().ok(),
                 Entry {
+                    identity: Some((file_metadata.dev(), file_metadata.ino())),
                     file: FileEntry {
                         path: trashed.clone(),
                         name: display_name,
@@ -319,17 +321,20 @@ fn desktop_entries() -> Result<Vec<Entry>, String> {
         let deleted = info
             .attribute_string("trash::deletion-date")
             .map_or_else(String::new, |value| value.to_string());
+        let metadata = fs::symlink_metadata(&trashed).ok();
         entries.push((
             deleted,
             Entry {
+                identity: metadata
+                    .as_ref()
+                    .map(|metadata| (metadata.dev(), metadata.ino())),
                 file: FileEntry {
                     path: trashed.clone(),
                     name: display_name,
                     directory: info.file_type() == gio::FileType::Directory,
-                    metadata: fs::symlink_metadata(&trashed).map_or_else(
-                        |_| crate::fs::EntryMetadata::default(),
-                        |metadata| crate::fs::entry_metadata(&metadata),
-                    ),
+                    metadata: metadata
+                        .as_ref()
+                        .map_or_else(crate::fs::EntryMetadata::default, crate::fs::entry_metadata),
                 },
                 receipt: journal::TrashReceipt {
                     original,
@@ -471,6 +476,21 @@ pub(super) fn finish_restore(
 pub(super) fn delete(entries: Vec<Entry>) -> DeleteReport {
     let mut report = DeleteReport::default();
     for entry in entries {
+        match fs::symlink_metadata(&entry.receipt.trashed) {
+            Ok(metadata) if entry.identity != Some((metadata.dev(), metadata.ino())) => {
+                report.failures.push((
+                    entry.file,
+                    "The Trash item changed since it was listed; select it again to delete it"
+                        .to_owned(),
+                ));
+                continue;
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                report.failures.push((entry.file, error.to_string()));
+                continue;
+            }
+            _ => {}
+        }
         if let Err(error) = crate::fs::delete_permanently(&entry.receipt.trashed)
             && !fs::symlink_metadata(&entry.receipt.trashed)
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
@@ -694,6 +714,7 @@ mod tests {
         fs::write(&trashed, "content").unwrap();
         fs::write(&info, "[Trash Info]\nPath=/unused\n").unwrap();
         let entry = Entry {
+            identity: None,
             file: FileEntry {
                 path: trashed.clone(),
                 name: OsString::from("item"),
@@ -733,6 +754,7 @@ mod tests {
             let destination = original.join("item");
             fs::write(&source, b"restored data").unwrap();
             let entry = Entry {
+                identity: None,
                 file: FileEntry {
                     path: root.clone(),
                     name: "tree".into(),

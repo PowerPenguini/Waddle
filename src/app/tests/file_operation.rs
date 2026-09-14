@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn trash_delete_confirmation_does_not_delete_a_replacement_item() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("Trash");
+            std_fs::create_dir_all(root.join("files")).unwrap();
+            std_fs::create_dir_all(root.join("info")).unwrap();
+            let trashed = root.join("files/item.txt");
+            let info = root.join("info/item.txt.trashinfo");
+            std_fs::write(&trashed, "original item").unwrap();
+            std_fs::write(&info, "[Trash Info]\nPath=/original/item.txt\n").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(root);
+            app.navigation
+                .install_trash_entries(app.trash.entries().unwrap());
+            app.grid.select_only(Some(0), 1);
+            let _ = app.update(Message::ContextDeletePermanent);
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::PermanentDelete { .. }
+            ));
+            let recovered = temp.path().join("recovered.txt");
+            std_fs::rename(&trashed, &recovered).unwrap();
+            std_fs::write(&trashed, "replacement item").unwrap();
+            std_fs::write(&info, "[Trash Info]\nPath=/replacement/item.txt\n").unwrap();
+
+            let confirmed = app.update(Message::PromptConfirm);
+            navigation::finish_tasks(&mut app, confirmed).await;
+            assert!(
+                trashed.exists(),
+                "The old confirmation deleted a replacement Trash item"
+            );
+            assert_eq!(
+                std_fs::read_to_string(&trashed).unwrap(),
+                "replacement item"
+            );
+            assert_eq!(
+                std_fs::read_to_string(&info).unwrap(),
+                "[Trash Info]\nPath=/replacement/item.txt\n"
+            );
+            assert_eq!(std_fs::read_to_string(&recovered).unwrap(), "original item");
+            assert_eq!(
+                app.browser_status_model().text,
+                "Permanently deleted 0  •  1 failed"
+            );
+        });
+}
+
+#[test]
 fn queued_undo_completion_refreshes_the_active_recursive_search() {
     use iced::futures::StreamExt;
 
@@ -852,6 +905,7 @@ fn benchmark_large_trash_selection_opens_delete_confirmation_promptly() {
             .map(|index| {
                 let name = format!("item-{index:05}.txt");
                 crate::app::trash::Entry {
+                    identity: None,
                     file: entry(&name),
                     receipt: crate::journal::TrashReceipt {
                         original: PathBuf::from("/original").join(&name),
@@ -1290,6 +1344,7 @@ fn trash_keyboard_delete_opens_confirmation_for_selected_items() {
     app.navigation.settle_for_test();
     app.navigation
         .install_trash_entries(vec![crate::app::trash::Entry {
+            identity: None,
             file: entry("trashed.txt"),
             receipt: crate::journal::TrashReceipt {
                 original: PathBuf::from("/original/trashed.txt"),
@@ -1324,6 +1379,7 @@ fn select_all_in_trash_moves_focus_to_entries_before_delete() {
         ["one.txt", "two.txt"]
             .into_iter()
             .map(|name| crate::app::trash::Entry {
+                identity: None,
                 file: entry(name),
                 receipt: crate::journal::TrashReceipt {
                     original: PathBuf::from("/original").join(name),
@@ -1369,6 +1425,7 @@ fn cut_in_trash_explains_delete_instead_of_claiming_sidebar_focus() {
     app.navigation.settle_for_test();
     app.navigation
         .install_trash_entries(vec![crate::app::trash::Entry {
+            identity: None,
             file: entry("trashed.txt"),
             receipt: crate::journal::TrashReceipt {
                 original: PathBuf::from("/original/trashed.txt"),
@@ -1414,6 +1471,7 @@ fn trash_location_shows_original_path_and_requires_permanent_delete_confirmation
     };
     app.navigation
         .install_trash_entries(vec![crate::app::trash::Entry {
+            identity: None,
             file: file.clone(),
             receipt: crate::journal::TrashReceipt {
                 original: original.clone(),

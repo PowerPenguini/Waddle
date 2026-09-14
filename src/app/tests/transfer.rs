@@ -359,6 +359,7 @@ fn transfer_conflict_replaces_progress_with_keyboard_choices() {
             };
             app.navigation
                 .install_trash_entries(vec![super::trash::Entry {
+                    identity: None,
                     file: trashed,
                     receipt: crate::journal::TrashReceipt {
                         original: temp.path().join("restored/notes.txt"),

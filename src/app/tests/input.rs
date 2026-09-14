@@ -196,6 +196,7 @@ fn trash_marquee_selects_entries_in_grid_and_list_views() {
             ["one.txt", "two.txt"]
                 .into_iter()
                 .map(|name| super::trash::Entry {
+                    identity: None,
                     file: entry(name),
                     receipt: crate::journal::TrashReceipt {
                         original: PathBuf::from("/original").join(name),
