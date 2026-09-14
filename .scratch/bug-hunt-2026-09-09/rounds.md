@@ -912,3 +912,22 @@ outside this work.
   Copy Redo remains refused. The existing partial-Redo recovery test also passes.
   All-target tests passed with 663 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 64: Rename Redo rejects an item recreated by New File or New Folder (2026-09-14)
+
+- Reproduction: create an item, record its creation, rename it, then Undo both
+  operations. Redo creation, restart the journal, and Redo Rename.
+- Red: `cargo test new_item_then_rename_can_be_redone_after_restart -- --nocapture`
+  refused Rename because the recreated item had different metadata. The test
+  fixes the original modification time to make the difference deterministic.
+- Cause: creation refreshed its own fingerprint, but the dependent Rename
+  retained the original fingerprint. Identity rebinding required that old
+  fingerprint to match, so it could not repair this sequence.
+- Fix: refresh dependent Rename metadata as well as identity after successful
+  New File or New Folder Redo. Only paths missing before that journal operation
+  and actually recreated by it qualify.
+- Green: the regression passes for both files and folders across restart and
+  a further Undo cycle. All-target tests passed with 664 tests and 24 opt-in
+  tests ignored. Clippy, formatting, and whitespace checks passed.
+- Follow-up: the separate copied-folder/child-Rename refusal is recorded in
+  `.scratch/journal-folder-undo/issues/01-copy-undo-after-child-rename.md`.

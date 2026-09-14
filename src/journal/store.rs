@@ -115,6 +115,7 @@ fn rebind_recreated_renames(
     stored: &mut StoredJournal,
     candidates: &[(usize, PathBuf)],
     published: &[PathBuf],
+    refresh_metadata: bool,
 ) {
     for (index, path) in candidates {
         if !published.iter().any(|root| path.starts_with(root)) {
@@ -125,9 +126,11 @@ fn rebind_recreated_renames(
             identity,
             ..
         } = &mut stored.entries[*index].action
-            && super::Fingerprint::read(path).is_ok_and(|current| current == *fingerprint)
+            && let Ok(current_fingerprint) = super::Fingerprint::read(path)
+            && (refresh_metadata || current_fingerprint == *fingerprint)
             && let Ok(current) = super::file_identity(path)
         {
+            *fingerprint = current_fingerprint;
             *identity = Some(current);
         }
     }
@@ -310,6 +313,7 @@ impl Journal {
                     &mut checkpoint.stored,
                     &candidates,
                     &published_paths(action, &previous, direction, false),
+                    false,
                 );
                 let result = checkpoint.save();
                 if result.is_ok() || matches!(&result, Err(Error::Committed { .. })) {
@@ -334,7 +338,11 @@ impl Journal {
             direction,
             effect.is_ok(),
         );
-        rebind_recreated_renames(&mut self.stored, &candidates, &published);
+        // New File and New Folder create fresh metadata on Redo. Transfers
+        // preserve metadata, so their dependent records must still match it.
+        let refresh_metadata = direction == Direction::Redo
+            && matches!(previous, Action::NewFile { .. } | Action::NewFolder { .. });
+        rebind_recreated_renames(&mut self.stored, &candidates, &published, refresh_metadata);
         if let Ok(effect) = &mut effect {
             if !effect.warnings.is_empty() {
                 effect.status.push_str("; metadata warnings: ");

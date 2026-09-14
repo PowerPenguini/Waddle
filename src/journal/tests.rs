@@ -2,6 +2,56 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn new_item_then_rename_can_be_redone_after_restart() {
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let before = temp.path().join("before");
+        let after = temp.path().join("after");
+        if directory {
+            fs::create_dir(&before).unwrap();
+        } else {
+            fs::write(&before, "").unwrap();
+        }
+        fs::File::open(&before)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+            .unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        let created = if directory {
+            Action::new_folder(before.clone())
+        } else {
+            Action::new_file(before.clone())
+        };
+        journal.record(created.unwrap()).unwrap();
+        fs::rename(&before, &after).unwrap();
+        journal
+            .record(Action::rename(before.clone(), after.clone()).unwrap())
+            .unwrap();
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert!(!before.exists());
+        assert!(!after.exists());
+        journal.redo().unwrap();
+        drop(journal);
+
+        let mut journal = Journal::open(history).unwrap();
+        journal
+            .redo()
+            .expect("Rename Redo must accept the item recreated by New File or New Folder Redo");
+        assert!(!before.exists());
+        assert_eq!(after.is_dir(), directory);
+        if !directory {
+            assert_eq!(fs::read(&after).unwrap(), b"");
+        }
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert!(!before.exists());
+        assert!(!after.exists());
+    }
+}
+
+#[test]
 fn copy_rename_history_rebinds_only_journal_recreated_files() {
     for replace in [false, true] {
         let temp = tempfile::tempdir().unwrap();
