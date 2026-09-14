@@ -2,6 +2,180 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn copy_folder_undo_preserves_file_edits_and_directory_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    for change in ["contents", "file-time", "directory-permissions"] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), "contents").unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source,
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        let file = destination.join("file");
+        match change {
+            "contents" => {
+                let modified = fs::metadata(&file).unwrap().modified().unwrap();
+                fs::write(&file, "modified").unwrap();
+                fs::File::open(&file)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+            }
+            "file-time" => fs::File::open(&file)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+                .unwrap(),
+            _ => {
+                let permissions = fs::metadata(&destination).unwrap().permissions();
+                fs::set_permissions(
+                    &destination,
+                    fs::Permissions::from_mode(permissions.mode() ^ 0o001),
+                )
+                .unwrap();
+            }
+        }
+        drop(journal);
+        let mut journal = Journal::open(history).unwrap();
+        let error = journal.undo().unwrap_err().to_string();
+        assert!(error.contains("contents changed"), "{change}: {error}");
+        assert_eq!(
+            fs::read_to_string(file).unwrap(),
+            if change == "contents" {
+                "modified"
+            } else {
+                "contents"
+            }
+        );
+    }
+}
+
+#[test]
+fn legacy_folder_copy_fingerprints_keep_their_metadata_checks() {
+    for changed in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), "contents").unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let action = Action::transfer(
+            TransferKind::Copy,
+            &[crate::fs::TransferReceipt {
+                source,
+                destination: destination.clone(),
+                replaced_existing: false,
+            }],
+        )
+        .unwrap()
+        .unwrap();
+        let mut legacy = serde_json::to_value(action).unwrap();
+        for field in ["source_fingerprint", "result_fingerprint"] {
+            legacy["Transfer"]["items"][0][field]
+                .as_object_mut()
+                .unwrap()
+                .remove("directory_stable_digest");
+        }
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(serde_json::from_value(legacy).unwrap())
+            .unwrap();
+        drop(journal);
+        if changed {
+            fs::File::open(&destination)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+                .unwrap();
+        }
+        let mut journal = Journal::open(history).unwrap();
+        let result = journal.undo();
+        if changed {
+            assert!(result.is_err());
+        } else {
+            result.unwrap();
+            assert!(!destination.exists());
+            journal.redo().unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(destination.join("file")).unwrap(),
+            "contents"
+        );
+    }
+}
+
+#[test]
+fn copy_folder_then_rename_child_supports_undo_and_redo_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    fs::write(source.join("nested/file.txt"), "contents").unwrap();
+    fs::File::open(source.join("nested"))
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+        .unwrap();
+    crate::fs::journal_copy(&source, &destination).unwrap();
+    let history = temp.path().join("history.json");
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    let before = destination.join("nested/file.txt");
+    let after = destination.join("nested/renamed.txt");
+    fs::rename(&before, &after).unwrap();
+    journal
+        .record(Action::rename(before.clone(), after.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
+    drop(journal);
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .undo()
+        .expect("Copy Undo must accept the folder after Rename Undo restores its child");
+    assert!(!destination.exists());
+    assert_eq!(
+        fs::read_to_string(source.join("nested/file.txt")).unwrap(),
+        "contents"
+    );
+    journal.redo().unwrap();
+    drop(journal);
+    let mut journal = Journal::open(history).unwrap();
+    journal.redo().unwrap();
+    assert_eq!(fs::read_to_string(&after).unwrap(), "contents");
+    assert!(!before.exists());
+    journal.undo().unwrap();
+    journal.undo().unwrap();
+    assert!(!destination.exists());
+}
+
+#[test]
 fn new_item_then_rename_can_be_redone_after_restart() {
     for directory in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -2198,6 +2372,7 @@ fn legacy_transfer_fingerprints_keep_undo_redo_available() {
             serde_json::Value::Object(object) => {
                 object.remove("attributes_digest");
                 object.remove("directory_attributes");
+                object.remove("directory_stable_digest");
                 for value in object.values_mut() {
                     remove_new_fields(value);
                 }

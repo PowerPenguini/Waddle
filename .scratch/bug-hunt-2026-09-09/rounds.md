@@ -931,3 +931,21 @@ outside this work.
   tests ignored. Clippy, formatting, and whitespace checks passed.
 - Follow-up: the separate copied-folder/child-Rename refusal is recorded in
   `.scratch/journal-folder-undo/issues/01-copy-undo-after-child-rename.md`.
+
+## Round 65: Copy Undo rejects a folder after child Rename Undo (2026-09-14)
+
+- Reproduction: Copy a folder with a nested file, rename the copied child, Undo
+  Rename, restart the journal, and Undo Copy.
+- Red: `cargo test copy_folder_then_rename_child_supports_undo_and_redo_after_restart -- --nocapture`
+  refused Copy Undo because the copied tree appeared changed.
+- Cause: tree fingerprints included directory timestamps and storage size,
+  which child operations can change even after Undo restores every entry.
+- Fix: persist a second digest that excludes those directory fields. New
+  records verify this digest and attributes; older records retain their
+  original checks. Both digests share the same filesystem traversal.
+- Green: the regression covers restart, both Redo operations, and another Undo
+  cycle. Separate tests verify that same-size content changes with retained
+  timestamps, file timestamp edits, and directory permissions still block
+  Copy Undo. Legacy folder records retain Undo/Redo and metadata checks.
+  All-target tests passed with 667 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

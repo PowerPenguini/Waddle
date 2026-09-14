@@ -1,6 +1,6 @@
 # Copy Undo rejects a folder after child Rename Undo
 
-Status: ready-for-agent
+Status: resolved
 Type: bug
 Blocked by: none
 
@@ -19,3 +19,15 @@ still needs its own regression and fix.
 
 Investigate directory metadata changed by the journal's child Rename. Preserve
 the refusal when a user changes actual contents or replaces a file externally.
+
+## Answer
+
+Round 65 adds a persisted digest that omits directory timestamps and storage
+size while retaining entry names, file contents and timestamps, permissions,
+and attributes. New records use this digest, so restoring the child's original
+name allows Copy Undo. Older records retain their complete metadata checks.
+
+The journal regression covers Copy, child Rename, both Undo operations, restart,
+both Redo operations, and another Undo cycle. Separate regressions retain
+content, file-timestamp, and directory-permission protection and verify legacy
+folder records. All 667 tests passed, with 24 opt-in tests ignored.

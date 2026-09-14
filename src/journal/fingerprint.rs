@@ -51,6 +51,8 @@ pub(super) struct TreeFingerprint {
     digest: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attributes_digest: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_stable_digest: Option<u64>,
 }
 
 impl TreeFingerprint {
@@ -65,8 +67,14 @@ impl TreeFingerprint {
     pub(super) fn matches(&self, path: &Path, permissions: bool) -> Result<bool, Error> {
         // Older journal records did not capture attributes. Keep their original
         // checks instead of invalidating all pre-upgrade Undo/Redo operations.
-        Ok(*self
-            == Self::read_with_permissions(path, permissions, self.attributes_digest.is_some())?)
+        let mut current =
+            Self::read_with_permissions(path, permissions, self.attributes_digest.is_some())?;
+        if let Some(expected) = self.directory_stable_digest {
+            return Ok(current.directory_stable_digest == Some(expected)
+                && current.attributes_digest == self.attributes_digest);
+        }
+        current.directory_stable_digest = None;
+        Ok(*self == current)
     }
 
     fn read_with_permissions(
@@ -74,19 +82,20 @@ impl TreeFingerprint {
         permissions: bool,
         attributes: bool,
     ) -> Result<Self, Error> {
-        let mut digest = Fnv::default();
+        let mut digests = [Fnv::default(), Fnv::default()];
         let mut attributes_digest = attributes.then(Fnv::default);
         hash_tree(
             path,
             Path::new(""),
-            &mut digest,
+            &mut digests,
             permissions,
             &mut attributes_digest,
         )?;
         Ok(Self {
             root: Fingerprint::read(path)?,
-            digest: digest.0,
+            digest: digests[0].0,
             attributes_digest: attributes_digest.map(|digest| digest.0),
+            directory_stable_digest: Some(digests[1].0),
         })
     }
 }
@@ -116,7 +125,7 @@ impl Fnv {
 fn hash_tree(
     path: &Path,
     relative: &Path,
-    digest: &mut Fnv,
+    digests: &mut [Fnv; 2],
     permissions: bool,
     attributes_digest: &mut Option<Fnv>,
 ) -> Result<(), Error> {
@@ -128,25 +137,31 @@ fn hash_tree(
         attributes.write_field(relative.as_os_str().as_bytes());
         attributes.write(&attribute_digest(path, permissions)?.to_le_bytes());
     }
-    digest.write(relative.as_os_str().as_bytes());
-    digest.write(
-        &(if permissions {
-            metadata.mode()
-        } else {
-            metadata.mode() & libc::S_IFMT
-        })
-        .to_le_bytes(),
-    );
-    digest.write(&metadata.size().to_le_bytes());
-    digest.write(&metadata.mtime().to_le_bytes());
-    digest.write(&metadata.mtime_nsec().to_le_bytes());
-    if metadata.file_type().is_symlink() {
+    for (index, digest) in digests.iter_mut().enumerate() {
+        digest.write(relative.as_os_str().as_bytes());
         digest.write(
-            fs::read_link(path)
-                .map_err(|error| Error::io("could not read symbolic link", error))?
-                .as_os_str()
-                .as_bytes(),
+            &(if permissions {
+                metadata.mode()
+            } else {
+                metadata.mode() & libc::S_IFMT
+            })
+            .to_le_bytes(),
         );
+        // Child operations change directory timestamps and storage size even
+        // when Undo restores every entry. Keep the original digest for older
+        // journals, and verify new records by contents and meaningful metadata.
+        if index == 0 || !metadata.is_dir() {
+            digest.write(&metadata.size().to_le_bytes());
+            digest.write(&metadata.mtime().to_le_bytes());
+            digest.write(&metadata.mtime_nsec().to_le_bytes());
+        }
+    }
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(path)
+            .map_err(|error| Error::io("could not read symbolic link", error))?;
+        for digest in digests.iter_mut() {
+            digest.write(target.as_os_str().as_bytes());
+        }
     } else if metadata.is_dir() {
         let mut entries = fs::read_dir(path)
             .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?
@@ -157,7 +172,7 @@ fn hash_tree(
             hash_tree(
                 &entry.path(),
                 &relative.join(entry.file_name()),
-                digest,
+                digests,
                 permissions,
                 attributes_digest,
             )?;
@@ -187,7 +202,9 @@ fn hash_tree(
             if read == 0 {
                 break;
             }
-            digest.write(&buffer[..read]);
+            for digest in digests.iter_mut() {
+                digest.write(&buffer[..read]);
+            }
         }
     } else {
         return Err(Error::message(format!(
