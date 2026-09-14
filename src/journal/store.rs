@@ -22,6 +22,117 @@ pub(crate) struct Journal {
     pub(super) stored: StoredJournal,
 }
 
+// Only rebind identities for paths created by this journal operation. An
+// external replacement at an already-existing path must keep failing checks.
+fn published_paths(
+    action: &Action,
+    previous: &Action,
+    direction: Direction,
+    complete: bool,
+) -> Vec<PathBuf> {
+    match action {
+        Action::Rename { before, after, .. } if complete => vec![match direction {
+            Direction::Undo => before.clone(),
+            Direction::Redo => after.clone(),
+        }],
+        Action::NewFile { path, .. } | Action::NewFolder { path, .. }
+            if complete && direction == Direction::Redo =>
+        {
+            vec![path.clone()]
+        }
+        Action::Transfer { kind, items, .. } => {
+            let Action::Transfer {
+                items: previous, ..
+            } = previous
+            else {
+                return Vec::new();
+            };
+            if matches!(
+                (kind, direction),
+                (super::TransferKind::Copy, Direction::Undo)
+            ) {
+                return Vec::new();
+            }
+            items
+                .iter()
+                .zip(previous)
+                .filter_map(|(item, previous)| {
+                    let target = match direction {
+                        Direction::Undo => &item.source,
+                        Direction::Redo => &item.destination,
+                    };
+                    ((item.undone == (direction == Direction::Undo)
+                        && item.undone != previous.undone)
+                        || item
+                            .publication
+                            .as_ref()
+                            .is_some_and(|publication| publication.verify(target).is_ok()))
+                    .then(|| target.clone())
+                })
+                .collect()
+        }
+        Action::Trash { items, .. } | Action::Restore { items, .. } => {
+            let (Action::Trash {
+                items: previous, ..
+            }
+            | Action::Restore {
+                items: previous, ..
+            }) = previous
+            else {
+                return Vec::new();
+            };
+            let restoring = matches!(
+                (action, direction),
+                (Action::Trash { .. }, Direction::Undo) | (Action::Restore { .. }, Direction::Redo)
+            );
+            items
+                .iter()
+                .zip(previous)
+                .filter_map(|(item, previous)| {
+                    let was_pending = if restoring {
+                        previous.restore_pending
+                    } else {
+                        previous.trash_pending
+                    };
+                    let (target, pending, publication) = if restoring {
+                        (&item.original, item.restore_pending, &item.restoration)
+                    } else {
+                        (&item.trashed, item.trash_pending, &item.trashing)
+                    };
+                    (((complete || pending) && !was_pending)
+                        || publication
+                            .as_ref()
+                            .is_some_and(|publication| publication.verify(target).is_ok()))
+                    .then(|| target.clone())
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn rebind_recreated_renames(
+    stored: &mut StoredJournal,
+    candidates: &[(usize, PathBuf)],
+    published: &[PathBuf],
+) {
+    for (index, path) in candidates {
+        if !published.iter().any(|root| path.starts_with(root)) {
+            continue;
+        }
+        if let Action::Rename {
+            fingerprint,
+            identity,
+            ..
+        } = &mut stored.entries[*index].action
+            && super::Fingerprint::read(path).is_ok_and(|current| current == *fingerprint)
+            && let Ok(current) = super::file_identity(path)
+        {
+            *identity = Some(current);
+        }
+    }
+}
+
 impl Journal {
     #[cfg(not(test))]
     pub(crate) fn open_default() -> Result<Self, Error> {
@@ -164,6 +275,29 @@ impl Journal {
     }
 
     fn apply_at(&mut self, index: usize, direction: Direction) -> Result<Effect, Error> {
+        let previous = self.stored.entries[index].action.clone();
+        let recovered = published_paths(&previous, &previous, direction, false);
+        let candidates: Vec<_> = self
+            .stored
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .flat_map(|(other, entry)| match &entry.action {
+                Action::Rename {
+                    before,
+                    after,
+                    identity: Some(_),
+                    ..
+                } => vec![(other, before.clone()), (other, after.clone())],
+                _ => Vec::new(),
+            })
+            .filter(|(_, path)| {
+                fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                    || recovered.iter().any(|root| path.starts_with(root))
+            })
+            .collect();
         let mut checkpoint = self.clone();
         let mut saved = false;
         let mut effect = apply(
@@ -172,6 +306,11 @@ impl Journal {
             &mut |action| {
                 checkpoint.stored.entries[index].action = action.clone();
                 checkpoint.stored.entries[index].running = Some(direction);
+                rebind_recreated_renames(
+                    &mut checkpoint.stored,
+                    &candidates,
+                    &published_paths(action, &previous, direction, false),
+                );
                 let result = checkpoint.save();
                 if result.is_ok() || matches!(&result, Err(Error::Committed { .. })) {
                     saved = true;
@@ -180,6 +319,22 @@ impl Journal {
                 Ok(())
             },
         );
+        for (other, _) in &candidates {
+            if let Action::Rename {
+                identity: updated, ..
+            } = &checkpoint.stored.entries[*other].action
+                && let Action::Rename { identity, .. } = &mut self.stored.entries[*other].action
+            {
+                *identity = *updated;
+            }
+        }
+        let published = published_paths(
+            &self.stored.entries[index].action,
+            &previous,
+            direction,
+            effect.is_ok(),
+        );
+        rebind_recreated_renames(&mut self.stored, &candidates, &published);
         if let Ok(effect) = &mut effect {
             if !effect.warnings.is_empty() {
                 effect.status.push_str("; metadata warnings: ");

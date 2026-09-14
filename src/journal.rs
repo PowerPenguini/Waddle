@@ -144,6 +144,8 @@ pub(crate) enum Action {
         #[serde(with = "crate::path_serde")]
         after: PathBuf,
         fingerprint: Fingerprint,
+        #[serde(default)]
+        identity: Option<(u64, u64)>,
     },
     NewFolder {
         #[serde(with = "crate::path_serde")]
@@ -259,6 +261,7 @@ impl Action {
     pub(crate) fn rename(before: PathBuf, after: PathBuf) -> Result<Self, Error> {
         Ok(Self::Rename {
             fingerprint: Fingerprint::read(&after)?,
+            identity: Some(file_identity(&after)?),
             before,
             after,
         })

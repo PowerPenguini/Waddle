@@ -2,6 +2,145 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn copy_rename_history_rebinds_only_journal_recreated_files() {
+    for replace in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::write(&source, "original").unwrap();
+        crate::fs::journal_copy(&source, &destination).unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Copy,
+                    &[crate::fs::TransferReceipt {
+                        source,
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        let before = destination;
+        let after = temp.path().join("renamed.txt");
+        let original_file = fs::File::open(&before).unwrap();
+        let original_identity = file_identity(&before).unwrap();
+        fs::rename(&before, &after).unwrap();
+        journal
+            .record(Action::rename(before.clone(), after.clone()).unwrap())
+            .unwrap();
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert!(!before.exists());
+        journal.redo().unwrap();
+        assert_ne!(file_identity(&before).unwrap(), original_identity);
+        drop(original_file);
+        drop(journal);
+
+        let retained = temp.path().join("retained.txt");
+        if replace {
+            fs::rename(&before, &retained).unwrap();
+            fs::write(&before, "replaced").unwrap();
+            fs::File::open(&before)
+                .unwrap()
+                .set_modified(fs::metadata(&retained).unwrap().modified().unwrap())
+                .unwrap();
+        }
+        let mut journal = Journal::open(history).unwrap();
+        let result = journal.redo();
+        if replace {
+            assert!(result.is_err());
+            assert_eq!(fs::read_to_string(&before).unwrap(), "replaced");
+            assert_eq!(fs::read_to_string(&retained).unwrap(), "original");
+            assert!(!after.exists());
+        } else {
+            result.expect("Rename Redo must accept the file recreated by Copy Redo");
+            assert_eq!(fs::read_to_string(&after).unwrap(), "original");
+            assert!(!before.exists());
+            journal.undo().unwrap();
+            assert_eq!(fs::read_to_string(&before).unwrap(), "original");
+        }
+    }
+}
+
+#[test]
+fn legacy_rename_records_still_undo_and_redo_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let before = temp.path().join("before.txt");
+    let after = temp.path().join("after.txt");
+    fs::write(&before, "contents").unwrap();
+    fs::rename(&before, &after).unwrap();
+    let mut legacy =
+        serde_json::to_value(Action::rename(before.clone(), after.clone()).unwrap()).unwrap();
+    legacy["Rename"].as_object_mut().unwrap().remove("identity");
+    let history = temp.path().join("history.json");
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .record(serde_json::from_value(legacy).unwrap())
+        .unwrap();
+    drop(journal);
+
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal.undo().unwrap();
+    assert_eq!(fs::read_to_string(&before).unwrap(), "contents");
+    assert!(!after.exists());
+    journal.redo().unwrap();
+    assert_eq!(fs::read_to_string(&after).unwrap(), "contents");
+    assert!(!before.exists());
+    drop(journal);
+    let mut journal = Journal::open(history).unwrap();
+    journal.undo().unwrap();
+    assert_eq!(fs::read_to_string(&before).unwrap(), "contents");
+    assert!(!after.exists());
+}
+
+#[test]
+fn rename_history_preserves_replacement_files_with_matching_metadata_after_restart() {
+    for redo in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let before = temp.path().join("before.txt");
+        let after = temp.path().join("after.txt");
+        let retained = temp.path().join("retained.txt");
+        let history = temp.path().join("history.json");
+        fs::write(&before, "original").unwrap();
+        fs::rename(&before, &after).unwrap();
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(Action::rename(before.clone(), after.clone()).unwrap())
+            .unwrap();
+        if redo {
+            journal.undo().unwrap();
+        }
+        drop(journal);
+        let (source, destination) = if redo {
+            (&before, &after)
+        } else {
+            (&after, &before)
+        };
+        fs::rename(source, &retained).unwrap();
+        fs::write(source, "replaced").unwrap();
+        fs::File::open(source)
+            .unwrap()
+            .set_modified(fs::metadata(&retained).unwrap().modified().unwrap())
+            .unwrap();
+
+        let mut journal = Journal::open(history).unwrap();
+        let result = if redo { journal.redo() } else { journal.undo() };
+        assert!(
+            result.is_err(),
+            "Rename history moved a replacement file whose metadata matched"
+        );
+        assert_eq!(fs::read_to_string(source).unwrap(), "replaced");
+        assert_eq!(fs::read_to_string(&retained).unwrap(), "original");
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
 fn hunt_journal_round_trips_non_utf8_file_paths() {
     use std::os::unix::ffi::OsStringExt;
     let temp = tempfile::tempdir().unwrap();

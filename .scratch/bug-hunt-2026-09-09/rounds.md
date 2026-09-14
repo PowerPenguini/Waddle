@@ -895,3 +895,20 @@ outside this work.
   restart and Redo. A compatibility test verifies older records still load and
   support Undo/Redo. All-target tests passed with 660 tests and 24 opt-in tests
   ignored. Clippy, formatting, and whitespace checks passed.
+
+## Round 63: Rename history moves a replacement with matching metadata (2026-09-14)
+
+- Reproduction: record Rename, restart the journal, replace its source while
+  retaining size and modification time, then Undo or Redo.
+- Red: `cargo test rename_history_preserves_replacement_files_with_matching_metadata_after_restart -- --nocapture`
+  moved the replacement file.
+- Cause: Rename records checked metadata without checking device/inode identity.
+- Fix: persist and verify identity for Rename, retaining compatibility with
+  older records. When another journal operation recreates a missing path,
+  update dependent Rename identities in its checkpoints. This preserves Copy
+  Redo followed by Rename Redo without accepting external replacements.
+- Green: regressions verify Undo and Redo after restart, older records, and
+  Copy Redo with a deliberately different inode. External replacement after
+  Copy Redo remains refused. The existing partial-Redo recovery test also passes.
+  All-target tests passed with 663 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

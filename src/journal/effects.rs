@@ -24,15 +24,29 @@ pub(super) fn apply(
             before,
             after,
             fingerprint,
+            identity,
         } => {
             let (source, destination, label) = match direction {
                 Direction::Undo => (after.as_path(), before.as_path(), "Undid rename"),
                 Direction::Redo => (before.as_path(), after.as_path(), "Redid rename"),
             };
             verify(source, fingerprint)?;
+            if let Some(expected) = identity
+                && file_identity(source)? != *expected
+            {
+                return Err(Error::message(format!(
+                    "Refused {}: {} is a different item",
+                    match direction {
+                        Direction::Undo => "Undo",
+                        Direction::Redo => "Redo",
+                    },
+                    source.display()
+                )));
+            }
             ensure_absent(destination)?;
             rename_noreplace(source, destination)?;
             *fingerprint = Fingerprint::read(destination)?;
+            *identity = Some(file_identity(destination)?);
             Ok(Effect {
                 warnings: Vec::new(),
                 status: label.to_owned(),
