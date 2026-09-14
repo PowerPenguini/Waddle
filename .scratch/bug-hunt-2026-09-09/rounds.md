@@ -798,3 +798,17 @@ outside this work.
   the new one while preserving the copied file and source. All-target tests
   passed with 653 tests and 24 opt-in tests ignored. Clippy, formatting, and
   whitespace checks passed.
+
+## Round 57: queued Undo completion replaces recursive-search results (2026-09-14)
+
+- Reproduction: undo a real file creation, retain the completion message, start
+  recursive search, add another matching file, then deliver Undo's completion.
+- Red: `cargo test queued_undo_completion_refreshes_the_active_recursive_search -- --nocapture`
+  replaced the nested matches with their parent directory from the root listing.
+- Cause: successful journal completion requested an ordinary folder refresh,
+  bypassing the recursive Search session started after the worker finished.
+- Fix: use the existing current-location refresh for recursive search in the
+  shared Undo/Redo completion handler. Pending navigation retains precedence.
+- Green: the regression retains the original match and discovers the new one;
+  the undone file remains absent. All-target tests passed with 654 tests and
+  24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.

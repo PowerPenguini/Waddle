@@ -619,7 +619,7 @@ impl App {
                 let tree = self.invalidate_tree(effect.changed_folders);
                 let refresh = if self.navigation.defer_refresh() {
                     Task::none()
-                } else if self.navigation.folder_displayed() {
+                } else if self.navigation.folder_displayed() && !self.search.is_recursive() {
                     self.refresh(effect.select)
                 } else {
                     self.refresh_location()

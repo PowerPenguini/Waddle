@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn queued_undo_completion_refreshes_the_active_recursive_search() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let nested = temp.path().join("nested");
+            std_fs::create_dir(&nested).unwrap();
+            let matched = nested.join("match.txt");
+            std_fs::write(&matched, "search match").unwrap();
+            let undone = temp.path().join("undo.bin");
+            std_fs::write(&undone, "").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.journal
+                .record(journal::Action::new_file(undone.clone()).unwrap())
+                .unwrap();
+            let key = keyboard::Key::Character("u".into());
+            let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("u"));
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            assert!(!undone.exists());
+            assert!(!app.foreground_operation_active());
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/txt".into()));
+            navigation::finish_tasks(&mut app, search).await;
+            let paths = |app: &App| {
+                app.navigation
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(paths(&app), std::slice::from_ref(&matched));
+            let added = nested.join("new.txt");
+            std_fs::write(&added, "new match").unwrap();
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, completion).await;
+            assert_eq!(
+                paths(&app),
+                [matched, added],
+                "Undo completion must refresh recursive matches instead of listing the root folder"
+            );
+            assert!(app.search.is_recursive());
+            assert!(!undone.exists());
+        });
+}
+
+#[test]
 fn restore_confirmation_survives_the_resulting_trash_refresh() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
