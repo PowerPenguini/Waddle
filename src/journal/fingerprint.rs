@@ -216,6 +216,10 @@ fn hash_tree(
 }
 
 impl Fingerprint {
+    pub(super) fn is_directory(&self) -> bool {
+        self.kind == libc::S_IFDIR
+    }
+
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
         use std::os::unix::fs::MetadataExt;
 

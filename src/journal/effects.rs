@@ -30,7 +30,6 @@ pub(super) fn apply(
                 Direction::Undo => (after.as_path(), before.as_path(), "Undid rename"),
                 Direction::Redo => (before.as_path(), after.as_path(), "Redid rename"),
             };
-            verify(source, fingerprint)?;
             if let Some(expected) = identity
                 && file_identity(source)? != *expected
             {
@@ -42,6 +41,12 @@ pub(super) fn apply(
                     },
                     source.display()
                 )));
+            }
+            // Child operations change folder metadata. Renaming the same
+            // folder preserves its contents; older records still need their
+            // metadata check because they did not capture identity.
+            if identity.is_none() || !fingerprint.is_directory() {
+                verify(source, fingerprint)?;
             }
             ensure_absent(destination)?;
             rename_noreplace(source, destination)?;

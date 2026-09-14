@@ -127,7 +127,9 @@ fn rebind_recreated_renames(
             ..
         } = &mut stored.entries[*index].action
             && let Ok(current_fingerprint) = super::Fingerprint::read(path)
-            && (refresh_metadata || current_fingerprint == *fingerprint)
+            && (refresh_metadata
+                || current_fingerprint == *fingerprint
+                || (fingerprint.is_directory() && current_fingerprint.is_directory()))
             && let Ok(current) = super::file_identity(path)
         {
             *fingerprint = current_fingerprint;
@@ -339,7 +341,7 @@ impl Journal {
             effect.is_ok(),
         );
         // New File and New Folder create fresh metadata on Redo. Transfers
-        // preserve metadata, so their dependent records must still match it.
+        // preserve file metadata, so dependent file records must still match it.
         let refresh_metadata = direction == Direction::Redo
             && matches!(previous, Action::NewFile { .. } | Action::NewFolder { .. });
         rebind_recreated_renames(&mut self.stored, &candidates, &published, refresh_metadata);

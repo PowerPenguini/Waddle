@@ -949,3 +949,25 @@ outside this work.
   Copy Undo. Legacy folder records retain Undo/Redo and metadata checks.
   All-target tests passed with 667 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 66: folder Rename history rejects undone child changes (2026-09-14)
+
+- Reproduction: Rename a folder, create a child, Undo New File, restart the
+  journal, then Undo Rename.
+- Red: `cargo test folder_rename_history_survives_an_undone_child_creation -- --nocapture`
+  rejected the same folder because its metadata changed during child creation
+  and removal.
+- Cause: Rename required its original directory timestamp and storage size
+  even when the saved device/inode identity still matched.
+- Fix: verify identity for folder Rename while retaining metadata checks for
+  files and older records without identity. Renaming the same folder preserves
+  its current contents.
+- A second failing regression, `copied_folder_rename_can_be_redone_after_undoing_child_changes`,
+  exposed the same metadata dependency when Copy Redo recreates the folder.
+  Update the dependent Rename identity for a verified journal-created folder
+  even when its directory metadata differs.
+- Green: regressions cover complete Undo/Redo cycles and restart. A separate
+  test verifies Undo and Redo refuse replacement folders and symlinks, keeping
+  the originals and replacement contents. All-target tests passed with 670
+  tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks
+  passed.

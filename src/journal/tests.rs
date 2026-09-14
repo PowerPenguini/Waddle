@@ -2,6 +2,171 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn copied_folder_rename_can_be_redone_after_undoing_child_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let before = temp.path().join("before");
+    let after = temp.path().join("after");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), "contents").unwrap();
+    fs::File::open(&source)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+        .unwrap();
+    crate::fs::journal_copy(&source, &before).unwrap();
+    let history = temp.path().join("history.json");
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .record(
+            Action::transfer(
+                TransferKind::Copy,
+                &[crate::fs::TransferReceipt {
+                    source,
+                    destination: before.clone(),
+                    replaced_existing: false,
+                }],
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    fs::rename(&before, &after).unwrap();
+    let original_folder = fs::File::open(&after).unwrap();
+    journal
+        .record(Action::rename(before.clone(), after.clone()).unwrap())
+        .unwrap();
+    let child = after.join("child");
+    fs::write(&child, "").unwrap();
+    journal
+        .record(Action::new_file(child.clone()).unwrap())
+        .unwrap();
+    for _ in 0..3 {
+        journal.undo().unwrap();
+    }
+    assert!(!before.exists());
+    assert!(!after.exists());
+    journal.redo().unwrap();
+    drop(journal);
+    let mut journal = Journal::open(history).unwrap();
+    journal.redo().expect(
+        "Rename Redo must accept the copied folder despite its fresh identity and metadata",
+    );
+    journal.redo().unwrap();
+    assert_eq!(fs::read_to_string(after.join("file")).unwrap(), "contents");
+    assert_eq!(fs::read(child).unwrap(), b"");
+    assert!(!before.exists());
+    drop(original_folder);
+}
+
+#[test]
+fn folder_rename_history_preserves_replacements_after_restart() {
+    for redo in [false, true] {
+        for symlink in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let before = temp.path().join("before");
+            let after = temp.path().join("after");
+            let retained = temp.path().join("retained");
+            fs::create_dir(&after).unwrap();
+            fs::write(after.join("file"), "original").unwrap();
+            let history = temp.path().join("history.json");
+            let mut journal = Journal::open(history.clone()).unwrap();
+            journal
+                .record(Action::rename(before.clone(), after.clone()).unwrap())
+                .unwrap();
+            if redo {
+                journal.undo().unwrap();
+            }
+            drop(journal);
+            let (source, destination) = if redo {
+                (&before, &after)
+            } else {
+                (&after, &before)
+            };
+            fs::rename(source, &retained).unwrap();
+            if symlink {
+                let target = temp.path().join("external");
+                fs::create_dir(&target).unwrap();
+                fs::write(target.join("file"), "replaced").unwrap();
+                std::os::unix::fs::symlink(target, source).unwrap();
+            } else {
+                fs::create_dir(source).unwrap();
+                fs::write(source.join("file"), "replaced").unwrap();
+                fs::File::open(source)
+                    .unwrap()
+                    .set_modified(fs::metadata(&retained).unwrap().modified().unwrap())
+                    .unwrap();
+            }
+            let mut journal = Journal::open(history).unwrap();
+            let result = if redo { journal.redo() } else { journal.undo() };
+            assert!(
+                result.is_err(),
+                "Rename history moved a replacement folder or symlink"
+            );
+            assert!(!destination.exists());
+            assert_eq!(fs::read_to_string(source.join("file")).unwrap(), "replaced");
+            assert_eq!(
+                fs::read_to_string(retained.join("file")).unwrap(),
+                "original"
+            );
+            assert_eq!(
+                fs::symlink_metadata(source)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                symlink
+            );
+        }
+    }
+}
+
+#[test]
+fn folder_rename_history_survives_an_undone_child_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let before = temp.path().join("before");
+    let after = temp.path().join("after");
+    fs::create_dir(&before).unwrap();
+    fs::write(before.join("retained.txt"), "retained contents").unwrap();
+    fs::File::open(&before)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+        .unwrap();
+    fs::rename(&before, &after).unwrap();
+    let history = temp.path().join("history.json");
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .record(Action::rename(before.clone(), after.clone()).unwrap())
+        .unwrap();
+    let child = after.join("temporary.txt");
+    fs::write(&child, "").unwrap();
+    journal
+        .record(Action::new_file(child.clone()).unwrap())
+        .unwrap();
+    journal.undo().unwrap();
+    drop(journal);
+
+    let mut journal = Journal::open(history).unwrap();
+    journal
+        .undo()
+        .expect("Rename Undo must accept the same folder after undoing its child creation");
+    assert!(!after.exists());
+    assert_eq!(
+        fs::read_to_string(before.join("retained.txt")).unwrap(),
+        "retained contents"
+    );
+    assert!(!before.join("temporary.txt").exists());
+    journal.redo().unwrap();
+    journal.redo().unwrap();
+    assert!(child.exists());
+    journal.undo().unwrap();
+    journal.undo().unwrap();
+    assert!(!after.exists());
+    assert_eq!(
+        fs::read_to_string(before.join("retained.txt")).unwrap(),
+        "retained contents"
+    );
+}
+
+#[test]
 fn copy_folder_undo_preserves_file_edits_and_directory_permissions() {
     use std::os::unix::fs::PermissionsExt;
     for change in ["contents", "file-time", "directory-permissions"] {
