@@ -977,6 +977,7 @@ fn undo_outcome<E: ToString>(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt;
     use std::{
         ffi::OsString,
         sync::{Arc, Mutex},
@@ -1007,7 +1008,9 @@ mod tests {
         std::fs::write(&trashed, "content").unwrap();
         std::fs::write(&info, "[Trash Info]").unwrap();
         trash::Entry {
-            identity: None,
+            identity: std::fs::symlink_metadata(&trashed)
+                .ok()
+                .map(|metadata| (metadata.dev(), metadata.ino())),
             file: entry(trashed.clone()),
             receipt: journal::TrashReceipt {
                 original,

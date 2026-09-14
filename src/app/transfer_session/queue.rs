@@ -45,7 +45,14 @@ impl Work {
         let progress = |update| self.progress.update(update);
         match self.batch {
             Batch::Filesystem(batch) => {
-                let mut outcome = (*batch).run_with(cancelled, progress);
+                let mut outcome = match &self.operation {
+                    Operation::Restore(entries) => {
+                        (*batch).run_with_source_check(cancelled, progress, |source| {
+                            trash::verify_restore_source(entries, source)
+                        })
+                    }
+                    _ => (*batch).run_with(cancelled, progress),
+                };
                 if let Operation::Restore(entries) = &self.operation
                     && let crate::fs::TransferBatchOutcome::Complete(report) = &mut outcome
                 {
@@ -661,6 +668,7 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt;
     use std::{ffi::OsString, path::PathBuf, thread};
 
     use crate::{
@@ -701,7 +709,9 @@ mod tests {
         fs::write(&source, "recover me").unwrap();
         fs::write(&info, "metadata").unwrap();
         let entry = trash::Entry {
-            identity: None,
+            identity: std::fs::symlink_metadata(&source)
+                .ok()
+                .map(|metadata| (metadata.dev(), metadata.ino())),
             file: FileEntry {
                 path: source.clone(),
                 name: "item".into(),
@@ -870,7 +880,9 @@ mod tests {
                 let metadata = info.join(format!("{name}.trashinfo"));
                 fs::write(&metadata, "fixture metadata").unwrap();
                 trash::Entry {
-                    identity: None,
+                    identity: std::fs::symlink_metadata(files.join(name))
+                        .ok()
+                        .map(|metadata| (metadata.dev(), metadata.ino())),
                     file: FileEntry {
                         path: files.join(name),
                         name: name.into(),
@@ -1281,6 +1293,7 @@ mod tests {
 #[cfg(test)]
 mod regressions {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
     #[test]
     fn undo_merged_restore_keeps_preexisting_destination_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -1294,7 +1307,9 @@ mod regressions {
         fs::write(source.join("restored.txt"), "restored").unwrap();
         fs::write(original.join("preexisting.txt"), "must remain").unwrap();
         let entry = trash::Entry {
-            identity: None,
+            identity: std::fs::symlink_metadata(&source)
+                .ok()
+                .map(|metadata| (metadata.dev(), metadata.ino())),
             file: crate::fs::FileEntry {
                 path: source.clone(),
                 name: "folder".into(),
@@ -1361,7 +1376,9 @@ mod regressions {
         fs::write(source.join("b"), "incoming b").unwrap();
         fs::write(original.join("a"), "existing a").unwrap();
         let entries = vec![trash::Entry {
-            identity: None,
+            identity: std::fs::symlink_metadata(&source)
+                .ok()
+                .map(|metadata| (metadata.dev(), metadata.ino())),
             file: FileEntry {
                 path: source.clone(),
                 name: "tree".into(),
@@ -1470,7 +1487,9 @@ mod regressions {
             }
             fs::write(source.join("b"), "incoming b").unwrap();
             let entries = vec![trash::Entry {
-                identity: None,
+                identity: std::fs::symlink_metadata(&source)
+                    .ok()
+                    .map(|metadata| (metadata.dev(), metadata.ino())),
                 file: FileEntry {
                     path: source.clone(),
                     name: "tree".into(),

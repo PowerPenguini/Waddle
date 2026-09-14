@@ -217,9 +217,18 @@ impl TransferBatch {
     }
 
     pub fn run_with(
+        self,
+        cancelled: impl Fn() -> bool,
+        progress: impl FnMut(TransferProgress),
+    ) -> TransferBatchOutcome {
+        self.run_with_source_check(cancelled, progress, |_| Ok(()))
+    }
+
+    pub(crate) fn run_with_source_check(
         mut self,
         cancelled: impl Fn() -> bool,
         mut progress: impl FnMut(TransferProgress),
+        check_source: impl Fn(&Path) -> io::Result<()>,
     ) -> TransferBatchOutcome {
         if cancelled() {
             self.cancelled = true;
@@ -256,7 +265,8 @@ impl TransferBatch {
                     choice: ConflictChoice::Skip,
                     ..
                 }
-            ) && let Err(error) = self.verify_merge_ancestors(&source_key)
+            ) && let Err(error) =
+                check_source(&source_key).and_then(|()| self.verify_merge_ancestors(&source_key))
             {
                 self.fail(root, source_key, error);
                 continue;

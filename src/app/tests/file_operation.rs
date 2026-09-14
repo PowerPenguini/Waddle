@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn queued_restore_does_not_move_a_replacement_trash_item() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("Trash");
+            std_fs::create_dir_all(root.join("files")).unwrap();
+            std_fs::create_dir_all(root.join("info")).unwrap();
+            let original = temp.path().join("original.txt");
+            let trashed = root.join("files/item.txt");
+            let info = root.join("info/item.txt.trashinfo");
+            std_fs::write(&trashed, "original item").unwrap();
+            std_fs::write(
+                &info,
+                format!("[Trash Info]\nPath={}\n", original.display()),
+            )
+            .unwrap();
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            app.trash = trash::Trash::at(root);
+            app.navigation
+                .install_trash_entries(app.trash.entries().unwrap());
+            app.grid.select_only(Some(0), 1);
+            let restore = app.update(Message::ContextRestore);
+            let recovered = temp.path().join("recovered.txt");
+            std_fs::rename(&trashed, &recovered).unwrap();
+            std_fs::write(&trashed, "replacement item").unwrap();
+            std_fs::write(&info, "[Trash Info]\nPath=/replacement/item.txt\n").unwrap();
+
+            navigation::finish_tasks(&mut app, restore).await;
+            assert!(
+                trashed.exists(),
+                "Queued Restore moved a replacement Trash item to the old location"
+            );
+            assert!(!original.exists());
+            assert_eq!(
+                std_fs::read_to_string(&trashed).unwrap(),
+                "replacement item"
+            );
+            assert_eq!(
+                std_fs::read_to_string(&info).unwrap(),
+                "[Trash Info]\nPath=/replacement/item.txt\n"
+            );
+            assert_eq!(std_fs::read_to_string(&recovered).unwrap(), "original item");
+            assert_eq!(
+                app.browser_status_model().text,
+                "Restored 0  •  1 failed  •  0 kept"
+            );
+        });
+}
+
+#[test]
 fn trash_delete_confirmation_does_not_delete_a_replacement_item() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

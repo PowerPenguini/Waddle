@@ -828,3 +828,22 @@ outside this work.
   with 655 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
   checks passed. All eleven performance benchmarks passed; opening confirmation
   for 9,999 selected Trash items took 9.3 ms.
+
+## Round 59: queued Restore moves a replacement Trash item (2026-09-14)
+
+- Reproduction: queue Restore for a listed Trash item, replace its file and
+  metadata before the worker starts, then process the queued work.
+- Red: `cargo test queued_restore_does_not_move_a_replacement_trash_item -- --nocapture`
+  moved the replacement to the original item's old location and removed the
+  replacement's Trash metadata.
+- Cause: Restore mapped source and destination paths into a Transfer batch
+  without checking the identity retained by the Trash listing.
+- Fix: the Restore worker checks each source against the listed Trash root's
+  device and inode before execution, including resumed work. Failures use the
+  existing per-source reporting; Skip remains available. Ordinary Transfers
+  retain their existing execution path.
+- Green: the replacement, its metadata, and the recovered original remain
+  intact, and Restore reports one failure. Updated physical Restore fixtures
+  supply their real identities. All-target tests passed with 656 tests and
+  24 opt-in tests ignored, including conflict, retry, and partial Restore tests.
+  Clippy, formatting, whitespace checks, and all eleven benchmarks passed.

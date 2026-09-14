@@ -367,6 +367,18 @@ fn restore_entry<'a>(entries: &'a [Entry], source: &Path) -> Option<&'a Entry> {
         .max_by_key(|entry| entry.receipt.trashed.components().count())
 }
 
+pub(super) fn verify_restore_source(entries: &[Entry], source: &Path) -> std::io::Result<()> {
+    let entry = restore_entry(entries, source)
+        .ok_or_else(|| std::io::Error::other("The source is not a selected Trash item"))?;
+    let metadata = fs::symlink_metadata(&entry.receipt.trashed)?;
+    if entry.identity != Some((metadata.dev(), metadata.ino())) {
+        return Err(std::io::Error::other(
+            "The Trash item changed since it was listed; select it again to restore it",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn restored_receipts(
     report: &crate::fs::TransferReport,
     entries: &[Entry],
