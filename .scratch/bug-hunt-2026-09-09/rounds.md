@@ -782,3 +782,19 @@ outside this work.
 - Green: the existing regression passed. All-target tests passed with 652 tests
   and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.
   This also completes the full-suite validation of round 54.
+
+## Round 56: queued Copy completion replaces recursive-search results (2026-09-14)
+
+- Reproduction: finish a real Copy worker but retain its completion message,
+  start recursive search, add another matching file, then deliver the completion.
+- Red: `cargo test queued_copy_completion_refreshes_the_active_recursive_search -- --nocapture`
+  replaced the nested matches with the root folder's directory and nonmatching
+  copied file.
+- Cause: the Transfer entry refresh bypassed the active recursive Search session
+  and requested an ordinary folder listing.
+- Fix: route completion through the existing current-location refresh when a
+  recursive Search session is active, preserving pending-navigation precedence.
+- Green: the same regression retains the original nested match and discovers
+  the new one while preserving the copied file and source. All-target tests
+  passed with 653 tests and 24 opt-in tests ignored. Clippy, formatting, and
+  whitespace checks passed.

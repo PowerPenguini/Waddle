@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn queued_copy_completion_refreshes_the_active_recursive_search() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source_directory = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            let nested = destination.join("nested");
+            std_fs::create_dir(&source_directory).unwrap();
+            std_fs::create_dir_all(&nested).unwrap();
+            let source = source_directory.join("copied.bin");
+            std_fs::write(&source, "copied contents").unwrap();
+            let matched = nested.join("match.txt");
+            std_fs::write(&matched, "search match").unwrap();
+            let mut transfer = TransferState::default();
+            transfer
+                .copy(&fs::read_directory(&source_directory).unwrap())
+                .unwrap();
+            let request = transfer.paste(destination.clone()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(destination.clone());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(&destination).unwrap());
+            let mut stream = iced_runtime::task::into_stream(app.start_transfer(request)).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert_eq!(queued.len(), 1);
+            press(&mut app, "/");
+            let search = app.update(Message::SearchChanged("/txt".into()));
+            navigation::finish_tasks(&mut app, search).await;
+            let paths = |app: &App| {
+                app.navigation
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(paths(&app), std::slice::from_ref(&matched));
+            let added = nested.join("new.txt");
+            std_fs::write(&added, "new match").unwrap();
+
+            let completion = app.update(queued.pop().unwrap());
+            navigation::finish_tasks(&mut app, completion).await;
+            assert_eq!(
+                paths(&app),
+                [matched, added],
+                "Copy completion must refresh recursive matches instead of listing the root folder"
+            );
+            assert!(app.search.is_recursive());
+            assert_eq!(
+                std_fs::read_to_string(destination.join("copied.bin")).unwrap(),
+                "copied contents"
+            );
+            assert!(source.exists());
+        });
+}
+
+#[test]
 fn partial_copy_failure_remains_visible_when_trash_refreshes() {
     use iced::futures::StreamExt;
     use std::os::unix::fs::PermissionsExt;
