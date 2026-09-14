@@ -2,6 +2,62 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn new_item_undo_survives_a_cross_device_move_round_trip() {
+    use std::os::unix::fs::MetadataExt;
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            fs::metadata(temp.path()).unwrap().dev(),
+            fs::metadata(target.path()).unwrap().dev()
+        );
+        let source = temp.path().join("created");
+        let destination = target.path().join("moved");
+        if directory {
+            fs::create_dir(&source).unwrap();
+        } else {
+            fs::write(&source, "").unwrap();
+        }
+        let original = fs::File::open(&source).unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(source.clone()).unwrap()
+            } else {
+                Action::new_file(source.clone()).unwrap()
+            })
+            .unwrap();
+        crate::fs::journal_move(&source, &destination).unwrap();
+        journal
+            .record(
+                Action::transfer(
+                    TransferKind::Move,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        journal.undo().unwrap();
+        assert!(source.exists());
+        assert!(!destination.exists());
+        drop(journal);
+        let mut journal = Journal::open(history).unwrap();
+        journal
+            .undo()
+            .expect("New File or New Folder Undo must accept the item recreated by Move Undo");
+        assert!(!source.exists());
+        assert!(!destination.exists());
+        drop(original);
+    }
+}
+
+#[test]
 fn copied_folder_rename_can_be_redone_after_undoing_child_changes() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");

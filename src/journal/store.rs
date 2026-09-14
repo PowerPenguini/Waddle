@@ -111,7 +111,7 @@ fn published_paths(
     }
 }
 
-fn rebind_recreated_renames(
+fn rebind_recreated_items(
     stored: &mut StoredJournal,
     candidates: &[(usize, PathBuf)],
     published: &[PathBuf],
@@ -125,12 +125,27 @@ fn rebind_recreated_renames(
             fingerprint,
             identity,
             ..
+        }
+        | Action::NewFile {
+            fingerprint,
+            identity,
+            ..
         } = &mut stored.entries[*index].action
             && let Ok(current_fingerprint) = super::Fingerprint::read(path)
             && (refresh_metadata
                 || current_fingerprint == *fingerprint
                 || (fingerprint.is_directory() && current_fingerprint.is_directory()))
             && let Ok(current) = super::file_identity(path)
+        {
+            *fingerprint = current_fingerprint;
+            *identity = Some(current);
+        } else if let Action::NewFolder {
+            fingerprint,
+            identity,
+            ..
+        } = &mut stored.entries[*index].action
+            && let Ok(current_fingerprint) = super::Fingerprint::read(path)
+            && let Ok(current) = super::DirectoryIdentity::read(path)
         {
             *fingerprint = current_fingerprint;
             *identity = Some(current);
@@ -295,6 +310,16 @@ impl Journal {
                     identity: Some(_),
                     ..
                 } => vec![(other, before.clone()), (other, after.clone())],
+                Action::NewFile {
+                    path,
+                    identity: Some(_),
+                    ..
+                }
+                | Action::NewFolder {
+                    path,
+                    identity: Some(_),
+                    ..
+                } => vec![(other, path.clone())],
                 _ => Vec::new(),
             })
             .filter(|(_, path)| {
@@ -311,7 +336,7 @@ impl Journal {
             &mut |action| {
                 checkpoint.stored.entries[index].action = action.clone();
                 checkpoint.stored.entries[index].running = Some(direction);
-                rebind_recreated_renames(
+                rebind_recreated_items(
                     &mut checkpoint.stored,
                     &candidates,
                     &published_paths(action, &previous, direction, false),
@@ -326,13 +351,7 @@ impl Journal {
             },
         );
         for (other, _) in &candidates {
-            if let Action::Rename {
-                identity: updated, ..
-            } = &checkpoint.stored.entries[*other].action
-                && let Action::Rename { identity, .. } = &mut self.stored.entries[*other].action
-            {
-                *identity = *updated;
-            }
+            self.stored.entries[*other].action = checkpoint.stored.entries[*other].action.clone();
         }
         let published = published_paths(
             &self.stored.entries[index].action,
@@ -344,7 +363,7 @@ impl Journal {
         // preserve file metadata, so dependent file records must still match it.
         let refresh_metadata = direction == Direction::Redo
             && matches!(previous, Action::NewFile { .. } | Action::NewFolder { .. });
-        rebind_recreated_renames(&mut self.stored, &candidates, &published, refresh_metadata);
+        rebind_recreated_items(&mut self.stored, &candidates, &published, refresh_metadata);
         if let Ok(effect) = &mut effect {
             if !effect.warnings.is_empty() {
                 effect.status.push_str("; metadata warnings: ");

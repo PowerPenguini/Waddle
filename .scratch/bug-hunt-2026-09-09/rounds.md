@@ -971,3 +971,18 @@ outside this work.
   the originals and replacement contents. All-target tests passed with 670
   tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks
   passed.
+
+## Round 67: New File and New Folder Undo reject a restored cross-device Move (2026-09-14)
+
+- Reproduction: create an item, record its creation, Move it across filesystems,
+  Undo Move, restart the journal, then Undo creation.
+- Red: `cargo test new_item_undo_survives_a_cross_device_move_round_trip -- --nocapture`
+  refused the restored file as a different item.
+- Cause: cross-device Move Undo recreates the item with a new identity. The
+  journal updated dependent Rename identities but not creation records.
+- Fix: update New File and New Folder identities for paths verified as
+  recreated by a journal operation, persisting the updates in checkpoints.
+- Green: the regression passes for files and folders across distinct devices
+  and restart. Existing replacement-preservation regressions remain green.
+  All-target tests passed with 671 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
