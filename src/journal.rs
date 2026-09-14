@@ -9,7 +9,7 @@ mod store;
 mod trash_receipt;
 
 use effects::{Direction, apply};
-use fingerprint::{DirectoryIdentity, Fingerprint, TreeFingerprint};
+use fingerprint::{DirectoryIdentity, Fingerprint, TreeFingerprint, file_identity};
 pub(crate) use store::{Effect, Journal};
 pub(crate) use trash_receipt::trash;
 
@@ -156,6 +156,8 @@ pub(crate) enum Action {
         #[serde(with = "crate::path_serde")]
         path: PathBuf,
         fingerprint: Fingerprint,
+        #[serde(default)]
+        identity: Option<(u64, u64)>,
     },
     Transfer {
         kind: TransferKind,
@@ -273,6 +275,7 @@ impl Action {
     pub(crate) fn new_file(path: PathBuf) -> Result<Self, Error> {
         Ok(Self::NewFile {
             fingerprint: Fingerprint::read(&path)?,
+            identity: Some(file_identity(&path)?),
             path,
         })
     }

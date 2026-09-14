@@ -5,7 +5,7 @@ use std::{
 
 use super::{
     Action, DirectoryIdentity, Error, Fingerprint, TransferItem, TransferKind, TrashItem,
-    TreeFingerprint, store::Effect, trash,
+    TreeFingerprint, file_identity, store::Effect, trash,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -89,9 +89,21 @@ pub(super) fn apply(
                 })
             }
         },
-        Action::NewFile { path, fingerprint } => match direction {
+        Action::NewFile {
+            path,
+            fingerprint,
+            identity,
+        } => match direction {
             Direction::Undo => {
                 verify(path, fingerprint)?;
+                if let Some(expected) = identity
+                    && file_identity(path)? != *expected
+                {
+                    return Err(Error::message(format!(
+                        "Refused Undo: {} is a different file",
+                        path.display()
+                    )));
+                }
                 fs::remove_file(&*path)
                     .map_err(|error| Error::io("could not undo New File", error))?;
                 Ok(Effect {
@@ -109,6 +121,7 @@ pub(super) fn apply(
                     .open(&*path)
                     .map_err(|error| Error::io("could not redo New File", error))?;
                 *fingerprint = Fingerprint::read(path)?;
+                *identity = Some(file_identity(path)?);
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New File".to_owned(),

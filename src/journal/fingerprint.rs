@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use super::Error;
 
+pub(super) fn file_identity(path: &Path) -> Result<(u64, u64), Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| Error::io(format!("could not verify {}", path.display()), error))?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DirectoryIdentity {
     device: u64,

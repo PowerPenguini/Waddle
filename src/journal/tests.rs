@@ -257,6 +257,68 @@ fn new_folder_undo_refuses_non_empty_directory() {
 }
 
 #[test]
+fn new_file_undo_preserves_replacements_with_matching_metadata_after_restart() {
+    for after_redo in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("new.txt");
+        let retained = temp.path().join("retained.txt");
+        let history = temp.path().join("history.json");
+        fs::write(&file, "").unwrap();
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(Action::new_file(file.clone()).unwrap())
+            .unwrap();
+        if after_redo {
+            journal.undo().unwrap();
+            journal.redo().unwrap();
+        }
+        drop(journal);
+        fs::rename(&file, &retained).unwrap();
+        fs::write(&file, "").unwrap();
+        fs::File::open(&file)
+            .unwrap()
+            .set_modified(fs::metadata(&retained).unwrap().modified().unwrap())
+            .unwrap();
+
+        let mut journal = Journal::open(history).unwrap();
+        assert!(
+            journal.undo().is_err(),
+            "Undo removed a replacement file whose size and modification time matched"
+        );
+        assert!(file.is_file());
+        assert!(retained.is_file());
+    }
+}
+
+#[test]
+fn legacy_new_file_records_still_undo_and_redo() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("file.txt");
+    fs::write(&file, "").unwrap();
+    let mut legacy = serde_json::to_value(Action::new_file(file.clone()).unwrap()).unwrap();
+    legacy["NewFile"]
+        .as_object_mut()
+        .unwrap()
+        .remove("identity");
+    let history = temp.path().join("history.json");
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal
+        .record(serde_json::from_value(legacy).unwrap())
+        .unwrap();
+    drop(journal);
+
+    let mut journal = Journal::open(history.clone()).unwrap();
+    journal.undo().unwrap();
+    assert!(!file.exists());
+    journal.redo().unwrap();
+    assert!(file.is_file());
+    drop(journal);
+    let mut journal = Journal::open(history).unwrap();
+    journal.undo().unwrap();
+    assert!(!file.exists());
+}
+
+#[test]
 fn new_file_undo_and_redo_survive_restart_and_refuse_changed_content() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("new.txt");

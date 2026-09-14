@@ -879,3 +879,19 @@ outside this work.
   stays at Parent, and verifies Undo restores the renamed file. All-target tests
   passed with 658 tests and 24 opt-in tests ignored. Clippy, formatting, and
   whitespace checks passed.
+
+## Round 62: New File Undo deletes a replacement with matching metadata (2026-09-14)
+
+- Reproduction: record New File, restart the journal, replace the file while
+  retaining its size and modification time, then Undo. Repeat after Redo.
+- Red: `cargo test new_file_undo_preserves_replacements_with_matching_metadata_after_restart -- --nocapture`
+  removed the replacement file.
+- Cause: New File history retained a metadata fingerprint but no device/inode
+  identity, so another file with matching metadata passed verification.
+- Fix: save identity with new New File records, verify it before Undo, and
+  update it when Redo creates the file again. Older records retain their prior
+  metadata checks and acquire identity on Redo.
+- Green: replacements and retained originals survive Undo, including after
+  restart and Redo. A compatibility test verifies older records still load and
+  support Undo/Redo. All-target tests passed with 660 tests and 24 opt-in tests
+  ignored. Clippy, formatting, and whitespace checks passed.
