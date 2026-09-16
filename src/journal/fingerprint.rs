@@ -44,6 +44,10 @@ pub(crate) struct MetadataFingerprint {
 }
 
 impl MetadataFingerprint {
+    pub(super) fn mode(&self) -> u32 {
+        self.mode & 0o7777
+    }
+
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
         use std::os::unix::fs::MetadataExt;
 

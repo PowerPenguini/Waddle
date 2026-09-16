@@ -1083,3 +1083,18 @@ outside this work.
   cases pass. Fresh shell directory changes still work. All-target tests passed
   with 680 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
   checks passed.
+
+## Round 74: creation Redo changes recorded permissions (2026-09-16)
+
+- Reproduction: record a private file or folder, Undo creation, reopen the
+  journal, then Redo under a process with different creation defaults.
+- Red: `cargo test creation_redo_restores_recorded_permissions_after_restart -- --nocapture`
+  recreated a file recorded as 0600 with permissions 0644.
+- Cause: creation Redo ignored the stored mode and used the current umask.
+- Fix: create using the recorded permission bits, then restore those bits
+  exactly so a more restrictive current umask cannot remove intended access.
+  Legacy records without metadata retain their previous defaults.
+- Green: private and group-readable files and folders retain their modes with
+  both 022 and 077 umasks in isolated test processes. Reopened journals and
+  repeated Undo/Redo cycles pass. All-target tests passed with 681 tests and
+  24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.

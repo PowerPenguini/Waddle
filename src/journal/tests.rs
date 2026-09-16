@@ -2,6 +2,64 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn creation_redo_restores_recorded_permissions_after_restart() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if std::env::var_os("WADDLE_CREATION_PERMISSIONS_CHILD").is_none() {
+        for mask in ["022", "077"] {
+            let output = std::process::Command::new("bash")
+                .args(["-c", "umask \"$1\"; exec \"$2\" --exact journal::tests::creation_redo_restores_recorded_permissions_after_restart --nocapture", "waddle-test", mask])
+                .arg(std::env::current_exe().unwrap())
+                .env("WADDLE_CREATION_PERMISSIONS_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "umask {mask}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    }
+
+    for (directory, mode) in [(false, 0o600), (true, 0o700), (false, 0o640), (true, 0o750)] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = temp.path().join("private");
+        if directory {
+            fs::create_dir(&item).unwrap();
+        } else {
+            fs::write(&item, "").unwrap();
+        }
+        // Record an item created with private permissions by an earlier process.
+        fs::set_permissions(&item, fs::Permissions::from_mode(mode)).unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        journal.undo().unwrap();
+        drop(journal);
+
+        let mut journal = Journal::open(history).unwrap();
+        for _ in 0..2 {
+            journal.redo().unwrap();
+            assert_eq!(
+                fs::metadata(&item).unwrap().permissions().mode() & 0o7777,
+                mode,
+                "Creation Redo broadened the recorded permissions"
+            );
+            journal.undo().unwrap();
+            assert!(!item.exists());
+        }
+    }
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn creation_undo_preserves_later_metadata_edits_after_restart() {
     use std::os::unix::fs::PermissionsExt;
