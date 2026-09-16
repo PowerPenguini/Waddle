@@ -1209,3 +1209,18 @@ outside this work.
   changes still apply and silent commands do not open an output panel.
   All-target tests passed with 691 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 82: changing shell directory retargets selected paths (2026-09-16)
+
+- Reproduction: select a file, run `cd ../other; cat $selected`, and place an
+  unrelated file with the same name in the other directory.
+- Red: `cargo test selected_shell_paths_still_refer_to_the_selection_after_cd -- --nocapture`
+  printed the unrelated file's contents instead of the selected file's contents.
+- Cause: selected entries beneath the starting directory were passed to Bash
+  as relative paths, whose meaning changed after cd.
+- Fix: pass absolute selected paths and resolve relative inputs against the
+  command's starting directory. Update the command help to describe this behavior.
+- Green: both command prefixes read the selected file after cd, including a
+  filename with spaces. Existing argument quoting and option-prefix checks
+  pass with absolute paths. All-target tests passed with 692 tests and
+  24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.

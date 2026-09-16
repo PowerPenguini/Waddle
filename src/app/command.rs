@@ -27,7 +27,7 @@ Commands
   :q  Quit Waddle
   :COMMAND  Run Bash and keep its final directory
   !COMMAND  Run Bash without changing Waddle's directory
-  $selected  Selected paths in Bash; use outside quotes
+  $selected  Absolute selected paths; use outside quotes
 
   Targets default to selection; relative paths use this folder
   Quote paths with spaces; put -- before Open-with paths

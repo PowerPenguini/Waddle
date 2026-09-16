@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn selected_shell_paths_still_refer_to_the_selection_after_cd() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let other = temp.path().join("other");
+                std_fs::create_dir(&source).unwrap();
+                std_fs::create_dir(&other).unwrap();
+                let selected = source.join("a file.txt");
+                std_fs::write(&selected, "selected contents").unwrap();
+                std_fs::write(other.join("a file.txt"), "unrelated contents").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(source.clone());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(&source).unwrap());
+                app.grid.select_only(Some(0), 1);
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged("cd ../other; cat $selected".into()));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let output = app.command.output().expect("selected file output");
+                assert_eq!(
+                    output.detail, "selected contents",
+                    "Changing directory retargeted $selected"
+                );
+                assert!(output.summary.ends_with("exit 0"));
+                assert_eq!(
+                    app.navigation.current(),
+                    if prefix == ":" {
+                        other.as_path()
+                    } else {
+                        source.as_path()
+                    }
+                );
+            }
+        });
+}
+
+#[test]
 fn silent_shell_results_survive_refresh_until_the_next_input() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

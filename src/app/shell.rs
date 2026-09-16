@@ -174,7 +174,12 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if uses_selected {
-        process.args(selected.iter().map(|path| selected_argument(current, path)));
+        let current = std::path::absolute(current)?;
+        process.args(
+            selected
+                .iter()
+                .map(|path| selected_argument(&current, path)),
+        );
     }
     let mut child = process.spawn()?;
 
@@ -221,11 +226,7 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
 }
 
 fn selected_argument(current: &Path, selected: &Path) -> PathBuf {
-    if let Ok(relative) = selected.strip_prefix(current)
-        && !relative.as_os_str().is_empty()
-    {
-        Path::new(".").join(relative)
-    } else if selected.is_absolute() {
+    if selected.is_absolute() {
         selected.to_path_buf()
     } else {
         current.join(selected)
@@ -535,14 +536,7 @@ mod tests {
 
         let expected = selected
             .iter()
-            .map(|path| {
-                format!(
-                    "<{}>",
-                    Path::new(".")
-                        .join(path.file_name().expect("selected path must have a name"))
-                        .display()
-                )
-            })
+            .map(|path| format!("<{}>", path.display()))
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(report.detail, expected);
@@ -599,10 +593,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_arguments_are_relative_here_and_absolute_elsewhere() {
+    fn selected_arguments_are_absolute_and_safe_from_option_parsing() {
         assert_eq!(
             selected_argument(Path::new("/work"), Path::new("/work/-option")),
-            PathBuf::from("./-option")
+            PathBuf::from("/work/-option")
         );
         assert_eq!(
             selected_argument(Path::new("/work"), Path::new("/elsewhere/file")),
