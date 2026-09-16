@@ -6,7 +6,10 @@ use crate::{fs, fs::FileEntry, journal};
 enum NameOperation {
     NewFolder,
     NewFile,
-    Rename(FileEntry),
+    Rename {
+        entry: FileEntry,
+        identity: Option<(u64, u64)>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +38,7 @@ enum State {
     Idle,
     Rename {
         entry: FileEntry,
+        identity: Option<(u64, u64)>,
         value: String,
         error: String,
     },
@@ -121,18 +125,30 @@ impl Work {
                 value,
             } => {
                 let kind = match &operation {
-                    NameOperation::Rename(entry) => NameKind::Rename {
+                    NameOperation::Rename { entry, .. } => NameKind::Rename {
                         source: entry.path.clone(),
                     },
                     NameOperation::NewFile => NameKind::NewFile,
                     NameOperation::NewFolder => NameKind::NewFolder,
                 };
                 let result = match operation {
-                    NameOperation::NewFolder => fs::create_folder(&current, &value),
-                    NameOperation::NewFile => fs::create_file(&current, &value),
-                    NameOperation::Rename(entry) => fs::rename_entry(&entry.path, &value),
-                }
-                .map_err(|error| error.to_string());
+                    NameOperation::NewFolder => {
+                        fs::create_folder(&current, &value).map_err(|error| error.to_string())
+                    }
+                    NameOperation::NewFile => {
+                        fs::create_file(&current, &value).map_err(|error| error.to_string())
+                    }
+                    NameOperation::Rename { entry, identity } => entry_identity(&entry.path)
+                        .and_then(|observed| {
+                            if Some(observed) != identity {
+                                return Err(format!(
+                                    "Refused Rename: {} is not the original item",
+                                    entry.path.display()
+                                ));
+                            }
+                            fs::rename_entry(&entry.path, &value).map_err(|error| error.to_string())
+                        }),
+                };
                 CompletionKind::Name { kind, result }
             }
             WorkKind::PermanentDelete(entries) => {
@@ -294,6 +310,7 @@ impl FileOperationSession {
         self.busy = false;
         self.state = State::Rename {
             value: fs::display_name(&entry.name),
+            identity: entry_identity(&entry.path).ok(),
             entry,
             error: String::new(),
         };
@@ -381,9 +398,17 @@ impl FileOperationSession {
         let (operation, value, error) = match &mut self.state {
             State::Rename {
                 entry,
+                identity,
                 value,
                 error,
-            } => (NameOperation::Rename(entry.clone()), value.clone(), error),
+            } => (
+                NameOperation::Rename {
+                    entry: entry.clone(),
+                    identity: *identity,
+                },
+                value.clone(),
+                error,
+            ),
             State::NewFolder { value, error } => (NameOperation::NewFolder, value.clone(), error),
             State::NewFile { value, error } => (NameOperation::NewFile, value.clone(), error),
             _ => return None,

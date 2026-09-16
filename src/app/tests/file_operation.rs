@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn rename_preserves_replacements_after_the_editor_opens() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for (queued, directory) in [(false, false), (true, false), (false, true), (true, true)] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("before.txt");
+                let destination = temp.path().join("after.txt");
+                let retained = temp.path().join("retained.txt");
+                let contents = |path: &std::path::Path| {
+                    if directory { path.join("contents") } else { path.to_path_buf() }
+                };
+                if directory {
+                    std_fs::create_dir(&source).unwrap();
+                }
+                std_fs::write(contents(&source), "original").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation.install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.select_only(Some(0), 1);
+                press(&mut app, "r");
+                let _ = app.update(Message::RenameChanged("after.txt".into()));
+                let pending = queued.then(|| app.update(Message::RenameSubmitted));
+                std_fs::rename(&source, &retained).unwrap();
+                if directory {
+                    std_fs::create_dir(&source).unwrap();
+                }
+                std_fs::write(contents(&source), "replaced").unwrap();
+                let task = pending.unwrap_or_else(|| app.update(Message::RenameSubmitted));
+                navigation::finish_tasks(&mut app, task).await;
+                assert!(!destination.exists(), "Rename moved an external replacement");
+                assert_eq!(std_fs::read_to_string(contents(&source)).unwrap(), "replaced");
+                assert_eq!(std_fs::read_to_string(contents(&retained)).unwrap(), "original");
+                assert!(matches!(app.file_operations.view(), FileOperationView::Rename { error, .. } if !error.is_empty()));
+                assert!(app.journal.undo().is_err(), "Rejected Rename must not add an Undo record");
+            }
+        });
+}
+
+#[test]
 fn queued_permanent_delete_fallback_preserves_a_replacement_folder() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

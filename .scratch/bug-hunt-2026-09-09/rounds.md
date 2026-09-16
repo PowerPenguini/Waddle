@@ -1035,3 +1035,18 @@ outside this work.
   partial-deletion behavior still passes. All-target tests passed with 676
   tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks
   passed.
+
+## Round 71: Rename acts on a replacement after its editor opens (2026-09-16)
+
+- Reproduction: open Rename, replace the source at the same path, then submit
+  the new name. Also replace the source after submission while work is queued.
+- Red: `cargo test rename_preserves_replacements_after_the_editor_opens -- --nocapture`
+  moved the replacement to the requested name.
+- Cause: the editor and its worker retained a path without the source identity
+  from when the editor opened.
+- Fix: capture device/inode identity when opening Rename, carry it through
+  submission, and verify it in the worker before renaming.
+- Green: file and folder replacements survive both timing cases, originals
+  remain intact, errors remain in the editor, and no Undo record is added.
+  All-target tests passed with 677 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
