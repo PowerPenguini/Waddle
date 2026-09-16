@@ -4,8 +4,8 @@ use std::{
 };
 
 use super::{
-    Action, DirectoryIdentity, Error, Fingerprint, TransferItem, TransferKind, TrashItem,
-    TreeFingerprint, file_identity, store::Effect, trash,
+    Action, DirectoryIdentity, Error, Fingerprint, MetadataFingerprint, TransferItem, TransferKind,
+    TrashItem, TreeFingerprint, file_identity, store::Effect, trash,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,6 +63,7 @@ pub(super) fn apply(
             path,
             fingerprint,
             identity,
+            metadata,
         } => match direction {
             Direction::Undo => {
                 let mut entries = fs::read_dir(&*path).map_err(|error| {
@@ -85,6 +86,7 @@ pub(super) fn apply(
                     // Older records have no identity; retain their conservative check.
                     verify(path, fingerprint)?;
                 }
+                verify_creation_metadata(path, metadata)?;
                 fs::remove_dir(&*path)
                     .map_err(|error| Error::io("could not undo New Folder", error))?;
                 Ok(Effect {
@@ -100,6 +102,7 @@ pub(super) fn apply(
                     .map_err(|error| Error::io("could not redo New Folder", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(DirectoryIdentity::read(path)?);
+                *metadata = Some(MetadataFingerprint::read(path)?);
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New Folder".to_owned(),
@@ -112,6 +115,7 @@ pub(super) fn apply(
             path,
             fingerprint,
             identity,
+            metadata,
         } => match direction {
             Direction::Undo => {
                 verify(path, fingerprint)?;
@@ -123,6 +127,7 @@ pub(super) fn apply(
                         path.display()
                     )));
                 }
+                verify_creation_metadata(path, metadata)?;
                 fs::remove_file(&*path)
                     .map_err(|error| Error::io("could not undo New File", error))?;
                 Ok(Effect {
@@ -144,6 +149,7 @@ pub(super) fn apply(
                     .map_err(|error| Error::io("could not restore New File timestamp", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(file_identity(path)?);
+                *metadata = Some(MetadataFingerprint::read(path)?);
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New File".to_owned(),
@@ -514,6 +520,21 @@ fn transfer_effect(kind: TransferKind, items: &[TransferItem], direction: Direct
         changed_folders,
         select,
     }
+}
+
+fn verify_creation_metadata(
+    path: &Path,
+    expected: &Option<MetadataFingerprint>,
+) -> Result<(), Error> {
+    if let Some(expected) = expected
+        && MetadataFingerprint::read(path)? != *expected
+    {
+        return Err(Error::message(format!(
+            "Refused Undo: permissions or attributes of {} changed after creation",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn verify_tree(path: &Path, expected: &TreeFingerprint) -> Result<(), Error> {

@@ -38,6 +38,25 @@ impl DirectoryIdentity {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct MetadataFingerprint {
+    mode: u32,
+    attributes: u64,
+}
+
+impl MetadataFingerprint {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| Error::io(format!("could not inspect {}", path.display()), error))?;
+        Ok(Self {
+            mode: metadata.mode(),
+            attributes: attribute_digest(path, true)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Fingerprint {
     kind: u32,
     size: u64,

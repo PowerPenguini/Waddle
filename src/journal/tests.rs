@@ -2,6 +2,63 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+#[cfg(target_os = "linux")]
+fn creation_undo_preserves_later_metadata_edits_after_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    for (directory, redo) in [(false, false), (true, false), (false, true), (true, true)] {
+        for attribute in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let item = temp.path().join("created");
+            if directory {
+                fs::create_dir(&item).unwrap();
+            } else {
+                fs::write(&item, "").unwrap();
+            }
+            let history = temp.path().join("history.json");
+            let mut journal = Journal::open(history.clone()).unwrap();
+            journal
+                .record(if directory {
+                    Action::new_folder(item.clone()).unwrap()
+                } else {
+                    Action::new_file(item.clone()).unwrap()
+                })
+                .unwrap();
+            if redo {
+                journal.undo().unwrap();
+                journal.redo().unwrap();
+            }
+            let mode = fs::metadata(&item).unwrap().permissions().mode();
+            if attribute {
+                set_test_attribute(&item, "user.comment", b"keep my annotation");
+            } else {
+                fs::set_permissions(&item, fs::Permissions::from_mode(mode ^ 0o001)).unwrap();
+            }
+            drop(journal);
+            let mut journal = Journal::open(history).unwrap();
+            assert!(
+                journal.undo().is_err(),
+                "creation Undo deleted an item with later metadata edits"
+            );
+            assert!(item.exists());
+            if attribute {
+                assert!(
+                    crate::fs::read_xattrs(&item)
+                        .unwrap()
+                        .iter()
+                        .any(|(name, value)| name.to_bytes() == b"user.comment"
+                            && value == b"keep my annotation")
+                );
+            } else {
+                assert_eq!(
+                    fs::metadata(&item).unwrap().permissions().mode(),
+                    mode ^ 0o001
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn new_file_redo_restores_subsecond_and_pre_epoch_modification_times() {
     use std::time::{Duration, UNIX_EPOCH};
     for modified in [
@@ -966,6 +1023,10 @@ fn legacy_new_file_records_still_undo_and_redo() {
         .as_object_mut()
         .unwrap()
         .remove("identity");
+    legacy["NewFile"]
+        .as_object_mut()
+        .unwrap()
+        .remove("metadata");
     let history = temp.path().join("history.json");
     let mut journal = Journal::open(history.clone()).unwrap();
     journal
@@ -1433,6 +1494,10 @@ fn legacy_new_folder_records_still_undo_and_redo() {
         .as_object_mut()
         .unwrap()
         .remove("identity");
+    legacy["NewFolder"]
+        .as_object_mut()
+        .unwrap()
+        .remove("metadata");
     let path = temp.path().join("history.json");
     let mut journal = Journal::open(path.clone()).unwrap();
     journal

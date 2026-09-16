@@ -1001,3 +1001,20 @@ outside this work.
   Timestamp coverage includes fractional seconds before and after the Unix
   epoch. All-target tests passed with 673 tests and 24 opt-in tests ignored.
   Clippy, formatting, and whitespace checks passed.
+
+## Round 69: creation Undo deletes later permission and attribute edits (2026-09-16)
+
+- Reproduction: record New File or New Folder, change its permissions or add a
+  user attribute, restart the journal, and Undo creation.
+- Red: `cargo test creation_undo_preserves_later_metadata_edits_after_restart -- --nocapture`
+  deleted the edited item.
+- Cause: creation records checked identity and basic metadata but had no
+  persisted permission or attribute check.
+- Fix: capture permissions and an attribute digest with new creation records,
+  verify them before removal, and refresh them when Redo creates the item.
+  Older records retain their previous checks and acquire the new guard on Redo.
+- Green: the regression preserves files and folders after permission and
+  attribute edits, both initially and after Redo, including restart. Legacy
+  compatibility and cross-device recreation regressions still pass.
+  All-target tests passed with 674 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
