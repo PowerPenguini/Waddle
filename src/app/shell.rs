@@ -474,7 +474,8 @@ fn take_final_directory(stdout: &mut Vec<u8>) -> Option<PathBuf> {
             .iter()
             .position(|byte| *byte == 0)?;
     let path = PathBuf::from(OsString::from_vec(stdout[path_start..path_end].to_vec()));
-    stdout.truncate(marker);
+    // EXIT traps may print after the wrapper reports its directory.
+    stdout.drain(marker..=path_end);
     Some(path)
 }
 

@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn shell_output_preserves_stdout_from_exit_traps() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    r#"trap 'printf "cleanup\n"; printf "cleanup error\n" >&2' EXIT; cd target; printf "body\n"; false"#.into()
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let output = app.command.output().expect("shell output");
+                assert_eq!(output.detail, "body\ncleanup\n\nstderr:\ncleanup error",
+                    "Waddle dropped stdout printed during shell exit");
+                assert!(output.summary.ends_with("exit 1"));
+                assert_eq!(app.navigation.current(), if prefix == ":" { target.as_path() } else { temp.path() });
+            }
+        });
+}
+
+#[test]
 fn shell_exit_status_is_not_overridden_by_a_user_status_variable() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

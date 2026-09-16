@@ -1180,3 +1180,17 @@ outside this work.
   Both command prefixes retain their directory behavior, and user exit traps
   still run. All-target tests passed with 689 tests and 24 opt-in tests ignored.
   Clippy, formatting, and whitespace checks passed.
+
+## Round 80: shell output drops stdout printed by exit traps (2026-09-16)
+
+- Reproduction: run a command with an EXIT trap that prints to stdout and
+  stderr, after the command prints its normal output and changes directory.
+- Red: `cargo test shell_output_preserves_stdout_from_exit_traps -- --nocapture`
+  retained normal output and trap stderr but discarded the trap's stdout.
+- Cause: extracting the shell directory marker truncated all stdout after
+  that marker, including output printed by the exit trap.
+- Fix: remove only the marker, path, and terminating delimiter from stdout.
+- Green: both command prefixes retain normal output, trap stdout, trap stderr,
+  the failing command's exit code, and their intended directory behavior.
+  All-target tests passed with 690 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
