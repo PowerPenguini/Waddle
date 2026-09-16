@@ -158,11 +158,16 @@ pub(super) fn execute(
     }
     let (directory_receiver, directory_sender) = directory_channel()?;
     let directory_fd = directory_sender.as_raw_fd();
+    let selection_setup = if uses_selected {
+        "WADDLE_SELECTED_PATHS=(\"$@\")\nbuiltin readonly -a WADDLE_SELECTED_PATHS\n"
+    } else {
+        ""
+    };
     let mut process = Command::new("bash");
     process
         .arg("-c")
         .arg(format!(
-            r#"command_text=$WADDLE_COMMAND_TEXT
+            r#"{selection_setup}command_text=$WADDLE_COMMAND_TEXT
 unset WADDLE_COMMAND_TEXT
 eval "$command_text"
 # Expand the numeric exit code before printing, without assigning user variables.
@@ -340,7 +345,7 @@ fn expand_selected(command: &str) -> Result<(String, bool), ShellError> {
                     "use $selected outside quotes so paths stay separate",
                 ));
             }
-            expanded.push_str("\"$@\"");
+            expanded.push_str("\"${WADDLE_SELECTED_PATHS[@]}\"");
             index += length;
             used = true;
             word_start = false;
@@ -643,7 +648,11 @@ mod tests {
         );
         assert_eq!(
             expand_selected("printf '%s\\n' ${selected} $selected").unwrap(),
-            ("printf '%s\\n' \"$@\" \"$@\"".to_owned(), true)
+            (
+                "printf '%s\\n' \"${WADDLE_SELECTED_PATHS[@]}\" \"${WADDLE_SELECTED_PATHS[@]}\""
+                    .to_owned(),
+                true
+            )
         );
     }
 

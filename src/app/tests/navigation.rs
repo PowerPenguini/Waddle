@@ -107,6 +107,94 @@ fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
 }
 
 #[test]
+fn shell_functions_keep_selected_paths_separate_from_function_arguments() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let selected = temp.path().join("chosen.txt");
+                std_fs::write(&selected, "selected contents").unwrap();
+                std_fs::write(temp.path().join("unrelated.txt"), "unrelated contents").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                let index = app
+                    .navigation
+                    .entries()
+                    .iter()
+                    .position(|entry| entry.path == selected)
+                    .unwrap();
+                app.grid
+                    .select_only(Some(index), app.navigation.entries().len());
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    "show() { printf '%s:' \"$1\"; cat $selected; }; show unrelated.txt".into(),
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let output = app.command.output().expect("shell output");
+                assert_eq!(
+                    output.detail, "unrelated.txt:selected contents",
+                    "Function arguments retargeted the selected paths"
+                );
+                assert!(output.summary.ends_with("exit 0"));
+            }
+        });
+}
+
+#[test]
+fn changing_shell_arguments_preserves_the_full_selection() {
+    use std::os::unix::ffi::OsStringExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for (command, expected) in [
+                    ("shift; printf '%s:' \"$#\"; cat $selected", "1:AB"),
+                    (
+                        "true; set -- one two; shift; printf '%s:' \"$1\"; cat ${selected}",
+                        "two:AB",
+                    ),
+                    (
+                        "show() { shift; printf '%s:' \"$#\"; (cat $selected); }; show one two",
+                        "1:AB",
+                    ),
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    std_fs::write(temp.path().join("a file.txt"), "A").unwrap();
+                    std_fs::write(
+                        temp.path()
+                            .join(std::ffi::OsString::from_vec(b"b-\xff".to_vec())),
+                        "B",
+                    )
+                    .unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.navigation
+                        .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                    app.grid.select_all(app.navigation.entries().len());
+                    press(&mut app, prefix);
+                    let _ = app.update(Message::CommandChanged(command.into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    let output = app.command.output().expect("shell output");
+                    assert_eq!(output.detail, expected, "{command}");
+                    assert!(output.summary.ends_with("exit 0"));
+                }
+            }
+        });
+}
+
+#[test]
 fn shell_directory_changes_follow_a_renamed_working_directory() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

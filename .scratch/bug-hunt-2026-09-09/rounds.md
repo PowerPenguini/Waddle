@@ -1319,3 +1319,19 @@ outside this work.
   in directory names remain intact. Both command prefixes retain their behavior.
   All-target tests passed with 702 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 89: shell function arguments retarget selected paths (2026-09-16)
+
+- Reproduction: define a function that reads `$selected`, then call it with an
+  unrelated file as its argument while another file is selected in Waddle.
+- Red: `shell_functions_keep_selected_paths_separate_from_function_arguments`
+  read the unrelated file's contents through both command prefixes.
+- Cause: placeholders expanded to Bash's positional arguments, which change
+  inside functions and after set or shift commands.
+- Fix: capture the selected paths in a readonly Bash array before evaluating
+  the command and expand placeholders from that array.
+- Green: function arguments retain their normal meaning while placeholders
+  retain the original selected paths. Additional checks cover set, shift,
+  subshells, multiple selections, spaces, and non-UTF-8 filenames.
+  All-target tests passed with 704 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
