@@ -10,6 +10,27 @@ enum NameOperation {
 }
 
 #[derive(Clone, Debug)]
+struct DeleteEntry {
+    entry: FileEntry,
+    identity: Option<(u64, u64)>,
+}
+
+impl DeleteEntry {
+    fn capture(entry: FileEntry) -> Self {
+        let identity = entry_identity(&entry.path).ok();
+        Self { entry, identity }
+    }
+}
+
+fn entry_identity(path: &std::path::Path) -> Result<(u64, u64), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::symlink_metadata(path)
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))
+}
+
+#[derive(Clone, Debug)]
 enum State {
     Idle,
     Rename {
@@ -26,7 +47,7 @@ enum State {
         error: String,
     },
     PermanentDelete {
-        entries: Vec<FileEntry>,
+        entries: Vec<DeleteEntry>,
         message: String,
         detail: String,
     },
@@ -87,7 +108,7 @@ enum WorkKind {
         operation: NameOperation,
         value: String,
     },
-    PermanentDelete(Vec<FileEntry>),
+    PermanentDelete(Vec<DeleteEntry>),
     TrashDelete(Vec<super::trash::Entry>),
 }
 
@@ -128,12 +149,26 @@ impl Work {
 }
 
 fn run_entries(
-    entries: Vec<FileEntry>,
+    entries: Vec<DeleteEntry>,
     mut operation: impl FnMut(&FileEntry) -> Result<(), String>,
 ) -> Vec<(FileEntry, String)> {
     entries
         .into_iter()
-        .filter_map(|entry| operation(&entry).err().map(|error| (entry, error)))
+        .filter_map(|DeleteEntry { entry, identity }| {
+            entry_identity(&entry.path)
+                .and_then(|current| {
+                    if Some(current) != identity {
+                        Err(format!(
+                            "Refused permanent deletion: {} is a different item",
+                            entry.path.display()
+                        ))
+                    } else {
+                        operation(&entry)
+                    }
+                })
+                .err()
+                .map(|error| (entry, error))
+        })
         .collect()
 }
 
@@ -430,7 +465,7 @@ impl FileOperationSession {
         self.state = State::PermanentDelete {
             message: permanent_delete_confirmation(entries.len()),
             detail: format!("{detail}\n\nThis cannot be undone."),
-            entries,
+            entries: entries.into_iter().map(DeleteEntry::capture).collect(),
         };
     }
 

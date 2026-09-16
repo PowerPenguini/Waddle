@@ -1018,3 +1018,20 @@ outside this work.
   compatibility and cross-device recreation regressions still pass.
   All-target tests passed with 674 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 70: permanent-delete fallback removes a replacement item (2026-09-16)
+
+- Reproduction: open the permanent-delete confirmation after a failed Trash
+  Transfer, replace the file at its path, then confirm deletion.
+- Red: `cargo test permanent_delete_fallback_preserves_a_replacement_after_confirmation_opens -- --nocapture`
+  deleted the replacement file.
+- Cause: the fallback retained only FileEntry paths and deleted whatever
+  occupied each path when the worker ran.
+- Fix: capture device/inode identity when the confirmation opens, carry it into
+  the worker, and refuse deletion if the item differs or cannot be verified.
+- Green: regressions preserve a file replaced while the prompt is open and a
+  folder replaced after confirmation while work is queued. Original and
+  replacement contents survive, and the error remains visible. Existing
+  partial-deletion behavior still passes. All-target tests passed with 676
+  tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace checks
+  passed.

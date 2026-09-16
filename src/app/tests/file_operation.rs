@@ -1,6 +1,94 @@
 use super::*;
 
 #[test]
+fn queued_permanent_delete_fallback_preserves_a_replacement_folder() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let item = temp.path().join("folder");
+            let retained = temp.path().join("retained");
+            std_fs::create_dir(&item).unwrap();
+            std_fs::write(item.join("file"), "original").unwrap();
+            let entries = fs::read_directory(temp.path()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation.install_folder_entries(entries.clone());
+            app.file_operations.finish_trash_transfer(
+                entries
+                    .into_iter()
+                    .map(|entry| (entry, "Trash unavailable".into()))
+                    .collect(),
+            );
+            let _ = app.update(Message::Noop);
+            let confirmed = app.update(Message::PromptConfirm);
+            std_fs::rename(&item, &retained).unwrap();
+            std_fs::create_dir(&item).unwrap();
+            std_fs::write(item.join("file"), "replaced").unwrap();
+            navigation::finish_tasks(&mut app, confirmed).await;
+            assert_eq!(
+                std_fs::read_to_string(item.join("file")).unwrap(),
+                "replaced"
+            );
+            assert_eq!(
+                std_fs::read_to_string(retained.join("file")).unwrap(),
+                "original"
+            );
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::Error { .. }
+            ));
+        });
+}
+
+#[test]
+fn permanent_delete_fallback_preserves_a_replacement_after_confirmation_opens() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let item = temp.path().join("item.txt");
+            let retained = temp.path().join("retained.txt");
+            std_fs::write(&item, "original").unwrap();
+            let entries = fs::read_directory(temp.path()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation.install_folder_entries(entries.clone());
+            app.file_operations.finish_trash_transfer(
+                entries
+                    .into_iter()
+                    .map(|entry| (entry, "Trash unavailable".into()))
+                    .collect(),
+            );
+            let _ = app.update(Message::Noop);
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::PermanentDelete { .. }
+            ));
+            std_fs::rename(&item, &retained).unwrap();
+            std_fs::write(&item, "replaced").unwrap();
+            let confirmed = app.update(Message::PromptConfirm);
+            navigation::finish_tasks(&mut app, confirmed).await;
+            assert!(
+                item.exists(),
+                "the old confirmation deleted a replacement file"
+            );
+            assert_eq!(std_fs::read_to_string(&item).unwrap(), "replaced");
+            assert_eq!(std_fs::read_to_string(&retained).unwrap(), "original");
+            assert!(matches!(
+                app.file_operations.view(),
+                FileOperationView::Error { .. }
+            ));
+        });
+}
+
+#[test]
 fn queued_rename_completion_refreshes_a_newer_recursive_search() {
     use iced::futures::StreamExt;
 
