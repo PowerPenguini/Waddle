@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf};
 
+mod access_control;
 mod effects;
 mod fingerprint;
 mod recovery;

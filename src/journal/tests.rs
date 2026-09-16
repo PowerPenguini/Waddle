@@ -2,6 +2,177 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+#[cfg(target_os = "linux")]
+fn failed_creation_acl_restore_keeps_inherited_users_masked() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        for fault in ["set", "unsupported", "remove"] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("parent");
+            fs::create_dir(&parent).unwrap();
+            if fault != "remove" {
+                set_test_attribute(
+                    &parent,
+                    "system.posix_acl_default",
+                    &transfer_test_acl(65533),
+                );
+            }
+            let item = if directory {
+                crate::fs::create_folder(&parent, "created").unwrap()
+            } else {
+                crate::fs::create_file(&parent, "created").unwrap()
+            };
+            let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+            journal
+                .record(if directory {
+                    Action::new_folder(item.clone()).unwrap()
+                } else {
+                    Action::new_file(item.clone()).unwrap()
+                })
+                .unwrap();
+            journal.undo().unwrap();
+            drop(journal);
+            set_test_attribute(
+                &parent,
+                "system.posix_acl_default",
+                &transfer_test_acl(65534),
+            );
+            let armed = temp.path().join("armed");
+            fs::write(&armed, "").unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "journal::tests::audit_history_fault_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                .env("WADDLE_AUDIT_CHILD_ROOT", temp.path());
+            if fault == "remove" {
+                child
+                    .env("WADDLE_AUDIT_REMOVE_ACL_TARGET", &parent)
+                    .env("WADDLE_AUDIT_REMOVE_ACL_ARMED", &armed);
+            } else {
+                child
+                    .env("WADDLE_AUDIT_XATTR_TARGET", &parent)
+                    .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+                    .env("WADDLE_AUDIT_SET_XATTR_NAME", "system.posix_acl_access")
+                    .env(
+                        "WADDLE_AUDIT_SET_XATTR_ERRNO",
+                        if fault == "unsupported" {
+                            libc::ENOTSUP
+                        } else {
+                            libc::EACCES
+                        }
+                        .to_string(),
+                    );
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(!armed.exists(), "ACL failure must be reached");
+            assert!(
+                fs::read_to_string(temp.path().join("result.txt"))
+                    .unwrap()
+                    .contains("access control")
+            );
+            assert_eq!(
+                fs::metadata(&item).unwrap().permissions().mode() & 0o077,
+                0,
+                "Failed Redo exposed the item through an inherited ACL"
+            );
+        }
+    }
+}
+
+#[test]
+fn creation_history_without_acl_snapshots_remains_usable() {
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = temp.path().join("created");
+        let (action, kind) = if directory {
+            fs::create_dir(&item).unwrap();
+            (Action::new_folder(item.clone()).unwrap(), "NewFolder")
+        } else {
+            fs::write(&item, "").unwrap();
+            (Action::new_file(item.clone()).unwrap(), "NewFile")
+        };
+        let mut legacy = serde_json::to_value(action).unwrap();
+        legacy[kind]["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("access_control");
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(serde_json::from_value(legacy).unwrap())
+            .unwrap();
+        drop(journal);
+        let mut journal = Journal::open(history).unwrap();
+        journal.undo().unwrap();
+        journal.redo().unwrap();
+        assert!(item.exists());
+        journal.undo().unwrap();
+        assert!(!item.exists());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn creation_redo_preserves_access_control_when_parent_defaults_change() {
+    for directory in [false, true] {
+        for original_acl in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("parent");
+            fs::create_dir(&parent).unwrap();
+            if original_acl {
+                set_test_attribute(
+                    &parent,
+                    "system.posix_acl_default",
+                    &transfer_test_acl(65533),
+                );
+            }
+            let item = if directory {
+                crate::fs::create_folder(&parent, "created").unwrap()
+            } else {
+                crate::fs::create_file(&parent, "created").unwrap()
+            };
+            let expected = crate::fs::read_xattrs(&item).unwrap();
+            let history = temp.path().join("history.json");
+            let mut journal = Journal::open(history.clone()).unwrap();
+            journal
+                .record(if directory {
+                    Action::new_folder(item.clone()).unwrap()
+                } else {
+                    Action::new_file(item.clone()).unwrap()
+                })
+                .unwrap();
+            journal.undo().unwrap();
+            drop(journal);
+            set_test_attribute(
+                &parent,
+                "system.posix_acl_default",
+                &transfer_test_acl(65534),
+            );
+
+            let mut journal = Journal::open(history).unwrap();
+            for _ in 0..2 {
+                journal.redo().unwrap();
+                assert_eq!(
+                    crate::fs::read_xattrs(&item).unwrap(),
+                    expected,
+                    "Creation Redo inherited a different access policy"
+                );
+                journal.undo().unwrap();
+                assert!(!item.exists());
+            }
+        }
+    }
+}
+
+#[test]
 fn creation_redo_restores_recorded_permissions_after_restart() {
     use std::os::unix::fs::PermissionsExt;
 

@@ -1098,3 +1098,21 @@ outside this work.
   both 022 and 077 umasks in isolated test processes. Reopened journals and
   repeated Undo/Redo cycles pass. All-target tests passed with 681 tests and
   24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.
+
+## Round 75: creation Redo inherits changed parent ACLs (2026-09-16)
+
+- Reproduction: create a file or folder, Undo creation, change the parent's
+  default ACL to grant a different user access, reopen the journal, and Redo.
+- Red: `cargo test creation_redo_preserves_access_control_when_parent_defaults_change -- --nocapture`
+  added an inherited named-user ACL to an item originally recorded without one.
+- Cause: the journal retained an attribute digest for verification but no ACL
+  values for replay. Restoring permission bits could enable newly inherited users.
+- Fix: retain access and default ACL snapshots in creation metadata. Create
+  with group and other access masked, restore the saved ACLs or remove inherited
+  ACLs when none were recorded, then restore the recorded permission bits.
+  Optional snapshots preserve compatibility with older journal records.
+- Green: files and folders preserve their ACLs across changed parent defaults,
+  journal restart, and repeated Undo/Redo. Older records remain usable. Injected
+  ACL set, unsupported, and removal failures report errors and keep inherited
+  users masked. All-target tests passed with 684 tests and 24 opt-in tests
+  ignored. Clippy, formatting, and whitespace checks passed.

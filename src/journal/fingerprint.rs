@@ -41,11 +41,35 @@ impl DirectoryIdentity {
 pub(crate) struct MetadataFingerprint {
     mode: u32,
     attributes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    access_control: Option<super::access_control::AccessControl>,
 }
 
 impl MetadataFingerprint {
     pub(super) fn mode(&self) -> u32 {
         self.mode & 0o7777
+    }
+
+    pub(super) fn creation_mode(&self) -> u32 {
+        if self.access_control.is_some() {
+            // Keep inherited named users masked until the saved ACL is restored.
+            self.mode() & 0o700
+        } else {
+            self.mode()
+        }
+    }
+
+    pub(super) fn restore_access_control(&self, path: &Path) -> Result<(), Error> {
+        if let Some(saved) = &self.access_control {
+            saved.restore(path)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn matches(&self, path: &Path) -> Result<bool, Error> {
+        let current = Self::read(path)?;
+        // Older records have the same digest but no ACL values for replay.
+        Ok(self.mode == current.mode && self.attributes == current.attributes)
     }
 
     pub(super) fn read(path: &Path) -> Result<Self, Error> {
@@ -56,6 +80,7 @@ impl MetadataFingerprint {
         Ok(Self {
             mode: metadata.mode(),
             attributes: attribute_digest(path, true)?,
+            access_control: super::access_control::AccessControl::read(path)?,
         })
     }
 }

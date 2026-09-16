@@ -100,10 +100,15 @@ pub(super) fn apply(
             Direction::Redo => {
                 ensure_absent(path)?;
                 fs::DirBuilder::new()
-                    .mode(metadata.as_ref().map_or(0o777, MetadataFingerprint::mode))
+                    .mode(
+                        metadata
+                            .as_ref()
+                            .map_or(0o777, MetadataFingerprint::creation_mode),
+                    )
                     .create(&*path)
                     .map_err(|error| Error::io("could not redo New Folder", error))?;
                 if let Some(saved) = metadata {
+                    saved.restore_access_control(path)?;
                     fs::set_permissions(&*path, fs::Permissions::from_mode(saved.mode())).map_err(
                         |error| Error::io("could not restore New Folder permissions", error),
                     )?;
@@ -151,10 +156,15 @@ pub(super) fn apply(
                 let file = fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
-                    .mode(metadata.as_ref().map_or(0o666, MetadataFingerprint::mode))
+                    .mode(
+                        metadata
+                            .as_ref()
+                            .map_or(0o666, MetadataFingerprint::creation_mode),
+                    )
                     .open(&*path)
                     .map_err(|error| Error::io("could not redo New File", error))?;
                 if let Some(saved) = metadata {
+                    saved.restore_access_control(path)?;
                     file.set_permissions(fs::Permissions::from_mode(saved.mode()))
                         .map_err(|error| {
                             Error::io("could not restore New File permissions", error)
@@ -542,7 +552,7 @@ fn verify_creation_metadata(
     expected: &Option<MetadataFingerprint>,
 ) -> Result<(), Error> {
     if let Some(expected) = expected
-        && MetadataFingerprint::read(path)? != *expected
+        && !expected.matches(path)?
     {
         return Err(Error::message(format!(
             "Refused Undo: permissions or attributes of {} changed after creation",
