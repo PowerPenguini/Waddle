@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn shell_exit_status_is_not_overridden_by_a_user_status_variable() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for (command, code) in [
+                    ("readonly status=0; printf result; false", 1),
+                    ("readonly status=7; printf result; true", 0),
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let target = temp.path().join("target");
+                    std_fs::create_dir(&target).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    press(&mut app, prefix);
+                    let _ = app.update(Message::CommandChanged(format!(
+                        "trap 'touch exit-ran' EXIT; cd target; {command}"
+                    )));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    let output = app.command.output().expect("shell command result");
+                    assert!(
+                        output.summary.ends_with(&format!("exit {code}")),
+                        "Wrong command status: {}",
+                        output.summary
+                    );
+                    assert_eq!(output.detail, "result", "Waddle changed the command output");
+                    assert!(
+                        target.join("exit-ran").exists(),
+                        "The user's exit trap did not run"
+                    );
+                    assert_eq!(
+                        app.navigation.current(),
+                        if prefix == ":" {
+                            target.as_path()
+                        } else {
+                            temp.path()
+                        }
+                    );
+                }
+            }
+        });
+}
+
+#[test]
 fn queued_shell_directory_changes_preserve_a_newer_search_session() {
     use iced::futures::StreamExt;
 

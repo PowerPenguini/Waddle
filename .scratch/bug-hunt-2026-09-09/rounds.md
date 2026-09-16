@@ -1165,3 +1165,18 @@ outside this work.
   Selected symlink coverage checks valid, replaced, and initially missing
   targets. All-target tests passed with 688 tests and 24 opt-in tests ignored.
   Clippy, formatting, and whitespace checks passed.
+
+## Round 79: user shell variables override reported command status (2026-09-16)
+
+- Reproduction: submit `readonly status=0; false` through the command prompt.
+  Also check a successful command after setting a nonzero readonly status.
+- Red: `cargo test shell_exit_status_is_not_overridden_by_a_user_status_variable -- --nocapture`
+  reported exit 0 for the failing command and added a readonly-variable error.
+- Cause: the shell wrapper assigned the command's exit code to a user-visible
+  variable named status. A readonly variable prevented that assignment.
+- Fix: expand the numeric exit code directly into the wrapper's final builtin
+  commands, preserving it across directory reporting without assigning status.
+- Green: failing and successful commands retain their exit codes and output.
+  Both command prefixes retain their directory behavior, and user exit traps
+  still run. All-target tests passed with 689 tests and 24 opt-in tests ignored.
+  Clippy, formatting, and whitespace checks passed.

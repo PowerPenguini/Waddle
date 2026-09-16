@@ -163,9 +163,8 @@ pub(super) fn execute(
             r#"command_text=$WADDLE_COMMAND_TEXT
 unset WADDLE_COMMAND_TEXT
 eval "$command_text"
-status=$?
-printf '\x00WADDLE_PWD\x00%s\x00' "$PWD"
-exit "$status""#,
+# Expand the numeric exit code before printing, without assigning user variables.
+builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$?""#,
         )
         .arg("waddle")
         .env("WADDLE_COMMAND_TEXT", expanded_command)
