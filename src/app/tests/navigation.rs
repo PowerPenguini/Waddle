@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn queued_shell_directory_changes_preserve_a_newer_search_session() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for recursive in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let original = temp.path().join("original");
+                let target = temp.path().join("target");
+                std_fs::create_dir(&original).unwrap();
+                std_fs::create_dir(&target).unwrap();
+                std_fs::write(original.join("needle.txt"), "selected match").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(original.clone());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(&original).unwrap());
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged("cd ../target".into()));
+                let mut stream =
+                    iced_runtime::task::into_stream(app.update(Message::CommandSubmitted)).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                press(&mut app, "/");
+                let search = app.update(Message::SearchChanged(
+                    if recursive { "/needle" } else { "needle" }.into(),
+                ));
+                finish_tasks(&mut app, search).await;
+                assert_eq!(app.search.is_recursive(), recursive);
+                assert_eq!(app.selected_entries()[0].path, original.join("needle.txt"));
+                for message in queued {
+                    let task = app.update(message);
+                    finish_tasks(&mut app, task).await;
+                }
+                assert_eq!(
+                    app.navigation.current(),
+                    original,
+                    "An older shell directory result replaced the newer Search session"
+                );
+                assert_eq!(app.search.is_recursive(), recursive);
+                assert_eq!(app.search.query(), "needle");
+                assert_eq!(app.selected_entries()[0].path, original.join("needle.txt"));
+                let _ = app.begin_command(':');
+                let _ = app.update(Message::CommandChanged("cd ../target".into()));
+                let mut stream =
+                    iced_runtime::task::into_stream(app.update(Message::CommandSubmitted)).unwrap();
+                let mut fresh = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        fresh.push(message);
+                    }
+                }
+                let refresh = app.update(Message::Refresh);
+                finish_tasks(&mut app, refresh).await;
+                for message in fresh {
+                    let task = app.update(message);
+                    finish_tasks(&mut app, task).await;
+                }
+                assert_eq!(
+                    app.navigation.current(),
+                    target,
+                    "Refreshing an existing Search session cancelled a fresh directory command"
+                );
+            }
+        });
+}
+
+#[test]
 fn recursive_search_refresh_preserves_selected_matches_by_path() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -1027,6 +1102,7 @@ fn shell_command_completion_preserves_the_displayed_recent_or_trash_location() {
         let work = app.update(Message::CommandFinished {
             request: app.command.output_revision(),
             navigation_revision: app.navigation.revision(),
+            search_session: app.search.session_id(),
             result: Ok(super::command::Completion::Shell(Ok(report))),
         });
 

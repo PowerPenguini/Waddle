@@ -457,8 +457,9 @@ impl App {
             Message::CommandFinished {
                 request,
                 navigation_revision,
+                search_session,
                 result,
-            } => self.finish_command(request, navigation_revision, result),
+            } => self.finish_command(request, navigation_revision, search_session, result),
             Message::VolumeFinished(result) => {
                 match result {
                     Ok(status) => {

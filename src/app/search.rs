@@ -38,14 +38,21 @@ pub(super) enum Update {
 #[derive(Clone, Debug, Default)]
 pub(super) struct SearchSession {
     revision: u64,
+    // Result refreshes keep the identity of the user's Search session.
+    session_id: u64,
     active: Option<Active>,
     query: String,
     last_query: String,
 }
 
 impl SearchSession {
+    pub(super) fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
     pub(super) fn begin(&mut self, navigation: &NavigationSession, grid: &GridInteraction) {
         self.revision = self.revision.wrapping_add(1);
+        self.session_id = self.session_id.wrapping_add(1);
         self.active = Some(Active {
             origin: grid
                 .selected_entry()

@@ -1132,3 +1132,19 @@ outside this work.
   replacements and external content survive cleanup. All-target tests passed
   with 685 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
   checks passed.
+
+## Round 77: delayed shell directory changes replace a newer Search session (2026-09-16)
+
+- Reproduction: queue a completed shell command that changes directory, start
+  a new Search session, then deliver the old command result.
+- Red: `cargo test queued_shell_directory_changes_preserve_a_newer_search_session -- --nocapture`
+  navigated to the old command's target and closed the newer recursive search.
+- Cause: command completion checked folder navigation revisions, but starting
+  a Search session did not change that revision.
+- Fix: capture Search session identity when submitting a shell command and
+  require that identity to match before applying its directory change. Refreshes
+  retain session identity, and completion still refreshes filesystem results.
+- Green: local and recursive searches retain their query and selected match.
+  Fresh shell directory changes still work after refreshing an existing search.
+  All-target tests passed with 686 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
