@@ -1148,3 +1148,20 @@ outside this work.
   Fresh shell directory changes still work after refreshing an existing search.
   All-target tests passed with 686 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 78: queued permission changes modify replacement targets (2026-09-16)
+
+- Reproduction: submit a chmod command, replace a target before its worker
+  executes, then deliver the resulting app messages.
+- Red: `cargo test queued_permission_changes_preserve_replaced_targets -- --nocapture`
+  changed the replacement from 0700 to 0755.
+- Cause: permission work retained only paths, so it modified whichever items
+  occupied those paths when the queued worker ran.
+- Fix: capture target device/inode identity at submission, following symlinks
+  as chmod does. Verify identity before each permission change and retain
+  initial inspection errors rather than accepting targets that appear later.
+- Green: replacement files and folders retain their permissions; unchanged
+  targets in the same command still succeed and failures remain visible.
+  Selected symlink coverage checks valid, replaced, and initially missing
+  targets. All-target tests passed with 688 tests and 24 opt-in tests ignored.
+  Clippy, formatting, and whitespace checks passed.

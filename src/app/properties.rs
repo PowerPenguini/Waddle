@@ -65,7 +65,39 @@ pub(super) fn read(path: &Path) -> Result<Info, String> {
     })
 }
 
-pub(super) fn chmod(paths: Vec<PathBuf>, mode: &str) -> Result<String, String> {
+pub(super) struct PermissionTarget {
+    path: PathBuf,
+    identity: Result<(u64, u64), String>,
+}
+
+impl PermissionTarget {
+    pub(super) fn capture(path: PathBuf) -> Self {
+        Self {
+            identity: permission_identity(&path),
+            path,
+        }
+    }
+
+    fn set_mode(&self, mode: u32) -> Result<(), String> {
+        let expected = self.identity.as_ref().map_err(Clone::clone)?;
+        if permission_identity(&self.path)? != *expected {
+            return Err(
+                "Refused permission change: item changed after command submission".to_owned(),
+            );
+        }
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(mode))
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn permission_identity(path: &Path) -> Result<(u64, u64), String> {
+    // chmod follows symbolic links, so identify the item whose permissions change.
+    fs::metadata(path)
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn chmod(paths: Vec<PermissionTarget>, mode: &str) -> Result<String, String> {
     let mode = mode.trim();
     if mode.len() < 3 || mode.len() > 4 || !mode.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
         return Err(
@@ -75,10 +107,10 @@ pub(super) fn chmod(paths: Vec<PathBuf>, mode: &str) -> Result<String, String> {
     let mode = u32::from_str_radix(mode, 8).map_err(|error| error.to_string())?;
     let mut changed = 0;
     let mut failures = Vec::new();
-    for path in paths {
-        match fs::set_permissions(&path, fs::Permissions::from_mode(mode)) {
+    for target in paths {
+        match target.set_mode(mode) {
             Ok(()) => changed += 1,
-            Err(error) => failures.push(format!("{}: {error}", path.display())),
+            Err(error) => failures.push(format!("{}: {error}", target.path.display())),
         }
     }
     if failures.is_empty() {
@@ -149,7 +181,7 @@ mod tests {
             assert!(info.detail.contains(label), "missing {label}");
         }
 
-        assert!(chmod(vec![path.clone()], "640").is_ok());
+        assert!(chmod(vec![PermissionTarget::capture(path.clone())], "640").is_ok());
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o640

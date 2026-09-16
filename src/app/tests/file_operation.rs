@@ -1,6 +1,127 @@
 use super::*;
 
 #[test]
+fn queued_permission_changes_verify_selected_symlink_targets() {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for directory in [false, true] {
+                for change in ["unchanged", "replaced", "created"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let target = temp.path().join("target");
+                    let retained = temp.path().join("retained");
+                    let link = temp.path().join("link");
+                    let create_target = || {
+                        if directory {
+                            std_fs::create_dir(&target).unwrap();
+                        } else {
+                            std_fs::write(&target, "contents").unwrap();
+                        }
+                        std_fs::set_permissions(&target, std_fs::Permissions::from_mode(0o700))
+                            .unwrap();
+                    };
+                    if change != "created" {
+                        create_target();
+                    }
+                    std::os::unix::fs::symlink(&target, &link).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    let entries = fs::read_directory(temp.path()).unwrap();
+                    let selected = entries.iter().position(|entry| entry.path == link).unwrap();
+                    let count = entries.len();
+                    app.navigation.install_folder_entries(entries);
+                    app.grid.select_only(Some(selected), count);
+                    press(&mut app, ":");
+                    let _ = app.update(Message::CommandChanged("chmod 755".into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    if change == "replaced" {
+                        std_fs::rename(&target, &retained).unwrap();
+                    }
+                    if change != "unchanged" {
+                        create_target();
+                    }
+                    navigation::finish_tasks(&mut app, task).await;
+                    let expected = if change == "unchanged" { 0o755 } else { 0o700 };
+                    assert_eq!(
+                        std_fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                        expected,
+                        "Queued chmod followed the wrong symlink target: {change}"
+                    );
+                    if change == "replaced" {
+                        assert_eq!(
+                            std_fs::metadata(&retained).unwrap().permissions().mode() & 0o7777,
+                            0o700
+                        );
+                    }
+                    if change != "unchanged" {
+                        assert!(app.command.output().unwrap().detail.contains("1 failed"));
+                    }
+                }
+            }
+        });
+}
+
+#[test]
+fn queued_permission_changes_preserve_replaced_targets() {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for directory in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                let retained = temp.path().join("retained");
+                let valid = temp.path().join("valid");
+                if directory {
+                    std_fs::create_dir(&target).unwrap();
+                } else {
+                    std_fs::write(&target, "original").unwrap();
+                }
+                std_fs::write(&valid, "unchanged target").unwrap();
+                for path in [&target, &valid] {
+                    std_fs::set_permissions(path, std_fs::Permissions::from_mode(0o700)).unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged("chmod 755 target valid".into()));
+                let task = app.update(Message::CommandSubmitted);
+                std_fs::rename(&target, &retained).unwrap();
+                if directory {
+                    std_fs::create_dir(&target).unwrap();
+                } else {
+                    std_fs::write(&target, "replacement").unwrap();
+                }
+                std_fs::set_permissions(&target, std_fs::Permissions::from_mode(0o700)).unwrap();
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    std_fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                    0o700,
+                    "Queued chmod changed a replacement item"
+                );
+                assert_eq!(
+                    std_fs::metadata(&retained).unwrap().permissions().mode() & 0o7777,
+                    0o700
+                );
+                assert_eq!(
+                    std_fs::metadata(&valid).unwrap().permissions().mode() & 0o7777,
+                    0o755
+                );
+                assert!(app.command.output().unwrap().detail.contains("1 failed"));
+            }
+        });
+}
+
+#[test]
 fn creation_through_a_directory_symlink_checks_the_target_identity() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

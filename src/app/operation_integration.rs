@@ -339,6 +339,10 @@ impl App {
         }
         self.presentation
             .set_status("Changing permissions…".to_owned());
+        let targets = targets
+            .into_iter()
+            .map(properties::PermissionTarget::capture)
+            .collect();
         let request = self.command.output_revision();
         Task::perform(
             self.operations
