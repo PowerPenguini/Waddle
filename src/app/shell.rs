@@ -166,7 +166,7 @@ pub(super) fn execute(
 unset WADDLE_COMMAND_TEXT
 eval "$command_text"
 # Expand the numeric exit code before printing, without assigning user variables.
-builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD" >&{directory_fd}; builtin exit '"$?""#,
+builtin eval 'builtin printf "\x00WADDLE_PWD\x00" >&{directory_fd}; builtin pwd -P >&{directory_fd}; builtin printf "\x00" >&{directory_fd}; builtin exit '"$?""#,
         ))
         .arg("waddle")
         .env("WADDLE_COMMAND_TEXT", expanded_command)
@@ -537,8 +537,12 @@ fn take_final_directory(stdout: &mut Vec<u8>) -> Option<PathBuf> {
             .get(path_start..)?
             .iter()
             .position(|byte| *byte == 0)?;
-    let path = PathBuf::from(OsString::from_vec(stdout[path_start..path_end].to_vec()));
-    // EXIT traps may print after the wrapper reports its directory.
+    // Remove only pwd's line terminator; newlines can also belong to the name.
+    let bytes = stdout[path_start..path_end].strip_suffix(b"\n")?;
+    let path = PathBuf::from(OsString::from_vec(bytes.to_vec()));
+    if !path.is_absolute() {
+        return None;
+    }
     stdout.drain(marker..=path_end);
     Some(path)
 }

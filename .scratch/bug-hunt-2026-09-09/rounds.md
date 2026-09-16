@@ -1303,3 +1303,19 @@ outside this work.
   traps, and directory names containing a newline and non-UTF-8 bytes.
   All-target tests passed with 700 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 88: shell navigation trusts a stale PWD variable (2026-09-16)
+
+- Reproduction: enter a folder, rename it from within the shell command, and
+  finish the command. Bash's PWD variable still names the old location.
+- Red: `shell_directory_changes_follow_a_renamed_working_directory` left Waddle
+  in its original folder instead of following the shell to the renamed folder.
+- Cause: the directory report copied PWD rather than querying the actual cwd.
+- Fix: report `builtin pwd -P` through the dedicated channel, preserving the
+  command's original exit status. Remove exactly the builtin's final newline
+  and accept only an absolute path.
+- Green: renamed directories are followed correctly. Changed, unset, and readonly
+  PWD variables do not affect reporting; non-UTF-8 bytes and trailing newlines
+  in directory names remain intact. Both command prefixes retain their behavior.
+  All-target tests passed with 702 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

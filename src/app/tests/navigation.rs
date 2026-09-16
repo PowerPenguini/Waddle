@@ -107,6 +107,89 @@ fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
 }
 
 #[test]
+fn shell_directory_changes_follow_a_renamed_working_directory() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                let renamed = temp.path().join("renamed");
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    "cd target; mv ../target ../renamed; printf result; false".into(),
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                assert!(!target.exists());
+                assert!(renamed.is_dir());
+                assert_eq!(
+                    app.navigation.current(),
+                    if prefix == ":" {
+                        renamed.as_path()
+                    } else {
+                        temp.path()
+                    },
+                    "Waddle followed stale PWD text after the shell's directory was renamed"
+                );
+                let output = app.command.output().expect("shell output");
+                assert_eq!(output.detail, "result");
+                assert!(output.summary.ends_with("exit 1"));
+            }
+        });
+}
+
+#[test]
+fn shell_directory_reports_preserve_path_bytes_when_pwd_is_changed_or_unset() {
+    use std::os::unix::ffi::OsStringExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for change in ["unset PWD", "PWD=/unrelated", "readonly PWD=/unrelated"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let target = temp
+                        .path()
+                        .join(std::ffi::OsString::from_vec(b"target-\xff\n\n".to_vec()));
+                    std_fs::create_dir(&target).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.navigation
+                        .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                    app.grid.select_only(Some(0), 1);
+                    press(&mut app, prefix);
+                    let _ = app.update(Message::CommandChanged(format!(
+                        "cd $selected; {change}; printf result; false"
+                    )));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    assert_eq!(
+                        app.navigation.current(),
+                        if prefix == ":" {
+                            target.as_path()
+                        } else {
+                            temp.path()
+                        }
+                    );
+                    let output = app.command.output().expect("shell output");
+                    assert_eq!(output.detail, "result");
+                    assert!(output.summary.ends_with("exit 1"));
+                }
+            }
+        });
+}
+
+#[test]
 fn shell_stdout_redirection_preserves_logs_and_directory_changes() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
