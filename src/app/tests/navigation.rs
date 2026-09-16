@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn silent_shell_results_survive_refresh_until_the_next_input() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for (command, code) in [("true", 0), ("false", 1), ("cd target", 0)] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged(command.into()));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let expected = format!(":{command}  •  exit {code}");
+                assert_eq!(
+                    app.browser_status_model().text,
+                    expected,
+                    "Refresh hid the silent shell result"
+                );
+                assert!(app.command.output().is_none());
+                let refresh = app.update(Message::Refresh);
+                finish_tasks(&mut app, refresh).await;
+                assert_eq!(app.browser_status_model().text, expected);
+                let input = app.update(Message::Event(
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    event::Status::Captured,
+                ));
+                finish_tasks(&mut app, input).await;
+                assert_ne!(app.browser_status_model().text, expected);
+                assert_eq!(
+                    app.navigation.current(),
+                    if command == "cd target" {
+                        target.as_path()
+                    } else {
+                        temp.path()
+                    }
+                );
+            }
+        });
+}
+
+#[test]
 fn shell_output_preserves_stdout_from_exit_traps() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

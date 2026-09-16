@@ -225,7 +225,7 @@ impl App {
             return Task::none();
         }
         if let Some(status) = consequences.status {
-            self.presentation.set_status(status);
+            self.presentation.set_status_notice(status);
         }
         if !consequences.refresh {
             return Task::none();

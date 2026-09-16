@@ -1194,3 +1194,18 @@ outside this work.
   the failing command's exit code, and their intended directory behavior.
   All-target tests passed with 690 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 81: refresh immediately hides silent shell results (2026-09-16)
+
+- Reproduction: submit a silent shell command and finish its completion and
+  subsequent directory refresh through app messages.
+- Red: `cargo test silent_shell_results_survive_refresh_until_the_next_input -- --nocapture`
+  displayed the folder summary instead of the command's exit status.
+- Cause: silent command results were ordinary browser status text, which the
+  completion's own refresh immediately replaced.
+- Fix: retain completion status as a status notice until the next user input.
+- Green: silent success, failure, and directory-changing commands keep their
+  exit status through refreshes and clear it on the next input. Directory
+  changes still apply and silent commands do not open an output panel.
+  All-target tests passed with 691 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
