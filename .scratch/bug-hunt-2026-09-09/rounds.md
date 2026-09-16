@@ -1068,3 +1068,18 @@ outside this work.
   support creation and Undo while replaced targets remain untouched.
   All-target tests passed with 679 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 73: delayed shell directory changes override newer navigation (2026-09-16)
+
+- Reproduction: queue the result of a shell command that changes directory,
+  navigate to the parent, then deliver the command result.
+- Red: `cargo test queued_shell_directory_changes_do_not_override_newer_navigation -- --nocapture`
+  replaced the user's chosen folder with the old command's destination.
+- Cause: command completions applied their directory without checking whether
+  a newer Navigation session request had superseded that choice.
+- Fix: capture the navigation revision at command submission and apply the
+  directory only if it still matches. Refreshes do not advance this revision.
+- Green: settled and pending navigation, navigating away and back, and refresh
+  cases pass. Fresh shell directory changes still work. All-target tests passed
+  with 680 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
+  checks passed.

@@ -1026,6 +1026,7 @@ fn shell_command_completion_preserves_the_displayed_recent_or_trash_location() {
         let report = super::shell::execute(temp.path(), '!', "true", &[]).unwrap();
         let work = app.update(Message::CommandFinished {
             request: app.command.output_revision(),
+            navigation_revision: app.navigation.revision(),
             result: Ok(super::command::Completion::Shell(Ok(report))),
         });
 
@@ -2102,4 +2103,77 @@ fn volume_reconciliation_preserves_existing_nodes() {
     assert_eq!(rows[1].id, original_id);
     assert!(tree.is_expanded(original_id));
     assert_eq!(rows[2].label, "Second");
+}
+
+#[test]
+fn queued_shell_directory_changes_do_not_override_newer_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for scenario in ["settled", "pending", "returned", "refresh"] {
+                let temp = tempfile::tempdir().unwrap();
+                let original = temp.path().join("original");
+                let destination = temp.path().join("command-target");
+                std_fs::create_dir(&original).unwrap();
+                std_fs::create_dir(&destination).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(original.clone());
+                app.navigation.settle_for_test();
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged(
+                    "cd ../command-target; touch created.txt".into(),
+                ));
+                let mut stream =
+                    iced_runtime::task::into_stream(app.update(Message::CommandSubmitted)).unwrap();
+                let mut queued = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        queued.push(message);
+                    }
+                }
+                let navigation = app.update(if scenario == "refresh" {
+                    Message::Refresh
+                } else {
+                    Message::Parent
+                });
+                if scenario != "pending" {
+                    finish_tasks(&mut app, navigation).await;
+                }
+                if scenario == "returned" {
+                    let back = app.update(Message::Back);
+                    finish_tasks(&mut app, back).await;
+                    assert_eq!(app.navigation.current(), original);
+                }
+                for message in queued {
+                    let task = app.update(message);
+                    finish_tasks(&mut app, task).await;
+                }
+                let expected = match scenario {
+                    "returned" => original.as_path(),
+                    "refresh" => destination.as_path(),
+                    "pending" => {
+                        assert_eq!(
+                            app.navigation.pending_request().unwrap().requested(),
+                            Some(temp.path())
+                        );
+                        original.as_path()
+                    }
+                    _ => temp.path(),
+                };
+                assert_eq!(app.navigation.current(), expected, "scenario: {scenario}");
+                assert!(destination.join("created.txt").exists());
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged(format!(
+                    "cd {}",
+                    destination.display()
+                )));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                assert_eq!(app.navigation.current(), destination);
+            }
+        });
 }

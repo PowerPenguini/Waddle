@@ -197,6 +197,7 @@ pub(super) struct NavigationSession {
     pending: Option<Request>,
     deferred_refresh: Option<PathBuf>,
     next_request_id: u64,
+    revision: u64,
 }
 
 impl NavigationSession {
@@ -214,11 +215,16 @@ impl NavigationSession {
             pending: None,
             deferred_refresh: None,
             next_request_id: 1,
+            revision: 0,
         }
     }
 
     pub(super) fn current(&self) -> &Path {
         &self.current
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub(super) fn entries(&self) -> &[FileEntry] {
@@ -421,6 +427,16 @@ impl NavigationSession {
     }
 
     fn begin(&mut self, target: Target, select: Vec<PathBuf>) -> Start {
+        if !matches!(
+            target,
+            Target::Folder {
+                kind: Kind::Refresh,
+                ..
+            } | Target::Recent { refresh: true }
+                | Target::Trash { refresh: true }
+        ) {
+            self.revision = self.revision.wrapping_add(1);
+        }
         let cancelled = self.cancel_pending();
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);

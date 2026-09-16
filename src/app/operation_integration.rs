@@ -185,6 +185,7 @@ impl App {
                 );
                 self.presentation.set_status(execution.status());
                 let request = self.command.output_revision();
+                let navigation_revision = self.navigation.revision();
                 let adapter = self.command_adapter;
                 Task::perform(
                     self.operations
@@ -192,9 +193,11 @@ impl App {
                             Ok(execution.run(&adapter))
                         }),
                     move |completion| match completion {
-                        Completion::Finished(result) => {
-                            Message::CommandFinished { request, result }
-                        }
+                        Completion::Finished(result) => Message::CommandFinished {
+                            request,
+                            navigation_revision,
+                            result,
+                        },
                         Completion::Cancelled => Message::Noop,
                     },
                 )
@@ -205,6 +208,7 @@ impl App {
     pub(super) fn finish_command(
         &mut self,
         request: u64,
+        navigation_revision: u64,
         result: Result<command::Completion, String>,
     ) -> Task<Message> {
         if let Some((summary, detail)) = command_failure_report(&result) {
@@ -224,7 +228,10 @@ impl App {
             return Task::none();
         }
         let tree_refresh = self.invalidate_tree(vec![self.navigation.current().to_path_buf()]);
-        if let Some(directory) = consequences.navigate {
+        if let Some(directory) = consequences
+            .navigate
+            .filter(|_| navigation_revision == self.navigation.revision())
+        {
             Task::batch([
                 tree_refresh,
                 self.transition_navigation(NavigationTransition::Open {

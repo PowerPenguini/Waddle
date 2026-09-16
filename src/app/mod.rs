@@ -263,6 +263,7 @@ enum Message {
     CommandSubmitted,
     CommandFinished {
         request: u64,
+        navigation_revision: u64,
         result: Result<command::Completion, String>,
     },
     VolumeFinished(Result<String, String>),
