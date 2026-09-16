@@ -107,6 +107,86 @@ fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
 }
 
 #[test]
+fn noisy_shell_commands_keep_standard_error_visible() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    "printf 'output begins\\n'; printf '%0140000d' 0; printf 'permission denied\\n' >&2; false".into(),
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let output = app.command.output().expect("shell output");
+                assert!(output.summary.ends_with("exit 1"));
+                assert!(output.detail.starts_with("output begins\n"));
+                assert!(
+                    output.detail.ends_with("stderr:\npermission denied"),
+                    "Large stdout hid the command's error"
+                );
+                assert!(output.detail.contains("output truncated"));
+                assert!(output.detail.len() < 132_000);
+            }
+        });
+}
+
+#[test]
+fn shell_output_shares_its_limit_without_discarding_fitting_streams() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for (stdout, stderr) in [
+                    ("out".repeat(30_000), "error".into()),
+                    ("output".into(), "err".repeat(30_000)),
+                    ("ż".repeat(90_000), "ę".repeat(90_000)),
+                    (String::new(), "err".repeat(50_000)),
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    std_fs::write(temp.path().join("stdout"), &stdout).unwrap();
+                    std_fs::write(temp.path().join("stderr"), &stderr).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    press(&mut app, prefix);
+                    let _ =
+                        app.update(Message::CommandChanged("cat stdout; cat stderr >&2".into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    let output = app.command.output().expect("shell output");
+                    assert!(output.summary.ends_with("exit 0"));
+                    assert!(output.detail.len() <= 128 * 1024);
+                    if stdout.len() + stderr.len() < 100_000 {
+                        assert_eq!(
+                            output.detail,
+                            format!("{stdout}\n\nstderr:\n{stderr}"),
+                            "A stream that fits in the output limit was truncated"
+                        );
+                    } else {
+                        assert!(output.detail.contains("output truncated"));
+                        assert!(!output.detail.contains('\u{fffd}'));
+                        if stdout.is_empty() {
+                            assert!(output.detail.starts_with("err"));
+                        } else {
+                            assert!(output.detail.starts_with('ż'));
+                            assert!(output.detail.contains("stderr:\nę"));
+                        }
+                    }
+                }
+            }
+        });
+}
+
+#[test]
 fn shell_comments_do_not_require_selected_entries() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

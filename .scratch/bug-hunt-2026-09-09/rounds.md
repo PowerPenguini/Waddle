@@ -1270,3 +1270,18 @@ outside this work.
   and literal hashes beside selected paths, including escaped newlines.
   All-target tests passed with 696 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 86: noisy command output hides standard error (2026-09-16)
+
+- Reproduction: submit a command that prints 140,000 characters to standard
+  output, writes an error to standard error, and exits unsuccessfully.
+- Red: `noisy_shell_commands_keep_standard_error_visible` lost the error text
+  in both command prefixes because combined-output truncation removed stderr.
+- Cause: stdout consumed the display allowance before stderr was appended.
+- Fix: allocate the display allowance between both streams before combining
+  them. Either stream can use the other's unused space. Include truncation
+  notices and the stderr label in the limit, and preserve UTF-8 boundaries.
+- Green: errors remain visible after noisy stdout, fitting streams retain all
+  their text, and large UTF-8 or stderr-only output stays within 128 KiB.
+  All-target tests passed with 698 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

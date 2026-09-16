@@ -210,13 +210,25 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
     );
     let mut detail = String::new();
     append_output(&mut detail, &stdout);
-    if !stderr.is_empty() {
-        if !detail.is_empty() {
-            detail.push_str("\n\nstderr:\n");
-        }
-        append_output(&mut detail, &stderr);
+    let mut errors = String::new();
+    append_output(&mut errors, &stderr);
+    if !detail.is_empty() && !errors.is_empty() {
+        const STDERR_LABEL: &str = "\n\nstderr:\n";
+        // Reserve room for errors before truncating a noisy command's stdout.
+        let error_budget = errors
+            .len()
+            .min(OUTPUT_LIMIT - STDERR_LABEL.len() - detail.len().min(OUTPUT_LIMIT / 2));
+        truncate_output(
+            &mut detail,
+            OUTPUT_LIMIT - error_budget - STDERR_LABEL.len(),
+        );
+        truncate_output(&mut errors, error_budget);
+        detail.push_str(STDERR_LABEL);
+        detail.push_str(&errors);
+    } else {
+        detail.push_str(&errors);
+        truncate_output(&mut detail, OUTPUT_LIMIT);
     }
-    truncate_output(&mut detail);
     Ok(ShellReport {
         summary: format!("{prefix}{command}  •  {status_text}"),
         detail,
@@ -502,16 +514,17 @@ fn append_output(target: &mut String, bytes: &[u8]) {
     target.push_str(String::from_utf8_lossy(bytes).trim_end());
 }
 
-fn truncate_output(output: &mut String) {
-    if output.len() <= OUTPUT_LIMIT {
+fn truncate_output(output: &mut String, limit: usize) {
+    const NOTICE: &str = "\n\n… output truncated";
+    if output.len() <= limit {
         return;
     }
-    let mut boundary = OUTPUT_LIMIT;
+    let mut boundary = limit.saturating_sub(NOTICE.len());
     while !output.is_char_boundary(boundary) {
         boundary -= 1;
     }
     output.truncate(boundary);
-    output.push_str("\n\n… output truncated at 128 KiB");
+    output.push_str(NOTICE);
 }
 
 #[cfg(test)]
