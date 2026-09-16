@@ -1254,3 +1254,19 @@ outside this work.
   submission behavior. Explicit Parent navigation still updates Location.
   All-target tests passed with 694 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 85: shell comments trigger selected-placeholder validation (2026-09-16)
+
+- Reproduction: submit `printf result # $selected is optional` with no selection
+  through each command prefix.
+- Red: `shell_comments_do_not_require_selected_entries` produced no command
+  output. The placeholder scanner rejected the comment before Bash could run.
+- Cause: the scanner interpreted placeholders and quotes inside shell comments.
+- Fix: recognize an unquoted comment at the start of a shell word and copy it
+  through the newline without interpreting its contents. Track word boundaries
+  through quoting, escapes, operators, and line continuations.
+- Green: both prefixes execute comments without requiring a selection. Further
+  checks cover quoted placeholders and apostrophes in comments, multiline input,
+  and literal hashes beside selected paths, including escaped newlines.
+  All-target tests passed with 696 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

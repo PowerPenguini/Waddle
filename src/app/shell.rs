@@ -243,6 +243,7 @@ enum Quote {
 fn expand_selected(command: &str) -> Result<(String, bool), ShellError> {
     let mut expanded = String::with_capacity(command.len());
     let mut quote = Quote::Unquoted;
+    let mut word_start = true;
     let mut index = 0;
     let mut used = false;
 
@@ -263,7 +264,18 @@ fn expand_selected(command: &str) -> Result<(String, bool), ShellError> {
                     .expect("escaped character must exist");
                 expanded.push(escaped);
                 index += escaped.len_utf8();
+                if escaped != '\n' {
+                    word_start = false;
+                }
             }
+            continue;
+        }
+
+        if quote == Quote::Unquoted && word_start && character == '#' {
+            // Bash ignores the rest of this line, including quotes and placeholders.
+            let length = remaining.find('\n').unwrap_or(remaining.len());
+            expanded.push_str(&remaining[..length]);
+            index += length;
             continue;
         }
 
@@ -286,9 +298,15 @@ fn expand_selected(command: &str) -> Result<(String, bool), ShellError> {
             expanded.push_str("\"$@\"");
             index += length;
             used = true;
+            word_start = false;
             continue;
         }
 
+        word_start = quote == Quote::Unquoted
+            && matches!(
+                character,
+                ' ' | '\t' | '\n' | ';' | '&' | '|' | '(' | ')' | '<' | '>'
+            );
         expanded.push(character);
         index += character.len_utf8();
     }

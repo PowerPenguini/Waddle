@@ -107,6 +107,80 @@ fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
 }
 
 #[test]
+fn shell_comments_do_not_require_selected_entries() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for command in [
+                    "printf result # $selected is optional",
+                    "printf result;# \"${selected}\" is optional",
+                    "# don't expand \"$selected\"\nprintf result",
+                    "printf result # $selected\\\nprintf ''",
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    press(&mut app, prefix);
+                    let _ = app.update(Message::CommandChanged(command.into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    let output = app.command.output().expect("shell output");
+                    assert_eq!(output.detail, "result", "{command}");
+                    assert!(output.summary.ends_with("exit 0"));
+                }
+            }
+        });
+}
+
+#[test]
+fn shell_comment_boundaries_preserve_selected_arguments() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                for command in [
+                    "# don't expand \"$selected\" here\ncat $selected",
+                    "printf '%s' x#$selected",
+                    "printf '%s' \\#$selected",
+                    "printf '%s' ''#$selected",
+                    "printf '%s' x\\\n#$selected",
+                    "# comment\n# another \"$selected\"\ncat $selected",
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let selected = temp.path().join("a file.txt");
+                    std_fs::write(&selected, "selected contents").unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.navigation
+                        .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                    app.grid.select_only(Some(0), 1);
+                    press(&mut app, prefix);
+                    let _ = app.update(Message::CommandChanged(command.into()));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish_tasks(&mut app, task).await;
+                    let output = app.command.output().expect("shell output");
+                    let expected = if command.starts_with('#') {
+                        "selected contents".to_owned()
+                    } else if command.contains(" x") {
+                        format!("x#{}", selected.display())
+                    } else {
+                        format!("#{}", selected.display())
+                    };
+                    assert_eq!(output.detail, expected, "{command}");
+                    assert!(output.summary.ends_with("exit 0"));
+                }
+            }
+        });
+}
+
+#[test]
 fn selected_shell_paths_still_refer_to_the_selection_after_cd() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
