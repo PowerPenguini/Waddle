@@ -134,11 +134,14 @@ pub(super) fn apply(
             }
             Direction::Redo => {
                 ensure_absent(path)?;
-                fs::OpenOptions::new()
+                let modified = fingerprint.modified()?;
+                let file = fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&*path)
                     .map_err(|error| Error::io("could not redo New File", error))?;
+                file.set_modified(modified)
+                    .map_err(|error| Error::io("could not restore New File timestamp", error))?;
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(file_identity(path)?);
                 Ok(Effect {

@@ -216,6 +216,25 @@ fn hash_tree(
 }
 
 impl Fingerprint {
+    pub(super) fn modified(&self) -> Result<std::time::SystemTime, Error> {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        if !(0..1_000_000_000).contains(&self.modified_nanoseconds) {
+            return Err(Error::message("invalid recorded modification time"));
+        }
+        let seconds = Duration::from_secs(self.modified_seconds.unsigned_abs());
+        let whole = if self.modified_seconds < 0 {
+            UNIX_EPOCH.checked_sub(seconds)
+        } else {
+            UNIX_EPOCH.checked_add(seconds)
+        };
+        whole
+            .and_then(|time| {
+                time.checked_add(Duration::from_nanos(self.modified_nanoseconds as u64))
+            })
+            .ok_or_else(|| Error::message("recorded modification time is out of range"))
+    }
+
     pub(super) fn is_directory(&self) -> bool {
         self.kind == libc::S_IFDIR
     }

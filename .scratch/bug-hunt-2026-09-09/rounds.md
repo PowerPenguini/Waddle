@@ -986,3 +986,18 @@ outside this work.
   and restart. Existing replacement-preservation regressions remain green.
   All-target tests passed with 671 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 68: Transfer Redo rejects a file recreated by New File Redo (2026-09-16)
+
+- Reproduction: create a file, Copy or Move it, Undo both operations, Redo New
+  File, restart the journal, then Redo the Transfer.
+- Red: `cargo test redo_transfer_accepts_a_redone_new_file_after_restart -- --nocapture`
+  refused the recreated file as changed.
+- Cause: New File Redo assigned a fresh modification time. The later Transfer
+  retained the original timestamp in its source fingerprint.
+- Fix: restore the recorded timestamp when redoing New File. Keep the Transfer
+  verification unchanged and refresh the recreated file's identity as before.
+- Green: Copy and Move pass through Redo, restart, and another Undo cycle.
+  Timestamp coverage includes fractional seconds before and after the Unix
+  epoch. All-target tests passed with 673 tests and 24 opt-in tests ignored.
+  Clippy, formatting, and whitespace checks passed.

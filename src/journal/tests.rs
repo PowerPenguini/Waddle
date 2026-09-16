@@ -2,6 +2,88 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn new_file_redo_restores_subsecond_and_pre_epoch_modification_times() {
+    use std::time::{Duration, UNIX_EPOCH};
+    for modified in [
+        UNIX_EPOCH + Duration::new(60, 123_456_789),
+        UNIX_EPOCH - Duration::from_nanos(500_000_001),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("new.txt");
+        fs::write(&file, "").unwrap();
+        fs::File::open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(Action::new_file(file.clone()).unwrap())
+            .unwrap();
+        journal.undo().unwrap();
+        drop(journal);
+        let mut journal = Journal::open(history).unwrap();
+        journal.redo().unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read(&file).unwrap(), b"");
+        journal.undo().unwrap();
+        assert!(!file.exists());
+    }
+}
+
+#[test]
+fn redo_transfer_accepts_a_redone_new_file_after_restart() {
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("new.txt");
+        let destination = temp.path().join("transferred.txt");
+        fs::write(&source, "").unwrap();
+        fs::File::open(&source)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+            .unwrap();
+        let history = temp.path().join("history.json");
+        let mut journal = Journal::open(history.clone()).unwrap();
+        journal
+            .record(Action::new_file(source.clone()).unwrap())
+            .unwrap();
+        match kind {
+            TransferKind::Copy => crate::fs::journal_copy(&source, &destination).unwrap(),
+            TransferKind::Move => crate::fs::journal_move(&source, &destination).unwrap(),
+        }
+        journal
+            .record(
+                Action::transfer(
+                    kind,
+                    &[crate::fs::TransferReceipt {
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        replaced_existing: false,
+                    }],
+                )
+                .unwrap()
+                .unwrap(),
+            )
+            .unwrap();
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert!(!source.exists());
+        journal.redo().unwrap();
+        drop(journal);
+        let mut journal = Journal::open(history).unwrap();
+        journal
+            .redo()
+            .expect("Transfer Redo must accept the file recreated by New File Redo");
+        assert_eq!(fs::read(&destination).unwrap(), b"");
+        assert_eq!(source.exists(), matches!(kind, TransferKind::Copy));
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        assert!(!source.exists());
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
 fn new_item_undo_survives_a_cross_device_move_round_trip() {
     use std::os::unix::fs::MetadataExt;
     for directory in [false, true] {
