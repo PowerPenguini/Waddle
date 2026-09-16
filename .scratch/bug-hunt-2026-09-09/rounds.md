@@ -1050,3 +1050,21 @@ outside this work.
   remain intact, errors remain in the editor, and no Undo record is added.
   All-target tests passed with 677 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 72: creation writes into a replaced parent folder (2026-09-16)
+
+- Reproduction: open New File or New Folder, replace the parent directory at
+  the same path, then submit. Also replace it after submission while work is
+  queued.
+- Red: `cargo test creation_preserves_a_replaced_parent_after_the_prompt_opens -- --nocapture`
+  created the item in the replacement folder.
+- Cause: the prompt retained no parent identity, and the worker used whichever
+  directory occupied the navigation path when creation ran.
+- Fix: capture parent device/inode identity when opening the prompt and verify
+  it in the worker. Follow directory symlinks when identifying the parent,
+  matching where creation actually writes.
+- Green: both creation operations refuse replaced parents in both timing
+  cases and add no Undo record. Symlink coverage verifies that valid targets
+  support creation and Undo while replaced targets remain untouched.
+  All-target tests passed with 679 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

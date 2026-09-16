@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn creation_through_a_directory_symlink_checks_the_target_identity() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for (directory, replaced) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                let alias = temp.path().join("alias");
+                std_fs::create_dir(&target).unwrap();
+                std::os::unix::fs::symlink(&target, &alias).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(alias.clone());
+                app.navigation.settle_for_test();
+                if directory {
+                    let _ = app.show_new_folder();
+                } else {
+                    let _ = app.show_new_file();
+                }
+                let _ = app.update(Message::PromptInputChanged("created".into()));
+                if replaced {
+                    std_fs::rename(&target, temp.path().join("retained")).unwrap();
+                    std_fs::create_dir(&target).unwrap();
+                }
+                let submitted = app.update(Message::PromptSubmit);
+                navigation::finish_tasks(&mut app, submitted).await;
+                assert_eq!(std_fs::read_link(&alias).unwrap(), target);
+                if replaced {
+                    assert!(!target.join("created").exists());
+                    assert!(!temp.path().join("retained/created").exists());
+                    assert!(app.journal.undo().is_err());
+                } else {
+                    assert!(target.join("created").exists());
+                    assert_eq!(target.join("created").is_dir(), directory);
+                    app.journal.undo().unwrap();
+                    assert!(!target.join("created").exists());
+                }
+            }
+        });
+}
+
+#[test]
+fn creation_preserves_a_replaced_parent_after_the_prompt_opens() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for (directory, queued) in [(false, false), (true, false), (false, true), (true, true)] {
+                let temp = tempfile::tempdir().unwrap();
+                let parent = temp.path().join("parent");
+                let retained = temp.path().join("retained");
+                std_fs::create_dir(&parent).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(parent.clone());
+                app.navigation.settle_for_test();
+                if directory { let _ = app.show_new_folder(); } else { let _ = app.show_new_file(); }
+                let _ = app.update(Message::PromptInputChanged("created".into()));
+                let pending = queued.then(|| app.update(Message::PromptSubmit));
+                std_fs::rename(&parent, &retained).unwrap();
+                std_fs::create_dir(&parent).unwrap();
+                let task = pending.unwrap_or_else(|| app.update(Message::PromptSubmit));
+                navigation::finish_tasks(&mut app, task).await;
+                assert!(!parent.join("created").exists(), "Creation wrote into a replacement parent folder");
+                assert!(!retained.join("created").exists());
+                assert!(matches!(app.file_operations.view(), FileOperationView::NewFile { error, .. } | FileOperationView::NewFolder { error, .. } if !error.is_empty()));
+                assert!(app.journal.undo().is_err());
+            }
+        });
+}
+
+#[test]
 fn rename_preserves_replacements_after_the_editor_opens() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

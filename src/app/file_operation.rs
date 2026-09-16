@@ -4,8 +4,8 @@ use crate::{fs, fs::FileEntry, journal};
 
 #[derive(Clone, Debug)]
 enum NameOperation {
-    NewFolder,
-    NewFile,
+    NewFolder(Option<(u64, u64)>),
+    NewFile(Option<(u64, u64)>),
     Rename {
         entry: FileEntry,
         identity: Option<(u64, u64)>,
@@ -33,6 +33,31 @@ fn entry_identity(path: &std::path::Path) -> Result<(u64, u64), String> {
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))
 }
 
+fn parent_identity(path: &std::path::Path) -> Result<(u64, u64), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    // Creation follows a directory symlink, so protect its target folder.
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+    if !metadata.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn verify_creation_parent(
+    path: &std::path::Path,
+    expected: Option<(u64, u64)>,
+) -> Result<(), String> {
+    if Some(parent_identity(path)?) != expected {
+        return Err(format!(
+            "Refused creation: {} is not the original folder",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 enum State {
     Idle,
@@ -43,10 +68,12 @@ enum State {
         error: String,
     },
     NewFolder {
+        parent_identity: Option<(u64, u64)>,
         value: String,
         error: String,
     },
     NewFile {
+        parent_identity: Option<(u64, u64)>,
         value: String,
         error: String,
     },
@@ -128,16 +155,19 @@ impl Work {
                     NameOperation::Rename { entry, .. } => NameKind::Rename {
                         source: entry.path.clone(),
                     },
-                    NameOperation::NewFile => NameKind::NewFile,
-                    NameOperation::NewFolder => NameKind::NewFolder,
+                    NameOperation::NewFile(_) => NameKind::NewFile,
+                    NameOperation::NewFolder(_) => NameKind::NewFolder,
                 };
                 let result = match operation {
-                    NameOperation::NewFolder => {
-                        fs::create_folder(&current, &value).map_err(|error| error.to_string())
+                    NameOperation::NewFolder(identity) => {
+                        verify_creation_parent(&current, identity).and_then(|()| {
+                            fs::create_folder(&current, &value).map_err(|error| error.to_string())
+                        })
                     }
-                    NameOperation::NewFile => {
-                        fs::create_file(&current, &value).map_err(|error| error.to_string())
-                    }
+                    NameOperation::NewFile(identity) => verify_creation_parent(&current, identity)
+                        .and_then(|()| {
+                            fs::create_file(&current, &value).map_err(|error| error.to_string())
+                        }),
                     NameOperation::Rename { entry, identity } => entry_identity(&entry.path)
                         .and_then(|observed| {
                             if Some(observed) != identity {
@@ -255,8 +285,8 @@ impl FileOperationSession {
         match &self.state {
             State::Idle => View::Idle,
             State::Rename { value, error, .. } => View::Rename { value, error },
-            State::NewFolder { value, error } => View::NewFolder { value, error },
-            State::NewFile { value, error } => View::NewFile { value, error },
+            State::NewFolder { value, error, .. } => View::NewFolder { value, error },
+            State::NewFile { value, error, .. } => View::NewFile { value, error },
             State::PermanentDelete {
                 message, detail, ..
             }
@@ -316,19 +346,21 @@ impl FileOperationSession {
         };
     }
 
-    pub(super) fn begin_new_folder(&mut self) {
+    pub(super) fn begin_new_folder(&mut self, parent: &std::path::Path) {
         self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::NewFolder {
+            parent_identity: parent_identity(parent).ok(),
             value: String::new(),
             error: String::new(),
         };
     }
 
-    pub(super) fn begin_new_file(&mut self) {
+    pub(super) fn begin_new_file(&mut self, parent: &std::path::Path) {
         self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         self.state = State::NewFile {
+            parent_identity: parent_identity(parent).ok(),
             value: String::new(),
             error: String::new(),
         };
@@ -378,6 +410,7 @@ impl FileOperationSession {
             | State::NewFolder {
                 value: target,
                 error,
+                ..
             }
             | State::NewFile {
                 value: target,
@@ -409,8 +442,24 @@ impl FileOperationSession {
                 value.clone(),
                 error,
             ),
-            State::NewFolder { value, error } => (NameOperation::NewFolder, value.clone(), error),
-            State::NewFile { value, error } => (NameOperation::NewFile, value.clone(), error),
+            State::NewFolder {
+                parent_identity,
+                value,
+                error,
+            } => (
+                NameOperation::NewFolder(*parent_identity),
+                value.clone(),
+                error,
+            ),
+            State::NewFile {
+                parent_identity,
+                value,
+                error,
+            } => (
+                NameOperation::NewFile(*parent_identity),
+                value.clone(),
+                error,
+            ),
             _ => return None,
         };
         if let Err(validation) = fs::validate_name(&value) {
@@ -689,7 +738,7 @@ mod tests {
     fn new_file_uses_the_name_prompt_and_reports_conflicts_inline() {
         let temp = tempfile::tempdir().unwrap();
         let mut session = FileOperationSession::default();
-        session.begin_new_file();
+        session.begin_new_file(temp.path());
         session.change_name("created.md".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
@@ -711,7 +760,7 @@ mod tests {
         );
 
         let mut session = FileOperationSession::default();
-        session.begin_new_file();
+        session.begin_new_file(temp.path());
         session.change_name("created.md".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
@@ -744,7 +793,7 @@ mod tests {
     fn new_folder_runs_through_the_session_and_can_be_cancelled() {
         let temp = tempfile::tempdir().unwrap();
         let mut session = FileOperationSession::default();
-        session.begin_new_folder();
+        session.begin_new_folder(temp.path());
         session.change_name("created".to_owned());
         let completion = session
             .submit_name(temp.path().to_path_buf())
@@ -756,7 +805,7 @@ mod tests {
         assert!(effects.refresh);
         assert_eq!(effects.select, Some(temp.path().join("created")));
 
-        session.begin_new_folder();
+        session.begin_new_folder(temp.path());
         session.change_name("discarded".to_owned());
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));

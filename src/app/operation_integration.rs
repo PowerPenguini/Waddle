@@ -264,7 +264,8 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        self.open_file_operation(|session| session.begin_new_folder());
+        let parent = self.navigation.current().to_path_buf();
+        self.open_file_operation(|session| session.begin_new_folder(&parent));
         self.refocus_bottom_input()
     }
 
@@ -272,7 +273,8 @@ impl App {
         if !self.mutations_allowed() {
             return Task::none();
         }
-        self.open_file_operation(|session| session.begin_new_file());
+        let parent = self.navigation.current().to_path_buf();
+        self.open_file_operation(|session| session.begin_new_file(&parent));
         self.refocus_bottom_input()
     }
 
