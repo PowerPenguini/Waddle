@@ -22,6 +22,18 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.19" date="2026-09-16">
+      <description>
+        <ul>
+          <li>Restore recorded permissions and ACLs when redoing file or folder creation, and allow retries after metadata errors.</li>
+          <li>Refuse queued permission changes when the selected file, folder, or symlink target has been replaced.</li>
+          <li>Keep delayed shell commands from overriding a newer Search session.</li>
+          <li>Preserve shell exit codes, output from exit traps, and completion messages.</li>
+          <li>Keep $selected paths anchored to the selected files when a shell command changes directory.</li>
+          <li>Preserve unchanged Location paths containing non-UTF-8 names and retain typed Location edits during refreshes.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.18" date="2026-09-16">
       <description>
         <ul>
