@@ -22,6 +22,17 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.18" date="2026-09-16">
+      <description>
+        <ul>
+          <li>Preserve New File timestamps so later Copy and Move operations can redo.</li>
+          <li>Preserve later permission and extended-attribute edits when undoing file or folder creation.</li>
+          <li>Refuse to rename or permanently delete items replaced after their prompts opened.</li>
+          <li>Refuse to create files or folders inside a replaced parent directory, including symlink targets.</li>
+          <li>Keep delayed shell directory changes from overriding newer navigation.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.17" date="2026-09-14">
       <description>
         <ul>
