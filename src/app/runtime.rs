@@ -211,6 +211,7 @@ impl App {
             Message::Forward => self.transition_navigation(NavigationTransition::HistoryForward),
             Message::LocationChanged(value) => {
                 self.location_input = value;
+                self.location_input_edited = true;
                 Task::none()
             }
             Message::LocationFocusChanged {
@@ -220,7 +221,10 @@ impl App {
             Message::LocationSubmitted => {
                 self.browser_input.leave_mode();
                 let input = PathBuf::from(&self.location_input);
-                let requested = if input.is_absolute() {
+                let requested = if !self.location_input_edited {
+                    // Display text may have replaced non-UTF-8 path bytes.
+                    self.navigation.current().to_path_buf()
+                } else if input.is_absolute() {
                     input
                 } else {
                     self.navigation.current().join(input)
@@ -987,6 +991,7 @@ impl App {
             InputIntent::CancelOpenWith => self.cancel_open_with(),
             InputIntent::CancelLocation => {
                 self.location_input = self.navigation.current().display().to_string();
+                self.location_input_edited = false;
                 self.startup
                     .remember_directory(self.navigation.current().to_path_buf());
                 self.release_location_focus()

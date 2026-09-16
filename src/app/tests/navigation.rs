@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp
+                .path()
+                .join(std::ffi::OsString::from_vec(b"folder-\xff".to_vec()));
+            let twin = PathBuf::from(original.display().to_string());
+            assert_ne!(original, twin);
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir(&twin).unwrap();
+            std_fs::write(original.join("original.txt"), "original").unwrap();
+            std_fs::write(twin.join("other.txt"), "other folder").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            let focus = app.begin_location();
+            finish_tasks(&mut app, focus).await;
+            let submitted = app.update(Message::LocationSubmitted);
+            finish_tasks(&mut app, submitted).await;
+            assert_eq!(
+                app.navigation.current(),
+                original,
+                "Unedited Location entered a different folder"
+            );
+            assert_eq!(
+                app.navigation.entries()[0].path,
+                original.join("original.txt")
+            );
+
+            let focus = app.begin_location();
+            finish_tasks(&mut app, focus).await;
+            let _ = app.update(Message::LocationChanged(twin.display().to_string()));
+            let submitted = app.update(Message::LocationSubmitted);
+            finish_tasks(&mut app, submitted).await;
+            assert_eq!(
+                app.navigation.current(),
+                twin,
+                "An explicitly entered UTF-8 path must still work"
+            );
+        });
+}
+
+#[test]
 fn selected_shell_paths_still_refer_to_the_selection_after_cd() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

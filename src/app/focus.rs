@@ -93,6 +93,7 @@ impl App {
                 self.browser_input.leave_mode();
             }
             self.location_input = self.navigation.current().display().to_string();
+            self.location_input_edited = false;
             self.focus.pending_unfocus = true;
         }
         self.focus.generation += 1;
@@ -147,12 +148,14 @@ impl App {
         if focused {
             if !self.focus.location_editing {
                 self.location_input = self.navigation.current().display().to_string();
+                self.location_input_edited = false;
             }
             self.focus_location()
         } else {
             if self.focus.location_editing && self.browser_input.mode() == InputMode::Location {
                 self.browser_input.leave_mode();
                 self.location_input = self.navigation.current().display().to_string();
+                self.location_input_edited = false;
             }
             self.focus.location_editing = false;
             Task::none()
@@ -230,6 +233,7 @@ impl App {
                 if self.browser_input.mode() == InputMode::Location {
                     self.browser_input.leave_mode();
                     self.location_input = self.navigation.current().display().to_string();
+                    self.location_input_edited = false;
                 }
                 widget::operation::focus(Id::new(id)).chain(if select_all {
                     widget::operation::select_all(Id::new(id))

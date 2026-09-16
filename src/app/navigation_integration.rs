@@ -187,6 +187,7 @@ impl App {
                 );
                 self.grid.remap_context_entry(context_entry);
                 self.location_input = commit.location_input().to_owned();
+                self.location_input_edited = false;
                 self.sync_location_monitoring();
                 self.presentation.set_status(commit.status().to_owned());
                 let reveal_selection = commit.reveal_selection();
@@ -359,6 +360,7 @@ impl App {
             self.cancel_rename();
         }
         self.location_input = self.navigation.current().display().to_string();
+        self.location_input_edited = false;
         self.focus_location()
     }
 

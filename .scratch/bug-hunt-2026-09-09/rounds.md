@@ -1224,3 +1224,19 @@ outside this work.
   filename with spaces. Existing argument quoting and option-prefix checks
   pass with absolute paths. All-target tests passed with 692 tests and
   24 opt-in tests ignored. Clippy, formatting, and whitespace checks passed.
+
+## Round 83: unchanged Location text can open a different non-UTF-8 folder (2026-09-16)
+
+- Reproduction: open a folder whose name contains invalid UTF-8, focus Location,
+  and submit it unchanged. Create a valid UTF-8 folder with the same displayed
+  replacement character to distinguish the paths.
+- Red: `cargo test submitting_an_unchanged_location_preserves_non_utf8_path_bytes -- --nocapture`
+  entered the valid UTF-8 twin instead of preserving the original folder.
+- Cause: Location submission rebuilt a filesystem path from lossy display text.
+- Fix: track whether Location text was edited. Preserve the Navigation session's
+  original path when unedited, and interpret explicit input as before. Reset
+  the edit flag whenever navigation or focus resets the Location text.
+- Green: unchanged submission retains the original path bytes and entries;
+  explicitly entering the identical-looking UTF-8 path still opens its folder.
+  All-target tests passed with 693 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
