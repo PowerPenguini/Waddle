@@ -137,6 +137,8 @@ impl App {
         request: NavigationRequest,
         completion: NavigationCompletion,
     ) -> Task<Message> {
+        let preserve_location_input =
+            request.is_refresh() && self.browser_input.mode() == InputMode::Location;
         let hidden_paths = self.transfers.pending_cut_paths().to_vec();
         let selection = self.grid.capture_selection().map(|index| {
             self.navigation
@@ -186,8 +188,10 @@ impl App {
                     selection,
                 );
                 self.grid.remap_context_entry(context_entry);
-                self.location_input = commit.location_input().to_owned();
-                self.location_input_edited = false;
+                if !preserve_location_input {
+                    self.location_input = commit.location_input().to_owned();
+                    self.location_input_edited = false;
+                }
                 self.sync_location_monitoring();
                 self.presentation.set_status(commit.status().to_owned());
                 let reveal_selection = commit.reveal_selection();

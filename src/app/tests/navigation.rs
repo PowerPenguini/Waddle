@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn directory_refresh_preserves_location_edits_and_their_submission() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for refresh_first in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                let created = temp.path().join("new.txt");
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.sync_location_monitoring();
+                let pending = refresh_first.then(|| app.update(Message::Refresh));
+                let focus = app.begin_location();
+                finish_tasks(&mut app, focus).await;
+                let _ = app.update(Message::LocationChanged("target".into()));
+                std_fs::write(&created, "external change").unwrap();
+                let refresh = pending.unwrap_or_else(|| {
+                    app.update(Message::DirectoryChanged(directory_watch::Event {
+                        path: temp.path().to_path_buf(),
+                        removed: Vec::new(),
+                        watch_failed: false,
+                    }))
+                });
+                finish_tasks(&mut app, refresh).await;
+                assert!(
+                    app.navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.path == created)
+                );
+                assert_eq!(
+                    app.location_input, "target",
+                    "Refresh replaced the Location edit"
+                );
+                assert_eq!(app.browser_input.mode(), InputMode::Location);
+                let submit = app.update(Message::LocationSubmitted);
+                finish_tasks(&mut app, submit).await;
+                assert_eq!(app.navigation.current(), target);
+                assert_eq!(app.location_input, target.display().to_string());
+                let focus = app.begin_location();
+                finish_tasks(&mut app, focus).await;
+                let _ = app.update(Message::LocationChanged("unsubmitted".into()));
+                let parent = app.update(Message::Parent);
+                finish_tasks(&mut app, parent).await;
+                assert_eq!(app.navigation.current(), temp.path());
+                assert_eq!(app.location_input, temp.path().display().to_string());
+            }
+        });
+}
+
+#[test]
 fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
     use std::os::unix::ffi::OsStringExt;
 

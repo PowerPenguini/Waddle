@@ -1240,3 +1240,17 @@ outside this work.
   explicitly entering the identical-looking UTF-8 path still opens its folder.
   All-target tests passed with 693 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 84: folder refresh replaces active Location edits (2026-09-16)
+
+- Reproduction: edit Location while a folder refresh is pending, or trigger a
+  filesystem notification after typing a relative destination.
+- Red: `directory_refresh_preserves_location_edits_and_their_submission`
+  showed the current folder path replacing the typed destination.
+- Cause: every navigation completion reset Location text and its edited flag,
+  including refreshes of the current folder.
+- Fix: preserve an active Location edit when a refresh commits.
+- Green: refreshes update the file list while retaining the text and its
+  submission behavior. Explicit Parent navigation still updates Location.
+  All-target tests passed with 694 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

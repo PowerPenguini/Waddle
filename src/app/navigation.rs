@@ -71,6 +71,17 @@ pub(super) struct Request {
 }
 
 impl Request {
+    pub(super) fn is_refresh(&self) -> bool {
+        matches!(
+            self.target,
+            Target::Folder {
+                kind: Kind::Refresh,
+                ..
+            } | Target::Recent { refresh: true }
+                | Target::Trash { refresh: true }
+        )
+    }
+
     pub(super) fn tree_load(&self) -> Option<&LoadRequest> {
         self.tree_load.as_ref()
     }
