@@ -3,7 +3,93 @@ use std::{error::Error as _, fs};
 
 #[test]
 #[cfg(target_os = "linux")]
-fn failed_creation_acl_restore_keeps_inherited_users_masked() {
+fn failed_creation_cleanup_preserves_replacements_and_added_contents() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        for replace in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("parent");
+            fs::create_dir(&parent).unwrap();
+            set_test_attribute(
+                &parent,
+                "system.posix_acl_default",
+                &transfer_test_acl(65533),
+            );
+            let item = if directory {
+                crate::fs::create_folder(&parent, "created").unwrap()
+            } else {
+                crate::fs::create_file(&parent, "created").unwrap()
+            };
+            let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
+            journal
+                .record(if directory {
+                    Action::new_folder(item.clone()).unwrap()
+                } else {
+                    Action::new_file(item.clone()).unwrap()
+                })
+                .unwrap();
+            journal.undo().unwrap();
+            drop(journal);
+            let replacement = temp.path().join("replacement");
+            if directory {
+                fs::create_dir(&replacement).unwrap();
+            } else {
+                fs::write(&replacement, "").unwrap();
+            }
+            let retained = temp.path().join("retained");
+            let addition = if directory {
+                item.join("external.txt")
+            } else {
+                item.clone()
+            };
+            let armed = temp.path().join("armed");
+            fs::write(&armed, "").unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "journal::tests::audit_history_fault_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                .env("WADDLE_AUDIT_CHILD_ROOT", temp.path())
+                .env("WADDLE_AUDIT_XATTR_TARGET", &parent)
+                .env("WADDLE_AUDIT_XATTR_ARMED", &armed)
+                .env("WADDLE_AUDIT_SET_XATTR_NAME", "system.posix_acl_access")
+                .env("WADDLE_AUDIT_SET_XATTR_ERRNO", libc::EACCES.to_string());
+            if replace {
+                child
+                    .env("WADDLE_AUDIT_XATTR_REPLACEMENT", &replacement)
+                    .env("WADDLE_AUDIT_XATTR_RETAINED", &retained);
+            } else {
+                child.env("WADDLE_AUDIT_XATTR_ADDITION", &addition);
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(
+                !armed.exists(),
+                "External change and failure must be reached"
+            );
+            assert!(
+                fs::read_to_string(temp.path().join("result.txt"))
+                    .unwrap()
+                    .contains("access control")
+            );
+            assert!(item.exists(), "Failure cleanup removed someone else's item");
+            if replace {
+                assert!(retained.exists());
+                assert!(!replacement.exists());
+            } else {
+                assert_eq!(fs::read(&addition).unwrap(), b"external change");
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn failed_creation_acl_restore_can_retry_without_exposing_inherited_users() {
     use std::os::unix::fs::PermissionsExt;
 
     let shim = audit_fault_library();
@@ -24,6 +110,8 @@ fn failed_creation_acl_restore_keeps_inherited_users_masked() {
             } else {
                 crate::fs::create_file(&parent, "created").unwrap()
             };
+            let expected_attributes = crate::fs::read_xattrs(&item).unwrap();
+            let expected_mode = fs::metadata(&item).unwrap().permissions().mode();
             let mut journal = Journal::open(temp.path().join("journal.json")).unwrap();
             journal
                 .record(if directory {
@@ -78,11 +166,24 @@ fn failed_creation_acl_restore_keeps_inherited_users_masked() {
                     .unwrap()
                     .contains("access control")
             );
+            if let Ok(metadata) = fs::metadata(&item) {
+                assert_eq!(
+                    metadata.permissions().mode() & 0o077,
+                    0,
+                    "Failed Redo exposed the item through an inherited ACL"
+                );
+            }
+            let mut recovered = Journal::open(temp.path().join("journal.json")).unwrap();
+            recovered
+                .redo()
+                .expect("Creation Redo must recover after the ACL error is gone");
+            assert_eq!(crate::fs::read_xattrs(&item).unwrap(), expected_attributes);
             assert_eq!(
-                fs::metadata(&item).unwrap().permissions().mode() & 0o077,
-                0,
-                "Failed Redo exposed the item through an inherited ACL"
+                fs::metadata(&item).unwrap().permissions().mode(),
+                expected_mode
             );
+            recovered.undo().unwrap();
+            assert!(!item.exists());
         }
     }
 }

@@ -95,6 +95,19 @@ int lsetxattr(const char *path, const char *name, const void *value, size_t size
     if (target && armed && !strcmp(name, attribute)) {
         size_t prefix = strlen(target);
         if (!strncmp(path, target, prefix) && path[prefix] == '/') {
+            const char *replacement = getenv("WADDLE_AUDIT_XATTR_REPLACEMENT");
+            const char *retained = getenv("WADDLE_AUDIT_XATTR_RETAINED");
+            if (replacement && retained) {
+                if (rename(path, retained) || rename(replacement, path)) return -1;
+            }
+            const char *addition = getenv("WADDLE_AUDIT_XATTR_ADDITION");
+            if (addition) {
+                int fd = open(addition, O_WRONLY | O_CREAT | O_APPEND, 0600);
+                if (fd < 0) return -1;
+                ssize_t written = write(fd, "external change", 15);
+                close(fd);
+                if (written != 15) return -1;
+            }
             int (*real_unlink)(const char *) = dlsym(RTLD_NEXT, "unlink");
             real_unlink(armed);
             const char *error = getenv("WADDLE_AUDIT_SET_XATTR_ERRNO");

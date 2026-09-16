@@ -1,6 +1,6 @@
 use std::{
     fs, io,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -13,6 +13,42 @@ use super::{
 pub(super) enum Direction {
     Undo,
     Redo,
+}
+
+struct PendingCreation {
+    path: PathBuf,
+    identity: (u64, u64),
+    complete: bool,
+}
+
+impl PendingCreation {
+    fn capture(path: &Path) -> Result<Self, Error> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            identity: file_identity(path)?,
+            complete: false,
+        })
+    }
+}
+
+impl Drop for PendingCreation {
+    fn drop(&mut self) {
+        if self.complete {
+            return;
+        }
+        let Ok(current) = fs::symlink_metadata(&self.path) else {
+            return;
+        };
+        if (current.dev(), current.ino()) != self.identity {
+            return;
+        }
+        if current.is_dir() {
+            // remove_dir refuses a folder to which another process added content.
+            let _ = fs::remove_dir(&self.path);
+        } else if current.is_file() && current.len() == 0 {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 pub(super) fn apply(
@@ -107,6 +143,7 @@ pub(super) fn apply(
                     )
                     .create(&*path)
                     .map_err(|error| Error::io("could not redo New Folder", error))?;
+                let mut pending = PendingCreation::capture(path)?;
                 if let Some(saved) = metadata {
                     saved.restore_access_control(path)?;
                     fs::set_permissions(&*path, fs::Permissions::from_mode(saved.mode())).map_err(
@@ -116,6 +153,7 @@ pub(super) fn apply(
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(DirectoryIdentity::read(path)?);
                 *metadata = Some(MetadataFingerprint::read(path)?);
+                pending.complete = true;
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New Folder".to_owned(),
@@ -163,6 +201,7 @@ pub(super) fn apply(
                     )
                     .open(&*path)
                     .map_err(|error| Error::io("could not redo New File", error))?;
+                let mut pending = PendingCreation::capture(path)?;
                 if let Some(saved) = metadata {
                     saved.restore_access_control(path)?;
                     file.set_permissions(fs::Permissions::from_mode(saved.mode()))
@@ -175,6 +214,7 @@ pub(super) fn apply(
                 *fingerprint = Fingerprint::read(path)?;
                 *identity = Some(file_identity(path)?);
                 *metadata = Some(MetadataFingerprint::read(path)?);
+                pending.complete = true;
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New File".to_owned(),

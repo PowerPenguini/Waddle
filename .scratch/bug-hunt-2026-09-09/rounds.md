@@ -1116,3 +1116,19 @@ outside this work.
   ACL set, unsupported, and removal failures report errors and keep inherited
   users masked. All-target tests passed with 684 tests and 24 opt-in tests
   ignored. Clippy, formatting, and whitespace checks passed.
+
+## Round 76: failed creation Redo cannot retry after metadata errors (2026-09-16)
+
+- Reproduction: inject an ACL restoration failure during New File or New
+  Folder Redo, remove the fault, reopen the journal, and retry Redo.
+- Red: `cargo test failed_creation_acl_restore_can_retry_without_exposing_inherited_users -- --nocapture`
+  refused the retry because the incomplete item still occupied its destination.
+- Cause: creation returned metadata errors without removing its empty result.
+- Fix: retain an incomplete-creation guard until metadata capture succeeds.
+  On failure, remove an empty result only while its device/inode identity still
+  matches. Preserve replacement items and files or folders with added content.
+- Green: retries restore the original permissions and ACLs after set, unsupported,
+  and removal failures, including a journal restart and another Undo. Injected
+  replacements and external content survive cleanup. All-target tests passed
+  with 685 tests and 24 opt-in tests ignored. Clippy, formatting, and whitespace
+  checks passed.
