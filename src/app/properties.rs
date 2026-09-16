@@ -1,6 +1,9 @@
 use std::{
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
 };
 
@@ -80,13 +83,26 @@ impl PermissionTarget {
 
     fn set_mode(&self, mode: u32) -> Result<(), String> {
         let expected = self.identity.as_ref().map_err(Clone::clone)?;
-        if permission_identity(&self.path)? != *expected {
+        // O_PATH follows symlinks without requiring read permission or opening
+        // device/FIFO contents. Keep this inode pinned through the chmod call.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(&self.path)
+            .map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if (metadata.dev(), metadata.ino()) != *expected {
             return Err(
                 "Refused permission change: item changed after command submission".to_owned(),
             );
         }
-        fs::set_permissions(&self.path, fs::Permissions::from_mode(mode))
-            .map_err(|error| error.to_string())
+        // fchmod rejects O_PATH descriptors; procfs resolves this owned handle
+        // to the pinned inode even if its original pathname is replaced.
+        fs::set_permissions(
+            format!("/proc/self/fd/{}", file.as_raw_fd()),
+            fs::Permissions::from_mode(mode),
+        )
+        .map_err(|error| error.to_string())
     }
 }
 

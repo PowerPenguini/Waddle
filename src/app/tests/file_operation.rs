@@ -1,6 +1,163 @@
 use super::*;
 
 #[test]
+#[cfg(target_os = "linux")]
+fn permission_changes_preserve_items_replaced_during_chmod() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const CHILD_ROOT: &str = "WADDLE_CHMOD_RACE_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(PathBuf::from(root));
+                app.navigation.settle_for_test();
+                press(&mut app, ":");
+                let input = std::env::var("WADDLE_CHMOD_INPUT").unwrap();
+                let _ = app.update(Message::CommandChanged(format!("chmod 755 {input}")));
+                let task = app.update(Message::CommandSubmitted);
+                navigation::finish_tasks(&mut app, task).await;
+            });
+        return;
+    }
+
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("chmod_race.c");
+    let library = fixture.path().join("chmod_race.so");
+    std_fs::write(
+        &source,
+        r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int chmod(const char *path, mode_t mode) {
+    int (*next_chmod)(const char *, mode_t) = dlsym(RTLD_NEXT, "chmod");
+    const char *target = getenv("WADDLE_CHMOD_TARGET");
+    const char *replacement = getenv("WADDLE_CHMOD_REPLACEMENT");
+    const char *retained = getenv("WADDLE_CHMOD_RETAINED");
+    const char *armed = getenv("WADDLE_CHMOD_ARMED");
+    char resolved[PATH_MAX];
+    if (target && replacement && retained && armed &&
+        realpath(path, resolved) && !strcmp(resolved, target) && !unlink(armed)) {
+        if (rename(target, retained) || rename(replacement, target)) return -1;
+    }
+    return next_chmod(path, mode);
+}
+"#,
+    )
+    .unwrap();
+    let compiled = std::process::Command::new("cc")
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&library)
+        .arg(&source)
+        .arg("-ldl")
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    for directory in [false, true] {
+        for symlink in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            let replacement = temp.path().join("replacement");
+            let retained = temp.path().join("retained");
+            let armed = temp.path().join("armed");
+            for (path, contents) in [(&target, "original"), (&replacement, "replacement")] {
+                if directory {
+                    std_fs::create_dir(path).unwrap();
+                } else {
+                    std_fs::write(path, contents).unwrap();
+                }
+                std_fs::set_permissions(path, std_fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            if symlink {
+                std::os::unix::fs::symlink(&target, temp.path().join("link")).unwrap();
+            }
+            std_fs::write(&armed, "").unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "app::tests::file_operation::permission_changes_preserve_items_replaced_during_chmod", "--nocapture"])
+                .env("LD_PRELOAD", &library)
+                .env(CHILD_ROOT, temp.path())
+                .env("WADDLE_CHMOD_INPUT", if symlink { "link" } else { "target" })
+                .env("WADDLE_CHMOD_TARGET", &target)
+                .env("WADDLE_CHMOD_REPLACEMENT", &replacement)
+                .env("WADDLE_CHMOD_RETAINED", &retained)
+                .env("WADDLE_CHMOD_ARMED", &armed)
+                .output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(!armed.exists(), "The replacement race must be reached");
+            assert_eq!(
+                std_fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                0o700,
+                "chmod changed permissions on the replacement item"
+            );
+            assert_eq!(
+                std_fs::metadata(&retained).unwrap().permissions().mode() & 0o7777,
+                0o755
+            );
+            if !directory {
+                assert_eq!(std_fs::read_to_string(&target).unwrap(), "replacement");
+                assert_eq!(std_fs::read_to_string(&retained).unwrap(), "original");
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn permission_changes_support_unreadable_items_and_fifos() {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+
+    for kind in ["file", "directory", "fifo"] {
+        for symlink in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            match kind {
+                "file" => std_fs::write(&target, "contents").unwrap(),
+                "directory" => std_fs::create_dir(&target).unwrap(),
+                "fifo" => {
+                    let path = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+                    // SAFETY: path is a valid NUL-terminated fixture pathname.
+                    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+                }
+                _ => unreachable!(),
+            }
+            let mode = if kind == "fifo" { 0o600 } else { 0 };
+            std_fs::set_permissions(&target, std_fs::Permissions::from_mode(mode)).unwrap();
+            if symlink {
+                std::os::unix::fs::symlink(&target, temp.path().join("link")).unwrap();
+            }
+            // A normal read-open would block forever on the FIFO. Bound the child.
+            let output = std::process::Command::new("timeout")
+                .arg("10")
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", "app::tests::file_operation::permission_changes_preserve_items_replaced_during_chmod", "--nocapture"])
+                .env("WADDLE_CHMOD_RACE_ROOT", temp.path())
+                .env("WADDLE_CHMOD_INPUT", if symlink { "link" } else { "target" })
+                .output().unwrap();
+            assert!(output.status.success(), "{kind}: {output:?}");
+            assert_eq!(
+                std_fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                0o755,
+                "Could not change permissions on {kind}"
+            );
+            if kind == "file" {
+                assert_eq!(std_fs::read_to_string(&target).unwrap(), "contents");
+            }
+        }
+    }
+}
+
+#[test]
 fn queued_permission_changes_verify_selected_symlink_targets() {
     use std::os::unix::fs::PermissionsExt;
 

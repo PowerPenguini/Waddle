@@ -1335,3 +1335,20 @@ outside this work.
   subshells, multiple selections, spaces, and non-UTF-8 filenames.
   All-target tests passed with 704 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 90: replacement during chmod changes the wrong item (2026-09-16)
+
+- Reproduction: use an isolated child and a filesystem-call shim to replace the
+  target immediately before chmod, after the queued command's identity check.
+- Red: `permission_changes_preserve_items_replaced_during_chmod` changed the
+  replacement to 755 instead of leaving its original 700 permissions intact.
+- Cause: checking the pathname and later passing it to chmod leaves a race in
+  which the pathname can resolve to a different inode.
+- Fix: open the target with O_PATH, verify the opened inode, and apply permissions
+  through its owned procfs descriptor path. The handle follows selected symlink
+  targets and does not require read access or open device/FIFO contents.
+- Green: replacement files, folders, and symlink targets retain their permissions
+  while the original opened item receives the requested change. Existing queued
+  replacement guards pass, as do mode-000 files/folders and FIFOs without peers.
+  All-target tests passed with 706 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
