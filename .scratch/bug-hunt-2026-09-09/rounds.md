@@ -1285,3 +1285,21 @@ outside this work.
   their text, and large UTF-8 or stderr-only output stays within 128 KiB.
   All-target tests passed with 698 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 87: shell redirection captures Waddle's directory report (2026-09-16)
+
+- Reproduction: redirect shell stdout with `exec >log.txt`, change directory,
+  print a log message and an error, then exit unsuccessfully.
+- Red: `shell_stdout_redirection_preserves_logs_and_directory_changes` found
+  Waddle's NUL-delimited directory report appended to the user's log.
+- Cause: the Bash wrapper sent its directory report through user stdout, so
+  persistent redirection captured it and prevented navigation from receiving it.
+- Fix: use a separate inherited Unix-stream descriptor for the directory report.
+  Its reader has the existing bounded-output and completion behavior. The parent
+  closes its sender after spawning, and ordinary script descriptors stay free.
+- Green: redirected logs contain only user output, standard error and exit codes
+  remain intact, and colon commands still follow directory changes. Further
+  checks cover script descriptors 3 and 4, large output before and during EXIT
+  traps, and directory names containing a newline and non-UTF-8 bytes.
+  All-target tests passed with 700 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

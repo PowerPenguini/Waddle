@@ -107,6 +107,92 @@ fn submitting_an_unchanged_location_preserves_non_utf8_path_bytes() {
 }
 
 #[test]
+fn shell_stdout_redirection_preserves_logs_and_directory_changes() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target");
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    "exec 3>extra.txt; exec 4>&3; printf extra >&4; exec >log.txt; cd target; printf logged; printf 'reported error' >&2; false"
+                        .into(),
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    std_fs::read(temp.path().join("log.txt")).unwrap(),
+                    b"logged",
+                    "Waddle wrote its internal directory report into the user's log"
+                );
+                assert_eq!(std_fs::read(temp.path().join("extra.txt")).unwrap(), b"extra");
+                let output = app.command.output().expect("standard error output");
+                assert_eq!(output.detail, "reported error");
+                assert!(output.summary.ends_with("exit 1"));
+                assert_eq!(
+                    app.navigation.current(),
+                    if prefix == ":" {
+                        target.as_path()
+                    } else {
+                        temp.path()
+                    }
+                );
+            }
+        });
+}
+
+#[test]
+fn noisy_exit_traps_do_not_hide_shell_directory_changes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for prefix in [":", "!"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join(std::ffi::OsString::from_vec(
+                    b"target-\xff\nfolder".to_vec(),
+                ));
+                std_fs::create_dir(&target).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.select_only(Some(0), 1);
+                press(&mut app, prefix);
+                let _ = app.update(Message::CommandChanged(
+                    "trap \"printf '%0140000d' 0\" EXIT; printf '%0140000d' 0; cd $selected; false"
+                        .into(),
+                ));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+                let output = app.command.output().expect("truncated command output");
+                assert!(output.summary.ends_with("exit 1"));
+                assert!(output.detail.contains("output truncated"));
+                assert!(!output.detail.contains("WADDLE_PWD"));
+                assert_eq!(
+                    app.navigation.current(),
+                    if prefix == ":" {
+                        target.as_path()
+                    } else {
+                        temp.path()
+                    }
+                );
+            }
+        });
+}
+
+#[test]
 fn noisy_shell_commands_keep_standard_error_visible() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

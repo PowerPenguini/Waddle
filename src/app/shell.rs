@@ -3,8 +3,8 @@ use std::{
     fmt,
     io::{self, Read},
     os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStringExt, process::CommandExt},
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::{ffi::OsStringExt, net::UnixStream, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
@@ -156,16 +156,18 @@ pub(super) fn execute(
             "$selected requires at least one selected entry",
         ));
     }
+    let (directory_receiver, directory_sender) = directory_channel()?;
+    let directory_fd = directory_sender.as_raw_fd();
     let mut process = Command::new("bash");
     process
         .arg("-c")
-        .arg(
+        .arg(format!(
             r#"command_text=$WADDLE_COMMAND_TEXT
 unset WADDLE_COMMAND_TEXT
 eval "$command_text"
 # Expand the numeric exit code before printing, without assigning user variables.
-builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$?""#,
-        )
+builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD" >&{directory_fd}; builtin exit '"$?""#,
+        ))
         .arg("waddle")
         .env("WADDLE_COMMAND_TEXT", expanded_command)
         .current_dir(current)
@@ -173,6 +175,16 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // SAFETY: the sender stays open until spawn completes. The child hook only
+    // changes its descriptor flags using an async-signal-safe system call.
+    unsafe {
+        process.pre_exec(move || {
+            if libc::fcntl(directory_fd, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     if uses_selected {
         let current = std::path::absolute(current)?;
         process.args(
@@ -182,6 +194,7 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
         );
     }
     let mut child = process.spawn()?;
+    drop(directory_sender);
 
     let screen_detected = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -195,15 +208,23 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
         Arc::clone(&screen_detected),
         Arc::clone(&finished),
     );
+    let directory_reader = spawn_output_reader(
+        directory_receiver,
+        // A directory name is metadata, not terminal screen output.
+        Arc::new(AtomicBool::new(false)),
+        Arc::clone(&finished),
+    );
     let status = wait_for_command(&mut child, &screen_detected);
     finished.store(true, Ordering::Release);
-    let mut stdout = join_output_reader(stdout_reader)?;
+    let stdout = join_output_reader(stdout_reader)?;
     let stderr = join_output_reader(stderr_reader)?;
+    let mut directory_report = join_output_reader(directory_reader)?;
     let status = status?;
     if screen_detected.load(Ordering::Acquire) {
         return Err(ShellError::RequiresTerminal);
     }
-    let final_directory = take_final_directory(&mut stdout).filter(|_| mode == CommandMode::Waddle);
+    let final_directory =
+        take_final_directory(&mut directory_report).filter(|_| mode == CommandMode::Waddle);
     let status_text = status.code().map_or_else(
         || "terminated by signal".to_owned(),
         |code| format!("exit {code}"),
@@ -235,6 +256,18 @@ builtin eval 'builtin printf "\x00WADDLE_PWD\x00%s\x00" "$PWD"; builtin exit '"$
         final_directory,
         successful: status.success(),
     })
+}
+
+fn directory_channel() -> io::Result<(UnixStream, OwnedFd)> {
+    let (receiver, sender) = UnixStream::pair()?;
+    // Keep the report separate from standard output and scripts' usual low FDs.
+    // SAFETY: sender owns a live descriptor. fcntl creates a new owned descriptor.
+    let descriptor = unsafe { libc::fcntl(sender.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
+    if descriptor == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: descriptor was just created above and has no other owner.
+    Ok((receiver, unsafe { OwnedFd::from_raw_fd(descriptor) }))
 }
 
 fn selected_argument(current: &Path, selected: &Path) -> PathBuf {
