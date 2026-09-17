@@ -249,11 +249,17 @@ impl App {
             } => self.finish_tree_volume_mount(navigation_revision, &id, result),
             Message::TreeVolumeUnmount(id) => self.unmount_tree_volume(id),
             Message::TreeVolumeUnmounted {
+                navigation_revision,
+                command_revision,
                 id,
                 label,
                 path,
                 result,
-            } => self.finish_tree_volume_unmount(&id, &label, &path, result),
+            } => {
+                let feedback_current = navigation_revision == self.navigation.revision()
+                    && command_revision == self.command.output_revision();
+                self.finish_tree_volume_unmount(&id, &label, &path, result, feedback_current)
+            }
             Message::Scrolled {
                 target,
                 offset,

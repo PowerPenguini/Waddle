@@ -1465,3 +1465,19 @@ outside this work.
   tests ignored, including the separate search work in progress. Strict Clippy,
   formatting, and whitespace checks passed. That search work is excluded from
   this round's commit.
+
+## Round 98: delayed unmount feedback overwrites newer actions (2026-09-17)
+
+- Reproduction: request a Sidebar unmount, complete newer navigation or a
+  command, then deliver the desktop's old unmount result.
+- Red: `delayed_unmount_feedback_preserves_newer_navigation_and_commands` showed
+  a delayed device-busy error replacing the newer folder's status.
+- Fix: capture Navigation and Command session revisions with the unmount request
+  and display completion feedback only while both revisions remain current.
+  Volume refresh and navigation out of an unavailable folder still run.
+- Green: obsolete success and failure feedback preserve newer navigation and
+  command status; current results remain visible. Success still refreshes the
+  Sidebar volume list, and failures clear the busy state so unmount can be retried.
+  All-target tests passed with 736 tests and 24 opt-in tests ignored in the shared
+  checkout. Strict Clippy, formatting, and whitespace checks passed. Separate
+  search changes remain outside this commit.

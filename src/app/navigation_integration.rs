@@ -672,12 +672,16 @@ impl App {
         let message_id = id.clone();
         let message_label = label.clone();
         let message_path = path.clone();
+        let navigation_revision = self.navigation.revision();
+        let command_revision = self.command.output_revision();
         Task::perform(
             self.operations
                 .run_foreground(OperationKind::Background, move |_| {
                     super::places::unmount_volume(&id)
                 }),
             move |completion| Message::TreeVolumeUnmounted {
+                navigation_revision,
+                command_revision,
                 id: message_id,
                 label: message_label,
                 path: message_path,
@@ -695,6 +699,7 @@ impl App {
         label: &str,
         path: &Path,
         result: Result<(), String>,
+        feedback_current: bool,
     ) -> Task<Message> {
         self.sidebar_tree.finish_volume_unmount(id);
         match result {
@@ -706,8 +711,10 @@ impl App {
                     .target_directory()
                     .is_some_and(|target| target.starts_with(path))
                 {
-                    self.presentation
-                        .set_status_notice(format!("Unmounted {label}"));
+                    if feedback_current {
+                        self.presentation
+                            .set_status_notice(format!("Unmounted {label}"));
+                    }
                     let fallback = std::env::var_os("HOME")
                         .map(PathBuf::from)
                         .filter(|path| path.is_dir())
@@ -718,13 +725,17 @@ impl App {
                         select: None,
                     })
                 } else {
-                    self.presentation.set_status(format!("Unmounted {label}"));
+                    if feedback_current {
+                        self.presentation.set_status(format!("Unmounted {label}"));
+                    }
                     Task::none()
                 }
             }
             Err(error) => {
-                self.presentation
-                    .set_status(format!("Could not unmount {label}: {error}"));
+                if feedback_current {
+                    self.presentation
+                        .set_status(format!("Could not unmount {label}: {error}"));
+                }
                 Task::none()
             }
         }

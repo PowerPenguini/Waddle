@@ -2667,6 +2667,93 @@ fn mounted_tree_volume_waits_for_its_path_then_opens_the_root() {
 }
 
 #[test]
+fn delayed_unmount_feedback_preserves_newer_navigation_and_commands() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for scenario in ["navigation", "command", "current"] {
+                for succeeds in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let original = temp.path().join("original");
+                    let volume_path = temp.path().join("volume");
+                    std_fs::create_dir(&original).unwrap();
+                    std_fs::create_dir(&volume_path).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(original.clone());
+                    app.navigation.settle_for_test();
+                    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                        id: "uuid:feedback-test".into(),
+                        path: Some(volume_path.clone()),
+                        label: "Feedback volume".into(),
+                        can_unmount: true,
+                    }]);
+                    // Supply the desktop result below without touching a real volume.
+                    drop(app.update(Message::TreeVolumeUnmount("uuid:feedback-test".into())));
+                    let navigation_revision = app.navigation.revision();
+                    let command_revision = app.command.output_revision();
+                    match scenario {
+                        "navigation" => {
+                            let task = app.update(Message::Parent);
+                            finish_tasks(&mut app, task).await;
+                        }
+                        "command" => {
+                            press(&mut app, ":");
+                            drop(app.update(Message::CommandChanged("set view=list".into())));
+                            let task = app.update(Message::CommandSubmitted);
+                            finish_tasks(&mut app, task).await;
+                        }
+                        _ => {}
+                    }
+                    let status = app.presentation.status().to_owned();
+                    let task = app.update(Message::TreeVolumeUnmounted {
+                        navigation_revision,
+                        command_revision,
+                        id: "uuid:feedback-test".into(),
+                        label: "Feedback volume".into(),
+                        path: volume_path,
+                        result: if succeeds {
+                            Ok(())
+                        } else {
+                            Err("device is busy".into())
+                        },
+                    });
+                    finish_tasks(&mut app, task).await;
+                    let expected = if scenario != "current" {
+                        status.as_str()
+                    } else if succeeds {
+                        "Unmounted Feedback volume"
+                    } else {
+                        "Could not unmount Feedback volume: device is busy"
+                    };
+                    assert_eq!(
+                        app.presentation.status(),
+                        expected,
+                        "scenario={scenario}, succeeds={succeeds}"
+                    );
+                    if succeeds {
+                        assert!(
+                            !app.sidebar_tree
+                                .rows(app.navigation.current())
+                                .iter()
+                                .any(|row| row.label == "Feedback volume"),
+                            "A successful unmount must still refresh the Sidebar volume list"
+                        );
+                    } else {
+                        drop(app.update(Message::TreeVolumeUnmount("uuid:feedback-test".into())));
+                        assert_eq!(
+                            app.presentation.status(),
+                            "Unmounting Feedback volume…",
+                            "A failed unmount must release the busy state so it can be retried"
+                        );
+                    }
+                }
+            }
+        });
+}
+
+#[test]
 fn unmount_completion_preserves_navigation_away_from_the_volume() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -2701,9 +2788,13 @@ fn unmount_completion_preserves_navigation_away_from_the_volume() {
                 drop(app.update(Message::TreeVolumeUnmount(
                     "uuid:unmount-navigation-test".into(),
                 )));
+                let navigation_revision = app.navigation.revision();
+                let command_revision = app.command.output_revision();
                 drop(app.update(Message::LocationChanged(destination.display().to_string())));
                 let navigation = app.update(Message::LocationSubmitted);
                 let completion = app.update(Message::TreeVolumeUnmounted {
+                    navigation_revision,
+                    command_revision,
                     id: "uuid:unmount-navigation-test".into(),
                     label: "Leaving volume".into(),
                     path: volume_path.clone(),
@@ -2755,6 +2846,8 @@ fn unmount_completion_preserves_pending_and_open_collection_views() {
                         can_unmount: true,
                     }]);
                     drop(app.update(Message::TreeVolumeUnmount("uuid:collection-unmount".into())));
+                    let navigation_revision = app.navigation.revision();
+                    let command_revision = app.command.output_revision();
                     let request = if recent {
                         app.navigation.recent()
                     } else {
@@ -2778,6 +2871,8 @@ fn unmount_completion_preserves_pending_and_open_collection_views() {
                         finish_tasks(&mut app, task).await;
                     }
                     let task = app.update(Message::TreeVolumeUnmounted {
+                        navigation_revision,
+                        command_revision,
                         id: "uuid:collection-unmount".into(),
                         label: "Collection volume".into(),
                         path: temp.path().to_path_buf(),
@@ -2814,7 +2909,7 @@ fn successful_unmount_notice_is_neutral_when_leaving_the_volume() {
         can_unmount: true,
     }]);
 
-    let task = app.finish_tree_volume_unmount("uuid:tmp", "tmp", &mounted_path, Ok(()));
+    let task = app.finish_tree_volume_unmount("uuid:tmp", "tmp", &mounted_path, Ok(()), true);
 
     assert_eq!(app.presentation.notice(), Some("Unmounted tmp"));
     assert!(!app.presentation.notice_is_danger());

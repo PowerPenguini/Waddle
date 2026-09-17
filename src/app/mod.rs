@@ -218,6 +218,8 @@ enum Message {
     },
     TreeVolumeUnmount(String),
     TreeVolumeUnmounted {
+        navigation_revision: u64,
+        command_revision: u64,
         id: String,
         label: String,
         path: PathBuf,
