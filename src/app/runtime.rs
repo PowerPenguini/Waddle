@@ -480,8 +480,13 @@ impl App {
                 search_session,
                 result,
             } => self.finish_command(request, navigation_revision, search_session, result),
-            Message::VolumeFinished { request, result } => {
-                let current_request = request == self.command.output_revision();
+            Message::VolumeFinished {
+                request,
+                navigation_revision,
+                result,
+            } => {
+                let current_request = request == self.command.output_revision()
+                    && navigation_revision == self.navigation.revision();
                 match result {
                     Ok(status) => {
                         if current_request {

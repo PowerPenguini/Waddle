@@ -273,6 +273,7 @@ enum Message {
     },
     VolumeFinished {
         request: u64,
+        navigation_revision: u64,
         result: Result<String, String>,
     },
     RecentLoaded {

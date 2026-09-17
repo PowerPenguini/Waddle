@@ -1556,3 +1556,23 @@ outside this work.
   paths are unique per app instance so unrelated tests do not share history.
   Locked all-target tests passed with 740 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 103: delayed volume commands overwrite newer navigation feedback (2026-09-17)
+
+- Reproduction: run a real failing :volume command, retain its completion,
+  start navigation through app messages, then deliver the queued result.
+- Red: the regression replaced the pending folder's Opening status with
+  "unknown volume action: invalid-action". It was initially named
+  queued_volume_command_errors_preserve_newer_folder_navigation.
+- Cause: volume commands guarded feedback against newer commands but did not
+  retain the Navigation session revision, unlike sidebar unmounts.
+- Fix: capture the navigation revision on submission and require both revisions
+  to match before displaying feedback. Successful results still refresh volumes.
+- Green: queued_volume_command_feedback_preserves_newer_folder_navigation
+  covers errors and supplied desktop-success results during pending and settled
+  navigation, leaving and returning to the original folder, ordinary refresh,
+  and no intervening navigation. Current feedback remains visible, obsolete
+  feedback preserves status, and success refreshes the Sidebar volume list.
+  The existing newer-command regression also passed. Locked all-target tests
+  passed with 741 tests and 24 opt-in tests ignored in the shared checkout.
+  Strict Clippy, formatting, and whitespace checks passed.

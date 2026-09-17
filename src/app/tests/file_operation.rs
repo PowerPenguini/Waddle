@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn queued_volume_command_feedback_preserves_newer_folder_navigation() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for scenario in ["pending", "settled", "returned", "refresh", "current"] {
+                for succeeds in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let original = temp.path().join("original");
+                    std_fs::create_dir(&original).unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(original.clone());
+                    app.navigation.settle_for_test();
+                    press(&mut app, ":");
+                    drop(app.update(Message::CommandChanged(
+                        "volume invalid-action unused".into(),
+                    )));
+                    let task = app.update(Message::CommandSubmitted);
+                    let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                    let mut queued = Vec::new();
+                    while let Some(action) = stream.next().await {
+                        if let iced_runtime::Action::Output(mut message) = action {
+                            if succeeds {
+                                // Supply desktop success without changing a real volume.
+                                let Message::VolumeFinished { result, .. } = &mut message else {
+                                    panic!("expected a volume command completion");
+                                };
+                                *result = Ok("Volume action completed".into());
+                            }
+                            queued.push(message);
+                        }
+                    }
+                    assert!(!queued.is_empty());
+                    let navigation = match scenario {
+                        "current" => None,
+                        "refresh" => Some(app.update(Message::Refresh)),
+                        _ => Some(app.update(Message::Parent)),
+                    };
+                    let mut pending = None;
+                    if let Some(task) = navigation {
+                        if scenario == "pending" {
+                            pending = Some(task);
+                        } else {
+                            navigation::finish_tasks(&mut app, task).await;
+                            if scenario == "returned" {
+                                let task = app.update(Message::Back);
+                                navigation::finish_tasks(&mut app, task).await;
+                            }
+                        }
+                    }
+                    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                        id: "uuid:volume-command-feedback-test".into(),
+                        path: None,
+                        label: "Obsolete test volume".into(),
+                        can_unmount: false,
+                    }]);
+                    let status = app.presentation.status().to_owned();
+                    for message in queued {
+                        let task = app.update(message);
+                        navigation::finish_tasks(&mut app, task).await;
+                    }
+                    let current = matches!(scenario, "current" | "refresh");
+                    assert_eq!(
+                        app.presentation.status(),
+                        if !current {
+                            status.as_str()
+                        } else if succeeds {
+                            "Volume action completed"
+                        } else {
+                            "unknown volume action: invalid-action"
+                        },
+                        "scenario={scenario}, succeeds={succeeds}"
+                    );
+                    if succeeds {
+                        assert!(
+                            !app.sidebar_tree
+                                .rows(app.navigation.current())
+                                .iter()
+                                .any(|row| row.label == "Obsolete test volume"),
+                            "Success must refresh volumes even when its feedback is obsolete"
+                        );
+                    }
+                    if let Some(task) = pending {
+                        navigation::finish_tasks(&mut app, task).await;
+                    }
+                    assert_eq!(
+                        app.navigation.current(),
+                        if matches!(scenario, "pending" | "settled") {
+                            temp.path()
+                        } else {
+                            original.as_path()
+                        }
+                    );
+                }
+            }
+        });
+}
+
+#[test]
 fn queued_volume_errors_preserve_newer_command_feedback() {
     use iced::futures::StreamExt;
 
