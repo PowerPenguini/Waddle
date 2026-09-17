@@ -65,6 +65,7 @@ enum State {
         entry: FileEntry,
         identity: Option<(u64, u64)>,
         value: String,
+        edited: bool,
         error: String,
     },
     NewFolder {
@@ -306,7 +307,8 @@ impl FileOperationSession {
         !self.busy
             && matches!(
                 &self.state,
-                State::Rename { entry, value, .. } if *value == fs::display_name(&entry.name)
+                State::Rename { entry, value, edited, .. }
+                    if !*edited || entry.name.to_str() == Some(value.as_str())
             )
     }
 
@@ -340,6 +342,7 @@ impl FileOperationSession {
         self.busy = false;
         self.state = State::Rename {
             value: fs::display_name(&entry.name),
+            edited: false,
             identity: entry_identity(&entry.path).ok(),
             entry,
             error: String::new(),
@@ -401,6 +404,9 @@ impl FileOperationSession {
         if self.busy {
             return;
         }
+        if let State::Rename { edited, .. } = &mut self.state {
+            *edited = true;
+        }
         match &mut self.state {
             State::Rename {
                 value: target,
@@ -434,6 +440,7 @@ impl FileOperationSession {
                 identity,
                 value,
                 error,
+                ..
             } => (
                 NameOperation::Rename {
                     entry: entry.clone(),

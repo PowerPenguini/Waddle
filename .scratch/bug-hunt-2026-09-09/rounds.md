@@ -1352,3 +1352,19 @@ outside this work.
   replacement guards pass, as do mode-000 files/folders and FIFOs without peers.
   All-target tests passed with 706 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 91: explicitly retyped non-UTF-8 names are ignored (2026-09-17)
+
+- Reproduction: open Rename for a non-UTF-8 filename, edit its text, then enter
+  the valid UTF-8 spelling shown in the editor and submit.
+- Red: `explicitly_retyping_a_lossy_filename_renames_its_original_bytes` left
+  the original byte sequence untouched instead of applying the requested name.
+- Cause: the unchanged-name check compared only lossy display strings, making
+  distinct non-UTF-8 and UTF-8 filenames appear identical.
+- Fix: track whether Rename text was edited. Untouched text preserves the
+  original filename; edited text must match its actual UTF-8 name to be a no-op.
+- Green: explicit renames work for files and folders and survive Undo/Redo.
+  Existing destination names produce a visible error and preserve both items.
+  Untouched names and retyped identical valid names remain no-ops without history.
+  All-target tests passed with 708 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

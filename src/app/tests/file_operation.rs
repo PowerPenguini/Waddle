@@ -1872,6 +1872,91 @@ fn folder_symlinks_use_directory_applications_and_default_associations() {
 }
 
 #[test]
+fn explicitly_retyping_a_lossy_filename_renames_its_original_bytes() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for directory in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let original_name = OsString::from_vec(b"name-\xff".to_vec());
+                let entered = original_name.to_string_lossy().into_owned();
+                let original = temp.path().join(&original_name);
+                let renamed = temp.path().join(&entered);
+                if directory {
+                    std_fs::create_dir(&original).unwrap();
+                } else {
+                    std_fs::write(&original, "original contents").unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.select_only(Some(0), 1);
+                press(&mut app, "r");
+                let _ = app.update(Message::RenameChanged("temporary input".into()));
+                let _ = app.update(Message::RenameChanged(entered));
+                let task = app.update(Message::RenameSubmitted);
+                navigation::finish_tasks(&mut app, task).await;
+                assert!(
+                    !original.exists(),
+                    "Explicitly entered UTF-8 name was ignored"
+                );
+                assert!(renamed.exists());
+                app.journal.undo().unwrap();
+                assert!(original.exists());
+                assert!(!renamed.exists());
+                app.journal.redo().unwrap();
+                assert!(!original.exists());
+                assert!(renamed.exists());
+                if !directory {
+                    assert_eq!(
+                        std_fs::read_to_string(&renamed).unwrap(),
+                        "original contents"
+                    );
+                }
+            }
+        });
+}
+
+#[test]
+fn explicitly_retyping_a_lossy_filename_reports_existing_name_collisions() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original_name = OsString::from_vec(b"name-\xff".to_vec());
+            let entered = original_name.to_string_lossy().into_owned();
+            let original = temp.path().join(&original_name);
+            let existing = temp.path().join(&entered);
+            std_fs::write(&original, "original contents").unwrap();
+            std_fs::write(&existing, "unrelated contents").unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation.install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            let selected = app.navigation.entries().iter().position(|entry| entry.path == original).unwrap();
+            app.grid.select_only(Some(selected), 2);
+            press(&mut app, "r");
+            let _ = app.update(Message::RenameChanged(entered));
+            let task = app.update(Message::RenameSubmitted);
+            navigation::finish_tasks(&mut app, task).await;
+            assert!(matches!(app.file_operations.view(), FileOperationView::Rename { error, .. } if !error.is_empty()));
+            assert_eq!(std_fs::read_to_string(&original).unwrap(), "original contents");
+            assert_eq!(std_fs::read_to_string(&existing).unwrap(), "unrelated contents");
+            assert_eq!(app.journal.undo().unwrap_err().to_string(), "Nothing to undo");
+        });
+}
+
+#[test]
 fn submitting_an_unchanged_rename_preserves_the_original_filename() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
@@ -1880,9 +1965,10 @@ fn submitting_an_unchanged_rename_preserves_the_original_filename() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        for name in [
-            OsString::from_vec(b"name-\xff.txt".to_vec()),
-            "plain.txt".into(),
+        for (name, retype) in [
+            (OsString::from_vec(b"name-\xff.txt".to_vec()), false),
+            ("plain.txt".into(), false),
+            ("plain.txt".into(), true),
         ] {
             let temp = tempfile::tempdir().unwrap();
             std_fs::write(temp.path().join(&name), "original contents").unwrap();
@@ -1892,6 +1978,10 @@ fn submitting_an_unchanged_rename_preserves_the_original_filename() {
                 .install_folder_entries(fs::read_directory(temp.path()).unwrap());
             app.grid.select_only(Some(0), 1);
             press(&mut app, "r");
+            if retype {
+                let _ = app.update(Message::RenameChanged("temporary input".into()));
+                let _ = app.update(Message::RenameChanged(name.to_str().unwrap().into()));
+            }
             let task = app.update(Message::RenameSubmitted);
             super::navigation::finish_tasks(&mut app, task).await;
 
