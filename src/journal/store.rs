@@ -35,8 +35,11 @@ fn published_paths(
             Direction::Undo => before.clone(),
             Direction::Redo => after.clone(),
         }],
-        Action::NewFile { path, .. } | Action::NewFolder { path, .. }
-            if complete && direction == Direction::Redo =>
+        Action::NewFile { path, prepared, .. } | Action::NewFolder { path, prepared, .. }
+            if direction == Direction::Redo
+                && (complete
+                    || (prepared.is_some()
+                        && super::effects::verify_prepared_creation(action, path).is_ok())) =>
         {
             vec![path.clone()]
         }

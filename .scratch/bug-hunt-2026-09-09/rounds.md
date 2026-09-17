@@ -1621,3 +1621,28 @@ outside this work.
   All four new regressions passed. Locked all-target tests passed with 748 tests
   and 24 opt-in tests ignored in the shared checkout. Strict Clippy, formatting,
   and whitespace checks passed.
+
+## Round 106: creation Redo strands published items after journal save failures (2026-09-17)
+
+- Reproduction: Undo a creation, inject fsync failure after Redo publishes its
+  replacement item, reopen history, and retry Redo.
+- Red: redo_creation_recovers_when_saving_after_publication_fails recreated the
+  item, but every retry failed because the destination already existed.
+- Cause: creation Redo published directly at the destination without recording
+  the new identity before publication or retaining a recoverable preparation.
+- Fix: exclusively create a temporary sibling, restore its metadata, and save
+  the preparation path and identity before an atomic non-overwriting rename.
+  Failed uncommitted checkpoints clean up only owned empty preparations; saved
+  preparations survive failures. Recovery verifies identity and metadata at the
+  preparation or final path. Completed recovery updates dependent Rename history.
+  Optional preparation paths preserve raw Unix bytes and retain older records.
+- Green: recovery covers file and folder creation, uncommitted checkpoint errors,
+  committed directory-sync errors, process interruption before publication, and
+  final-save failure after publication. Unrelated destinations and replacement
+  preparations survive failed recovery; successful retry leaves no preparation.
+  Reopened Undo/Redo and dependent Rename remain usable. Existing ACL restoration
+  and cleanup regressions still pass; the cleanup fault now targets the actual
+  preparation path and verifies preservation of foreign data there.
+  Fifteen creation-related checks passed. Locked all-target tests passed with
+  750 tests and 24 opt-in tests ignored in the shared checkout. Strict Clippy,
+  formatting, and whitespace checks passed.

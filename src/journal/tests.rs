@@ -2,6 +2,189 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn redo_creation_recovers_prepared_items_and_preserves_unrelated_entries() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        for fault in ["uncommitted", "committed", "interrupted"] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("parent");
+            fs::create_dir(&parent).unwrap();
+            let item = if directory {
+                crate::fs::create_folder(&parent, "created").unwrap()
+            } else {
+                crate::fs::create_file(&parent, "created").unwrap()
+            };
+            let state = temp.path().join("state");
+            let path = state.join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal
+                .record(if directory {
+                    Action::new_folder(item.clone()).unwrap()
+                } else {
+                    Action::new_file(item.clone()).unwrap()
+                })
+                .unwrap();
+            journal.undo().unwrap();
+            drop(journal);
+            let armed = temp.path().join("armed");
+            fs::write(&armed, "").unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "journal::tests::audit_history_fault_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                .env("WADDLE_AUDIT_CHILD_ROOT", &state)
+                .env("WADDLE_AUDIT_ARMED", &armed);
+            if fault == "interrupted" {
+                child.env("WADDLE_AUDIT_COMMIT", &path);
+            } else {
+                child.env("WADDLE_AUDIT_SYNC_TARGET", &state);
+                if fault == "committed" {
+                    child.env("WADDLE_AUDIT_SYNC_EXACT", "1");
+                }
+            }
+            let output = child.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if fault == "interrupted" { 86 } else { 0 }),
+                "{output:?}"
+            );
+            assert!(!armed.exists());
+            assert!(
+                !item.exists(),
+                "Checkpoint failure must precede publication"
+            );
+            if fault != "interrupted" {
+                assert!(
+                    fs::read_to_string(state.join("result.txt"))
+                        .unwrap()
+                        .contains("could not flush operation journal")
+                );
+            }
+            let remaining = fs::read_dir(&parent)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            if fault == "uncommitted" {
+                assert!(
+                    remaining.is_empty(),
+                    "An unsaved preparation must be cleaned up"
+                );
+            } else {
+                assert_eq!(remaining.len(), 1, "Saved preparation must survive failure");
+                let prepared = &remaining[0];
+                // Recovery must not overwrite a new destination or accept a
+                // replacement at the saved preparation path.
+                fs::write(&item, b"unrelated destination").unwrap();
+                let mut journal = Journal::open(path.clone()).unwrap();
+                assert!(journal.redo().is_err());
+                assert_eq!(fs::read(&item).unwrap(), b"unrelated destination");
+                fs::remove_file(&item).unwrap();
+                let retained = temp.path().join("retained");
+                fs::rename(prepared, &retained).unwrap();
+                crate::fs::journal_copy(&retained, prepared).unwrap();
+                let mut journal = Journal::open(path.clone()).unwrap();
+                let error = journal.redo().unwrap_err();
+                assert!(error.to_string().contains("different item"), "{error}");
+                assert!(prepared.exists());
+                crate::fs::delete_permanently(prepared).unwrap();
+                fs::rename(&retained, prepared).unwrap();
+            }
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal.redo().unwrap();
+            assert_eq!(item.is_dir(), directory);
+            assert_eq!(
+                fs::read_dir(&parent).unwrap().count(),
+                1,
+                "No leftover preparation after recovery"
+            );
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal.undo().unwrap();
+            assert!(!item.exists());
+            let mut journal = Journal::open(path).unwrap();
+            journal.redo().unwrap();
+            assert!(item.exists());
+        }
+    }
+}
+
+#[test]
+fn redo_creation_recovers_when_saving_after_publication_fails() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = if directory {
+            crate::fs::create_folder(temp.path(), "created").unwrap()
+        } else {
+            crate::fs::create_file(temp.path(), "created").unwrap()
+        };
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        let renamed = temp.path().join("renamed");
+        crate::fs::rename_entry(&item, "renamed").unwrap();
+        journal
+            .record(Action::rename(item.clone(), renamed.clone()).unwrap())
+            .unwrap();
+        journal.undo().unwrap();
+        journal.undo().unwrap();
+        drop(journal);
+        let armed = temp.path().join("armed");
+        fs::write(&armed, "").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", &state)
+            .env("WADDLE_AUDIT_SYNC_TARGET", &state)
+            .env("WADDLE_AUDIT_SYNC_AFTER_PATH", &item)
+            .env("WADDLE_AUDIT_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(!armed.exists());
+        assert!(
+            fs::read_to_string(state.join("result.txt"))
+                .unwrap()
+                .contains("could not flush operation journal")
+        );
+        assert!(item.exists());
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .redo()
+            .expect("Retry must recognize the published creation");
+        assert_eq!(item.is_dir(), directory);
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .redo()
+            .expect("Recovered creation must update dependent Rename identity");
+        assert!(renamed.exists());
+        journal.undo().unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.undo().unwrap();
+        assert!(!item.exists());
+        let mut journal = Journal::open(path).unwrap();
+        journal.redo().unwrap();
+        assert!(item.exists());
+    }
+}
+
+#[test]
 fn undo_creation_requires_saved_intent_to_accept_an_absent_item() {
     for directory in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -429,11 +612,6 @@ fn failed_creation_cleanup_preserves_replacements_and_added_contents() {
                 fs::write(&replacement, "").unwrap();
             }
             let retained = temp.path().join("retained");
-            let addition = if directory {
-                item.join("external.txt")
-            } else {
-                item.clone()
-            };
             let armed = temp.path().join("armed");
             fs::write(&armed, "").unwrap();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
@@ -455,7 +633,10 @@ fn failed_creation_cleanup_preserves_replacements_and_added_contents() {
                     .env("WADDLE_AUDIT_XATTR_REPLACEMENT", &replacement)
                     .env("WADDLE_AUDIT_XATTR_RETAINED", &retained);
             } else {
-                child.env("WADDLE_AUDIT_XATTR_ADDITION", &addition);
+                child.env(
+                    "WADDLE_AUDIT_XATTR_ADDITION_SUFFIX",
+                    if directory { "/external.txt" } else { "" },
+                );
             }
             let output = child.output().unwrap();
             assert!(output.status.success(), "{output:?}");
@@ -468,12 +649,26 @@ fn failed_creation_cleanup_preserves_replacements_and_added_contents() {
                     .unwrap()
                     .contains("access control")
             );
-            assert!(item.exists(), "Failure cleanup removed someone else's item");
+            assert!(!item.exists(), "Failed preparation must not be published");
+            let remaining = fs::read_dir(&parent)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                remaining.len(),
+                1,
+                "Failure cleanup removed someone else's item"
+            );
             if replace {
                 assert!(retained.exists());
                 assert!(!replacement.exists());
             } else {
-                assert_eq!(fs::read(&addition).unwrap(), b"external change");
+                let addition = if directory {
+                    remaining[0].join("external.txt")
+                } else {
+                    remaining[0].clone()
+                };
+                assert_eq!(fs::read(addition).unwrap(), b"external change");
             }
         }
     }

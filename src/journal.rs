@@ -158,6 +158,12 @@ pub(crate) enum Action {
         identity: Option<DirectoryIdentity>,
         #[serde(default)]
         metadata: Option<MetadataFingerprint>,
+        #[serde(
+            default,
+            with = "crate::path_serde::optional",
+            skip_serializing_if = "Option::is_none"
+        )]
+        prepared: Option<PathBuf>,
     },
     NewFile {
         #[serde(with = "crate::path_serde")]
@@ -167,6 +173,12 @@ pub(crate) enum Action {
         identity: Option<(u64, u64)>,
         #[serde(default)]
         metadata: Option<MetadataFingerprint>,
+        #[serde(
+            default,
+            with = "crate::path_serde::optional",
+            skip_serializing_if = "Option::is_none"
+        )]
+        prepared: Option<PathBuf>,
     },
     Transfer {
         kind: TransferKind,
@@ -247,6 +259,7 @@ pub(crate) struct TrashItem {
 impl Action {
     pub(super) fn has_partial_effects(&self) -> bool {
         match self {
+            Self::NewFile { prepared, .. } | Self::NewFolder { prepared, .. } => prepared.is_some(),
             Self::Transfer { items, .. } => {
                 items
                     .iter()
@@ -280,6 +293,7 @@ impl Action {
             identity: Some(DirectoryIdentity::read(&path)?),
             metadata: Some(MetadataFingerprint::read(&path)?),
             path,
+            prepared: None,
         })
     }
 
@@ -289,6 +303,7 @@ impl Action {
             identity: Some(file_identity(&path)?),
             metadata: Some(MetadataFingerprint::read(&path)?),
             path,
+            prepared: None,
         })
     }
 

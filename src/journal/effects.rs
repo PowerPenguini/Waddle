@@ -22,6 +22,30 @@ struct PendingCreation {
 }
 
 impl PendingCreation {
+    fn prepare<T>(
+        destination: &Path,
+        mut create: impl FnMut(&Path) -> io::Result<T>,
+    ) -> Result<(Self, T), Error> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let parent = destination.parent().unwrap_or(Path::new("."));
+        for _ in 0..10_000 {
+            let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".waddle-create-{}-{nonce}", std::process::id()));
+            if path == destination {
+                continue;
+            }
+            match create(&path) {
+                Ok(created) => return Ok((Self::capture(&path)?, created)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(Error::io("could not prepare creation Redo", error)),
+            }
+        }
+        Err(Error::message(
+            "could not reserve a creation Redo staging name",
+        ))
+    }
+
     fn capture(path: &Path) -> Result<Self, Error> {
         Ok(Self {
             path: path.to_path_buf(),
@@ -51,6 +75,40 @@ impl Drop for PendingCreation {
     }
 }
 
+pub(super) fn verify_prepared_creation(action: &Action, path: &Path) -> Result<(), Error> {
+    let (fingerprint, metadata, matches) = match action {
+        Action::NewFolder {
+            fingerprint,
+            metadata,
+            identity,
+            ..
+        } => (
+            fingerprint,
+            metadata,
+            identity.as_ref() == Some(&DirectoryIdentity::read(path)?),
+        ),
+        Action::NewFile {
+            fingerprint,
+            metadata,
+            identity,
+            ..
+        } => (
+            fingerprint,
+            metadata,
+            *identity == Some(file_identity(path)?),
+        ),
+        _ => return Err(Error::message("not a prepared creation")),
+    };
+    if !matches {
+        return Err(Error::message(format!(
+            "Refused creation recovery: {} is a different item",
+            path.display()
+        )));
+    }
+    verify(path, fingerprint)?;
+    verify_creation_metadata(path, metadata)
+}
+
 pub(super) fn apply(
     action: &mut Action,
     direction: Direction,
@@ -74,6 +132,50 @@ pub(super) fn apply(
             changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
             select: None,
         });
+    }
+    if direction == Direction::Redo {
+        let creation = match &*action {
+            Action::NewFolder {
+                path,
+                prepared: Some(staging),
+                ..
+            }
+            | Action::NewFile {
+                path,
+                prepared: Some(staging),
+                ..
+            } => Some((path, staging)),
+            _ => None,
+        };
+        if let Some((path, staging)) = creation {
+            let current = match fs::symlink_metadata(path) {
+                Ok(_) => path,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => staging,
+                Err(error) => return Err(Error::io("could not inspect creation recovery", error)),
+            };
+            verify_prepared_creation(action, current)?;
+            if current == staging {
+                rename_noreplace(staging, path)?;
+            }
+            let effect = Effect {
+                warnings: Vec::new(),
+                status: if matches!(action, Action::NewFolder { .. }) {
+                    "Redid New Folder"
+                } else {
+                    "Redid New File"
+                }
+                .to_owned(),
+                changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
+                select: Some(path.clone()),
+            };
+            match action {
+                Action::NewFolder { prepared, .. } | Action::NewFile { prepared, .. } => {
+                    *prepared = None
+                }
+                _ => unreachable!(),
+            }
+            return Ok(effect);
+        }
     }
     match action {
         Action::Rename {
@@ -137,6 +239,7 @@ pub(super) fn apply(
             fingerprint,
             identity,
             metadata,
+            prepared,
         } => match direction {
             Direction::Undo => {
                 let mut entries = fs::read_dir(&*path).map_err(|error| {
@@ -166,6 +269,7 @@ pub(super) fn apply(
                     fingerprint: fingerprint.clone(),
                     identity: identity.clone(),
                     metadata: metadata.clone(),
+                    prepared: prepared.clone(),
                 })?;
                 fs::remove_dir(&*path)
                     .map_err(|error| Error::io("could not undo New Folder", error))?;
@@ -178,25 +282,44 @@ pub(super) fn apply(
             }
             Direction::Redo => {
                 ensure_absent(path)?;
-                fs::DirBuilder::new()
-                    .mode(
-                        metadata
-                            .as_ref()
-                            .map_or(0o777, MetadataFingerprint::creation_mode),
-                    )
-                    .create(&*path)
-                    .map_err(|error| Error::io("could not redo New Folder", error))?;
-                let mut pending = PendingCreation::capture(path)?;
+                let (mut pending, ()) = PendingCreation::prepare(path, |staging| {
+                    fs::DirBuilder::new()
+                        .mode(
+                            metadata
+                                .as_ref()
+                                .map_or(0o777, MetadataFingerprint::creation_mode),
+                        )
+                        .create(staging)
+                })?;
                 if let Some(saved) = metadata {
-                    saved.restore_access_control(path)?;
-                    fs::set_permissions(&*path, fs::Permissions::from_mode(saved.mode())).map_err(
-                        |error| Error::io("could not restore New Folder permissions", error),
-                    )?;
+                    saved.restore_access_control(&pending.path)?;
+                    fs::set_permissions(&pending.path, fs::Permissions::from_mode(saved.mode()))
+                        .map_err(|error| {
+                            Error::io("could not restore New Folder permissions", error)
+                        })?;
                 }
-                *fingerprint = Fingerprint::read(path)?;
-                *identity = Some(DirectoryIdentity::read(path)?);
-                *metadata = Some(MetadataFingerprint::read(path)?);
+                *fingerprint = Fingerprint::read(&pending.path)?;
+                *identity = Some(DirectoryIdentity::read(&pending.path)?);
+                *metadata = Some(MetadataFingerprint::read(&pending.path)?);
+                *prepared = Some(pending.path.clone());
+                let result = checkpoint(&Action::NewFolder {
+                    path: path.clone(),
+                    fingerprint: fingerprint.clone(),
+                    identity: identity.clone(),
+                    metadata: metadata.clone(),
+                    prepared: prepared.clone(),
+                });
+                if let Err(error) = result {
+                    if matches!(&error, Error::Committed { .. }) {
+                        pending.complete = true;
+                    } else {
+                        *prepared = None;
+                    }
+                    return Err(error);
+                }
                 pending.complete = true;
+                rename_noreplace(&pending.path, path)?;
+                *prepared = None;
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New Folder".to_owned(),
@@ -210,6 +333,7 @@ pub(super) fn apply(
             fingerprint,
             identity,
             metadata,
+            prepared,
         } => match direction {
             Direction::Undo => {
                 verify(path, fingerprint)?;
@@ -228,6 +352,7 @@ pub(super) fn apply(
                     fingerprint: fingerprint.clone(),
                     identity: *identity,
                     metadata: metadata.clone(),
+                    prepared: prepared.clone(),
                 })?;
                 fs::remove_file(&*path)
                     .map_err(|error| Error::io("could not undo New File", error))?;
@@ -241,19 +366,19 @@ pub(super) fn apply(
             Direction::Redo => {
                 ensure_absent(path)?;
                 let modified = fingerprint.modified()?;
-                let file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(
-                        metadata
-                            .as_ref()
-                            .map_or(0o666, MetadataFingerprint::creation_mode),
-                    )
-                    .open(&*path)
-                    .map_err(|error| Error::io("could not redo New File", error))?;
-                let mut pending = PendingCreation::capture(path)?;
+                let (mut pending, file) = PendingCreation::prepare(path, |staging| {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(
+                            metadata
+                                .as_ref()
+                                .map_or(0o666, MetadataFingerprint::creation_mode),
+                        )
+                        .open(staging)
+                })?;
                 if let Some(saved) = metadata {
-                    saved.restore_access_control(path)?;
+                    saved.restore_access_control(&pending.path)?;
                     file.set_permissions(fs::Permissions::from_mode(saved.mode()))
                         .map_err(|error| {
                             Error::io("could not restore New File permissions", error)
@@ -261,10 +386,28 @@ pub(super) fn apply(
                 }
                 file.set_modified(modified)
                     .map_err(|error| Error::io("could not restore New File timestamp", error))?;
-                *fingerprint = Fingerprint::read(path)?;
-                *identity = Some(file_identity(path)?);
-                *metadata = Some(MetadataFingerprint::read(path)?);
+                *fingerprint = Fingerprint::read(&pending.path)?;
+                *identity = Some(file_identity(&pending.path)?);
+                *metadata = Some(MetadataFingerprint::read(&pending.path)?);
+                *prepared = Some(pending.path.clone());
+                let result = checkpoint(&Action::NewFile {
+                    path: path.clone(),
+                    fingerprint: fingerprint.clone(),
+                    identity: *identity,
+                    metadata: metadata.clone(),
+                    prepared: prepared.clone(),
+                });
+                if let Err(error) = result {
+                    if matches!(&error, Error::Committed { .. }) {
+                        pending.complete = true;
+                    } else {
+                        *prepared = None;
+                    }
+                    return Err(error);
+                }
                 pending.complete = true;
+                rename_noreplace(&pending.path, path)?;
+                *prepared = None;
                 Ok(Effect {
                     warnings: Vec::new(),
                     status: "Redid New File".to_owned(),

@@ -103,8 +103,11 @@ int lsetxattr(const char *path, const char *name, const void *value, size_t size
             if (replacement && retained) {
                 if (rename(path, retained) || rename(replacement, path)) return -1;
             }
-            const char *addition = getenv("WADDLE_AUDIT_XATTR_ADDITION");
-            if (addition) {
+            const char *suffix = getenv("WADDLE_AUDIT_XATTR_ADDITION_SUFFIX");
+            if (suffix) {
+                char addition[4096];
+                int size = snprintf(addition, sizeof addition, "%s%s", path, suffix);
+                if (size < 0 || (size_t)size >= sizeof addition) { errno = ENAMETOOLONG; return -1; }
                 int fd = open(addition, O_WRONLY | O_CREAT | O_APPEND, 0600);
                 if (fd < 0) return -1;
                 ssize_t written = write(fd, "external change", 15);
