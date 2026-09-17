@@ -112,13 +112,15 @@ impl Recent {
                 Ok((Effect::Reload, "Shared Recent history cleared".to_owned()))
             }
             "disable" => {
-                self.preferences.enabled = false;
-                self.save_preferences()?;
+                let preferences = Preferences { enabled: false };
+                self.save_preferences(&preferences)?;
+                self.preferences = preferences;
                 Ok((Effect::Disabled, "Recent disabled in Waddle".to_owned()))
             }
             "enable" => {
-                self.preferences.enabled = true;
-                self.save_preferences()?;
+                let preferences = Preferences { enabled: true };
+                self.save_preferences(&preferences)?;
+                self.preferences = preferences;
                 Ok((Effect::Enabled, "Recent enabled in Waddle".to_owned()))
             }
             command => Err(format!(
@@ -136,7 +138,7 @@ impl Recent {
             .map_err(|error| format!("Could not clear shared Recent history: {error}"))
     }
 
-    fn save_preferences(&self) -> Result<(), String> {
+    fn save_preferences(&self, preferences: &Preferences) -> Result<(), String> {
         let parent = self
             .preferences_path
             .parent()
@@ -145,7 +147,7 @@ impl Recent {
         let temporary = self.preferences_path.with_extension("json.tmp");
         fs::write(
             &temporary,
-            serde_json::to_vec_pretty(&self.preferences).map_err(|error| error.to_string())?,
+            serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
         fs::rename(temporary, &self.preferences_path).map_err(|error| error.to_string())

@@ -1,6 +1,124 @@
 use super::*;
 
 #[test]
+fn failed_recent_preference_saves_preserve_the_previous_behavior() {
+    const CHILD_ROOT: &str = "WADDLE_RECENT_SAVE_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        for enabled in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let config = temp.path().join("config");
+            let data = temp.path().join("data");
+            std_fs::create_dir_all(config.join("waddle/recent.json.tmp")).unwrap();
+            std_fs::create_dir_all(&data).unwrap();
+            std_fs::write(
+                config.join("waddle/recent.json"),
+                format!(r#"{{"enabled":{enabled}}}"#),
+            )
+            .unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "app::tests::navigation::failed_recent_preference_saves_preserve_the_previous_behavior", "--nocapture"])
+                .env(CHILD_ROOT, temp.path())
+                .env("WADDLE_RECENT_INITIAL_ENABLED", enabled.to_string())
+                .env("XDG_CONFIG_HOME", config)
+                .env("XDG_DATA_HOME", data)
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let root = PathBuf::from(root);
+    let enabled = std::env::var("WADDLE_RECENT_INITIAL_ENABLED").unwrap() == "true";
+    let preferences = root.join("config/waddle/recent.json");
+    let original_preferences = std_fs::read(&preferences).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(root.clone());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(
+                if enabled {
+                    "recent disable"
+                } else {
+                    "recent enable"
+                }
+                .into(),
+            ));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            assert!(
+                app.presentation
+                    .status()
+                    .to_lowercase()
+                    .contains("directory"),
+                "Save failure was not reported: {}",
+                app.presentation.status()
+            );
+            assert_eq!(std_fs::read(&preferences).unwrap(), original_preferences);
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("recent open".into()));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                if enabled {
+                    DisplayedLocation::Recent
+                } else {
+                    DisplayedLocation::Folder
+                },
+                "Failed save changed whether Recent could be opened"
+            );
+            std_fs::remove_dir(root.join("config/waddle/recent.json.tmp")).unwrap();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(
+                if enabled {
+                    "recent disable"
+                } else {
+                    "recent enable"
+                }
+                .into(),
+            ));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("recent open".into()));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            let expected = if enabled {
+                DisplayedLocation::Folder
+            } else {
+                DisplayedLocation::Recent
+            };
+            assert_eq!(
+                app.navigation.displayed_location(),
+                expected,
+                "Retry did not apply the preference"
+            );
+
+            let (mut reopened, _) = App::new();
+            reopened.navigation = NavigationSession::new(root.clone());
+            reopened.navigation.settle_for_test();
+            press(&mut reopened, ":");
+            let _ = reopened.update(Message::CommandChanged("recent open".into()));
+            let task = reopened.update(Message::CommandSubmitted);
+            finish_tasks(&mut reopened, task).await;
+            assert_eq!(
+                reopened.navigation.displayed_location(),
+                expected,
+                "Successful retry was not saved"
+            );
+        });
+}
+
+#[test]
 fn directory_refresh_preserves_location_edits_and_their_submission() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

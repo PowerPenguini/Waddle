@@ -1384,3 +1384,18 @@ outside this work.
   commands retain shell dispatch.
   All-target tests passed with 710 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 93: failed Recent preference saves change the active setting (2026-09-17)
+
+- Reproduction: block the Recent preferences temporary file in an isolated
+  configuration directory, then try to disable or enable Recent through the app.
+- Red: `failed_recent_preference_saves_preserve_the_previous_behavior` could
+  no longer open Recent after a failed disable, despite unchanged saved settings.
+- Cause: enable and disable changed the in-memory flag before attempting the save.
+- Fix: write the proposed preferences first and commit the active preferences
+  only after the save succeeds.
+- Green: failed enable and disable preserve the prior behavior and report the
+  write error. Removing the filesystem obstruction allows a successful retry,
+  and a newly opened app reads the new saved preference.
+  All-target tests passed with 711 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.
