@@ -1368,3 +1368,19 @@ outside this work.
   Untouched names and retyped identical valid names remain no-ops without history.
   All-target tests passed with 708 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 92: tabs send built-in commands to Bash (2026-09-17)
+
+- Reproduction: submit favorite, recent, volume, or chmod with a tab between
+  the command name and its arguments through the colon prompt.
+- Red: `built_in_commands_accept_tabs_before_their_arguments` showed a
+  tab-separated favorite command entering shell execution instead of its handler.
+- Cause: those four built-ins recognized only a literal space after the name,
+  unlike other commands that already used whitespace-aware tokenization.
+- Fix: use the existing command-and-arguments parser for their exact command names.
+- Green: spaces, tabs, and mixed separators dispatch to the built-in handlers.
+  Tab-separated chmod applies to selected files and quoted explicit paths while
+  preserving unrelated files. Bang commands and similarly named external
+  commands retain shell dispatch.
+  All-target tests passed with 710 tests and 24 opt-in tests ignored. Clippy,
+  formatting, and whitespace checks passed.

@@ -285,32 +285,20 @@ impl CommandSession {
                 arguments: arguments.trim().to_owned(),
             };
         }
-        if prefix == ':' && (trimmed == "favorite" || trimmed.starts_with("favorite ")) {
-            return CommandAction::ManageFavorite(
-                trimmed
-                    .strip_prefix("favorite")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            );
+        if prefix == ':'
+            && let Some(("favorite", arguments)) = command_and_arguments(trimmed)
+        {
+            return CommandAction::ManageFavorite(arguments.to_owned());
         }
-        if prefix == ':' && (trimmed == "recent" || trimmed.starts_with("recent ")) {
-            return CommandAction::ManageRecent(
-                trimmed
-                    .strip_prefix("recent")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            );
+        if prefix == ':'
+            && let Some(("recent", arguments)) = command_and_arguments(trimmed)
+        {
+            return CommandAction::ManageRecent(arguments.to_owned());
         }
-        if prefix == ':' && (trimmed == "volume" || trimmed.starts_with("volume ")) {
-            return CommandAction::ManageVolume(
-                trimmed
-                    .strip_prefix("volume")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            );
+        if prefix == ':'
+            && let Some(("volume", arguments)) = command_and_arguments(trimmed)
+        {
+            return CommandAction::ManageVolume(arguments.to_owned());
         }
         if prefix == ':'
             && let Some((command, arguments)) = command_and_arguments(trimmed)
@@ -321,8 +309,9 @@ impl CommandSession {
                 Err(error) => CommandAction::Error(error),
             };
         }
-        if prefix == ':' && (trimmed == "chmod" || trimmed.starts_with("chmod ")) {
-            let arguments = trimmed.strip_prefix("chmod").unwrap_or_default().trim();
+        if prefix == ':'
+            && let Some(("chmod", arguments)) = command_and_arguments(trimmed)
+        {
             return match parse_chmod_arguments(&current, arguments) {
                 Ok((mode, targets)) => CommandAction::ChangePermissions { mode, targets },
                 Err(error) => CommandAction::Error(error),

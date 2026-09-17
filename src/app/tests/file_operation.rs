@@ -1,6 +1,98 @@
 use super::*;
 
 #[test]
+fn built_in_commands_accept_tabs_before_their_arguments() {
+    for (command, expected) in [
+        ("favorite", "unknown favorite command: invalid-subcommand"),
+        ("recent", "unknown Recent command: invalid-subcommand"),
+        ("volume", "Waiting for desktop volume authorization…"),
+        ("chmod", "Select entries or pass paths to :chmod"),
+    ] {
+        for separator in [" ", "\t", "\t "] {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(format!(
+                "{command}{separator}invalid-subcommand"
+            )));
+            // Inspect immediate dispatch without running a volume or shell worker.
+            let task = app.update(Message::CommandSubmitted);
+            assert!(
+                app.presentation.status().starts_with(expected),
+                "{command} with {separator:?} was dispatched incorrectly: {}",
+                app.presentation.status()
+            );
+            drop(task);
+        }
+        for (prefix, text) in [
+            ("!", format!("{command}\tinvalid-subcommand")),
+            (":", format!("{command}-external\tinvalid-subcommand")),
+        ] {
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            press(&mut app, prefix);
+            let _ = app.update(Message::CommandChanged(text));
+            let task = app.update(Message::CommandSubmitted);
+            assert!(app.presentation.status().starts_with("Running "));
+            drop(task);
+        }
+    }
+}
+
+#[test]
+fn tab_separated_chmod_uses_selection_and_quoted_explicit_paths() {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for explicit in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join("target file.txt");
+                let other = temp.path().join("other.txt");
+                for path in [&target, &other] {
+                    std_fs::write(path, "contents").unwrap();
+                    std_fs::set_permissions(path, std_fs::Permissions::from_mode(0o700)).unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                let selected = app
+                    .navigation
+                    .entries()
+                    .iter()
+                    .position(|entry| {
+                        entry.path == if explicit { &other } else { &target }.as_path()
+                    })
+                    .unwrap();
+                app.grid.select_only(Some(selected), 2);
+                press(&mut app, ":");
+                let _ = app.update(Message::CommandChanged(if explicit {
+                    "chmod\t640\t\"target file.txt\"".into()
+                } else {
+                    "chmod\t640".into()
+                }));
+                let task = app.update(Message::CommandSubmitted);
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    std_fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                    0o640
+                );
+                assert_eq!(
+                    std_fs::metadata(&other).unwrap().permissions().mode() & 0o7777,
+                    0o700
+                );
+            }
+        });
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn permission_changes_preserve_items_replaced_during_chmod() {
     use std::os::unix::fs::PermissionsExt;
