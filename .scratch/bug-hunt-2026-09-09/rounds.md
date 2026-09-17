@@ -1519,3 +1519,18 @@ outside this work.
   All eight Favorites checks passed, including simultaneous-window writes.
   Locked all-target tests passed with 738 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 101: command diagnostics overwrite pre-existing temporary entries (2026-09-17)
+
+- Reproduction: occupy the diagnostics temporary path with a symlink, hardlink,
+  file, or directory, then run a failing shell command through app messages.
+- Red: `command_failure_history_preserves_preexisting_temporary_entries` showed
+  the symlink's unrelated target replaced with diagnostics JSON.
+- Cause: the history saver wrote through a fixed temporary path before rename,
+  following links and truncating files that it did not create.
+- Fix: write and sync an exclusively created NamedTempFile in the state directory,
+  then atomically persist it as the diagnostics history.
+- Green: all four collision types remain intact. The command failure is persisted
+  and visible through :diagnostics. Existing retention and reporting checks pass.
+  Locked all-target tests passed with 739 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.

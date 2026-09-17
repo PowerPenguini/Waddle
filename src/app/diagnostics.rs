@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -85,13 +86,17 @@ impl History {
     fn save(&self) -> Result<(), String> {
         let directory = self.path.parent().ok_or("diagnostic path has no parent")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(&self.records).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.path).map_err(|error| error.to_string())
+        let bytes = serde_json::to_vec_pretty(&self.records).map_err(|error| error.to_string())?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        temporary
+            .write_all(&bytes)
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist(&self.path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -116,6 +121,90 @@ fn state_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_failure_history_preserves_preexisting_temporary_entries() {
+        use crate::app::{App, Message, NavigationSession};
+        use iced::{Task, futures::StreamExt, keyboard};
+
+        async fn finish(app: &mut App, task: Task<Message>) {
+            let mut pending = std::collections::VecDeque::from([task]);
+            while let Some(task) = pending.pop_front() {
+                if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+                    while let Some(action) = stream.next().await {
+                        if let iced_runtime::Action::Output(message) = action {
+                            pending.push_back(app.update(message));
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for kind in ["symlink", "hardlink", "file", "directory"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let path = temp.path().join("diagnostics.json");
+                    let collision = path.with_extension("json.tmp");
+                    let unrelated = temp.path().join("unrelated.txt");
+                    fs::write(&unrelated, b"unrelated contents").unwrap();
+                    match kind {
+                        "symlink" => std::os::unix::fs::symlink(&unrelated, &collision).unwrap(),
+                        "hardlink" => fs::hard_link(&unrelated, &collision).unwrap(),
+                        "file" => fs::write(&collision, b"unrelated contents").unwrap(),
+                        _ => fs::create_dir(&collision).unwrap(),
+                    }
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.diagnostics = History {
+                        path: path.clone(),
+                        records: Vec::new(),
+                    };
+                    let key = keyboard::Key::Character(":".into());
+                    drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(":")));
+                    drop(app.update(Message::CommandChanged(
+                        "printf diagnostic_persist_marker >&2; false".into(),
+                    )));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish(&mut app, task).await;
+                    assert_eq!(
+                        fs::read(&unrelated).unwrap(),
+                        b"unrelated contents",
+                        "A command failure overwrote the target of a {kind}"
+                    );
+                    if kind == "directory" {
+                        assert!(collision.is_dir());
+                    } else {
+                        assert_eq!(fs::read(&collision).unwrap(), b"unrelated contents");
+                        if kind == "symlink" {
+                            assert_eq!(fs::read_link(&collision).unwrap(), unrelated);
+                        }
+                    }
+                    assert!(
+                        fs::read_to_string(&path)
+                            .unwrap()
+                            .contains("diagnostic_persist_marker"),
+                        "An occupied temporary name must not prevent retaining the diagnostic"
+                    );
+                    let key = keyboard::Key::Character(":".into());
+                    drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(":")));
+                    drop(app.update(Message::CommandChanged("diagnostics".into())));
+                    let task = app.update(Message::CommandSubmitted);
+                    finish(&mut app, task).await;
+                    assert!(
+                        app.command
+                            .output()
+                            .unwrap()
+                            .detail
+                            .contains("diagnostic_persist_marker")
+                    );
+                }
+            });
+    }
 
     #[test]
     fn history_is_bounded_persistent_and_reportable() {
