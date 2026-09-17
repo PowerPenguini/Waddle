@@ -148,13 +148,14 @@ impl App {
             command::CommandAction::ManageVolume(arguments) => {
                 self.presentation
                     .set_status("Waiting for desktop volume authorization…");
+                let request = self.command.output_revision();
                 Task::perform(
                     self.operations
                         .run_foreground(OperationKind::Background, move |_| {
                             places::run_volume_command(&arguments)
                         }),
-                    |completion| match completion {
-                        Completion::Finished(result) => Message::VolumeFinished(result),
+                    move |completion| match completion {
+                        Completion::Finished(result) => Message::VolumeFinished { request, result },
                         Completion::Cancelled => Message::Noop,
                     },
                 )

@@ -464,13 +464,17 @@ impl App {
                 search_session,
                 result,
             } => self.finish_command(request, navigation_revision, search_session, result),
-            Message::VolumeFinished(result) => {
+            Message::VolumeFinished { request, result } => {
+                let current_request = request == self.command.output_revision();
                 match result {
                     Ok(status) => {
-                        self.presentation.set_status(status);
+                        if current_request {
+                            self.presentation.set_status(status);
+                        }
                         self.sidebar_tree.refresh_volumes();
                     }
-                    Err(error) => self.presentation.set_status(error),
+                    Err(error) if current_request => self.presentation.set_status(error),
+                    Err(_) => {}
                 }
                 Task::none()
             }

@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn queued_volume_errors_preserve_newer_command_feedback() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(
+                "volume invalid-action unused".into(),
+            ));
+            let task = app.update(Message::CommandSubmitted);
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert!(!queued.is_empty());
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged("set view=list".into()));
+            let task = app.update(Message::CommandSubmitted);
+            navigation::finish_tasks(&mut app, task).await;
+            let status = app.presentation.status().to_owned();
+            for message in queued {
+                let task = app.update(message);
+                navigation::finish_tasks(&mut app, task).await;
+            }
+            assert_eq!(
+                app.presentation.status(),
+                status,
+                "An obsolete volume result replaced the newer command's feedback"
+            );
+            press(&mut app, ":");
+            let _ = app.update(Message::CommandChanged(
+                "volume current-invalid unused".into(),
+            ));
+            let task = app.update(Message::CommandSubmitted);
+            navigation::finish_tasks(&mut app, task).await;
+            assert_eq!(
+                app.presentation.status(),
+                "unknown volume action: current-invalid",
+                "A current volume error must still be displayed"
+            );
+        });
+}
+
+#[test]
 fn built_in_commands_accept_tabs_before_their_arguments() {
     for (command, expected) in [
         ("favorite", "unknown favorite command: invalid-subcommand"),

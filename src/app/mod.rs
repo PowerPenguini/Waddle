@@ -267,7 +267,10 @@ enum Message {
         search_session: u64,
         result: Result<command::Completion, String>,
     },
-    VolumeFinished(Result<String, String>),
+    VolumeFinished {
+        request: u64,
+        result: Result<String, String>,
+    },
     RecentLoaded {
         request: NavigationRequest,
         result: Option<Result<Vec<FileEntry>, String>>,

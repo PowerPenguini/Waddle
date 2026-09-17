@@ -1399,3 +1399,15 @@ outside this work.
   and a newly opened app reads the new saved preference.
   All-target tests passed with 711 tests and 24 opt-in tests ignored. Clippy,
   formatting, and whitespace checks passed.
+
+## Round 94: queued volume errors overwrite newer command feedback (2026-09-17)
+
+- Reproduction: queue an invalid volume command result, complete a newer command,
+  then deliver the older result through the app message loop.
+- Red: `queued_volume_errors_preserve_newer_command_feedback` showed the obsolete
+  volume error replacing the newer command's status.
+- Fix: associate volume results with their Command session output revision and
+  display feedback only when that revision is still current. Successful volume
+  operations still refresh the Sidebar tree's volume list.
+- Green: delayed errors preserve newer feedback, and current errors remain visible.
+  All-target tests, strict Clippy, formatting, and whitespace checks passed.
