@@ -20,6 +20,7 @@ struct Record {
 pub(super) struct History {
     path: PathBuf,
     records: Vec<Record>,
+    pending_records: Vec<Record>,
 }
 
 impl History {
@@ -30,35 +31,55 @@ impl History {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let mut history = Self { path, records };
-        history.prune(now());
+        let mut history = Self {
+            path,
+            records,
+            pending_records: Vec::new(),
+        };
+        Self::prune(&mut history.records, now());
         history
     }
 
     #[cfg(test)]
     pub(super) fn open_default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         Self {
             path: std::env::temp_dir().join(format!(
-                "waddle-diagnostics-test-{}-{}.json",
+                "waddle-diagnostics-test-{}-{}-{}.json",
                 std::process::id(),
-                now()
+                now(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             )),
             records: Vec::new(),
+            pending_records: Vec::new(),
         }
     }
 
     pub(super) fn record(&mut self, summary: String, detail: String) {
         let timestamp = now();
-        self.records.push(Record {
+        let record = Record {
             timestamp,
             summary,
             detail,
-        });
-        self.prune(timestamp);
+        };
+        self.records.push(record.clone());
+        self.pending_records.push(record);
+        Self::prune(&mut self.records, timestamp);
+        Self::prune(&mut self.pending_records, timestamp);
         let _ = self.save();
     }
 
-    pub(super) fn report(&self) -> String {
+    pub(super) fn report(&mut self) -> String {
+        let mut records = match self.read_records() {
+            Ok(mut records) => {
+                records.extend(self.pending_records.iter().cloned());
+                records
+            }
+            Err(_) => self.records.clone(),
+        };
+        Self::prune(&mut records, now());
+        self.records = records;
         if self.records.is_empty() {
             return "No command failures recorded in the last 30 days.".to_owned();
         }
@@ -75,18 +96,38 @@ impl History {
             .join("\n\n")
     }
 
-    fn prune(&mut self, timestamp: u64) {
+    fn prune(records: &mut Vec<Record>, timestamp: u64) {
         let oldest = timestamp.saturating_sub(RETENTION.as_secs());
-        self.records.retain(|record| record.timestamp >= oldest);
-        if self.records.len() > MAX_RECORDS {
-            self.records.drain(..self.records.len() - MAX_RECORDS);
+        records.retain(|record| record.timestamp >= oldest);
+        records.sort_by_key(|record| record.timestamp);
+        if records.len() > MAX_RECORDS {
+            records.drain(..records.len() - MAX_RECORDS);
         }
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn read_records(&self) -> Result<Vec<Record>, String> {
+        match fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn save(&mut self) -> Result<(), String> {
         let directory = self.path.parent().ok_or("diagnostic path has no parent")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-        let bytes = serde_json::to_vec_pretty(&self.records).map_err(|error| error.to_string())?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path.with_extension("lock"))
+            .map_err(|error| error.to_string())?;
+        lock.lock().map_err(|error| error.to_string())?;
+        let mut records = self.read_records()?;
+        records.extend(self.pending_records.iter().cloned());
+        Self::prune(&mut records, now());
+        let bytes = serde_json::to_vec_pretty(&records).map_err(|error| error.to_string())?;
         let mut temporary =
             tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
         temporary
@@ -95,8 +136,10 @@ impl History {
             .map_err(|error| error.to_string())?;
         temporary
             .persist(&self.path)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.records = records;
+        self.pending_records.clear();
+        Ok(())
     }
 }
 
@@ -121,6 +164,91 @@ fn state_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_failures_from_multiple_windows_remain_in_shared_diagnostics() {
+        use crate::app::{App, Message, NavigationSession};
+        use iced::{futures::StreamExt, keyboard};
+
+        async fn command(app: &mut App, value: &str) {
+            let key = keyboard::Key::Character(":".into());
+            drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(":")));
+            drop(app.update(Message::CommandChanged(value.into())));
+            let mut pending =
+                std::collections::VecDeque::from([app.update(Message::CommandSubmitted)]);
+            while let Some(task) = pending.pop_front() {
+                if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+                    while let Some(action) = stream.next().await {
+                        if let iced_runtime::Action::Output(message) = action {
+                            pending.push_back(app.update(message));
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("diagnostics.json");
+                let window = || {
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.diagnostics = History {
+                        path: path.clone(),
+                        records: Vec::new(),
+                        pending_records: Vec::new(),
+                    };
+                    app
+                };
+                let mut first = window();
+                let mut second = window();
+                command(&mut first, "printf window_a_failure >&2; false").await;
+                command(&mut second, "printf window_b_failure >&2; false").await;
+                let stored = fs::read_to_string(&path).unwrap();
+                assert!(
+                    stored.contains("window_a_failure"),
+                    "The second window erased the first failure"
+                );
+                assert!(stored.contains("window_b_failure"));
+                for app in [&mut first, &mut second] {
+                    command(app, "diagnostics").await;
+                    let detail = &app.command.output().unwrap().detail;
+                    assert!(detail.contains("window_a_failure"));
+                    assert!(
+                        detail.contains("window_b_failure"),
+                        "An existing window hid another window's failure"
+                    );
+                }
+                // Block persistence, then let the other window add another record before retry.
+                let retained = temp.path().join("retained.json");
+                fs::rename(&path, &retained).unwrap();
+                fs::create_dir(&path).unwrap();
+                command(&mut first, "printf pending_failure >&2; false").await;
+                command(&mut first, "diagnostics").await;
+                assert!(first.command.output().unwrap().detail.contains("pending_failure"));
+                assert!(first.command.output().unwrap().detail.contains("window_b_failure"),
+                    "A temporary storage error must not hide shared records already displayed by this window");
+                fs::remove_dir(&path).unwrap();
+                fs::rename(&retained, &path).unwrap();
+                command(&mut second, "printf later_failure >&2; false").await;
+                command(&mut first, "printf window_a_failure >&2; false").await;
+                let mut reopened = window();
+                for app in [&mut first, &mut second, &mut reopened] {
+                    command(app, "diagnostics").await;
+                    let detail = &app.command.output().unwrap().detail;
+                    for (failure, count) in [("window_a_failure", 2), ("window_b_failure", 1),
+                        ("pending_failure", 1), ("later_failure", 1)] {
+                        assert_eq!(detail.lines().filter(|line| *line == failure).count(), count,
+                            "Each failure must be retained exactly once, including retries and repeated commands");
+                    }
+                }
+            });
+    }
 
     #[test]
     fn command_failure_history_preserves_preexisting_temporary_entries() {
@@ -163,6 +291,7 @@ mod tests {
                     app.diagnostics = History {
                         path: path.clone(),
                         records: Vec::new(),
+                        pending_records: Vec::new(),
                     };
                     let key = keyboard::Key::Character(":".into());
                     drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(":")));
@@ -213,6 +342,7 @@ mod tests {
         let mut history = History {
             path: path.clone(),
             records: Vec::new(),
+            pending_records: Vec::new(),
         };
         for index in 0..105 {
             history.record(format!("failure {index}"), "detail".to_owned());
@@ -225,6 +355,7 @@ mod tests {
         let reopened = History {
             path: temp.path().join("diagnostics.json"),
             records,
+            pending_records: Vec::new(),
         };
         assert_eq!(reopened.records.len(), MAX_RECORDS);
     }

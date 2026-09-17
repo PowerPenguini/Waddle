@@ -1534,3 +1534,25 @@ outside this work.
   and visible through :diagnostics. Existing retention and reporting checks pass.
   Locked all-target tests passed with 739 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 102: one window erases another window's command diagnostics (2026-09-17)
+
+- Reproduction: open two app windows against one diagnostics file, run a failing
+  command in each, and request :diagnostics from both windows.
+- Red: `command_failures_from_multiple_windows_remain_in_shared_diagnostics`
+  showed the second window removing the first failure from the saved history.
+  An added storage-failure check also exposed loss of previously displayed
+  shared records from the report's fallback cache.
+- Cause: each save replaced the shared file with one window's cached list,
+  and reports did not reload or cache records written by other windows.
+- Fix: lock a stable sidecar around read, append, prune, and atomic replacement.
+  Track unsaved records separately so retries append them once without merging
+  duplicate cached records. Reload shared history for reports and retain it as
+  the fallback cache. Keep the existing time and record-count limits.
+- Green: interleaved window writes and reports retain both failures. Blocked saves
+  keep pending failures visible; retry preserves another window's intervening
+  write. Repeated identical commands remain separate records, and a newly opened
+  window reports every saved occurrence exactly once. Test-default diagnostic
+  paths are unique per app instance so unrelated tests do not share history.
+  Locked all-target tests passed with 740 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
