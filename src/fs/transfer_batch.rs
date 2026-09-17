@@ -37,6 +37,7 @@ impl FileIdentity {
 #[derive(Clone, Debug)]
 struct TransferRoot {
     source: PathBuf,
+    identity: Option<FileIdentity>,
     destination: PathBuf,
     replaced_existing: bool,
 }
@@ -179,6 +180,7 @@ impl TransferBatch {
         for (source, destination) in entries {
             let root = roots.len();
             roots.push(TransferRoot {
+                identity: FileIdentity::read(&source).ok(),
                 source: source.clone(),
                 destination: destination.clone(),
                 replaced_existing: false,
@@ -265,8 +267,10 @@ impl TransferBatch {
                     choice: ConflictChoice::Skip,
                     ..
                 }
-            ) && let Err(error) =
-                check_source(&source_key).and_then(|()| self.verify_merge_ancestors(&source_key))
+            ) && let Err(error) = self
+                .verify_root_source(root)
+                .and_then(|()| check_source(&source_key))
+                .and_then(|()| self.verify_merge_ancestors(&source_key))
             {
                 self.fail(root, source_key, error);
                 continue;
@@ -459,6 +463,16 @@ impl TransferBatch {
         }
         self.publish_progress(&mut progress);
         TransferBatchOutcome::Complete(self.report())
+    }
+
+    fn verify_root_source(&self, root: usize) -> io::Result<()> {
+        let root = &self.roots[root];
+        if Some(FileIdentity::read(&root.source)?) != root.identity {
+            return Err(io::Error::other(
+                "the source changed after the transfer was requested; select it again",
+            ));
+        }
+        Ok(())
     }
 
     fn order_source_dependencies(&mut self) {

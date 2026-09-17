@@ -1725,3 +1725,22 @@ outside this work.
 - Validation: all-target tests passed (754 passed, 24 ignored); strict Clippy,
   formatting, and whitespace checks passed. Existing uncommitted search changes
   were excluded from this commit.
+
+## Round 111: queued Copy and Move act on replacement sources (2026-09-17)
+
+- Reproduction: create a Transfer batch, move a selected source aside and create
+  a replacement at its path, then run the batch. Exercise Copy and Move with
+  files, populated folders, and symlinks, with and without destination conflicts.
+- Red: `cargo test --locked queued_transfers_preserve_replaced_sources -- --nocapture`
+  failed because queued Copy published the replacement file.
+- Cause: source identity was captured when a conflict appeared or a merge began,
+  but ordinary queued roots had no identity from the original request.
+- Fix: each root captures its identity at batch creation and verifies it before
+  work runs. Skip remains available without touching the source. Metadata checks
+  inspect the selected symlink itself instead of following its target.
+- Green: replacements and retained originals survive all cases, existing
+  destinations remain intact, and only the unchanged selection transfers. Editing
+  that selection on the same inode remains allowed and transfers its new contents.
+- Validation: all-target tests passed (755 passed, 24 ignored); strict Clippy,
+  formatting, and whitespace checks passed. Uncommitted search changes were
+  excluded from this commit.

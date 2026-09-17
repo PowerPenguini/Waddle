@@ -16,6 +16,93 @@ fn complete(batch: TransferBatch) -> TransferReport {
 }
 
 #[test]
+fn queued_transfers_preserve_replaced_sources() {
+    for action in [Action::Copy, Action::Move] {
+        for kind in ["file", "directory", "symlink"] {
+            for conflict in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let retained = temp.path().join("retained");
+                let unchanged = temp.path().join("unchanged");
+                let destination = temp.path().join("destination");
+                let target = temp.path().join("link-target");
+                fs::create_dir(&destination).unwrap();
+                fs::write(&target, b"link target").unwrap();
+                let create = |path: &std::path::Path, contents: &[u8]| match kind {
+                    "file" => fs::write(path, contents).unwrap(),
+                    "directory" => {
+                        fs::create_dir(path).unwrap();
+                        fs::write(path.join("child"), contents).unwrap();
+                    }
+                    _ => std::os::unix::fs::symlink(&target, path).unwrap(),
+                };
+                create(&source, b"original source");
+                fs::write(&unchanged, b"original contents").unwrap();
+                if conflict {
+                    fs::write(destination.join("source"), b"existing destination").unwrap();
+                }
+                let batch = TransferBatch::try_new(
+                    vec![source.clone(), unchanged.clone()],
+                    destination.clone(),
+                    action,
+                )
+                .unwrap();
+                fs::rename(&source, &retained).unwrap();
+                create(&source, b"replacement source");
+                // Content changes on the same selected inode remain valid.
+                fs::write(&unchanged, b"updated contents").unwrap();
+                let report = complete(batch);
+                assert!(
+                    fs::symlink_metadata(&source).is_ok(),
+                    "queued {action:?} moved replacement {kind}"
+                );
+                if conflict {
+                    assert_eq!(
+                        fs::read(destination.join("source")).unwrap(),
+                        b"existing destination"
+                    );
+                } else {
+                    assert!(
+                        fs::symlink_metadata(destination.join("source")).is_err(),
+                        "queued {action:?} published replacement {kind}"
+                    );
+                }
+                match kind {
+                    "file" => {
+                        assert_eq!(fs::read(&source).unwrap(), b"replacement source");
+                        assert_eq!(fs::read(&retained).unwrap(), b"original source");
+                    }
+                    "directory" => {
+                        assert_eq!(
+                            fs::read(source.join("child")).unwrap(),
+                            b"replacement source"
+                        );
+                        assert_eq!(
+                            fs::read(retained.join("child")).unwrap(),
+                            b"original source"
+                        );
+                    }
+                    _ => {
+                        assert_eq!(fs::read_link(&source).unwrap(), target);
+                        assert_eq!(fs::read_link(&retained).unwrap(), target);
+                    }
+                }
+                assert_eq!(fs::read(&target).unwrap(), b"link target");
+                assert_eq!(
+                    fs::read(destination.join("unchanged")).unwrap(),
+                    b"updated contents"
+                );
+                assert_eq!(unchanged.exists(), action == Action::Copy);
+                assert_eq!(report.completed, vec![destination.join("unchanged")]);
+                assert_eq!(report.failures.len(), 1);
+                assert_eq!(report.failures[0].source, source);
+                assert_eq!(report.retry, vec![(source, destination.join("source"))]);
+            }
+        }
+    }
+}
+
+#[test]
 fn hunt_cancel_during_a_single_large_copy_stops_before_publication() {
     use std::cell::Cell;
     let temp = tempfile::tempdir().unwrap();
