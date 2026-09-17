@@ -1646,3 +1646,23 @@ outside this work.
   Fifteen creation-related checks passed. Locked all-target tests passed with
   750 tests and 24 opt-in tests ignored in the shared checkout. Strict Clippy,
   formatting, and whitespace checks passed.
+
+## Round 107: retried Trash recovery deletes metadata for a reused slot (2026-09-17)
+
+- Reproduction: restore an item through history while its Trash metadata directory
+  is unwritable, then populate the vacated Trash slot with another item and new
+  recovery metadata before reopening and retrying the history operation.
+- Red: retrying_trash_restore_preserves_a_reused_trash_slot reported success and
+  removed the newer item's metadata. A control also caught an overly strict first
+  fix that blocked completion even when no metadata remained to remove.
+- Cause: a restore_pending receipt verified the already-restored original but
+  unconditionally deleted its old metadata path without checking the Trash slot.
+- Fix: when metadata still exists, require the physical Trash slot to be absent
+  before removing it. If metadata is already gone, finish without touching a
+  newer occupant. This matches normal Restore's source-absence guard.
+- Green: the regression covers Undo Trash and Redo Restore with a replacement
+  file, populated folder, or dangling symlink. Both the newer contents and its
+  recovery metadata survive refusal. Cleanup can finish after the newer item is
+  handled, and missing metadata permits completion while preserving an occupant.
+  Locked all-target tests passed with 751 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.

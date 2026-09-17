@@ -540,14 +540,21 @@ fn apply_trash(
                     items[index] = item.clone();
                     checkpoint(items, transfer)?;
                 }
-                match fs::remove_file(&item.info) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(Error::io(
-                            "restored the item but could not remove Trash metadata",
-                            error,
-                        ));
+                if !fs::symlink_metadata(&item.info)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                {
+                    // The restored item's old slot may have been reused while
+                    // metadata cleanup was blocked. Its new occupant owns the info.
+                    ensure_absent(&item.trashed)?;
+                    match fs::remove_file(&item.info) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(Error::io(
+                                "restored the item but could not remove Trash metadata",
+                                error,
+                            ));
+                        }
                     }
                 }
             }

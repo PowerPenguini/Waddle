@@ -2,6 +2,142 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn retrying_trash_restore_preserves_a_reused_trash_slot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for redo_restore in [false, true] {
+        for replacement in ["file", "directory", "symlink"] {
+            let temp = tempfile::tempdir().unwrap();
+            let files = temp.path().join("Trash/files");
+            let info = temp.path().join("Trash/info");
+            fs::create_dir_all(&files).unwrap();
+            fs::create_dir_all(&info).unwrap();
+            let receipt = TrashReceipt {
+                original: temp.path().join("original.txt"),
+                trashed: files.join("slot.txt"),
+                info: info.join("slot.txt.trashinfo"),
+            };
+            fs::write(
+                if redo_restore {
+                    &receipt.original
+                } else {
+                    &receipt.trashed
+                },
+                b"original contents",
+            )
+            .unwrap();
+            let path = temp.path().join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            if redo_restore {
+                journal
+                    .record(
+                        Action::restore(std::slice::from_ref(&receipt), false)
+                            .unwrap()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                let saved = receipt.clone();
+                trash_receipt::test_backend::with(
+                    move |source| {
+                        fs::rename(source, &saved.trashed).unwrap();
+                        fs::write(&saved.info, b"original Trash metadata").unwrap();
+                        Ok(saved.clone())
+                    },
+                    || {
+                        journal.undo().unwrap();
+                    },
+                );
+            } else {
+                fs::write(&receipt.info, b"original Trash metadata").unwrap();
+                journal
+                    .record(
+                        Action::trash(std::slice::from_ref(&receipt))
+                            .unwrap()
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            fs::set_permissions(&info, fs::Permissions::from_mode(0o500)).unwrap();
+            let failure = if redo_restore {
+                journal.redo()
+            } else {
+                journal.undo()
+            };
+            fs::set_permissions(&info, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(failure.unwrap_err().to_string().contains("Trash metadata"));
+            assert_eq!(fs::read(&receipt.original).unwrap(), b"original contents");
+            assert!(!receipt.trashed.exists());
+            // Another desktop operation reuses the vacated physical Trash slot.
+            let dangling_target = temp.path().join("absent-link-target");
+            match replacement {
+                "file" => fs::write(&receipt.trashed, b"another trashed item").unwrap(),
+                "directory" => {
+                    fs::create_dir(&receipt.trashed).unwrap();
+                    fs::write(receipt.trashed.join("child"), b"another trashed item").unwrap();
+                }
+                _ => std::os::unix::fs::symlink(&dangling_target, &receipt.trashed).unwrap(),
+            }
+            fs::write(&receipt.info, b"another item's recovery metadata").unwrap();
+            let mut journal = Journal::open(path.clone()).unwrap();
+            let result = if redo_restore {
+                journal.redo()
+            } else {
+                journal.undo()
+            };
+            assert!(
+                result.is_err(),
+                "redo_restore={redo_restore}, replacement={replacement}"
+            );
+            assert_eq!(
+                fs::read(&receipt.info).unwrap(),
+                b"another item's recovery metadata"
+            );
+            match replacement {
+                "file" => assert_eq!(fs::read(&receipt.trashed).unwrap(), b"another trashed item"),
+                "directory" => assert_eq!(
+                    fs::read(receipt.trashed.join("child")).unwrap(),
+                    b"another trashed item"
+                ),
+                _ => assert_eq!(fs::read_link(&receipt.trashed).unwrap(), dangling_target),
+            }
+            assert_eq!(fs::read(&receipt.original).unwrap(), b"original contents");
+            // Once metadata is already gone, there is nothing left to delete.
+            // Keep the dangling-link occupant to verify that it is not touched.
+            if replacement != "symlink" {
+                crate::fs::delete_permanently(&receipt.trashed).unwrap();
+            }
+            fs::remove_file(&receipt.info).unwrap();
+            let mut journal = Journal::open(path).unwrap();
+            if redo_restore {
+                journal.redo()
+            } else {
+                journal.undo()
+            }
+            .unwrap();
+            if replacement == "symlink" {
+                assert_eq!(fs::read_link(&receipt.trashed).unwrap(), dangling_target);
+            }
+            let exhausted = if redo_restore {
+                journal.redo()
+            } else {
+                journal.undo()
+            }
+            .unwrap_err();
+            assert_eq!(
+                exhausted.to_string(),
+                if redo_restore {
+                    "Nothing to redo"
+                } else {
+                    "Nothing to undo"
+                }
+            );
+            assert_eq!(fs::read(&receipt.original).unwrap(), b"original contents");
+        }
+    }
+}
+
+#[test]
 fn redo_creation_recovers_prepared_items_and_preserves_unrelated_entries() {
     let shim = audit_fault_library();
     for directory in [false, true] {
