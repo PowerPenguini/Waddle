@@ -1,6 +1,80 @@
 use super::*;
 
 #[test]
+fn recent_preference_saves_preserve_preexisting_temporary_entries() {
+    const CHILD: &str = "WADDLE_RECENT_TEMP_COLLISION_ROOT";
+    let Some(root) = std::env::var_os(CHILD) else {
+        for kind in ["symlink", "hardlink", "file", "directory"] {
+            let temp = tempfile::tempdir().unwrap();
+            let config = temp.path().join("config/waddle");
+            std_fs::create_dir_all(&config).unwrap();
+            std_fs::create_dir(temp.path().join("data")).unwrap();
+            let unrelated = temp.path().join("unrelated.txt");
+            std_fs::write(&unrelated, b"unrelated contents").unwrap();
+            let collision = config.join("recent.json.tmp");
+            match kind {
+                "symlink" => std::os::unix::fs::symlink(&unrelated, &collision).unwrap(),
+                "hardlink" => std_fs::hard_link(&unrelated, &collision).unwrap(),
+                "file" => std_fs::write(&collision, b"unrelated contents").unwrap(),
+                _ => std_fs::create_dir(&collision).unwrap(),
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "app::tests::navigation::recent_preference_saves_preserve_preexisting_temporary_entries", "--nocapture"])
+                .env(CHILD, temp.path())
+                .env("XDG_CONFIG_HOME", temp.path().join("config"))
+                .env("XDG_DATA_HOME", temp.path().join("data"))
+                .output().unwrap();
+            assert_eq!(
+                std_fs::read(&unrelated).unwrap(),
+                b"unrelated contents",
+                "Saving Recent preferences overwrote the target of a {kind}"
+            );
+            if kind == "directory" {
+                assert!(collision.is_dir());
+            } else {
+                assert_eq!(std_fs::read(&collision).unwrap(), b"unrelated contents");
+                if kind == "symlink" {
+                    assert_eq!(std_fs::read_link(&collision).unwrap(), unrelated);
+                }
+            }
+            assert!(
+                output.status.success(),
+                "kind={kind}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let root = PathBuf::from(root);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(root.clone());
+            app.navigation.settle_for_test();
+            press(&mut app, ":");
+            drop(app.update(Message::CommandChanged("recent disable".into())));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            let (mut reopened, _) = App::new();
+            reopened.navigation = NavigationSession::new(root);
+            reopened.navigation.settle_for_test();
+            press(&mut reopened, ":");
+            drop(reopened.update(Message::CommandChanged("recent open".into())));
+            let task = reopened.update(Message::CommandSubmitted);
+            finish_tasks(&mut reopened, task).await;
+            assert_eq!(
+                reopened.presentation.status(),
+                "Recent is disabled; use :recent enable",
+                "An occupied temporary name must not prevent saving the preference"
+            );
+        });
+}
+
+#[test]
 fn failed_recent_preference_saves_preserve_the_previous_behavior() {
     const CHILD_ROOT: &str = "WADDLE_RECENT_SAVE_TEST_ROOT";
     let Some(root) = std::env::var_os(CHILD_ROOT) else {
@@ -8,7 +82,7 @@ fn failed_recent_preference_saves_preserve_the_previous_behavior() {
             let temp = tempfile::tempdir().unwrap();
             let config = temp.path().join("config");
             let data = temp.path().join("data");
-            std_fs::create_dir_all(config.join("waddle/recent.json.tmp")).unwrap();
+            std_fs::create_dir_all(config.join("waddle")).unwrap();
             std_fs::create_dir_all(&data).unwrap();
             std_fs::write(
                 config.join("waddle/recent.json"),
@@ -35,12 +109,16 @@ fn failed_recent_preference_saves_preserve_the_previous_behavior() {
     let enabled = std::env::var("WADDLE_RECENT_INITIAL_ENABLED").unwrap() == "true";
     let preferences = root.join("config/waddle/recent.json");
     let original_preferences = std_fs::read(&preferences).unwrap();
+    let retained_preferences = preferences.with_extension("previous");
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .unwrap()
         .block_on(async {
             let (mut app, _) = App::new();
+            // Block the final replacement after the app has loaded valid preferences.
+            std_fs::rename(&preferences, &retained_preferences).unwrap();
+            std_fs::create_dir(&preferences).unwrap();
             app.navigation = NavigationSession::new(root.clone());
             app.navigation.settle_for_test();
             press(&mut app, ":");
@@ -62,7 +140,17 @@ fn failed_recent_preference_saves_preserve_the_previous_behavior() {
                 "Save failure was not reported: {}",
                 app.presentation.status()
             );
-            assert_eq!(std_fs::read(&preferences).unwrap(), original_preferences);
+            assert_eq!(
+                std_fs::read(&retained_preferences).unwrap(),
+                original_preferences
+            );
+            assert_eq!(
+                std_fs::read_dir(preferences.parent().unwrap())
+                    .unwrap()
+                    .count(),
+                2,
+                "A failed save must remove its own temporary file"
+            );
             press(&mut app, ":");
             let _ = app.update(Message::CommandChanged("recent open".into()));
             let task = app.update(Message::CommandSubmitted);
@@ -76,7 +164,8 @@ fn failed_recent_preference_saves_preserve_the_previous_behavior() {
                 },
                 "Failed save changed whether Recent could be opened"
             );
-            std_fs::remove_dir(root.join("config/waddle/recent.json.tmp")).unwrap();
+            std_fs::remove_dir(&preferences).unwrap();
+            std_fs::rename(&retained_preferences, &preferences).unwrap();
             press(&mut app, ":");
             let _ = app.update(Message::CommandChanged(
                 if enabled {

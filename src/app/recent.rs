@@ -1,4 +1,4 @@
-use std::{ffi::OsString, fs, path::PathBuf};
+use std::{ffi::OsString, fs, io::Write, path::PathBuf};
 
 use gio::prelude::FileExt;
 use serde::{Deserialize, Serialize};
@@ -161,13 +161,17 @@ impl Recent {
             .parent()
             .ok_or("Recent preferences path has no parent")?;
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        let temporary = self.preferences_path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.preferences_path).map_err(|error| error.to_string())
+        let bytes = serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+        temporary
+            .write_all(&bytes)
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist(&self.preferences_path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 

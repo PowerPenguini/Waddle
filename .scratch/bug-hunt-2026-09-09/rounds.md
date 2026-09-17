@@ -1481,3 +1481,21 @@ outside this work.
   All-target tests passed with 736 tests and 24 opt-in tests ignored in the shared
   checkout. Strict Clippy, formatting, and whitespace checks passed. Separate
   search changes remain outside this commit.
+
+## Round 99: Recent preference saves overwrite pre-existing temporary entries (2026-09-17)
+
+- Reproduction: place a symlink, hardlink, file, or directory at recent.json.tmp
+  in an isolated configuration directory, then disable Recent through the app.
+- Red: `recent_preference_saves_preserve_preexisting_temporary_entries` showed
+  the symlink's unrelated target overwritten with the preferences JSON.
+- Cause: saving used fs::write on a fixed temporary path, following links and
+  truncating any existing file before renaming it over the preferences file.
+- Fix: create a fresh NamedTempFile in the preferences directory, write and sync
+  it, then atomically persist it. Promote the existing tempfile dependency to
+  application use; the lockfile and packaged dependency sources are unchanged.
+- Green: all four collision types are preserved and the saved preference survives
+  reopening the app. The save-failure regression now obstructs the final target
+  instead of the old temporary name; active settings remain unchanged on failure,
+  owned temporary files are removed, and retry persists the new setting.
+  Locked all-target tests passed with 737 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
