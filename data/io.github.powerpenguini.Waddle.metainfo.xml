@@ -22,6 +22,19 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.20" date="2026-09-17">
+      <description>
+        <ul>
+          <li>Keep shell selections stable inside functions and after positional-argument changes, and ignore selection placeholders in comments.</li>
+          <li>Keep shell errors visible when output is truncated and preserve directory changes when stdout is redirected or the working folder is renamed.</li>
+          <li>Protect replacement files from permission changes and support unreadable items and named pipes.</li>
+          <li>Honor explicit Rename edits to filenames containing invalid UTF-8 bytes.</li>
+          <li>Accept tabs before built-in command arguments.</li>
+          <li>Preserve the active Recent setting when saving preferences fails.</li>
+          <li>Keep delayed volume results from overwriting newer command feedback.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.19" date="2026-09-16">
       <description>
         <ul>
