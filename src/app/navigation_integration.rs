@@ -590,23 +590,27 @@ impl App {
             TreeActivation::Recent => self.open_recent(),
             TreeActivation::Trash => self.open_trash(),
             TreeActivation::MountVolume { id, label } => {
+                let navigation = self.transition_navigation(NavigationTransition::MountVolume);
                 let navigation_revision = self.navigation.revision();
                 self.presentation.set_status(format!("Mounting {label}…"));
                 let message_id = id.clone();
-                Task::perform(
-                    self.operations
-                        .run_foreground(OperationKind::Background, move |_| {
-                            super::places::mount_volume(&id)
-                        }),
-                    move |completion| match completion {
-                        Completion::Finished(result) => Message::TreeVolumeMounted {
-                            navigation_revision,
-                            id: message_id,
-                            result,
+                Task::batch([
+                    navigation,
+                    Task::perform(
+                        self.operations
+                            .run_foreground(OperationKind::Background, move |_| {
+                                super::places::mount_volume(&id)
+                            }),
+                        move |completion| match completion {
+                            Completion::Finished(result) => Message::TreeVolumeMounted {
+                                navigation_revision,
+                                id: message_id,
+                                result,
+                            },
+                            Completion::Cancelled => Message::Noop,
                         },
-                        Completion::Cancelled => Message::Noop,
-                    },
-                )
+                    ),
+                ])
             }
             TreeActivation::Folder { path, load } => {
                 self.sync_location_monitoring();

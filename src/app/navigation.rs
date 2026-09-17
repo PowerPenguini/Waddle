@@ -44,6 +44,7 @@ pub(super) enum Transition {
         requested: PathBuf,
         load: Option<LoadRequest>,
     },
+    MountVolume,
     Parent,
     Back,
     HistoryForward,
@@ -327,6 +328,10 @@ impl NavigationSession {
                     self.pending = Some(request.clone());
                 }
                 start
+            }
+            Transition::MountVolume => {
+                self.revision = self.revision.wrapping_add(1);
+                Start::default()
             }
             Transition::Parent => self.parent(),
             Transition::Back => self.back(),

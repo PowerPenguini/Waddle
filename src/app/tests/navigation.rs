@@ -2337,6 +2337,159 @@ fn undo_is_not_ignored_while_the_current_folder_refreshes() {
 }
 
 #[test]
+fn the_latest_sidebar_volume_choice_wins_regardless_of_mount_order() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for order in [[0, 1], [1, 0]] {
+                let temp = tempfile::tempdir().unwrap();
+                let paths = [temp.path().join("first"), temp.path().join("second")];
+                for path in &paths {
+                    std_fs::create_dir(path).unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                let volumes = ["First volume", "Second volume"].map(|label| VolumeRoot {
+                    id: format!("uuid:{label}"),
+                    path: None,
+                    label: label.into(),
+                    can_unmount: false,
+                });
+                app.sidebar_tree = SidebarTree::new(volumes.to_vec());
+                let mut completions = Vec::new();
+                for volume in &volumes {
+                    let row = app
+                        .sidebar_tree
+                        .rows(temp.path())
+                        .into_iter()
+                        .find(|row| row.label == volume.label)
+                        .unwrap();
+                    // Simulate desktop mount reports through app messages; no real device is mounted.
+                    drop(app.update(Message::TreeRow(row.id)));
+                    completions.push(Some(Message::TreeVolumeMounted {
+                        navigation_revision: app.navigation.revision(),
+                        id: volume.id.clone(),
+                        result: Ok(places::MountedVolume {
+                            label: volume.label.clone(),
+                        }),
+                    }));
+                }
+                app.sidebar_tree.reconcile_volumes(
+                    volumes
+                        .iter()
+                        .zip(&paths)
+                        .map(|(volume, path)| VolumeRoot {
+                            path: Some(path.clone()),
+                            can_unmount: true,
+                            ..volume.clone()
+                        })
+                        .collect(),
+                );
+                let mounting_status = app.presentation.status().to_owned();
+                for index in order {
+                    let task = app.update(completions[index].take().unwrap());
+                    finish_tasks(&mut app, task).await;
+                    if index == 0 && order[0] == 0 {
+                        assert_eq!(
+                            app.navigation.current(),
+                            temp.path(),
+                            "The earlier volume opened while the newer mount was still pending"
+                        );
+                        assert_eq!(app.presentation.status(), mounting_status);
+                    }
+                }
+                assert_eq!(
+                    app.navigation.current(),
+                    paths[1],
+                    "completion order: {order:?}"
+                );
+                let task = app.update(Message::Back);
+                finish_tasks(&mut app, task).await;
+                assert_eq!(
+                    app.navigation.current(),
+                    temp.path(),
+                    "The abandoned mount must not enter history"
+                );
+            }
+        });
+}
+
+#[test]
+fn a_sidebar_volume_choice_supersedes_an_already_queued_folder_result() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("original");
+            let mounted = temp.path().join("mounted");
+            std_fs::create_dir(&original).unwrap();
+            std_fs::create_dir(&mounted).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(original.clone());
+            app.navigation.settle_for_test();
+            let volume = VolumeRoot {
+                id: "uuid:queued-folder-test".into(),
+                path: None,
+                label: "Chosen volume".into(),
+                can_unmount: false,
+            };
+            app.sidebar_tree = SidebarTree::new(vec![volume.clone()]);
+            let task = app.update(Message::Parent);
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut queued = Vec::new();
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    queued.push(message);
+                }
+            }
+            assert!(!queued.is_empty());
+            let row = app
+                .sidebar_tree
+                .rows(&original)
+                .into_iter()
+                .find(|row| row.label == volume.label)
+                .unwrap();
+            drop(app.update(Message::TreeRow(row.id)));
+            let navigation_revision = app.navigation.revision();
+            let status = app.presentation.status().to_owned();
+            for message in queued {
+                let task = app.update(message);
+                finish_tasks(&mut app, task).await;
+            }
+            assert_eq!(
+                app.navigation.current(),
+                original,
+                "An older folder result replaced the user's volume choice"
+            );
+            assert_eq!(app.presentation.status(), status);
+            app.sidebar_tree.reconcile_volumes(vec![VolumeRoot {
+                path: Some(mounted.clone()),
+                can_unmount: true,
+                ..volume.clone()
+            }]);
+            let task = app.update(Message::TreeVolumeMounted {
+                navigation_revision,
+                id: volume.id,
+                result: Ok(places::MountedVolume {
+                    label: volume.label,
+                }),
+            });
+            finish_tasks(&mut app, task).await;
+            assert_eq!(app.navigation.current(), mounted);
+            let task = app.update(Message::Back);
+            finish_tasks(&mut app, task).await;
+            assert_eq!(app.navigation.current(), original);
+        });
+}
+
+#[test]
 fn delayed_volume_mounts_preserve_newer_navigation() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -2366,8 +2519,8 @@ fn delayed_volume_mounts_preserve_newer_navigation() {
                     .find(|row| row.label == volume.label)
                     .unwrap();
                 // Supply the desktop's mount completion below; do not mount a real device.
-                let navigation_revision = app.navigation.revision();
                 drop(app.update(Message::TreeRow(row.id)));
+                let navigation_revision = app.navigation.revision();
                 let navigation = app.update(if scenario == "refresh" {
                     Message::Refresh
                 } else {
@@ -2432,8 +2585,8 @@ fn deferred_volume_mount_timeouts_preserve_newer_navigation_feedback() {
                 }]);
                 let row = app.sidebar_tree.rows(&original).into_iter()
                     .find(|row| row.label == "Missing mount path").unwrap();
-                let navigation_revision = app.navigation.revision();
                 drop(app.update(Message::TreeRow(row.id)));
+                let navigation_revision = app.navigation.revision();
                 drop(app.update(Message::TreeVolumeMounted {
                     navigation_revision,
                     id: "uuid:missing-mount-path".into(),

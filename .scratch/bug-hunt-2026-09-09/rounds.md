@@ -1428,3 +1428,21 @@ outside this work.
   opening the mounted folder, and a current missing-path timeout remains visible.
   All-target tests passed with 714 tests and 24 opt-in tests ignored. Strict
   Clippy, formatting, and whitespace checks passed.
+
+## Round 96: an earlier mount wins over the latest Sidebar volume choice (2026-09-17)
+
+- Reproduction: activate two unmounted volumes and deliver their mount results
+  in either order through app messages.
+- Red: `the_latest_sidebar_volume_choice_wins_regardless_of_mount_order` opened
+  the earlier volume while the user's later choice was still mounting.
+- Cause: activating an unmounted volume did not advance the Navigation session,
+  so both mounts shared a revision and the first completion could win.
+- Fix: start a MountVolume navigation transition at activation. This supersedes
+  prior navigation work and advances the revision before the mount starts.
+- Green: the later volume opens in either completion order, and Back returns
+  directly to the original folder. A queued real folder-read result is also
+  superseded when the user chooses an unmounted volume.
+  All-target tests passed with 716 tests and 24 opt-in tests ignored after
+  excluding an unrelated, concurrently added diagnostic test from this round.
+  The shared checkout's complete suite also passed with that diagnostic included.
+  Strict Clippy, formatting, and whitespace checks passed.
