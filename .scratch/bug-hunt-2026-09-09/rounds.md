@@ -1576,3 +1576,26 @@ outside this work.
   The existing newer-command regression also passed. Locked all-target tests
   passed with 741 tests and 24 opt-in tests ignored in the shared checkout.
   Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 104: Rename Undo/Redo loses recovery after journal save failures (2026-09-17)
+
+- Reproduction: make an existing journal directory unwritable, then Undo or Redo
+  a rename while its file directory remains writable. A second regression injects
+  a journal fsync failure only after the rename has completed, then reopens history.
+- Red: rename_history_refuses_changes_without_a_durable_checkpoint showed Undo
+  moving the file without saving intent. After adding that checkpoint,
+  rename_history_recovers_when_saving_after_the_rename_fails showed retry failing
+  because it still looked for the pre-rename source.
+- Cause: Rename had no durable intent before its filesystem effect and no recovery
+  path for an effect completed before the final journal save.
+- Fix: verify the source and destination, persist intent with the source identity,
+  then rename. When retrying recorded intent, recognize completion only if the
+  source is absent and the destination retains the recorded identity and required
+  fingerprint. Upgrade legacy records with identity before saving intent.
+- Green: Undo and Redo refuse mutation when checkpoint storage is unavailable,
+  recover after post-rename save failure for files and populated directories,
+  reject identical-content replacement destinations, and recover after process
+  interruption between intent commit and rename. Reopening and reversing the
+  recovered operation works. Seven focused Rename history checks passed.
+  Locked all-target tests passed with 744 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.

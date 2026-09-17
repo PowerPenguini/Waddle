@@ -54,6 +54,7 @@ impl Drop for PendingCreation {
 pub(super) fn apply(
     action: &mut Action,
     direction: Direction,
+    recovering: bool,
     checkpoint: &mut dyn FnMut(&Action) -> Result<(), Error>,
 ) -> Result<Effect, Error> {
     match action {
@@ -67,8 +68,15 @@ pub(super) fn apply(
                 Direction::Undo => (after.as_path(), before.as_path(), "Undid rename"),
                 Direction::Redo => (before.as_path(), after.as_path(), "Redid rename"),
             };
+            // A durable intent may outlive the final save. Only accept the
+            // recorded inode at the destination when the source is absent.
+            let already_renamed = recovering
+                && identity.is_some()
+                && fs::symlink_metadata(source)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+            let current = if already_renamed { destination } else { source };
             if let Some(expected) = identity
-                && file_identity(source)? != *expected
+                && file_identity(current)? != *expected
             {
                 return Err(Error::message(format!(
                     "Refused {}: {} is a different item",
@@ -76,17 +84,27 @@ pub(super) fn apply(
                         Direction::Undo => "Undo",
                         Direction::Redo => "Redo",
                     },
-                    source.display()
+                    current.display()
                 )));
             }
             // Child operations change folder metadata. Renaming the same
             // folder preserves its contents; older records still need their
             // metadata check because they did not capture identity.
             if identity.is_none() || !fingerprint.is_directory() {
-                verify(source, fingerprint)?;
+                verify(current, fingerprint)?;
             }
-            ensure_absent(destination)?;
-            rename_noreplace(source, destination)?;
+            if !already_renamed {
+                ensure_absent(destination)?;
+                // Upgrade older records before persisting recovery intent too.
+                *identity = Some(file_identity(source)?);
+                checkpoint(&Action::Rename {
+                    before: before.clone(),
+                    after: after.clone(),
+                    fingerprint: fingerprint.clone(),
+                    identity: *identity,
+                })?;
+                rename_noreplace(source, destination)?;
+            }
             *fingerprint = Fingerprint::read(destination)?;
             *identity = Some(file_identity(destination)?);
             Ok(Effect {

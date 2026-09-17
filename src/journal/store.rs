@@ -330,9 +330,11 @@ impl Journal {
             .collect();
         let mut checkpoint = self.clone();
         let mut saved = false;
+        let recovering = self.stored.entries[index].running == Some(direction);
         let mut effect = apply(
             &mut self.stored.entries[index].action,
             direction,
+            recovering,
             &mut |action| {
                 checkpoint.stored.entries[index].action = action.clone();
                 checkpoint.stored.entries[index].running = Some(direction);

@@ -2,6 +2,195 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn rename_history_recovers_after_interruption_before_the_rename() {
+    let shim = audit_fault_library();
+    for redo in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let before = temp.path().join("before");
+        let after = temp.path().join("after");
+        fs::write(&before, b"interrupted rename").unwrap();
+        crate::fs::rename_entry(&before, "after").unwrap();
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(Action::rename(before.clone(), after.clone()).unwrap())
+            .unwrap();
+        if redo {
+            journal.undo().unwrap();
+        }
+        drop(journal);
+        let (source, destination) = if redo {
+            (&before, &after)
+        } else {
+            (&after, &before)
+        };
+        let armed = temp.path().join("armed");
+        fs::write(&armed, "").unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", temp.path())
+            .env("WADDLE_AUDIT_COMMIT", &path)
+            .env("WADDLE_AUDIT_ARMED", &armed);
+        if !redo {
+            child.env("WADDLE_AUDIT_UNDO", "1");
+        }
+        let output = child.output().unwrap();
+        assert_eq!(output.status.code(), Some(86), "{output:?}");
+        assert!(!armed.exists());
+        assert_eq!(fs::read(source).unwrap(), b"interrupted rename");
+        assert!(!destination.exists());
+        let mut journal = Journal::open(path.clone()).unwrap();
+        if redo { journal.redo() } else { journal.undo() }.unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"interrupted rename");
+        assert!(!source.exists());
+        let mut journal = Journal::open(path).unwrap();
+        if redo { journal.undo() } else { journal.redo() }.unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"interrupted rename");
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
+fn rename_history_recovers_when_saving_after_the_rename_fails() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        for redo in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let before = temp.path().join("before");
+            let after = temp.path().join("after");
+            if directory {
+                fs::create_dir(&before).unwrap();
+                fs::write(before.join("child.txt"), b"retained contents").unwrap();
+            } else {
+                fs::write(&before, b"retained contents").unwrap();
+            }
+            crate::fs::rename_entry(&before, "after").unwrap();
+            let state = temp.path().join("state");
+            let path = state.join("journal.json");
+            let mut journal = Journal::open(path.clone()).unwrap();
+            journal
+                .record(Action::rename(before.clone(), after.clone()).unwrap())
+                .unwrap();
+            if redo {
+                journal.undo().unwrap();
+            }
+            drop(journal);
+            let (source, destination) = if redo {
+                (&before, &after)
+            } else {
+                (&after, &before)
+            };
+            let armed = temp.path().join("armed");
+            fs::write(&armed, "").unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "journal::tests::audit_history_fault_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+                .env("WADDLE_AUDIT_CHILD_ROOT", &state)
+                .env("WADDLE_AUDIT_SYNC_TARGET", &state)
+                .env("WADDLE_AUDIT_SYNC_AFTER_PATH", destination)
+                .env("WADDLE_AUDIT_ARMED", &armed);
+            if !redo {
+                child.env("WADDLE_AUDIT_UNDO", "1");
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(!armed.exists(), "The final journal save must fail");
+            assert!(
+                fs::read_to_string(state.join("result.txt"))
+                    .unwrap()
+                    .contains("could not flush operation journal")
+            );
+            assert!(!source.exists());
+            assert!(destination.exists());
+            // Identical replacement contents do not authorize recovery.
+            let retained = temp.path().join("retained");
+            fs::rename(destination, &retained).unwrap();
+            crate::fs::journal_copy(&retained, destination).unwrap();
+            let mut journal = Journal::open(path.clone()).unwrap();
+            let error = if redo { journal.redo() } else { journal.undo() }.unwrap_err();
+            assert!(error.to_string().contains("different item"), "{error}");
+            assert!(destination.exists());
+            assert!(!source.exists());
+            crate::fs::delete_permanently(destination).unwrap();
+            fs::rename(&retained, destination).unwrap();
+            let mut journal = Journal::open(path.clone()).unwrap();
+            if redo { journal.redo() } else { journal.undo() }
+                .expect("Retry must recognize the rename already completed before the save failed");
+            let contents = if directory {
+                destination.join("child.txt")
+            } else {
+                destination.clone()
+            };
+            assert_eq!(fs::read(contents).unwrap(), b"retained contents");
+            let mut journal = Journal::open(path).unwrap();
+            if redo { journal.undo() } else { journal.redo() }.unwrap();
+            assert!(source.exists());
+            assert!(!destination.exists());
+        }
+    }
+}
+
+#[test]
+fn rename_history_refuses_changes_without_a_durable_checkpoint() {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for redo in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let before = temp.path().join("before.txt");
+        let after = temp.path().join("after.txt");
+        fs::write(&before, b"rename history contents").unwrap();
+        crate::fs::rename_entry(&before, "after.txt").unwrap();
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(Action::rename(before.clone(), after.clone()).unwrap())
+            .unwrap();
+        if redo {
+            journal.undo().unwrap();
+        }
+        let saved = fs::read(&path).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = if redo { journal.redo() } else { journal.undo() };
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err(), "The journal directory is unwritable");
+        let (source, destination) = if redo {
+            (&before, &after)
+        } else {
+            (&after, &before)
+        };
+        assert!(
+            source.exists(),
+            "redo={redo}: moved the item without saving recovery intent"
+        );
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        let mut journal = Journal::open(path.clone()).unwrap();
+        if redo { journal.redo() } else { journal.undo() }.unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(destination).unwrap(), b"rename history contents");
+        let mut journal = Journal::open(path).unwrap();
+        if redo { journal.undo() } else { journal.redo() }.unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"rename history contents");
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn failed_creation_cleanup_preserves_replacements_and_added_contents() {
     let shim = audit_fault_library();

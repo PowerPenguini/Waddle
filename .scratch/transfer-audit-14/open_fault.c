@@ -63,7 +63,8 @@ int fsync(int fd) {
     int (*real_fsync)(int) = dlsym(RTLD_NEXT, "fsync");
     const char *target = getenv("WADDLE_AUDIT_SYNC_TARGET");
     const char *armed = getenv("WADDLE_AUDIT_ARMED");
-    if (target && armed) {
+    const char *after = getenv("WADDLE_AUDIT_SYNC_AFTER_PATH");
+    if (target && armed && (!after || !access(after, F_OK))) {
         char descriptor[64], path[4096];
         int length = snprintf(descriptor, sizeof descriptor, "/proc/self/fd/%d", fd);
         if (length > 0) {
