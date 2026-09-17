@@ -2,6 +2,209 @@ use super::*;
 use std::{error::Error as _, fs};
 
 #[test]
+fn undo_creation_requires_saved_intent_to_accept_an_absent_item() {
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = if directory {
+            crate::fs::create_folder(temp.path(), "created").unwrap()
+        } else {
+            crate::fs::create_file(temp.path(), "created").unwrap()
+        };
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        crate::fs::delete_permanently(&item).unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        assert!(journal.undo().is_err());
+        let mut journal = Journal::open(path).unwrap();
+        assert!(
+            journal
+                .redo()
+                .unwrap_err()
+                .to_string()
+                .contains("Nothing to redo")
+        );
+        assert!(!item.exists());
+    }
+}
+
+#[test]
+fn undo_creation_recovers_after_interruption_before_deletion() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = if directory {
+            crate::fs::create_folder(temp.path(), "created").unwrap()
+        } else {
+            crate::fs::create_file(temp.path(), "created").unwrap()
+        };
+        let path = temp.path().join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        drop(journal);
+        let armed = temp.path().join("armed");
+        fs::write(&armed, "").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", temp.path())
+            .env("WADDLE_AUDIT_UNDO", "1")
+            .env("WADDLE_AUDIT_COMMIT", &path)
+            .env("WADDLE_AUDIT_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(86), "{output:?}");
+        assert!(!armed.exists());
+        assert!(item.exists(), "The interruption must precede deletion");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.undo().unwrap();
+        assert!(!item.exists());
+        let mut journal = Journal::open(path).unwrap();
+        journal.redo().unwrap();
+        assert!(item.exists());
+        assert_eq!(item.is_dir(), directory);
+    }
+}
+
+#[test]
+fn undo_creation_recovers_when_saving_after_deletion_fails() {
+    let shim = audit_fault_library();
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = if directory {
+            crate::fs::create_folder(temp.path(), "created").unwrap()
+        } else {
+            crate::fs::create_file(temp.path(), "created").unwrap()
+        };
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        drop(journal);
+        // Keep the original inode allocated while checking a replacement below.
+        let original = fs::File::open(&item).unwrap();
+        let modified = original.metadata().unwrap().modified().unwrap();
+        let armed = temp.path().join("armed");
+        fs::write(&armed, "").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal::tests::audit_history_fault_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LD_PRELOAD", shim.path().join("open_fault.so"))
+            .env("WADDLE_AUDIT_CHILD_ROOT", &state)
+            .env("WADDLE_AUDIT_UNDO", "1")
+            .env("WADDLE_AUDIT_SYNC_TARGET", &state)
+            .env("WADDLE_AUDIT_SYNC_MISSING_PATH", &item)
+            .env("WADDLE_AUDIT_ARMED", &armed)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(!armed.exists(), "The final journal save must fail");
+        assert!(
+            fs::read_to_string(state.join("result.txt"))
+                .unwrap()
+                .contains("could not flush operation journal")
+        );
+        assert!(!item.exists());
+        if directory {
+            fs::create_dir(&item).unwrap();
+        } else {
+            fs::write(&item, b"").unwrap();
+        }
+        fs::File::open(&item)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let mut journal = Journal::open(path.clone()).unwrap();
+        let error = journal.undo().unwrap_err();
+        assert!(error.to_string().contains("different"), "{error}");
+        assert!(item.exists(), "Recovery deleted a replacement item");
+        crate::fs::delete_permanently(&item).unwrap();
+        drop(original);
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .undo()
+            .expect("Retry must recognize the completed deletion");
+        assert!(!item.exists());
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.redo().unwrap();
+        assert!(item.exists());
+        assert_eq!(item.is_dir(), directory);
+        let mut journal = Journal::open(path).unwrap();
+        journal.undo().unwrap();
+        assert!(!item.exists());
+    }
+}
+
+#[test]
+fn undo_creation_preserves_the_item_when_history_cannot_be_saved() {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert_ne!(unsafe { libc::geteuid() }, 0);
+    for directory in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let item = if directory {
+            crate::fs::create_folder(temp.path(), "created").unwrap()
+        } else {
+            crate::fs::create_file(temp.path(), "created").unwrap()
+        };
+        let state = temp.path().join("state");
+        let path = state.join("journal.json");
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal
+            .record(if directory {
+                Action::new_folder(item.clone()).unwrap()
+            } else {
+                Action::new_file(item.clone()).unwrap()
+            })
+            .unwrap();
+        let saved = fs::read(&path).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = journal.undo();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert!(
+            item.exists(),
+            "directory={directory}: deleted without durable Undo intent"
+        );
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        let mut journal = Journal::open(path.clone()).unwrap();
+        journal.undo().unwrap();
+        assert!(!item.exists());
+        let mut journal = Journal::open(path).unwrap();
+        journal.redo().unwrap();
+        assert!(item.exists());
+        assert_eq!(item.is_dir(), directory);
+    }
+}
+
+#[test]
 fn rename_history_recovers_after_interruption_before_the_rename() {
     let shim = audit_fault_library();
     for redo in [false, true] {

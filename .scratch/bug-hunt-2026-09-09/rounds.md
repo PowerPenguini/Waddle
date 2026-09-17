@@ -1599,3 +1599,25 @@ outside this work.
   recovered operation works. Seven focused Rename history checks passed.
   Locked all-target tests passed with 744 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 105: creation Undo deletes items without recoverable journal progress (2026-09-17)
+
+- Reproduction: make the journal directory unwritable and Undo New File or New
+  Folder. Separately inject fsync failure only after the item has been deleted,
+  then reopen the journal and retry Undo.
+- Red: undo_creation_preserves_the_item_when_history_cannot_be_saved showed an
+  item deleted without saved intent. After adding intent checkpoints,
+  undo_creation_recovers_when_saving_after_deletion_fails showed retry failing
+  because the deleted item could no longer be verified.
+- Cause: creation Undo performed deletion before recording intent and treated
+  an absent item as an error even while recovering a saved Undo operation.
+- Fix: verify the original item, save intent with its identity, then delete it.
+  A retry with recorded Undo intent accepts absence as completed deletion.
+  Existing paths still require the normal identity and metadata checks.
+- Green: both creation types preserve their items on checkpoint failure, recover
+  after final-save failure or interruption before deletion, and retain Undo/Redo
+  across reopening. Identical-metadata replacements survive recovery attempts.
+  Missing items without recorded intent remain errors and do not enable Redo.
+  All four new regressions passed. Locked all-target tests passed with 748 tests
+  and 24 opt-in tests ignored in the shared checkout. Strict Clippy, formatting,
+  and whitespace checks passed.

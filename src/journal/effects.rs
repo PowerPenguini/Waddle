@@ -57,6 +57,24 @@ pub(super) fn apply(
     recovering: bool,
     checkpoint: &mut dyn FnMut(&Action) -> Result<(), Error>,
 ) -> Result<Effect, Error> {
+    // A recorded creation Undo may have removed its item before the final
+    // journal save. Absence completes that intent; an existing replacement
+    // must still pass the normal identity and metadata checks below.
+    let removed_creation = match (&*action, direction, recovering) {
+        (Action::NewFolder { path, .. }, Direction::Undo, true) => Some((path, "Undid New Folder")),
+        (Action::NewFile { path, .. }, Direction::Undo, true) => Some((path, "Undid New File")),
+        _ => None,
+    };
+    if let Some((path, status)) = removed_creation
+        && fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        return Ok(Effect {
+            warnings: Vec::new(),
+            status: status.to_owned(),
+            changed_folders: path.parent().map(Path::to_path_buf).into_iter().collect(),
+            select: None,
+        });
+    }
     match action {
         Action::Rename {
             before,
@@ -142,6 +160,13 @@ pub(super) fn apply(
                     verify(path, fingerprint)?;
                 }
                 verify_creation_metadata(path, metadata)?;
+                *identity = Some(DirectoryIdentity::read(path)?);
+                checkpoint(&Action::NewFolder {
+                    path: path.clone(),
+                    fingerprint: fingerprint.clone(),
+                    identity: identity.clone(),
+                    metadata: metadata.clone(),
+                })?;
                 fs::remove_dir(&*path)
                     .map_err(|error| Error::io("could not undo New Folder", error))?;
                 Ok(Effect {
@@ -197,6 +222,13 @@ pub(super) fn apply(
                     )));
                 }
                 verify_creation_metadata(path, metadata)?;
+                *identity = Some(file_identity(path)?);
+                checkpoint(&Action::NewFile {
+                    path: path.clone(),
+                    fingerprint: fingerprint.clone(),
+                    identity: *identity,
+                    metadata: metadata.clone(),
+                })?;
                 fs::remove_file(&*path)
                     .map_err(|error| Error::io("could not undo New File", error))?;
                 Ok(Effect {

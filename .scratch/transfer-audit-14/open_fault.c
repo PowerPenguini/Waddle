@@ -64,7 +64,9 @@ int fsync(int fd) {
     const char *target = getenv("WADDLE_AUDIT_SYNC_TARGET");
     const char *armed = getenv("WADDLE_AUDIT_ARMED");
     const char *after = getenv("WADDLE_AUDIT_SYNC_AFTER_PATH");
-    if (target && armed && (!after || !access(after, F_OK))) {
+    const char *missing = getenv("WADDLE_AUDIT_SYNC_MISSING_PATH");
+    if (target && armed && (!after || !access(after, F_OK)) &&
+        (!missing || access(missing, F_OK))) {
         char descriptor[64], path[4096];
         int length = snprintf(descriptor, sizeof descriptor, "/proc/self/fd/%d", fd);
         if (length > 0) {
