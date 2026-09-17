@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn recent_supports_file_operators_and_delete_with_entries_focus() {
+    for recent in [false, true] {
+        let (mut app, _) = App::new();
+        app.navigation.settle_for_test();
+        if recent {
+            let request = app.navigation.recent().request.unwrap();
+            drop(app.update(Message::RecentLoaded {
+                request,
+                result: Some(Ok(vec![entry("diagnostic.txt")])),
+            }));
+        } else {
+            app.navigation
+                .replace_displayed_entries(vec![entry("diagnostic.txt")]);
+        }
+        app.focus_browser(BrowserFocus::Entries);
+        app.grid.select_only(Some(0), 1);
+        press(&mut app, "d");
+        assert_eq!(app.focus.browser(), BrowserFocus::Entries);
+        assert!(app.delete_operator_pending(), "d was rejected in Recent");
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        drop(app.handle_key(escape.clone(), escape, keyboard::Modifiers::empty(), None));
+        let delete = keyboard::Key::Named(keyboard::key::Named::Delete);
+        let task = app.handle_key(delete.clone(), delete, keyboard::Modifiers::empty(), None);
+        assert!(
+            app.transfers.overview().active,
+            "Delete did not start Trash"
+        );
+        drop(task);
+    }
+}
+
+#[test]
 fn recent_entry_menu_offers_only_available_actions() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -27,8 +59,8 @@ fn recent_entry_menu_offers_only_available_actions() {
             let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
             assert_eq!(
                 labels,
-                ["Properties", "Open-with…"],
-                "Recent offered mutation actions whose handlers reject this location"
+                ["Properties", "Open-with…", "Rename", "Move to Trash"],
+                "Recent must offer operations on files without offering a destination folder"
             );
             let (_, properties) = actions.into_iter().next().unwrap();
             let inspected = app.update(properties);
@@ -65,8 +97,8 @@ fn recursive_search_menus_offer_only_available_actions() {
             let labels: Vec<_> = actions.iter().map(|(label, _)| label.as_str()).collect();
             assert_eq!(
                 labels,
-                ["Properties", "Open-with…"],
-                "Recursive search offered mutation actions whose handlers reject them"
+                ["Properties", "Open-with…", "Rename", "Move to Trash"],
+                "Search results support file operations but are not a destination folder"
             );
             assert!(app.context_actions(ContextTarget::Background).is_empty());
             let (_, properties) = actions.into_iter().next().unwrap();
@@ -563,7 +595,8 @@ fn focused_sidebar_can_move_above_home_to_computer() {
 
 #[test]
 fn context_menu_does_not_offer_template_files() {
-    let (app, _) = App::new();
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
     let labels = app
         .context_actions(ContextTarget::Entry(0))
         .into_iter()

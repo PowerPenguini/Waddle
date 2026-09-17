@@ -13,6 +13,7 @@ mod location_monitoring;
 mod navigation;
 mod navigation_integration;
 mod open_with;
+mod operation_access;
 mod operation_integration;
 mod operations;
 mod places;

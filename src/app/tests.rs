@@ -45,6 +45,8 @@ mod file_operation;
 mod focus;
 mod input;
 mod navigation;
+mod operation_access;
 mod presentation;
+mod recent_lifecycle;
 mod transfer;
 mod transient;

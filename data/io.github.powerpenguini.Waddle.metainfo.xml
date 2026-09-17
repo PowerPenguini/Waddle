@@ -22,6 +22,17 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.21" date="2026-09-17">
+      <description>
+        <ul>
+          <li>Support file operations in Recent and search results through shared keyboard, menu, and execution rules.</li>
+          <li>Preserve collection views, pending Cut entries, and Undo/Redo through transfers, refreshes, and conflicts.</li>
+          <li>Observe externally restored Recent files and reject stale scans after clearing or disabling history.</li>
+          <li>Reject drops onto collection backgrounds instead of writing to a hidden previous folder.</li>
+          <li>Keep newer navigation and the latest sidebar volume choice when mount results arrive late.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.20" date="2026-09-17">
       <description>
         <ul>

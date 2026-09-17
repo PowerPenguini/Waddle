@@ -31,6 +31,9 @@ pub(super) fn transfer_runtime_message(event: transfer_session::RuntimeEvent) ->
 
 impl App {
     pub(super) fn copy_selection(&mut self) -> Task<Message> {
+        if !self.operation_access().entries {
+            return Task::none();
+        }
         let entries = self.selected_entries();
         let Some(change) = self.transfers.copy(&entries) else {
             return Task::none();
@@ -39,13 +42,16 @@ impl App {
         self.flash_copy_feedback();
         if change.restore_entries {
             self.sync_location_monitoring();
-            self.refresh(None)
+            self.refresh_location()
         } else {
             Task::none()
         }
     }
 
     pub(super) fn cut_selection(&mut self) -> Task<Message> {
+        if !self.operation_access().entries {
+            return Task::none();
+        }
         let entries = self.selected_entries();
         let Some(change) = self.transfers.cut(&entries) else {
             return Task::none();
@@ -54,7 +60,11 @@ impl App {
         self.navigation.hide_paths(&change.hide_paths);
         self.sync_location_monitoring();
         self.grid.select_only(None, self.navigation.entries().len());
-        Task::none()
+        if change.restore_entries {
+            self.refresh_location()
+        } else {
+            Task::none()
+        }
     }
 
     pub(super) fn cancel_cut(&mut self, status: &str) -> Task<Message> {
@@ -63,11 +73,11 @@ impl App {
         }
         self.sync_location_monitoring();
         self.presentation.set_status(status.to_owned());
-        self.refresh(None)
+        self.refresh_location()
     }
 
     pub(super) fn paste(&mut self) -> Task<Message> {
-        if !self.mutations_allowed() {
+        if !self.operation_access().destination {
             return Task::none();
         }
         if !self.transfers.pending_cut_paths().is_empty() {
@@ -141,6 +151,10 @@ impl App {
     }
 
     pub(super) fn drop_destination_at(&self, point: Point, allow_current: bool) -> Option<PathBuf> {
+        let access = self.operation_access();
+        if !access.entries && !access.trash {
+            return None;
+        }
         let row_heights = self.sidebar_tree.row_heights(self.navigation.current());
         match self.grid.drop_zone(
             point,
@@ -152,13 +166,16 @@ impl App {
             DropZone::Sidebar(index) => {
                 self.sidebar_tree.row_path(index, self.navigation.current())
             }
-            DropZone::Entry(index) => self
+            DropZone::Entry(index) if access.entries => self
                 .navigation
                 .entries()
                 .get(index)
                 .filter(|entry| entry.is_directory())
                 .map(|entry| entry.path.clone()),
-            DropZone::Current => Some(self.navigation.current().to_path_buf()),
+            DropZone::Current if access.destination => {
+                Some(self.navigation.current().to_path_buf())
+            }
+            _ => None,
         }
     }
 
@@ -485,13 +502,5 @@ impl App {
                 .into_iter()
                 .map(|request| self.load_tree_node(request)),
         )
-    }
-
-    pub(super) fn mutations_allowed(&self) -> bool {
-        !self.foreground_operation_active()
-            && self.transfers.overview().conflict_prompt.is_none()
-            && !self.navigation.loading()
-            && !self.search.is_recursive()
-            && self.navigation.folder_displayed()
     }
 }

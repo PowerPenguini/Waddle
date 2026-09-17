@@ -38,7 +38,7 @@ impl Recent {
         Self::open_at(history_path(), preferences_path())
     }
 
-    fn open_at(history_path: PathBuf, preferences_path: PathBuf) -> Self {
+    pub(super) fn open_at(history_path: PathBuf, preferences_path: PathBuf) -> Self {
         let preferences = fs::read(&preferences_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -60,18 +60,10 @@ impl Recent {
     }
 
     pub(super) fn entries(&self) -> Result<Vec<FileEntry>, String> {
-        if !self.preferences.enabled || !self.history_path.exists() {
-            return Ok(Vec::new());
-        }
-        let mut bookmarks = gio::glib::BookmarkFile::new();
-        bookmarks
-            .load_from_file(&self.history_path)
-            .map_err(|error| format!("Could not read shared Recent history: {error}"))?;
-        let mut entries = bookmarks
-            .uris()
+        let mut entries = self
+            .paths()?
             .into_iter()
-            .filter_map(|uri| {
-                let path = gio::File::for_uri(uri.as_str()).path()?;
+            .filter_map(|path| {
                 let metadata = fs::metadata(&path).ok()?;
                 let name = path.file_name().map(OsString::from)?;
                 Some(FileEntry {
@@ -86,6 +78,21 @@ impl Recent {
         Ok(entries)
     }
 
+    fn paths(&self) -> Result<Vec<PathBuf>, String> {
+        if !self.preferences.enabled || !self.history_path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut bookmarks = gio::glib::BookmarkFile::new();
+        bookmarks
+            .load_from_file(&self.history_path)
+            .map_err(|error| format!("Could not read shared Recent history: {error}"))?;
+        Ok(bookmarks
+            .uris()
+            .into_iter()
+            .filter_map(|uri| gio::File::for_uri(uri.as_str()).path())
+            .collect())
+    }
+
     pub(super) fn watch_paths(&self, displayed: &[FileEntry]) -> Vec<PathBuf> {
         let mut paths = self
             .history_path
@@ -98,6 +105,16 @@ impl Recent {
                 .iter()
                 .filter_map(|entry| entry.path.parent().map(PathBuf::from)),
         );
+        // Missing bookmarks can reappear after an external restore. Keep their
+        // parents watched even when the last visible entry has disappeared.
+        paths.extend(
+            self.paths()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|path| path.parent().map(PathBuf::from)),
+        );
+        paths.sort();
+        paths.dedup();
         paths
     }
 

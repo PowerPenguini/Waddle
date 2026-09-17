@@ -119,26 +119,36 @@ impl App {
                         self.install_locations();
                         match effect {
                             recent::Effect::Open => return self.open_recent(),
-                            recent::Effect::Reload
-                                if self.navigation.displayed_location()
-                                    == DisplayedLocation::Recent =>
-                            {
-                                return self.open_recent();
+                            recent::Effect::Reload | recent::Effect::Disabled => {
+                                let loading_recent = self.navigation.pending_location()
+                                    == Some(DisplayedLocation::Recent);
+                                if loading_recent {
+                                    self.cancel_pending_navigation();
+                                }
+                                // A history change invalidates older Recent reads, but
+                                // must not replace a newer choice to open a folder.
+                                if self.navigation.loading() {
+                                    return Task::none();
+                                }
+                                if effect == recent::Effect::Reload && loading_recent {
+                                    return self.open_recent();
+                                }
+                                if self.navigation.displayed_location() == DisplayedLocation::Recent
+                                {
+                                    if effect == recent::Effect::Reload {
+                                        return self.refresh_location();
+                                    }
+                                    let current = self.navigation.current().to_path_buf();
+                                    return self.transition_navigation(
+                                        NavigationTransition::Open {
+                                            requested: current,
+                                            remember: false,
+                                            select: None,
+                                        },
+                                    );
+                                }
                             }
-                            recent::Effect::Disabled
-                                if self.navigation.displayed_location()
-                                    == DisplayedLocation::Recent =>
-                            {
-                                let current = self.navigation.current().to_path_buf();
-                                return self.transition_navigation(NavigationTransition::Open {
-                                    requested: current,
-                                    remember: false,
-                                    select: None,
-                                });
-                            }
-                            recent::Effect::Reload
-                            | recent::Effect::Disabled
-                            | recent::Effect::Enabled => {}
+                            recent::Effect::Enabled => {}
                         }
                     }
                     Err(error) => self.presentation.set_status(error),
@@ -250,7 +260,7 @@ impl App {
     }
 
     pub(super) fn show_rename(&mut self, index: usize) -> Task<Message> {
-        if !self.mutations_allowed() {
+        if !self.operation_access().entries {
             return Task::none();
         }
         let Some(entry) = self.navigation.entries().get(index).cloned() else {
@@ -272,7 +282,7 @@ impl App {
     }
 
     pub(super) fn show_new_folder(&mut self) -> Task<Message> {
-        if !self.mutations_allowed() {
+        if !self.operation_access().destination {
             return Task::none();
         }
         let parent = self.navigation.current().to_path_buf();
@@ -281,7 +291,7 @@ impl App {
     }
 
     pub(super) fn show_new_file(&mut self) -> Task<Message> {
-        if !self.mutations_allowed() {
+        if !self.operation_access().destination {
             return Task::none();
         }
         let parent = self.navigation.current().to_path_buf();
@@ -323,7 +333,7 @@ impl App {
         mode: String,
         mut targets: Vec<PathBuf>,
     ) -> Task<Message> {
-        if !self.mutations_allowed() {
+        if !self.operation_access().entries {
             return Task::none();
         }
         if targets.is_empty() {
@@ -452,7 +462,7 @@ impl App {
         if self.navigation.displayed_location() == DisplayedLocation::Trash {
             return self.show_trash_delete_prompt(false);
         }
-        if !self.mutations_allowed() {
+        if !self.operation_access().entries {
             return Task::none();
         }
         let entries = self.selected_entries();
@@ -481,10 +491,7 @@ impl App {
     }
 
     pub(super) fn restore_selected_trash(&mut self) -> Task<Message> {
-        if self.navigation.displayed_location() != DisplayedLocation::Trash
-            || self.foreground_operation_active()
-            || self.transfers.overview().conflict_prompt.is_some()
-        {
+        if !self.operation_access().trash {
             return Task::none();
         }
         let entries = self.selected_trash_entries();
@@ -499,9 +506,7 @@ impl App {
     }
 
     pub(super) fn show_trash_delete_prompt(&mut self, empty: bool) -> Task<Message> {
-        if self.navigation.displayed_location() != DisplayedLocation::Trash
-            || self.foreground_operation_active()
-        {
+        if !self.operation_access().trash {
             return Task::none();
         }
         let entries = if empty {
@@ -596,13 +601,7 @@ impl App {
     }
 
     pub(super) fn run_journal(&mut self, redo: bool) -> Task<Message> {
-        let transfers = self.transfers.overview();
-        if self.foreground_operation_active()
-            || transfers.active
-            || transfers.conflict_prompt.is_some()
-            || self.search.is_recursive()
-            || !self.navigation.folder_displayed()
-        {
+        if !self.operation_access().history {
             return Task::none();
         }
         self.presentation

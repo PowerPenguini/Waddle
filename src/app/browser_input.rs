@@ -157,10 +157,19 @@ pub(super) struct Context {
     pub(super) navigation_pending: bool,
     pub(super) file_operators_allowed: bool,
     pub(super) trash_delete_allowed: bool,
+    pub(super) file_operator_error: Option<&'static str>,
     pub(super) bottom_input: BottomInput,
 }
 
 impl Context {
+    fn rejected_file_operator(self) -> Intent {
+        Intent::InvalidSequence(
+            self.file_operator_error
+                .unwrap_or("File operators are unavailable in the focused sidebar")
+                .to_owned(),
+        )
+    }
+
     fn deletion_allowed(self) -> bool {
         self.file_operators_allowed || self.trash_delete_allowed
     }
@@ -527,7 +536,8 @@ impl BrowserInput {
             return match text.map(str::to_ascii_lowercase).as_deref() {
                 Some("=" | "+") => Intent::ResizeIcons(1),
                 Some("-") => Intent::ResizeIcons(-1),
-                Some("c") => Intent::Copy,
+                Some("c") if context.file_operators_allowed => Intent::Copy,
+                Some("c") => context.rejected_file_operator(),
                 Some("a") => Intent::SelectAll,
                 Some("l") => Intent::BeginLocation,
                 Some("v") => Intent::Paste,
@@ -629,9 +639,7 @@ impl BrowserInput {
                 }
                 (2, Some("x" | "d")) => {
                     self.clear_sequence();
-                    Intent::InvalidSequence(
-                        "File operators are unavailable in the focused sidebar".to_owned(),
-                    )
+                    context.rejected_file_operator()
                 }
                 _ => self.invalid_sequence(text.unwrap_or("key")),
             };
@@ -690,9 +698,8 @@ impl BrowserInput {
             Some("y" | "x" | "d") if context.trash_delete_allowed => {
                 Intent::InvalidSequence("Use Delete to delete permanently from Trash".to_owned())
             }
-            Some("y" | "x" | "d") => Intent::InvalidSequence(
-                "File operators are unavailable in the focused sidebar".to_owned(),
-            ),
+            Some("d") if context.file_operators_allowed => Intent::None,
+            Some("y" | "x" | "d") => context.rejected_file_operator(),
             Some("g") => {
                 self.count = count;
                 self.g_pending = true;

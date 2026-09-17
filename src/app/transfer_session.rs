@@ -589,6 +589,7 @@ impl TransferSession {
         entries: &[FileEntry],
         adapter: Option<&dyn ClipboardAdapter>,
     ) -> Option<ClipboardChange> {
+        let restore_entries = !self.state.pending_cut_paths().is_empty();
         let status = self.state.cut(entries)?;
         self.local_copy = false;
         let status = self.write_clipboard(adapter).map_or(status, |error| {
@@ -597,7 +598,7 @@ impl TransferSession {
         Some(ClipboardChange {
             status,
             hide_paths: self.state.pending_cut_paths().to_vec(),
-            restore_entries: false,
+            restore_entries,
         })
     }
 

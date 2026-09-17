@@ -236,7 +236,7 @@ impl App {
             }
         };
         let refresh = if refresh {
-            self.live_refresh()
+            self.refresh_location()
         } else {
             Task::none()
         };
@@ -277,7 +277,7 @@ impl App {
         if self.navigation.folder_displayed() {
             return self.live_refresh();
         }
-        if self.foreground_operation_active() || self.navigation.loading() {
+        if self.navigation.defer_refresh() {
             return Task::none();
         }
         let selected = self

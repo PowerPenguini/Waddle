@@ -10,12 +10,11 @@ use iced::{
 use crate::{fs, theme, transfer::Event as TransferEvent};
 
 use super::{
-    App, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget, DisplayedLocation,
-    InputContext, InputIntent, InputMode, InputNamedKey, InputPress,
-    MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion, MouseBackGesture, NavigationCompletion,
-    NavigationTransition, ScrollTarget, TreeLoadOutcome, X11_INBOUND_ID, clears_status_notice,
-    find_window_after_delay, location_monitoring, native_clipboard, scroll_motion,
-    system_icon_task, transfer_integration, transfer_session,
+    App, BrowserFocus, ContextNavigation, ContextOutcome, ContextTarget, InputContext, InputIntent,
+    InputMode, InputNamedKey, InputPress, MOUSE_BACK_DOUBLE_CLICK_INTERVAL, Message, Motion,
+    MouseBackGesture, NavigationCompletion, NavigationTransition, ScrollTarget, TreeLoadOutcome,
+    X11_INBOUND_ID, clears_status_notice, find_window_after_delay, location_monitoring,
+    native_clipboard, scroll_motion, system_icon_task, transfer_integration, transfer_session,
 };
 
 fn is_modifier_key(key: &keyboard::Key) -> bool {
@@ -449,6 +448,13 @@ impl App {
             Message::SearchChanged(value) => self.update_search(value),
             Message::SearchSubmitted => self.submit_search(),
             Message::SearchFinished { request, result } => {
+                let result = result.map(|mut results| {
+                    super::navigation::exclude_paths(
+                        &mut results.entries,
+                        self.transfers.pending_cut_paths(),
+                    );
+                    results
+                });
                 if let Err(error) =
                     self.search
                         .complete(request, &mut self.navigation, &mut self.grid, result)
@@ -933,6 +939,8 @@ impl App {
         }
         let foreground_operation_active = self.foreground_operation_active();
         let transfers = self.transfers.overview();
+        let access = self.operation_access();
+        let entries_focused = self.focus.is(BrowserFocus::Entries);
         let intent = self.transient_presentation().handle(
             &mut self.browser_input,
             InputPress {
@@ -955,10 +963,13 @@ impl App {
                 has_selection: self.grid.selected_entry().is_some(),
                 pending_cut: !self.transfers.pending_cut_paths().is_empty(),
                 navigation_pending: self.navigation.loading(),
-                file_operators_allowed: self.focus.is(BrowserFocus::Entries)
-                    && self.navigation.folder_displayed(),
-                trash_delete_allowed: self.focus.is(BrowserFocus::Entries)
-                    && self.navigation.displayed_location() == DisplayedLocation::Trash,
+                file_operators_allowed: entries_focused && access.entries,
+                trash_delete_allowed: entries_focused && access.trash,
+                file_operator_error: Some(if entries_focused {
+                    access.unavailable
+                } else {
+                    "File operators are unavailable in the focused sidebar"
+                }),
                 ..InputContext::default()
             },
         );
@@ -1169,45 +1180,32 @@ impl App {
     }
 
     pub(super) fn context_actions(&self, target: ContextTarget) -> Vec<(String, Message)> {
-        if self.search.is_recursive()
-            || self.navigation.displayed_location() == DisplayedLocation::Recent
-        {
-            return match target {
-                ContextTarget::Background => Vec::new(),
-                ContextTarget::Entry(_) => vec![
-                    ("Properties".to_owned(), Message::ContextProperties),
-                    ("Open-with…".to_owned(), Message::ContextOpenWith),
-                ],
-            };
+        let access = self.operation_access();
+        let entry = matches!(target, ContextTarget::Entry(_));
+        let mut actions = Vec::new();
+        if access.destination {
+            actions.push(("New Folder".to_owned(), Message::ContextNewFolder));
+            actions.push(("New Empty File".to_owned(), Message::ContextNewFile));
         }
-        match (self.navigation.displayed_location(), target) {
-            (DisplayedLocation::Trash, ContextTarget::Background) => {
-                vec![("Empty Trash".to_owned(), Message::ContextEmptyTrash)]
-            }
-            (DisplayedLocation::Trash, ContextTarget::Entry(_)) => vec![
-                ("Restore".to_owned(), Message::ContextRestore),
-                (
+        if access.trash {
+            if entry {
+                actions.push(("Restore".to_owned(), Message::ContextRestore));
+                actions.push((
                     "Delete permanently".to_owned(),
                     Message::ContextDeletePermanent,
-                ),
-                ("Empty Trash".to_owned(), Message::ContextEmptyTrash),
-                ("Properties".to_owned(), Message::ContextProperties),
-                ("Open-with…".to_owned(), Message::ContextOpenWith),
-            ],
-            (DisplayedLocation::Folder, ContextTarget::Background) => vec![
-                ("New Folder".to_owned(), Message::ContextNewFolder),
-                ("New Empty File".to_owned(), Message::ContextNewFile),
-            ],
-            (DisplayedLocation::Recent, ContextTarget::Background) => Vec::new(),
-            (_, ContextTarget::Entry(_)) => vec![
-                ("New Folder".to_owned(), Message::ContextNewFolder),
-                ("New Empty File".to_owned(), Message::ContextNewFile),
-                ("Properties".to_owned(), Message::ContextProperties),
-                ("Open-with…".to_owned(), Message::ContextOpenWith),
-                ("Rename".to_owned(), Message::ContextRename),
-                ("Move to Trash".to_owned(), Message::ContextTrash),
-            ],
+                ));
+            }
+            actions.push(("Empty Trash".to_owned(), Message::ContextEmptyTrash));
         }
+        if entry {
+            actions.push(("Properties".to_owned(), Message::ContextProperties));
+            actions.push(("Open-with…".to_owned(), Message::ContextOpenWith));
+            if access.entries {
+                actions.push(("Rename".to_owned(), Message::ContextRename));
+                actions.push(("Move to Trash".to_owned(), Message::ContextTrash));
+            }
+        }
+        actions
     }
 
     pub(super) fn handle_context_key(&mut self, key: InputNamedKey, shift: bool) -> Task<Message> {

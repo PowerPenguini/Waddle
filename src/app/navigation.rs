@@ -207,7 +207,7 @@ pub(super) struct NavigationSession {
     forward_history: Vec<PathBuf>,
     display: Display,
     pending: Option<Request>,
-    deferred_refresh: Option<PathBuf>,
+    deferred_refresh: Option<(DisplayedLocation, PathBuf)>,
     next_request_id: u64,
     revision: u64,
 }
@@ -269,6 +269,10 @@ impl NavigationSession {
 
     pub(super) fn loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub(super) fn pending_location(&self) -> Option<DisplayedLocation> {
+        self.pending.as_ref().map(Request::location)
     }
 
     pub(super) fn cancel_pending(&mut self) -> Option<Request> {
@@ -343,12 +347,12 @@ impl NavigationSession {
         start
     }
 
-    /// Coalesce a live refresh while the displayed folder has an in-flight request.
+    /// Coalesce changes while a location scan is in flight, including collections.
     pub(super) fn defer_refresh(&mut self) -> bool {
-        if !self.loading() {
+        let Some(pending) = self.pending.as_ref() else {
             return false;
-        }
-        self.deferred_refresh = Some(self.current.clone());
+        };
+        self.deferred_refresh = Some((pending.location(), self.current.clone()));
         true
     }
 
@@ -493,7 +497,7 @@ impl NavigationSession {
                 self.complete_folder(kind, &request.select, result, hidden_paths)
             }
             (Target::Recent { refresh }, Completion::Recent(result)) => {
-                self.complete_recent(&request.select, *refresh, result)
+                self.complete_recent(&request.select, *refresh, result, hidden_paths)
             }
             (Target::Trash { refresh }, Completion::Trash(result)) => {
                 self.complete_trash(&request.select, *refresh, result)
@@ -504,7 +508,9 @@ impl NavigationSession {
             && self
                 .deferred_refresh
                 .take()
-                .is_some_and(|path| self.folder_displayed() && path == self.current);
+                .is_some_and(|(location, path)| {
+                    location == self.displayed_location() && path == self.current
+                });
         Completed {
             outcome,
             tree_load: accepted.tree_load,
@@ -597,11 +603,13 @@ impl NavigationSession {
         select: &[PathBuf],
         refresh: bool,
         result: Result<Vec<FileEntry>, String>,
+        hidden_paths: &[PathBuf],
     ) -> Outcome {
-        let entries = match result {
+        let mut entries = match result {
             Ok(entries) => entries,
             Err(error) => return Outcome::Failed(error),
         };
+        exclude_paths(&mut entries, hidden_paths);
         self.display = Display {
             location: DisplayedLocation::Recent,
             entries,
@@ -718,7 +726,7 @@ impl NavigationSession {
     }
 }
 
-fn exclude_paths(entries: &mut Vec<FileEntry>, paths: &[PathBuf]) {
+pub(super) fn exclude_paths(entries: &mut Vec<FileEntry>, paths: &[PathBuf]) {
     let hidden: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
     entries.retain(|entry| !hidden.contains(entry.path.as_path()));
 }
