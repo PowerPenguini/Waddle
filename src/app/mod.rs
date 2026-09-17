@@ -211,6 +211,7 @@ enum Message {
     },
     TreeStorageUsageLoaded(Vec<(TreeStorageUsageRequest, Result<fs::StorageUsage, String>)>),
     TreeVolumeMounted {
+        navigation_revision: u64,
         id: String,
         result: Result<places::MountedVolume, String>,
     },
@@ -329,6 +330,7 @@ pub fn run() -> iced::Result {
 }
 
 struct PendingVolumeNavigation {
+    navigation_revision: u64,
     id: String,
     label: String,
     deadline: Instant,

@@ -243,7 +243,11 @@ impl App {
                 self.sidebar_tree.focus(id);
                 self.activate_tree_row(id)
             }
-            Message::TreeVolumeMounted { id, result } => self.finish_tree_volume_mount(&id, result),
+            Message::TreeVolumeMounted {
+                navigation_revision,
+                id,
+                result,
+            } => self.finish_tree_volume_mount(navigation_revision, &id, result),
             Message::TreeVolumeUnmount(id) => self.unmount_tree_volume(id),
             Message::TreeVolumeUnmounted {
                 id,

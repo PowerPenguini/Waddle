@@ -2337,6 +2337,129 @@ fn undo_is_not_ignored_while_the_current_folder_refreshes() {
 }
 
 #[test]
+fn delayed_volume_mounts_preserve_newer_navigation() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for scenario in ["settled", "pending", "returned", "refresh"] {
+                let temp = tempfile::tempdir().unwrap();
+                let original = temp.path().join("original");
+                let mounted = temp.path().join("mounted");
+                std_fs::create_dir(&original).unwrap();
+                std_fs::create_dir(&mounted).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(original.clone());
+                app.navigation.settle_for_test();
+                let volume = VolumeRoot {
+                    id: "uuid:delayed-test".into(),
+                    path: None,
+                    label: "Delayed volume".into(),
+                    can_unmount: false,
+                };
+                app.sidebar_tree = SidebarTree::new(vec![volume.clone()]);
+                let row = app
+                    .sidebar_tree
+                    .rows(&original)
+                    .into_iter()
+                    .find(|row| row.label == volume.label)
+                    .unwrap();
+                // Supply the desktop's mount completion below; do not mount a real device.
+                let navigation_revision = app.navigation.revision();
+                drop(app.update(Message::TreeRow(row.id)));
+                let navigation = app.update(if scenario == "refresh" {
+                    Message::Refresh
+                } else {
+                    Message::Parent
+                });
+                if scenario != "pending" {
+                    finish_tasks(&mut app, navigation).await;
+                }
+                if scenario == "returned" {
+                    let back = app.update(Message::Back);
+                    finish_tasks(&mut app, back).await;
+                }
+                let status = app.presentation.status().to_owned();
+                app.sidebar_tree.reconcile_volumes(vec![VolumeRoot {
+                    path: Some(mounted.clone()),
+                    can_unmount: true,
+                    ..volume.clone()
+                }]);
+                let task = app.update(Message::TreeVolumeMounted {
+                    navigation_revision,
+                    id: volume.id,
+                    result: Ok(places::MountedVolume {
+                        label: volume.label,
+                    }),
+                });
+                finish_tasks(&mut app, task).await;
+                let expected = match scenario {
+                    "settled" => temp.path(),
+                    "refresh" => mounted.as_path(),
+                    _ => original.as_path(),
+                };
+                assert_eq!(app.navigation.current(), expected, "scenario: {scenario}");
+                if scenario == "pending" {
+                    assert_eq!(app.navigation.pending_path(), Some(temp.path()));
+                }
+                if scenario != "refresh" {
+                    assert_eq!(app.presentation.status(), status, "scenario: {scenario}");
+                }
+            }
+        });
+}
+
+#[test]
+fn deferred_volume_mount_timeouts_preserve_newer_navigation_feedback() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for navigate_away in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let original = temp.path().join("original");
+                std_fs::create_dir(&original).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(original.clone());
+                app.navigation.settle_for_test();
+                app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                    id: "uuid:missing-mount-path".into(),
+                    path: None,
+                    label: "Missing mount path".into(),
+                    can_unmount: false,
+                }]);
+                let row = app.sidebar_tree.rows(&original).into_iter()
+                    .find(|row| row.label == "Missing mount path").unwrap();
+                let navigation_revision = app.navigation.revision();
+                drop(app.update(Message::TreeRow(row.id)));
+                drop(app.update(Message::TreeVolumeMounted {
+                    navigation_revision,
+                    id: "uuid:missing-mount-path".into(),
+                    result: Ok(places::MountedVolume { label: "Missing mount path".into() }),
+                }));
+                if navigate_away {
+                    let task = app.update(Message::Parent);
+                    finish_tasks(&mut app, task).await;
+                }
+                let status = app.presentation.status().to_owned();
+                // Arrange expiry of the desktop's missing-path deadline without a 10-second sleep.
+                app.pending_volume_navigation.as_mut().unwrap().deadline = Instant::now();
+                let task = app.update(Message::PollSystem);
+                finish_tasks(&mut app, task).await;
+                assert_eq!(app.navigation.current(), if navigate_away { temp.path() } else { &original });
+                if navigate_away {
+                    assert_eq!(app.presentation.status(), status,
+                        "An abandoned volume navigation replaced newer feedback when its path timed out");
+                } else {
+                    assert_eq!(app.presentation.status(), "Mounted Missing mount path, but its folder is unavailable");
+                }
+            }
+        });
+}
+
+#[test]
 fn mounted_tree_volume_waits_for_its_path_then_opens_the_root() {
     let (mut app, _) = App::new();
     app.navigation = NavigationSession::new(PathBuf::from("/current"));
@@ -2359,6 +2482,7 @@ fn mounted_tree_volume_waits_for_its_path_then_opens_the_root() {
     let mounted_path = PathBuf::from("/run/media/user/USB Stick");
 
     let _ = app.finish_tree_volume_mount(
+        app.navigation.revision(),
         "uuid:test",
         Ok(places::MountedVolume {
             label: "USB Stick".to_owned(),

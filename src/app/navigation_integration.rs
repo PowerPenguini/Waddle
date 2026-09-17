@@ -590,6 +590,7 @@ impl App {
             TreeActivation::Recent => self.open_recent(),
             TreeActivation::Trash => self.open_trash(),
             TreeActivation::MountVolume { id, label } => {
+                let navigation_revision = self.navigation.revision();
                 self.presentation.set_status(format!("Mounting {label}…"));
                 let message_id = id.clone();
                 Task::perform(
@@ -599,6 +600,7 @@ impl App {
                         }),
                     move |completion| match completion {
                         Completion::Finished(result) => Message::TreeVolumeMounted {
+                            navigation_revision,
                             id: message_id,
                             result,
                         },
@@ -618,15 +620,21 @@ impl App {
 
     pub(super) fn finish_tree_volume_mount(
         &mut self,
+        navigation_revision: u64,
         id: &str,
         result: Result<super::places::MountedVolume, String>,
     ) -> Task<Message> {
+        if navigation_revision != self.navigation.revision() {
+            self.sidebar_tree.finish_volume_mount(id, None);
+            return Task::none();
+        }
         match result {
             Ok(mounted) => {
                 if let Some(path) = self.sidebar_tree.volume_path(id) {
                     return self.open_mounted_tree_volume(id, &mounted.label, path);
                 }
                 self.pending_volume_navigation = Some(super::PendingVolumeNavigation {
+                    navigation_revision,
                     id: id.to_owned(),
                     label: mounted.label.clone(),
                     deadline: iced::time::Instant::now() + Duration::from_secs(10),
@@ -720,6 +728,11 @@ impl App {
         };
         let id = pending.id.clone();
         let label = pending.label.clone();
+        if pending.navigation_revision != self.navigation.revision() {
+            self.pending_volume_navigation = None;
+            self.sidebar_tree.finish_volume_mount(&id, None);
+            return Task::none();
+        }
         if let Some(path) = self.sidebar_tree.volume_path(&id) {
             self.pending_volume_navigation = None;
             return self.open_mounted_tree_volume(&id, &label, path);

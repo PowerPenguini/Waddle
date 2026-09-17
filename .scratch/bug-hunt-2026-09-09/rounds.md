@@ -1411,3 +1411,20 @@ outside this work.
   operations still refresh the Sidebar tree's volume list.
 - Green: delayed errors preserve newer feedback, and current errors remain visible.
   All-target tests, strict Clippy, formatting, and whitespace checks passed.
+
+## Round 95: delayed sidebar mounts override newer navigation (2026-09-17)
+
+- Reproduction: activate an unmounted Sidebar volume, navigate elsewhere, then
+  deliver the desktop's mount result. Also complete a mount without a known
+  path, navigate elsewhere, and let the path lookup deadline expire.
+- Red: `delayed_volume_mounts_preserve_newer_navigation` reopened the mounted
+  folder after Parent navigation. A second regression showed an abandoned
+  path lookup replacing newer feedback with its timeout error.
+- Fix: capture the Navigation session revision when starting the mount and
+  retain it while waiting for the path. Obsolete completions and path lookups
+  release the Sidebar loading state without changing navigation or feedback.
+- Green: settled navigation, pending navigation, and returning to the original
+  folder all supersede the mount's automatic opening. Refreshes still allow
+  opening the mounted folder, and a current missing-path timeout remains visible.
+  All-target tests passed with 714 tests and 24 opt-in tests ignored. Strict
+  Clippy, formatting, and whitespace checks passed.
