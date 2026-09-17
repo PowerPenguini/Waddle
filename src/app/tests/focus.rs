@@ -386,7 +386,10 @@ fn permanent_delete_prompt_traps_browser_keys_from_either_surface() {
             app.grid.select_only(Some(0), 2);
             app.focus_browser(surface);
             app.file_operations
-                .finish_trash_transfer(vec![(entry("one"), "Trash unavailable".into())]);
+                .finish_trash_transfer(vec![trash::Failure::capture(
+                    entry("one"),
+                    "Trash unavailable".into(),
+                )]);
             let _ = app.update(Message::Noop);
             for pressed in [
                 Key::Named(Named::Tab),

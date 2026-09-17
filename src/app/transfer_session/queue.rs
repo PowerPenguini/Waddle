@@ -383,7 +383,7 @@ impl Queue {
                 let retry_paths = report
                     .failures
                     .iter()
-                    .map(|(entry, _)| entry.path.as_path())
+                    .map(|failure| failure.entry.path.as_path())
                     .chain(report.retained.iter().map(|entry| entry.path.as_path()))
                     .collect::<std::collections::BTreeSet<_>>();
                 let retry_entries = entries
@@ -1213,7 +1213,7 @@ mod tests {
 
         let report = trash::Report {
             receipts: Vec::new(),
-            failures: vec![(first.clone(), "denied".to_owned())],
+            failures: vec![trash::Failure::capture(first.clone(), "denied".to_owned())],
             retained: vec![second.clone()],
             retry: trash::Batch::new(vec![first.clone(), second.clone()]),
             cancelled: true,

@@ -1,6 +1,149 @@
 use super::*;
 
 #[test]
+fn trash_fallback_preserves_sources_replaced_before_confirmation() {
+    use iced::futures::StreamExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    const CHILD: &str = "WADDLE_TRASH_FALLBACK_IDENTITY_ROOT";
+    let Some(root) = std::env::var_os(CHILD) else {
+        let temp = tempfile::Builder::new()
+            .prefix("waddle-trash-fallback-test-")
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/files")).unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/info")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::file_operation::trash_fallback_preserves_sources_replaced_before_confirmation",
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "permission fixture requires a normal user"
+    );
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = PathBuf::from(root);
+            for timing in ["queued", "completed", "unchanged"] {
+                for kind in ["file", "directory", "symlink"] {
+                    let folder = root.join(format!("{timing}-{kind}"));
+                    std_fs::create_dir(&folder).unwrap();
+                    let source = folder.join("source");
+                    let retained = root.join(format!("retained-{timing}-{kind}"));
+                    let target = root.join(format!("target-{timing}-{kind}"));
+                    let create = |path: &std::path::Path, contents: &[u8]| match kind {
+                        "file" => std_fs::write(path, contents).unwrap(),
+                        "directory" => {
+                            std_fs::create_dir(path).unwrap();
+                            std_fs::write(path.join("child"), contents).unwrap();
+                        }
+                        _ => std::os::unix::fs::symlink(&target, path).unwrap(),
+                    };
+                    std_fs::write(&target, b"link target").unwrap();
+                    create(&source, b"original source");
+                    let (mut app, _) = App::new();
+                    app.trash = trash::Trash::at(root.join("data/Trash"));
+                    app.navigation = NavigationSession::new(folder.clone());
+                    app.navigation.settle_for_test();
+                    app.navigation
+                        .install_folder_entries(fs::read_directory(&folder).unwrap());
+                    app.grid.select_click(0, false, false, 1);
+                    let task = app.update(Message::ContextTrash);
+                    if timing == "queued" {
+                        std_fs::rename(&source, &retained).unwrap();
+                        create(&source, b"replacement source");
+                        navigation::finish_tasks(&mut app, task).await;
+                    } else {
+                        // Fail real desktop Trash, then hold its completion before the UI sees it.
+                        std_fs::set_permissions(&folder, std_fs::Permissions::from_mode(0o500))
+                            .unwrap();
+                        let mut stream = iced_runtime::task::into_stream(task).unwrap();
+                        let mut queued = Vec::new();
+                        while let Some(action) = stream.next().await {
+                            if let iced_runtime::Action::Output(message) = action {
+                                queued.push(message);
+                            }
+                        }
+                        std_fs::set_permissions(&folder, std_fs::Permissions::from_mode(0o700))
+                            .unwrap();
+                        assert!(source.exists(), "Trash must fail in the read-only parent");
+                        if timing == "completed" {
+                            std_fs::rename(&source, &retained).unwrap();
+                            create(&source, b"replacement source");
+                        }
+                        for message in queued {
+                            let task = app.update(message);
+                            navigation::finish_tasks(&mut app, task).await;
+                        }
+                    }
+                    assert!(matches!(
+                        app.file_operations.view(),
+                        FileOperationView::PermanentDelete { .. }
+                    ));
+                    let task = app.update(Message::PromptConfirm);
+                    navigation::finish_tasks(&mut app, task).await;
+                    if timing == "unchanged" {
+                        assert!(
+                            std_fs::symlink_metadata(&source).is_err(),
+                            "Confirmed fallback should delete the original {kind}"
+                        );
+                    } else {
+                        assert!(
+                            std_fs::symlink_metadata(&source).is_ok(),
+                            "Fallback deleted a replacement {kind}, timing={timing}"
+                        );
+                        match kind {
+                            "file" => {
+                                assert_eq!(std_fs::read(&source).unwrap(), b"replacement source");
+                                assert_eq!(std_fs::read(&retained).unwrap(), b"original source");
+                            }
+                            "directory" => {
+                                assert_eq!(
+                                    std_fs::read(source.join("child")).unwrap(),
+                                    b"replacement source"
+                                );
+                                assert_eq!(
+                                    std_fs::read(retained.join("child")).unwrap(),
+                                    b"original source"
+                                );
+                            }
+                            _ => {
+                                assert_eq!(std_fs::read_link(&source).unwrap(), target);
+                                assert_eq!(std_fs::read_link(&retained).unwrap(), target);
+                            }
+                        }
+                        assert!(matches!(
+                            app.file_operations.view(),
+                            FileOperationView::Error { .. }
+                        ));
+                    }
+                    assert_eq!(std_fs::read(&target).unwrap(), b"link target");
+                }
+            }
+        });
+}
+
+#[test]
 fn trash_retry_keeps_original_source_identities() {
     const CHILD: &str = "WADDLE_TRASH_RETRY_ROOT";
     let Some(root) = std::env::var_os(CHILD) else {
@@ -874,7 +1017,7 @@ fn queued_permanent_delete_fallback_preserves_a_replacement_folder() {
             app.file_operations.finish_trash_transfer(
                 entries
                     .into_iter()
-                    .map(|entry| (entry, "Trash unavailable".into()))
+                    .map(|entry| trash::Failure::capture(entry, "Trash unavailable".into()))
                     .collect(),
             );
             let _ = app.update(Message::Noop);
@@ -917,7 +1060,7 @@ fn permanent_delete_fallback_preserves_a_replacement_after_confirmation_opens() 
             app.file_operations.finish_trash_transfer(
                 entries
                     .into_iter()
-                    .map(|entry| (entry, "Trash unavailable".into()))
+                    .map(|entry| trash::Failure::capture(entry, "Trash unavailable".into()))
                     .collect(),
             );
             let _ = app.update(Message::Noop);
@@ -2476,7 +2619,7 @@ fn partial_permanent_delete_refreshes_entries_and_keeps_the_error() {
         app.file_operations.finish_trash_transfer(
             entries
                 .into_iter()
-                .map(|entry| (entry, "Trash unavailable".to_owned()))
+                .map(|entry| trash::Failure::capture(entry, "Trash unavailable".to_owned()))
                 .collect(),
         );
         let _ = app.update(Message::Noop);
@@ -2840,7 +2983,10 @@ fn trash_failure_uses_an_expanded_permanent_delete_prompt() {
     app.grid
         .select_only(Some(0), app.navigation.entries().len());
     app.file_operations
-        .finish_trash_transfer(vec![(entry("one.txt"), "Trash is unavailable".to_owned())]);
+        .finish_trash_transfer(vec![trash::Failure::capture(
+            entry("one.txt"),
+            "Trash is unavailable".to_owned(),
+        )]);
     let _ = app.update(Message::Noop);
 
     assert!(matches!(
@@ -2914,7 +3060,10 @@ fn permanent_delete_prompt_accepts_y_and_n_from_the_keyboard() {
         .select_only(Some(0), app.navigation.entries().len());
 
     app.file_operations
-        .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
+        .finish_trash_transfer(vec![trash::Failure::capture(
+            entry("one.txt"),
+            "Trash unavailable".to_owned(),
+        )]);
     let _ = app.update(Message::Noop);
     press(&mut app, "n");
     assert!(matches!(
@@ -2923,7 +3072,10 @@ fn permanent_delete_prompt_accepts_y_and_n_from_the_keyboard() {
     ));
 
     app.file_operations
-        .finish_trash_transfer(vec![(entry("one.txt"), "Trash unavailable".to_owned())]);
+        .finish_trash_transfer(vec![trash::Failure::capture(
+            entry("one.txt"),
+            "Trash unavailable".to_owned(),
+        )]);
     let _ = app.update(Message::Noop);
     let key = keyboard::Key::Character("Y".into());
     let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some("Y"));

@@ -130,7 +130,10 @@ fn copying_visible_output_cannot_confirm_a_hidden_permanent_delete() {
     let (mut app, _) = App::new();
     app.navigation.settle_for_test();
     app.file_operations
-        .finish_trash_transfer(vec![(entry("keep.txt"), "Trash unavailable".to_owned())]);
+        .finish_trash_transfer(vec![trash::Failure::capture(
+            entry("keep.txt"),
+            "Trash unavailable".to_owned(),
+        )]);
     app.show_command_output("Result".to_owned(), "Copy this output".to_owned());
 
     press(&mut app, "y");

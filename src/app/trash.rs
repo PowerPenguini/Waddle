@@ -79,9 +79,27 @@ impl TrashSource {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct Failure {
+    pub(super) entry: FileEntry,
+    pub(super) identity: Option<(u64, u64)>,
+    pub(super) error: String,
+}
+
+#[cfg(test)]
+impl Failure {
+    pub(super) fn capture(entry: FileEntry, error: String) -> Self {
+        Self {
+            identity: source_identity(&entry.path).ok(),
+            entry,
+            error,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct Report {
     pub(super) receipts: Vec<journal::TrashReceipt>,
-    pub(super) failures: Vec<(FileEntry, String)>,
+    pub(super) failures: Vec<Failure>,
     pub(super) retained: Vec<FileEntry>,
     pub(super) retry: Batch,
     pub(super) cancelled: bool,
@@ -163,7 +181,11 @@ impl Batch {
                     completed_bytes = completed_bytes.saturating_add(bytes);
                 }
                 Err(error) => {
-                    failures.push((source.entry.clone(), error));
+                    failures.push(Failure {
+                        entry: source.entry.clone(),
+                        identity: source.identity.as_ref().ok().copied(),
+                        error,
+                    });
                     retry.push(source);
                 }
             }

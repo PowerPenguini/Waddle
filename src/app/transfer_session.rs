@@ -108,7 +108,7 @@ pub(super) struct CompletionOutcome {
     pub(super) changed_folders: Vec<PathBuf>,
     pub(super) refresh: Refresh,
     pub(super) sync_location_monitoring: bool,
-    pub(super) trash_failures: Vec<(FileEntry, String)>,
+    pub(super) trash_failures: Vec<trash::Failure>,
 }
 
 pub(super) struct ClipboardChange {
@@ -865,20 +865,14 @@ fn trash_completion(report: trash::Report, entries: &[FileEntry]) -> CompletionO
     } else {
         Refresh::Entries(Vec::new())
     };
-    let failed_paths = report
-        .failures
-        .iter()
-        .map(|(entry, _)| entry.path.as_path())
-        .collect::<BTreeSet<_>>();
     let trash_failures = entries
         .iter()
-        .filter(|entry| failed_paths.contains(entry.path.as_path()))
         .filter_map(|entry| {
             report
                 .failures
                 .iter()
-                .find(|(failed, _)| failed.path == entry.path)
-                .map(|(_, error)| (entry.clone(), error.clone()))
+                .find(|failure| failure.entry.path == entry.path)
+                .cloned()
         })
         .collect();
     CompletionOutcome {
@@ -1446,7 +1440,10 @@ mod tests {
                     trashed: PathBuf::from("/trash/one"),
                     info: PathBuf::from("/trash/info/one.trashinfo"),
                 }],
-                failures: vec![(second.clone(), "Trash unavailable".to_owned())],
+                failures: vec![trash::Failure::capture(
+                    second.clone(),
+                    "Trash unavailable".to_owned(),
+                )],
                 retained: Vec::new(),
                 retry: trash::Batch::new(vec![second.clone()]),
                 cancelled: false,
@@ -1475,7 +1472,7 @@ mod tests {
                     if status == "Moved 1 to Trash  •  1 failed"
             ));
             assert_eq!(completed.trash_failures.len(), 1);
-            assert_eq!(completed.trash_failures[0].0.path, second.path);
+            assert_eq!(completed.trash_failures[0].entry.path, second.path);
             assert!(matches!(completed.refresh, Refresh::Entries(_)));
             assert!(!session.overview().active);
             assert!(session.overview().retry);

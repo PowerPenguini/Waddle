@@ -1704,3 +1704,24 @@ outside this work.
   and that the replacement remains intact. Locked all-target tests passed with
   753 tests and 24 opt-in tests ignored in the shared checkout. Strict Clippy,
   formatting, and whitespace checks passed.
+
+## Round 110: permanent-delete fallback adopts a replacement Trash source (2026-09-17)
+
+- Reproduction: request Trash through App messages, replace a selected source before
+  the worker runs, then confirm the permanent-delete fallback. Also fail real GIO
+  Trash using a read-only parent, replace the source after the worker finishes but
+  before its completion reaches the UI, and confirm the resulting prompt.
+- Red: `cargo test --locked trash_fallback_preserves_sources_replaced_before_confirmation -- --nocapture`
+  failed with `Fallback deleted a replacement file, timing=queued`.
+- Cause: the worker retained the original identity for Trash and Retry, but its
+  failure result discarded that identity. Opening the fallback prompt captured
+  whichever item currently occupied the original path.
+- Fix: Trash failures carry the source identity captured when the request was
+  queued. The Transfer session preserves it, and permanent-delete confirmation
+  uses it without inspecting the path again to choose a new target.
+- Green: the regression passes for files, populated folders, and symlinks replaced
+  at either timing. Unchanged originals remain deletable after confirmation, and
+  symlink targets remain intact. Tests use real files and GIO in an isolated child.
+- Validation: all-target tests passed (754 passed, 24 ignored); strict Clippy,
+  formatting, and whitespace checks passed. Existing uncommitted search changes
+  were excluded from this commit.

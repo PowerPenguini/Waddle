@@ -18,13 +18,6 @@ struct DeleteEntry {
     identity: Option<(u64, u64)>,
 }
 
-impl DeleteEntry {
-    fn capture(entry: FileEntry) -> Self {
-        let identity = entry_identity(&entry.path).ok();
-        Self { entry, identity }
-    }
-}
-
 fn entry_identity(path: &std::path::Path) -> Result<(u64, u64), String> {
     use std::os::unix::fs::MetadataExt;
 
@@ -531,22 +524,35 @@ impl FileOperationSession {
         self.state = State::Warning { message };
     }
 
-    pub(super) fn finish_trash_transfer(&mut self, failures: Vec<(FileEntry, String)>) {
+    pub(super) fn finish_trash_transfer(&mut self, failures: Vec<super::trash::Failure>) {
         self.revision = self.revision.wrapping_add(1);
         self.busy = false;
         if failures.is_empty() {
             self.state = State::Idle;
             return;
         }
-        let detail = failure_detail(&failures);
+        let detail = failures
+            .iter()
+            .map(|failure| {
+                format!(
+                    "{}: {}",
+                    fs::display_name(&failure.entry.name),
+                    failure.error
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let entries = failures
             .into_iter()
-            .map(|(entry, _)| entry)
+            .map(|failure| DeleteEntry {
+                entry: failure.entry,
+                identity: failure.identity,
+            })
             .collect::<Vec<_>>();
         self.state = State::PermanentDelete {
             message: permanent_delete_confirmation(entries.len()),
             detail: format!("{detail}\n\nThis cannot be undone."),
-            entries: entries.into_iter().map(DeleteEntry::capture).collect(),
+            entries,
         };
     }
 
@@ -786,7 +792,10 @@ mod tests {
     fn partial_trash_failure_requires_permanent_delete_confirmation() {
         let two = entry("two.txt");
         let mut session = FileOperationSession::default();
-        session.finish_trash_transfer(vec![(two, "Trash unavailable".to_owned())]);
+        session.finish_trash_transfer(vec![super::super::trash::Failure::capture(
+            two,
+            "Trash unavailable".to_owned(),
+        )]);
         assert!(matches!(
             session.view(),
             View::PermanentDelete { message, detail }
@@ -822,11 +831,17 @@ mod tests {
     fn permanent_delete_failure_and_cancellation_stay_in_the_session() {
         let failed = entry("failed.txt");
         let mut session = FileOperationSession::default();
-        session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
+        session.finish_trash_transfer(vec![super::super::trash::Failure::capture(
+            failed.clone(),
+            "Trash unavailable".to_owned(),
+        )]);
         assert!(session.cancel());
         assert!(matches!(session.view(), View::Idle));
 
-        session.finish_trash_transfer(vec![(failed.clone(), "Trash unavailable".to_owned())]);
+        session.finish_trash_transfer(vec![super::super::trash::Failure::capture(
+            failed.clone(),
+            "Trash unavailable".to_owned(),
+        )]);
         assert!(session.confirm(PathBuf::from("/work")).is_some());
         let effects = session.complete(Completion::prepare(
             session.revision,
