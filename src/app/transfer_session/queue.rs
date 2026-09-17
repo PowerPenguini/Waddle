@@ -781,6 +781,7 @@ mod tests {
     fn report() -> TransferReport {
         TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
@@ -936,7 +937,13 @@ mod tests {
 
     #[test]
     fn retry_preserves_nested_destinations_and_does_not_repeat_successes() {
-        use std::os::unix::net::UnixListener;
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "permission fixture requires a normal user"
+        );
 
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source/folder");
@@ -944,7 +951,8 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(destination.join("folder")).unwrap();
         fs::write(source.join("a"), "copied once").unwrap();
-        let special = UnixListener::bind(source.join("b")).unwrap();
+        fs::write(source.join("b"), "now readable").unwrap();
+        fs::set_permissions(source.join("b"), fs::Permissions::from_mode(0o000)).unwrap();
         let mut request = request(destination.to_str().unwrap());
         request.paths = vec![source.clone()];
         let mut queue = Queue::open(temp.path().join("history.json"));
@@ -976,9 +984,7 @@ mod tests {
         );
         queue.finish(id, Report::Filesystem(&report)).unwrap();
 
-        drop(special);
-        fs::remove_file(source.join("b")).unwrap();
-        fs::write(source.join("b"), "now readable").unwrap();
+        fs::set_permissions(source.join("b"), fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(destination.join("folder/a"), "edited after Copy").unwrap();
         let retried = queue.retry(&Operations::default()).unwrap().unwrap();
         let WorkOutcome::Filesystem(crate::fs::TransferBatchOutcome::Complete(report), undo) =
@@ -1166,6 +1172,7 @@ mod tests {
 
         let failed = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: vec![(request.paths[0].clone(), destination.join("item"))],
             completed: Vec::new(),
             failures: vec![TransferFailure {

@@ -823,6 +823,7 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
                 Completion::Finished(Err(error)) => WorkOutcome::Filesystem(
                     TransferBatchOutcome::Complete(TransferReport {
                         copied_links: Default::default(),
+                        source_identities: Default::default(),
                         retry: Vec::new(),
                         completed: Vec::new(),
                         failures: vec![fs::TransferFailure {

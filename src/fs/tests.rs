@@ -16,6 +16,196 @@ fn complete(batch: TransferBatch) -> TransferReport {
 }
 
 #[test]
+fn merge_retry_preserves_replaced_pending_children() {
+    fn finish(mut batch: TransferBatch) -> TransferReport {
+        loop {
+            match batch.run() {
+                TransferBatchOutcome::Complete(report) => return report,
+                TransferBatchOutcome::Conflict { batch: paused, .. } => {
+                    batch = paused.resolve(ConflictChoice::Replace, false);
+                }
+            }
+        }
+    }
+    for action in [Action::Copy, Action::Move] {
+        for kind in ["file", "directory", "symlink"] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            let destination = temp.path().join("destination");
+            let output = destination.join("source");
+            let retained = temp.path().join("retained");
+            let replacement = temp.path().join("replacement");
+            let target = temp.path().join("link-target");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir_all(&output).unwrap();
+            fs::write(source.join("a"), b"completed sibling").unwrap();
+            fs::write(&target, b"link target").unwrap();
+            let child = source.join("b");
+            let create = |path: &std::path::Path, contents: &[u8]| match kind {
+                "file" => fs::write(path, contents).unwrap(),
+                "directory" => {
+                    fs::create_dir(path).unwrap();
+                    fs::write(path.join("contents"), contents).unwrap();
+                }
+                _ => std::os::unix::fs::symlink(&target, path).unwrap(),
+            };
+            create(&child, b"original child");
+            fs::write(output.join("b"), b"existing destination").unwrap();
+            let TransferBatchOutcome::Conflict { batch, .. } =
+                TransferBatch::try_new(vec![source.clone()], destination, action)
+                    .unwrap()
+                    .run()
+            else {
+                panic!("expected root folder conflict");
+            };
+            let TransferBatchOutcome::Conflict { batch, conflict } =
+                batch.resolve(ConflictChoice::Replace, false).run()
+            else {
+                panic!("expected pending child conflict");
+            };
+            assert_eq!(conflict.source, child);
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"completed sibling");
+            let mut report = batch.cancel();
+            fs::rename(&child, &retained).unwrap();
+            create(&child, b"replacement child");
+            fs::remove_file(output.join("b")).unwrap();
+            for _ in 0..2 {
+                report = finish(report.retry_plan().into_batch(action).unwrap());
+                assert!(
+                    fs::symlink_metadata(&child).is_ok(),
+                    "Retry moved replacement child {kind}, action={action:?}"
+                );
+                assert!(
+                    fs::symlink_metadata(output.join("b")).is_err(),
+                    "Retry published replacement child {kind}, action={action:?}"
+                );
+                assert!(!report.failures.is_empty());
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"completed sibling");
+            }
+            fs::rename(&child, &replacement).unwrap();
+            fs::rename(&retained, &child).unwrap();
+            report = finish(report.retry_plan().into_batch(action).unwrap());
+            assert!(report.failures.is_empty(), "{report:?}");
+            assert!(report.retry.is_empty());
+            assert_eq!(source.exists(), action == Action::Copy);
+            match kind {
+                "file" => {
+                    assert_eq!(fs::read(output.join("b")).unwrap(), b"original child");
+                    assert_eq!(fs::read(&replacement).unwrap(), b"replacement child");
+                }
+                "directory" => {
+                    assert_eq!(
+                        fs::read(output.join("b/contents")).unwrap(),
+                        b"original child"
+                    );
+                    assert_eq!(
+                        fs::read(replacement.join("contents")).unwrap(),
+                        b"replacement child"
+                    );
+                }
+                _ => {
+                    assert_eq!(fs::read_link(output.join("b")).unwrap(), target);
+                    assert_eq!(fs::read_link(&replacement).unwrap(), target);
+                }
+            }
+            assert_eq!(fs::read(&target).unwrap(), b"link target");
+        }
+    }
+}
+
+#[test]
+fn transfer_retry_preserves_original_source_identities() {
+    for action in [Action::Copy, Action::Move] {
+        for cancelled in [false, true] {
+            for kind in ["file", "directory", "symlink"] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let retained = temp.path().join("retained");
+                let replacement = temp.path().join("replacement");
+                let unchanged = temp.path().join("unchanged");
+                let target = temp.path().join("link-target");
+                let destination = temp.path().join("destination");
+                fs::create_dir(&destination).unwrap();
+                fs::write(&target, b"link target").unwrap();
+                let create = |path: &std::path::Path, contents: &[u8]| match kind {
+                    "file" => fs::write(path, contents).unwrap(),
+                    "directory" => {
+                        fs::create_dir(path).unwrap();
+                        fs::write(path.join("child"), contents).unwrap();
+                    }
+                    _ => std::os::unix::fs::symlink(&target, path).unwrap(),
+                };
+                create(&source, b"original source");
+                fs::write(&unchanged, b"unchanged contents").unwrap();
+                let batch = TransferBatch::try_new(
+                    vec![source.clone(), unchanged.clone()],
+                    destination.clone(),
+                    action,
+                )
+                .unwrap();
+                let mut report = if cancelled {
+                    let report = batch.cancel();
+                    fs::rename(&source, &retained).unwrap();
+                    create(&source, b"replacement source");
+                    report
+                } else {
+                    fs::rename(&source, &retained).unwrap();
+                    create(&source, b"replacement source");
+                    complete(batch)
+                };
+                for _ in 0..2 {
+                    report = complete(report.retry_plan().into_batch(action).unwrap());
+                    assert!(
+                        fs::symlink_metadata(&source).is_ok(),
+                        "Retry moved replacement {kind}, action={action:?}, cancelled={cancelled}"
+                    );
+                    assert!(
+                        fs::symlink_metadata(destination.join("source")).is_err(),
+                        "Retry published replacement {kind}, action={action:?}, cancelled={cancelled}"
+                    );
+                    assert_eq!(report.failures.len(), 1);
+                    assert_eq!(report.failures[0].source, source);
+                    assert_eq!(
+                        fs::read(destination.join("unchanged")).unwrap(),
+                        b"unchanged contents"
+                    );
+                }
+                fs::rename(&source, &replacement).unwrap();
+                fs::rename(&retained, &source).unwrap();
+                report = complete(report.retry_plan().into_batch(action).unwrap());
+                assert!(report.failures.is_empty());
+                assert!(report.retry.is_empty());
+                assert_eq!(source.exists(), action == Action::Copy);
+                match kind {
+                    "file" => {
+                        assert_eq!(
+                            fs::read(destination.join("source")).unwrap(),
+                            b"original source"
+                        );
+                        assert_eq!(fs::read(&replacement).unwrap(), b"replacement source");
+                    }
+                    "directory" => {
+                        assert_eq!(
+                            fs::read(destination.join("source/child")).unwrap(),
+                            b"original source"
+                        );
+                        assert_eq!(
+                            fs::read(replacement.join("child")).unwrap(),
+                            b"replacement source"
+                        );
+                    }
+                    _ => {
+                        assert_eq!(fs::read_link(destination.join("source")).unwrap(), target);
+                        assert_eq!(fs::read_link(&replacement).unwrap(), target);
+                    }
+                }
+                assert_eq!(fs::read(&target).unwrap(), b"link target");
+            }
+        }
+    }
+}
+
+#[test]
 fn queued_transfers_preserve_replaced_sources() {
     for action in [Action::Copy, Action::Move] {
         for kind in ["file", "directory", "symlink"] {

@@ -34,10 +34,40 @@ impl FileIdentity {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceIdentities(BTreeMap<PathBuf, Option<FileIdentity>>);
+
+impl SourceIdentities {
+    fn capture(&mut self, source: &Path) {
+        self.0
+            .entry(source.to_path_buf())
+            .or_insert_with(|| FileIdentity::read(source).ok());
+    }
+
+    fn verify(&self, source: &Path) -> io::Result<()> {
+        let mut known = false;
+        for ancestor in source.ancestors() {
+            if let Some(expected) = self.0.get(ancestor) {
+                known = true;
+                if Some(FileIdentity::read(ancestor)?) != *expected {
+                    return Err(io::Error::other(
+                        "the source changed after the transfer was requested; select it again",
+                    ));
+                }
+            }
+        }
+        if !known {
+            return Err(io::Error::other(
+                "the original source identity is unavailable; select it again",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TransferRoot {
     source: PathBuf,
-    identity: Option<FileIdentity>,
     destination: PathBuf,
     replaced_existing: bool,
 }
@@ -89,6 +119,7 @@ struct MergeDirectory {
 pub struct TransferBatch {
     action: Action,
     roots: Vec<TransferRoot>,
+    sources: SourceIdentities,
     pending: VecDeque<PendingTransfer>,
     blocked: Option<BlockedTransfer>,
     apply_remaining: Option<ConflictChoice>,
@@ -120,12 +151,14 @@ pub enum TransferBatchOutcome {
 #[derive(Clone, Debug)]
 pub(crate) struct TransferRetry {
     entries: Vec<(PathBuf, PathBuf)>,
+    sources: SourceIdentities,
     links: CopyLinks,
 }
 
 impl TransferRetry {
     pub(crate) fn into_batch(self, action: Action) -> Result<TransferBatch, FsError> {
         let mut batch = TransferBatch::try_new_mapped(self.entries, action)?;
+        batch.sources = self.sources;
         batch.links = self.links;
         Ok(batch)
     }
@@ -135,6 +168,7 @@ impl TransferReport {
     pub(crate) fn retry_plan(&self) -> TransferRetry {
         TransferRetry {
             entries: self.retry.clone(),
+            sources: self.source_identities.clone(),
             links: self.copied_links.clone(),
         }
     }
@@ -176,11 +210,12 @@ impl TransferBatch {
         action: Action,
     ) -> Self {
         let mut roots = Vec::new();
+        let mut sources = SourceIdentities::default();
         let mut pending = VecDeque::new();
         for (source, destination) in entries {
             let root = roots.len();
+            sources.capture(&source);
             roots.push(TransferRoot {
-                identity: FileIdentity::read(&source).ok(),
                 source: source.clone(),
                 destination: destination.clone(),
                 replaced_existing: false,
@@ -194,6 +229,7 @@ impl TransferBatch {
         Self {
             action,
             roots,
+            sources,
             pending,
             blocked: None,
             apply_remaining: None,
@@ -268,7 +304,8 @@ impl TransferBatch {
                     ..
                 }
             ) && let Err(error) = self
-                .verify_root_source(root)
+                .sources
+                .verify(&source_key)
                 .and_then(|()| check_source(&source_key))
                 .and_then(|()| self.verify_merge_ancestors(&source_key))
             {
@@ -465,16 +502,6 @@ impl TransferBatch {
         TransferBatchOutcome::Complete(self.report())
     }
 
-    fn verify_root_source(&self, root: usize) -> io::Result<()> {
-        let root = &self.roots[root];
-        if Some(FileIdentity::read(&root.source)?) != root.identity {
-            return Err(io::Error::other(
-                "the source changed after the transfer was requested; select it again",
-            ));
-        }
-        Ok(())
-    }
-
     fn order_source_dependencies(&mut self) {
         // Resolve parent aliases without following the selected leaf: copying
         // a symlink reads the link itself, not the entry it points at.
@@ -588,7 +615,7 @@ impl TransferBatch {
                     blocked.source,
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "the source changed while the conflict was open; retry the Transfer to use the new source",
+                        "the source changed while the conflict was open; select it again",
                     ),
                 ));
             }
@@ -751,6 +778,7 @@ impl TransferBatch {
                 });
         }
         for child in children.into_iter().rev() {
+            self.sources.capture(&child.path());
             self.pending.push_front(PendingTransfer::Entry {
                 destination: blocked.destination.join(child.file_name()),
                 source: child.path(),
@@ -850,6 +878,7 @@ impl TransferBatch {
     fn report(self) -> TransferReport {
         TransferReport {
             copied_links: self.links,
+            source_identities: self.sources,
             retry: self.retry,
             completed: self
                 .roots

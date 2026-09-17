@@ -1744,3 +1744,27 @@ outside this work.
 - Validation: all-target tests passed (755 passed, 24 ignored); strict Clippy,
   formatting, and whitespace checks passed. Uncommitted search changes were
   excluded from this commit.
+
+## Round 112: Copy and Move Retry adopts replacement sources (2026-09-17)
+
+- Reproduction: fail or cancel a Transfer, replace an original source, then Retry.
+  Also cancel a partially completed folder merge and replace its pending child.
+  Exercise Copy and Move with files, populated folders, and symlinks.
+- Red: `transfer_retry_preserves_original_source_identities` published a replacement
+  file on Copy Retry. After retaining root identities, the separate
+  `merge_retry_preserves_replaced_pending_children` regression still published a
+  replacement child from a cancelled merge.
+- Cause: retry plans kept paths and hardlink relationships but rebuilt source
+  identity from whatever occupied those paths. Pending children lost their
+  original identity when a merge was retried.
+- Fix: retain selected-source and queued-child identities in Transfer reports and
+  retry plans. Retries keep these snapshots, including ancestor checks, instead
+  of accepting new sources. Conflict feedback now asks for a fresh selection when
+  the original source changes.
+- Green: repeated retries preserve replacements and completed siblings. Restoring
+  originals allows completion. The existing nested-destination fixture now repairs
+  file permissions without replacing its source, retaining the same assertions.
+  Seven focused retry checks, including hardlink and Restore cases, passed.
+- Validation: all-target tests passed (757 passed, 24 ignored); strict Clippy,
+  formatting, and whitespace checks passed. Uncommitted search changes were
+  excluded from this commit.

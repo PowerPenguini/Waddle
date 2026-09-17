@@ -976,6 +976,7 @@ mod tests {
         };
         let report = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/item")],
             failures: Vec::new(),
@@ -1011,6 +1012,7 @@ mod tests {
         };
         let report = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/do skopiowania")],
             failures: Vec::new(),
@@ -1047,6 +1049,7 @@ mod tests {
 
         let report = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/two")],
             failures: Vec::new(),
@@ -1132,6 +1135,7 @@ mod tests {
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one"), PathBuf::from("/target/two")],
             failures: Vec::new(),
@@ -1172,6 +1176,7 @@ mod tests {
         let request = state.paste(PathBuf::from("/target")).unwrap();
         let report = TransferReport {
             copied_links: Default::default(),
+            source_identities: Default::default(),
             retry: Vec::new(),
             completed: vec![PathBuf::from("/target/one")],
             failures: vec![crate::fs::TransferFailure {

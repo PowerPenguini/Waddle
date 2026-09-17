@@ -133,6 +133,7 @@ pub struct TransferReceipt {
 #[derive(Clone, Debug, Default)]
 pub struct TransferReport {
     pub(crate) copied_links: tree_copy::CopyLinks,
+    pub(crate) source_identities: transfer_batch::SourceIdentities,
     pub retry: Vec<(PathBuf, PathBuf)>,
     pub completed: Vec<PathBuf>,
     pub failures: Vec<TransferFailure>,
