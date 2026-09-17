@@ -1499,3 +1499,23 @@ outside this work.
   owned temporary files are removed, and retry persists the new setting.
   Locked all-target tests passed with 737 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 100: Favorites edits overwrite pre-existing temporary entries (2026-09-17)
+
+- Reproduction: occupy favorites.json.tmp with a symlink, hardlink, file, or
+  directory, then add, reorder, and remove Favorites through app messages in
+  an isolated configuration directory.
+- Red: `favorite_edits_preserve_preexisting_temporary_entries` showed an unrelated
+  symlink target overwritten with Favorites JSON during Add.
+- Cause: the locked save still wrote through a fixed temporary path, following
+  links and truncating existing files before atomic replacement.
+- Fix: write and sync an exclusively created NamedTempFile in the configuration
+  directory, then persist it atomically. Keep the existing stable lock around
+  read, modification, and replacement so concurrent windows retain each other's edits.
+- Green: all collision types remain intact; Add, drag reordering, Remove, and
+  reopening preserve the requested Favorites. The storage-failure regression
+  now removes directory write permission, confirming unchanged in-memory and
+  saved state after failed Add, Remove, and Reorder, followed by successful retry.
+  All eight Favorites checks passed, including simultaneous-window writes.
+  Locked all-target tests passed with 738 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.

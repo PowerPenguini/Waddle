@@ -1,6 +1,109 @@
 use super::*;
 
 #[test]
+fn favorite_edits_preserve_preexisting_temporary_entries() {
+    const CHILD: &str = "WADDLE_FAVORITE_TEMP_COLLISION_ROOT";
+    let Some(root) = std::env::var_os(CHILD) else {
+        for kind in ["symlink", "hardlink", "file", "directory"] {
+            let temp = tempfile::tempdir().unwrap();
+            let config = temp.path().join("config/waddle");
+            std_fs::create_dir_all(&config).unwrap();
+            std_fs::create_dir(temp.path().join("data")).unwrap();
+            for name in ["One", "Two"] {
+                std_fs::create_dir(temp.path().join(name)).unwrap();
+            }
+            let unrelated = temp.path().join("unrelated.txt");
+            std_fs::write(&unrelated, b"unrelated contents").unwrap();
+            let collision = config.join("favorites.json.tmp");
+            match kind {
+                "symlink" => std::os::unix::fs::symlink(&unrelated, &collision).unwrap(),
+                "hardlink" => std_fs::hard_link(&unrelated, &collision).unwrap(),
+                "file" => std_fs::write(&collision, b"unrelated contents").unwrap(),
+                _ => std_fs::create_dir(&collision).unwrap(),
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::tests::navigation::favorite_edits_preserve_preexisting_temporary_entries",
+                    "--nocapture",
+                ])
+                .env(CHILD, temp.path())
+                .env("XDG_CONFIG_HOME", temp.path().join("config"))
+                .env("XDG_DATA_HOME", temp.path().join("data"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                std_fs::read(&unrelated).unwrap(),
+                b"unrelated contents",
+                "Saving Favorites overwrote the target of a {kind}"
+            );
+            if kind == "directory" {
+                assert!(collision.is_dir());
+            } else {
+                assert_eq!(std_fs::read(&collision).unwrap(), b"unrelated contents");
+                if kind == "symlink" {
+                    assert_eq!(std_fs::read_link(&collision).unwrap(), unrelated);
+                }
+            }
+            assert!(
+                output.status.success(),
+                "kind={kind}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let root = PathBuf::from(root);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let labels = |app: &App| {
+                app.sidebar_tree
+                    .rows(app.navigation.current())
+                    .into_iter()
+                    .filter(|row| row.kind == NodeKind::Favorite)
+                    .map(|row| row.label)
+                    .collect::<Vec<_>>()
+            };
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(root.clone());
+            app.navigation.settle_for_test();
+            for label in ["One", "Two"] {
+                drop(app.update(Message::LocationChanged(
+                    root.join(label).display().to_string(),
+                )));
+                let task = app.update(Message::LocationSubmitted);
+                finish_tasks(&mut app, task).await;
+                press(&mut app, ":");
+                drop(app.update(Message::CommandChanged(format!("favorite add {label}"))));
+                let task = app.update(Message::CommandSubmitted);
+                finish_tasks(&mut app, task).await;
+            }
+            assert_eq!(labels(&app), ["One", "Two"]);
+            drop(app.update(Message::FavoritePressed(1)));
+            let task = app.update(Message::FavoriteReleased(0));
+            finish_tasks(&mut app, task).await;
+            assert_eq!(labels(&app), ["Two", "One"]);
+            let (reopened, _) = App::new();
+            assert_eq!(
+                labels(&reopened),
+                ["Two", "One"],
+                "Favorite order was not saved"
+            );
+            press(&mut app, ":");
+            drop(app.update(Message::CommandChanged("favorite remove 2".into())));
+            let task = app.update(Message::CommandSubmitted);
+            finish_tasks(&mut app, task).await;
+            assert_eq!(labels(&app), ["Two"]);
+            let (reopened, _) = App::new();
+            assert_eq!(labels(&reopened), ["Two"], "Favorite removal was not saved");
+        });
+}
+
+#[test]
 fn recent_preference_saves_preserve_preexisting_temporary_entries() {
     const CHILD: &str = "WADDLE_RECENT_TEMP_COLLISION_ROOT";
     let Some(root) = std::env::var_os(CHILD) else {

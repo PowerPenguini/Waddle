@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -246,13 +247,16 @@ impl Places {
     fn commit(&mut self, favorites: Vec<Favorite>) -> Result<(), String> {
         let directory = self.path.parent().ok_or("Favorites path has no parent")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(&favorites).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.path).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec_pretty(&favorites).map_err(|error| error.to_string())?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        temporary
+            .write_all(&bytes)
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| error.to_string())?;
         self.favorites = favorites;
         Ok(())
     }
@@ -554,6 +558,8 @@ mod tests {
 
     #[test]
     fn hunt_failed_favorite_save_preserves_state_and_allows_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(unsafe { libc::geteuid() }, 0);
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("favorites.json");
         let mut places = Places::empty_at(path.clone());
@@ -564,33 +570,29 @@ mod tests {
         places.command(&temp.path().join("two"), "add Two").unwrap();
         let before = places.command(temp.path(), "list").unwrap();
         let disk_before = fs::read(&path).unwrap();
-        // An occupied staging path deterministically makes writes fail, including as root.
-        let blocked = path.with_extension("json.tmp");
-        fs::create_dir(&blocked).unwrap();
-        assert!(
-            places
-                .command(&temp.path().join("three"), "add Three")
-                .is_err()
-        );
+        // Existing preferences and the lock remain readable, but a new save cannot be created.
+        let permissions = fs::metadata(temp.path()).unwrap().permissions();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let added = places.command(&temp.path().join("three"), "add Three");
+        let after_add = places.command(temp.path(), "list").unwrap();
+        let removed = places.command(temp.path(), "remove 1");
+        let after_remove = places.command(temp.path(), "list").unwrap();
+        let reordered = places.reorder(0, 1);
+        let after_reorder = places.command(temp.path(), "list").unwrap();
+        fs::set_permissions(temp.path(), permissions).unwrap();
+        assert!(added.is_err());
         assert_eq!(
-            places.command(temp.path(), "list").unwrap(),
-            before,
+            after_add, before,
             "failed Add must not create an unsaved Favorite"
         );
-        assert!(places.command(temp.path(), "remove 1").is_err());
+        assert!(removed.is_err());
         assert_eq!(
-            places.command(temp.path(), "list").unwrap(),
-            before,
+            after_remove, before,
             "failed Remove must preserve the Favorite"
         );
-        assert!(places.reorder(0, 1).is_err());
-        assert_eq!(
-            places.command(temp.path(), "list").unwrap(),
-            before,
-            "failed Reorder must preserve order"
-        );
+        assert!(reordered.is_err());
+        assert_eq!(after_reorder, before, "failed Reorder must preserve order");
         assert_eq!(fs::read(&path).unwrap(), disk_before);
-        fs::remove_dir(blocked).unwrap();
         places
             .command(&temp.path().join("three"), "add Three")
             .expect("retry should work after repairing storage");
