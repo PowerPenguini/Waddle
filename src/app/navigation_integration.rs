@@ -701,7 +701,11 @@ impl App {
             Ok(()) => {
                 self.sidebar_tree.refresh_volumes();
                 self.sync_location_monitoring();
-                if self.navigation.current().starts_with(path) {
+                if self
+                    .navigation
+                    .target_directory()
+                    .is_some_and(|target| target.starts_with(path))
+                {
                     self.presentation
                         .set_status_notice(format!("Unmounted {label}"));
                     let fallback = std::env::var_os("HOME")

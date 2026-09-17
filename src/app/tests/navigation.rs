@@ -2667,6 +2667,142 @@ fn mounted_tree_volume_waits_for_its_path_then_opens_the_root() {
 }
 
 #[test]
+fn unmount_completion_preserves_navigation_away_from_the_volume() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for into_volume in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let volume_path = temp.path().join("volume");
+                let original = if into_volume {
+                    temp.path().join("original")
+                } else {
+                    volume_path.join("original")
+                };
+                let destination = if into_volume {
+                    volume_path.join("destination")
+                } else {
+                    temp.path().join("destination")
+                };
+                std_fs::create_dir_all(&original).unwrap();
+                std_fs::create_dir_all(&destination).unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(original);
+                app.navigation.settle_for_test();
+                app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                    id: "uuid:unmount-navigation-test".into(),
+                    path: Some(volume_path.clone()),
+                    label: "Leaving volume".into(),
+                    can_unmount: true,
+                }]);
+                // The desktop completion is supplied below without unmounting a real device.
+                drop(app.update(Message::TreeVolumeUnmount(
+                    "uuid:unmount-navigation-test".into(),
+                )));
+                drop(app.update(Message::LocationChanged(destination.display().to_string())));
+                let navigation = app.update(Message::LocationSubmitted);
+                let completion = app.update(Message::TreeVolumeUnmounted {
+                    id: "uuid:unmount-navigation-test".into(),
+                    label: "Leaving volume".into(),
+                    path: volume_path.clone(),
+                    result: Ok(()),
+                });
+                if into_volume {
+                    assert!(
+                        !app.navigation
+                            .pending_path()
+                            .unwrap()
+                            .starts_with(&volume_path),
+                        "Navigation into the unmounted volume must fall back to a safe folder"
+                    );
+                } else {
+                    assert_eq!(
+                        app.navigation.pending_path(),
+                        Some(destination.as_path()),
+                        "The unmount replaced a newer navigation out of the volume"
+                    );
+                }
+                finish_tasks(&mut app, completion).await;
+                finish_tasks(&mut app, navigation).await;
+                if into_volume {
+                    assert!(!app.navigation.current().starts_with(&volume_path));
+                } else {
+                    assert_eq!(app.navigation.current(), destination);
+                }
+            }
+        });
+}
+
+#[test]
+fn unmount_completion_preserves_pending_and_open_collection_views() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for recent in [true, false] {
+                for pending in [true, false] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                    app.navigation.settle_for_test();
+                    app.sidebar_tree = SidebarTree::new(vec![VolumeRoot {
+                        id: "uuid:collection-unmount".into(),
+                        path: Some(temp.path().to_path_buf()),
+                        label: "Collection volume".into(),
+                        can_unmount: true,
+                    }]);
+                    drop(app.update(Message::TreeVolumeUnmount("uuid:collection-unmount".into())));
+                    let request = if recent {
+                        app.navigation.recent()
+                    } else {
+                        app.navigation.trash()
+                    }
+                    .request
+                    .unwrap();
+                    let mut loaded = Some(if recent {
+                        Message::RecentLoaded {
+                            request,
+                            result: Some(Ok(Vec::new())),
+                        }
+                    } else {
+                        Message::TrashLoaded {
+                            request,
+                            result: Some(Ok(Vec::new())),
+                        }
+                    });
+                    if !pending {
+                        let task = app.update(loaded.take().unwrap());
+                        finish_tasks(&mut app, task).await;
+                    }
+                    let task = app.update(Message::TreeVolumeUnmounted {
+                        id: "uuid:collection-unmount".into(),
+                        label: "Collection volume".into(),
+                        path: temp.path().to_path_buf(),
+                        result: Ok(()),
+                    });
+                    finish_tasks(&mut app, task).await;
+                    if let Some(message) = loaded {
+                        let task = app.update(message);
+                        finish_tasks(&mut app, task).await;
+                    }
+                    assert_eq!(
+                        app.navigation.displayed_location(),
+                        if recent {
+                            DisplayedLocation::Recent
+                        } else {
+                            DisplayedLocation::Trash
+                        },
+                        "recent={recent}, pending={pending}"
+                    );
+                }
+            }
+        });
+}
+
+#[test]
 fn successful_unmount_notice_is_neutral_when_leaving_the_volume() {
     let mounted_path = PathBuf::from("/run/media/user/tmp");
     let (mut app, _) = App::new();

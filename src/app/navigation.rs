@@ -255,6 +255,13 @@ impl NavigationSession {
         self.display.location == DisplayedLocation::Folder
     }
 
+    pub(super) fn target_directory(&self) -> Option<&Path> {
+        match self.pending.as_ref() {
+            Some(request) => request.requested(),
+            None => self.folder_displayed().then_some(self.current.as_path()),
+        }
+    }
+
     pub(super) fn location_label(&self) -> String {
         match self.display.location {
             DisplayedLocation::Folder => self.current.display().to_string(),

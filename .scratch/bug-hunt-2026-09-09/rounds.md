@@ -1446,3 +1446,22 @@ outside this work.
   excluding an unrelated, concurrently added diagnostic test from this round.
   The shared checkout's complete suite also passed with that diagnostic included.
   Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 97: unmount completion discards navigation away from the volume (2026-09-17)
+
+- Reproduction: begin unmounting the displayed volume, submit Location navigation
+  to a folder outside it, then deliver the unmount completion before the folder opens.
+- Red: `unmount_completion_preserves_navigation_away_from_the_volume` showed the
+  unmount replacing the newer destination with the home folder.
+- Cause: unmount fallback considered only the displayed folder, ignoring pending
+  navigation and whether the displayed location was a collection.
+- Fix: obtain the pending target directory, or the displayed directory when no
+  navigation is pending. Redirect only when that target lies within the volume.
+  Recent and Trash do not have a target directory for this decision.
+- Green: navigation away from the volume reaches its intended destination;
+  navigation into the unmounted volume still falls back to a safe folder.
+  Pending and open Recent and Trash views survive the completion.
+  The shared checkout's all-target suite passed with 735 tests and 24 opt-in
+  tests ignored, including the separate search work in progress. Strict Clippy,
+  formatting, and whitespace checks passed. That search work is excluded from
+  this round's commit.
