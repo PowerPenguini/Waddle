@@ -83,6 +83,7 @@ pub(super) struct Report {
     pub(super) receipts: Vec<journal::TrashReceipt>,
     pub(super) failures: Vec<(FileEntry, String)>,
     pub(super) retained: Vec<FileEntry>,
+    pub(super) retry: Batch,
     pub(super) cancelled: bool,
     pub(super) undo: Result<Option<journal::Action>, String>,
 }
@@ -134,6 +135,7 @@ impl Batch {
         let mut receipts = Vec::new();
         let mut failures = Vec::new();
         let mut retained = Vec::new();
+        let mut retry = Vec::new();
         let mut entries = self.entries.into_iter().zip(sizes);
         publish_progress(
             &mut progress,
@@ -145,8 +147,10 @@ impl Batch {
         let mut was_cancelled = false;
         while let Some((source, bytes)) = entries.next() {
             if cancelled() {
-                retained.push(source.entry);
-                retained.extend(entries.map(|(source, _)| source.entry));
+                for source in std::iter::once(source).chain(entries.map(|(source, _)| source)) {
+                    retained.push(source.entry.clone());
+                    retry.push(source);
+                }
                 was_cancelled = true;
                 break;
             }
@@ -158,7 +162,10 @@ impl Batch {
                     receipts.push(receipt);
                     completed_bytes = completed_bytes.saturating_add(bytes);
                 }
-                Err(error) => failures.push((source.entry, error)),
+                Err(error) => {
+                    failures.push((source.entry.clone(), error));
+                    retry.push(source);
+                }
             }
             completed_entries = completed_entries.saturating_add(1);
             publish_progress(
@@ -174,6 +181,7 @@ impl Batch {
             receipts,
             failures,
             retained,
+            retry: Self { entries: retry },
             cancelled: was_cancelled,
             undo,
         }

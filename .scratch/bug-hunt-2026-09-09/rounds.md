@@ -1686,3 +1686,21 @@ outside this work.
   real temporary source files; progress, cancellation, and retry checks pass.
   Locked all-target tests passed with 752 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 109: Trash Retry adopts replacement source identities (2026-09-17)
+
+- Reproduction: fail or cancel a Trash request, replace one selected source,
+  and invoke Retry through app messages in an isolated real GIO Trash fixture.
+- Red: trash_retry_keeps_original_source_identities showed Retry moving the
+  replacement that the initial failed attempt had correctly rejected.
+- Cause: the queue rebuilt a Trash batch from FileEntry paths on every Retry,
+  capturing current identities instead of retaining the original request's ones.
+- Fix: the worker returns a retry batch containing the original source snapshots
+  for failed and cancelled entries. The queue retains and runs that batch instead
+  of recapturing identities. Successful entries are excluded from later retries.
+- Green: failed and cancelled requests preserve replacements through repeated
+  retries, continue processing unchanged selected entries, and succeed when the
+  original source returns to its path. The fixture verifies actual Trash contents
+  and that the replacement remains intact. Locked all-target tests passed with
+  753 tests and 24 opt-in tests ignored in the shared checkout. Strict Clippy,
+  formatting, and whitespace checks passed.

@@ -226,7 +226,10 @@ enum Retry {
         request: Request,
         plan: crate::fs::TransferRetry,
     },
-    Trash(Vec<crate::fs::FileEntry>),
+    Trash {
+        entries: Vec<crate::fs::FileEntry>,
+        batch: trash::Batch,
+    },
     Restore {
         entries: Vec<trash::Entry>,
         plan: crate::fs::TransferRetry,
@@ -388,8 +391,10 @@ impl Queue {
                     .filter(|entry| retry_paths.contains(entry.path.as_path()))
                     .cloned()
                     .collect::<Vec<_>>();
-                self.last_retry =
-                    (!retry_entries.is_empty()).then_some(Retry::Trash(retry_entries));
+                self.last_retry = (!retry_entries.is_empty()).then(|| Retry::Trash {
+                    entries: retry_entries,
+                    batch: report.retry.clone(),
+                });
                 self.history.push(trash_history_entry(report, &snapshot));
             }
             (Operation::Restore(entries), Report::Filesystem(report)) => {
@@ -430,10 +435,7 @@ impl Queue {
                     Batch::Filesystem(Box::new(batch)),
                 )
             }
-            Retry::Trash(entries) => {
-                let batch = trash::Batch::new(entries.clone());
-                (Operation::Trash(entries), Batch::Trash(batch))
-            }
+            Retry::Trash { entries, batch } => (Operation::Trash(entries), Batch::Trash(batch)),
             Retry::Restore { entries, plan } => {
                 let batch = plan
                     .into_batch(crate::transfer::Action::Move)
@@ -1213,6 +1215,7 @@ mod tests {
             receipts: Vec::new(),
             failures: vec![(first.clone(), "denied".to_owned())],
             retained: vec![second.clone()],
+            retry: trash::Batch::new(vec![first.clone(), second.clone()]),
             cancelled: true,
             undo: Ok(None),
         };

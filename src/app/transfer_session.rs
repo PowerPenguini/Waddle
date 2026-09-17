@@ -1448,6 +1448,7 @@ mod tests {
                 }],
                 failures: vec![(second.clone(), "Trash unavailable".to_owned())],
                 retained: Vec::new(),
+                retry: trash::Batch::new(vec![second.clone()]),
                 cancelled: false,
                 undo: Ok(None),
             };

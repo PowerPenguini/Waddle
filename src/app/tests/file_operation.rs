@@ -1,6 +1,115 @@
 use super::*;
 
 #[test]
+fn trash_retry_keeps_original_source_identities() {
+    const CHILD: &str = "WADDLE_TRASH_RETRY_ROOT";
+    let Some(root) = std::env::var_os(CHILD) else {
+        let temp = tempfile::Builder::new()
+            .prefix("waddle-trash-retry-test-")
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/files")).unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/info")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::file_operation::trash_retry_keeps_original_source_identities",
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = PathBuf::from(root);
+            for cancelled in [false, true] {
+                let folder = root.join(if cancelled { "cancelled" } else { "failed" });
+                std_fs::create_dir(&folder).unwrap();
+                let source = folder.join("source");
+                let unchanged = folder.join("unchanged");
+                let retained = root.join(if cancelled {
+                    "retained-cancelled"
+                } else {
+                    "retained-failed"
+                });
+                std_fs::write(&source, b"original source").unwrap();
+                std_fs::write(&unchanged, b"unchanged selection").unwrap();
+                let (mut app, _) = App::new();
+                app.trash = trash::Trash::at(root.join("data/Trash"));
+                app.navigation = NavigationSession::new(folder.clone());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(&folder).unwrap());
+                app.grid.select_click(0, false, false, 2);
+                app.grid.select_click(1, true, false, 2);
+                let task = app.update(Message::ContextTrash);
+                if cancelled {
+                    drop(app.update(Message::CancelTransfer));
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert!(source.exists() && unchanged.exists());
+                    std_fs::rename(&source, &retained).unwrap();
+                    std_fs::write(&source, b"replacement source").unwrap();
+                } else {
+                    std_fs::rename(&source, &retained).unwrap();
+                    std_fs::write(&source, b"replacement source").unwrap();
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert!(!unchanged.exists());
+                }
+                for _ in 0..2 {
+                    let dismiss = app.update(Message::PromptCancel);
+                    navigation::finish_tasks(&mut app, dismiss).await;
+                    let retry = app.update(Message::RetryTransfer);
+                    navigation::finish_tasks(&mut app, retry).await;
+                    assert!(
+                        source.exists(),
+                        "Retry adopted a replacement source, cancelled={cancelled}"
+                    );
+                    assert_eq!(std_fs::read(&source).unwrap(), b"replacement source");
+                    assert_eq!(std_fs::read(&retained).unwrap(), b"original source");
+                    assert!(!unchanged.exists());
+                }
+                let replacement = folder.join("replacement-kept");
+                std_fs::rename(&source, &replacement).unwrap();
+                std_fs::rename(&retained, &source).unwrap();
+                let dismiss = app.update(Message::PromptCancel);
+                navigation::finish_tasks(&mut app, dismiss).await;
+                let retry = app.update(Message::RetryTransfer);
+                navigation::finish_tasks(&mut app, retry).await;
+                assert!(
+                    !source.exists(),
+                    "Retry must accept the original source when restored"
+                );
+                assert_eq!(std_fs::read(&replacement).unwrap(), b"replacement source");
+                let entries = app.trash.entries().unwrap();
+                for (original, expected) in [
+                    (&source, b"original source".as_slice()),
+                    (&unchanged, b"unchanged selection".as_slice()),
+                ] {
+                    let trashed = entries
+                        .iter()
+                        .find(|entry| &entry.receipt.original == original)
+                        .unwrap();
+                    assert_eq!(std_fs::read(&trashed.receipt.trashed).unwrap(), expected);
+                }
+            }
+        });
+}
+
+#[test]
 fn queued_trash_preserves_replaced_source_items() {
     const CHILD: &str = "WADDLE_QUEUED_TRASH_ROOT";
     let Some(root) = std::env::var_os(CHILD) else {
