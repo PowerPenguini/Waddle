@@ -1,6 +1,107 @@
 use super::*;
 
 #[test]
+fn queued_trash_preserves_replaced_source_items() {
+    const CHILD: &str = "WADDLE_QUEUED_TRASH_ROOT";
+    let Some(root) = std::env::var_os(CHILD) else {
+        let temp = tempfile::Builder::new()
+            .prefix("waddle-queued-trash-test-")
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/files")).unwrap();
+        std_fs::create_dir_all(temp.path().join("data/Trash/info")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::file_operation::queued_trash_preserves_replaced_source_items",
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = PathBuf::from(root);
+            for kind in ["file", "directory", "symlink"] {
+                let folder = root.join(kind);
+                std_fs::create_dir(&folder).unwrap();
+                let source = folder.join("source");
+                let retained = root.join(format!("retained-{kind}"));
+                let unchanged = folder.join("unchanged.txt");
+                let target = root.join(format!("target-{kind}"));
+                match kind {
+                    "file" => std_fs::write(&source, b"original item").unwrap(),
+                    "directory" => {
+                        std_fs::create_dir(&source).unwrap();
+                        std_fs::write(source.join("child"), b"original item").unwrap();
+                    }
+                    _ => {
+                        std_fs::write(&target, b"link target").unwrap();
+                        std::os::unix::fs::symlink(&target, &source).unwrap();
+                    }
+                }
+                std_fs::write(&unchanged, b"trash this selected item").unwrap();
+                let (mut app, _) = App::new();
+                app.trash = trash::Trash::at(root.join("data/Trash"));
+                app.navigation = NavigationSession::new(folder.clone());
+                app.navigation.settle_for_test();
+                app.navigation.install_folder_entries(fs::read_directory(&folder).unwrap());
+                app.grid.select_click(0, false, false, 2);
+                app.grid.select_click(1, true, false, 2);
+                let task = app.update(Message::ContextTrash);
+                std_fs::rename(&source, &retained).unwrap();
+                match kind {
+                    "file" => std_fs::write(&source, b"replacement item").unwrap(),
+                    "directory" => {
+                        std_fs::create_dir(&source).unwrap();
+                        std_fs::write(source.join("child"), b"replacement item").unwrap();
+                    }
+                    // A new symlink to the same target is still a replacement.
+                    _ => std::os::unix::fs::symlink(&target, &source).unwrap(),
+                }
+                // Editing the same inode is allowed; replacing it is not.
+                std_fs::write(&unchanged, b"updated selected contents").unwrap();
+                navigation::finish_tasks(&mut app, task).await;
+                assert!(source.exists(), "Queued Trash moved a replacement {kind}");
+                match kind {
+                    "file" => {
+                        assert_eq!(std_fs::read(&source).unwrap(), b"replacement item");
+                        assert_eq!(std_fs::read(&retained).unwrap(), b"original item");
+                    }
+                    "directory" => {
+                        assert_eq!(std_fs::read(source.join("child")).unwrap(), b"replacement item");
+                        assert_eq!(std_fs::read(retained.join("child")).unwrap(), b"original item");
+                    }
+                    _ => {
+                        assert_eq!(std_fs::read_link(&source).unwrap(), target);
+                        assert_eq!(std_fs::read_link(&retained).unwrap(), target);
+                        assert_eq!(std_fs::read(&target).unwrap(), b"link target");
+                    }
+                }
+                assert!(!unchanged.exists(), "The same selected inode should still be trashed");
+                let trashed = app.trash.entries().unwrap().into_iter()
+                    .find(|entry| entry.receipt.original == unchanged).unwrap();
+                assert_eq!(std_fs::read(trashed.receipt.trashed).unwrap(), b"updated selected contents");
+                assert!(matches!(app.file_operations.view(), FileOperationView::PermanentDelete { detail, .. } if detail.contains("changed")));
+            }
+        });
+}
+
+#[test]
 fn queued_volume_command_feedback_preserves_newer_folder_navigation() {
     use iced::futures::StreamExt;
 

@@ -1666,3 +1666,23 @@ outside this work.
   handled, and missing metadata permits completion while preserving an occupant.
   Locked all-target tests passed with 751 tests and 24 opt-in tests ignored in
   the shared checkout. Strict Clippy, formatting, and whitespace checks passed.
+
+## Round 108: queued Trash moves replacement source items (2026-09-17)
+
+- Reproduction: submit Trash through app messages, replace a selected source
+  before running the queued task, then drain the real worker in isolated XDG
+  directories on the home filesystem so GIO Trash is available.
+- Red: queued_trash_preserves_replaced_source_items showed the replacement file
+  moved to Trash instead of preserving it and reporting a changed source.
+- Cause: a Trash batch retained paths and listing metadata but no source identity;
+  the worker accepted whichever entry occupied a path when execution began.
+- Fix: capture each source's device and inode at batch creation using symlink
+  metadata, then verify them immediately before invoking desktop Trash. Inspection
+  failures and changed entries become individual failures; other entries continue.
+- Green: the app regression covers replaced files, populated directories, and
+  symlinks pointing to the same target. Originals retained elsewhere and new
+  occupants remain intact. An unchanged inode edited while queued is still
+  trashed with its updated contents. The existing adapter progress test now uses
+  real temporary source files; progress, cancellation, and retry checks pass.
+  Locked all-target tests passed with 752 tests and 24 opt-in tests ignored in
+  the shared checkout. Strict Clippy, formatting, and whitespace checks passed.

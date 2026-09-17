@@ -50,7 +50,32 @@ impl Adapter for GioAdapter {
 
 #[derive(Clone, Debug)]
 pub(super) struct Batch {
-    entries: Vec<FileEntry>,
+    entries: Vec<TrashSource>,
+}
+
+#[derive(Clone, Debug)]
+struct TrashSource {
+    entry: FileEntry,
+    identity: Result<(u64, u64), String>,
+}
+
+fn source_identity(path: &Path) -> Result<(u64, u64), String> {
+    fs::symlink_metadata(path)
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))
+}
+
+impl TrashSource {
+    fn verify(&self) -> Result<(), String> {
+        let expected = self.identity.as_ref().map_err(Clone::clone)?;
+        if source_identity(&self.entry.path)? != *expected {
+            return Err(
+                "The item changed after Trash was requested; select it again to trash it"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -64,7 +89,15 @@ pub(super) struct Report {
 
 impl Batch {
     pub(super) fn new(entries: Vec<FileEntry>) -> Self {
-        Self { entries }
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|entry| TrashSource {
+                    identity: source_identity(&entry.path),
+                    entry,
+                })
+                .collect(),
+        }
     }
 
     pub(super) fn run(
@@ -90,9 +123,9 @@ impl Batch {
         let sizes: Vec<_> = self
             .entries
             .iter()
-            .map(|entry| {
-                crate::fs::tree_bytes(&entry.path)
-                    .unwrap_or_else(|_| entry.metadata.size.unwrap_or_default())
+            .map(|source| {
+                crate::fs::tree_bytes(&source.entry.path)
+                    .unwrap_or_else(|_| source.entry.metadata.size.unwrap_or_default())
             })
             .collect();
         let total_bytes = sizes.iter().copied().fold(0_u64, u64::saturating_add);
@@ -110,19 +143,22 @@ impl Batch {
             total_bytes,
         );
         let mut was_cancelled = false;
-        while let Some((entry, bytes)) = entries.next() {
+        while let Some((source, bytes)) = entries.next() {
             if cancelled() {
-                retained.push(entry);
-                retained.extend(entries.map(|(entry, _)| entry));
+                retained.push(source.entry);
+                retained.extend(entries.map(|(source, _)| source.entry));
                 was_cancelled = true;
                 break;
             }
-            match adapter.trash(&entry.path) {
+            match source
+                .verify()
+                .and_then(|()| adapter.trash(&source.entry.path))
+            {
                 Ok(receipt) => {
                     receipts.push(receipt);
                     completed_bytes = completed_bytes.saturating_add(bytes);
                 }
-                Err(error) => failures.push((entry, error)),
+                Err(error) => failures.push((source.entry, error)),
             }
             completed_entries = completed_entries.saturating_add(1);
             publish_progress(
@@ -635,9 +671,13 @@ mod tests {
 
     #[test]
     fn trash_batch_reports_progress_failures_and_retained_entries() {
-        let first = file_entry("/work/one", 10);
-        let second = file_entry("/work/two", 20);
-        let third = file_entry("/work/three", 30);
+        let temp = tempfile::tempdir().unwrap();
+        let first = file_entry(temp.path().join("one"), 10);
+        let second = file_entry(temp.path().join("two"), 20);
+        let third = file_entry(temp.path().join("three"), 30);
+        for (entry, size) in [(&first, 10), (&second, 20), (&third, 30)] {
+            fs::write(&entry.path, vec![b'x'; size]).unwrap();
+        }
         let adapter = MemoryAdapter {
             failures: BTreeSet::from([second.path.clone()]),
             ..MemoryAdapter::default()
