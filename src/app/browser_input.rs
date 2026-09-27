@@ -30,9 +30,10 @@ Vim navigation
 
 Selection and file operations
   v  Toggle visual selection
+  Ctrl+V  Toggle rectangular visual selection
   Ctrl+A  Select all entries
   y / Ctrl+C  Copy the selection
-  p / Ctrl+V  Paste
+  p  Paste
   x  Cut the selection
   dd  Cut the active entry
   d{motion}  Cut through 0, $, h, j, k, l, or d
@@ -149,6 +150,7 @@ pub(super) struct Context {
     pub(super) transfer_history_available: bool,
     pub(super) prompt: PromptInteraction,
     pub(super) foreground_operation_active: bool,
+    pub(super) browsing_allowed: bool,
     pub(super) command_output: bool,
     pub(super) visual_active: bool,
     pub(super) selection_count: usize,
@@ -221,6 +223,7 @@ pub(super) enum Intent {
     RepeatSearch(bool),
     Rename,
     ToggleVisual,
+    ToggleVisualBlock,
     Trash,
     Pending(String),
     InvalidSequence(String),
@@ -450,7 +453,9 @@ impl BrowserInput {
             if !press.control && !press.alt && !press.logo {
                 return match press.text.as_deref() {
                     Some("c") if context.transfer_active => Intent::CancelTransfer,
-                    Some("R") if context.transfer_retry => Intent::RetryTransfer,
+                    Some("R") if context.transfer_retry && !context.foreground_operation_active => {
+                        Intent::RetryTransfer
+                    }
                     Some("y") => Intent::CopyTransferReport,
                     _ => Intent::None,
                 };
@@ -506,7 +511,7 @@ impl BrowserInput {
             };
         }
 
-        if context.foreground_operation_active {
+        if context.foreground_operation_active && !context.browsing_allowed {
             return Intent::None;
         }
 
@@ -540,7 +545,7 @@ impl BrowserInput {
                 Some("c") => context.rejected_file_operator(),
                 Some("a") => Intent::SelectAll,
                 Some("l") => Intent::BeginLocation,
-                Some("v") => Intent::Paste,
+                Some("v") => Intent::ToggleVisualBlock,
                 Some("o") => Intent::Back,
                 Some("i") => Intent::Forward,
                 Some("r") => Intent::Redo,
@@ -663,13 +668,15 @@ impl BrowserInput {
         let count = self.count.take();
         match text {
             Some("/") => Intent::BeginSearch,
-            Some("!") => Intent::BeginCommand('!'),
-            Some(":") => Intent::BeginCommand(':'),
+            Some("!") if !context.foreground_operation_active => Intent::BeginCommand('!'),
+            Some(":") if !context.foreground_operation_active => Intent::BeginCommand(':'),
             Some("n") => Intent::RepeatSearch(false),
             Some("N") => Intent::RepeatSearch(true),
             Some("u") => Intent::Undo,
             Some("c") if context.transfer_active => Intent::CancelTransfer,
-            Some("R") if context.transfer_retry => Intent::RetryTransfer,
+            Some("R") if context.transfer_retry && !context.foreground_operation_active => {
+                Intent::RetryTransfer
+            }
             Some("t") if context.transfer_history_available => Intent::ToggleTransferHistory,
             Some("r") => Intent::Rename,
             Some("o") if !press.alt && !press.logo => {
@@ -1156,7 +1163,10 @@ mod tests {
         };
 
         assert_eq!(input.handle(control("c"), selected()), Intent::Copy);
-        assert_eq!(input.handle(control("V"), selected()), Intent::Paste);
+        assert_eq!(
+            input.handle(control("V"), selected()),
+            Intent::ToggleVisualBlock
+        );
         assert_eq!(input.handle(control("o"), selected()), Intent::Back);
         assert_eq!(input.handle(control("i"), selected()), Intent::Forward);
         assert_eq!(input.handle(control("r"), selected()), Intent::Redo);

@@ -599,7 +599,7 @@ impl TransferState {
         adapter: Option<&dyn Adapter>,
         request: &Request,
         report: &TransferReport,
-        current: &Path,
+        _current: &Path,
     ) -> Consequences {
         if let Some(id) = request.inbound_id
             && let Some(adapter) = adapter
@@ -690,7 +690,12 @@ impl TransferState {
         Consequences {
             status: if !report.retained.is_empty() && error.is_none() && warning.is_none() {
                 Some(format!(
-                    "Transfer cancelled; {} pending item(s) were left unchanged",
+                    "{}; {} item(s) retained",
+                    if report.cancelled {
+                        "Transfer cancelled"
+                    } else {
+                        "Transfer finished"
+                    },
                     report.retained.len()
                 ))
             } else {
@@ -699,12 +704,17 @@ impl TransferState {
             },
             warning,
             error,
-            changed_folders: if completed > 0 {
-                vec![current.to_path_buf(), request.destination.clone()]
-            } else {
-                Vec::new()
-            },
-            refresh: completed > 0,
+            // A failed or skipped root can contain children already moved or
+            // copied. Root completion alone cannot tell whether folders changed.
+            changed_folders: request
+                .paths
+                .iter()
+                .filter_map(|source| source.parent().map(Path::to_path_buf))
+                .chain(std::iter::once(request.destination.clone()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            refresh: true,
             select: if clipboard {
                 report.completed.clone()
             } else {
@@ -960,6 +970,88 @@ mod tests {
                 assert_eq!(state.move_pointer(Point::new(7.0, 0.0)), Some(0));
             }
         }
+    }
+
+    #[test]
+    fn transfer_audit_partial_merge_refreshes_changed_folders_without_claiming_cancellation() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source/folder");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(destination.join("folder")).unwrap();
+        std::fs::write(source.join("a"), b"move this").unwrap();
+        std::fs::write(source.join("b"), b"keep this").unwrap();
+        std::fs::write(destination.join("folder/b"), b"existing").unwrap();
+        let request = Request::clipboard(
+            vec![source.clone()],
+            destination.clone(),
+            Action::Move,
+            None,
+        )
+        .unwrap();
+        let crate::fs::TransferBatchOutcome::Conflict { batch, .. } =
+            crate::fs::TransferBatch::try_new(
+                request.paths.clone(),
+                destination.clone(),
+                Action::Move,
+            )
+            .unwrap()
+            .run()
+        else {
+            panic!("expected folder conflict")
+        };
+        let crate::fs::TransferBatchOutcome::Conflict { batch, .. } = batch
+            .resolve(crate::fs::ConflictChoice::Replace, false)
+            .run()
+        else {
+            panic!("expected child conflict")
+        };
+        let crate::fs::TransferBatchOutcome::Complete(report) =
+            batch.resolve(crate::fs::ConflictChoice::Skip, false).run()
+        else {
+            panic!("expected completion")
+        };
+        assert_eq!(
+            std::fs::read(destination.join("folder/a")).unwrap(),
+            b"move this"
+        );
+        assert!(report.completed.is_empty());
+        assert!(!report.cancelled);
+        let consequences = TransferState::default().finish_transfer(
+            None,
+            &request,
+            &report,
+            &temp.path().join("unrelated"),
+        );
+        assert!(
+            consequences.refresh,
+            "partial Move changed files but requests no refresh"
+        );
+        assert!(
+            consequences
+                .changed_folders
+                .contains(&source.parent().unwrap().to_path_buf())
+        );
+        assert!(consequences.changed_folders.contains(&destination));
+        assert!(!consequences.status.unwrap().contains("cancelled"));
+    }
+
+    #[test]
+    fn transfer_audit_skip_is_not_reported_as_cancel() {
+        let request = Request::clipboard(
+            vec![PathBuf::from("/source/item")],
+            PathBuf::from("/target"),
+            Action::Copy,
+            None,
+        )
+        .unwrap();
+        let report = TransferReport {
+            retained: request.paths.clone(),
+            ..Default::default()
+        };
+        let consequences =
+            TransferState::default().finish_transfer(None, &request, &report, Path::new("/source"));
+        assert!(!consequences.status.unwrap().contains("cancelled"));
     }
 
     #[test]

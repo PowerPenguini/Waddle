@@ -83,7 +83,7 @@ ICED_BACKEND=tiny-skia cargo run
 
 ## Keyboard at a glance
 
-Waddle also supports standard arrows, `Ctrl+C`, `Ctrl+V`, Tab navigation between files and the Sidebar, and the usual mouse
+Waddle also supports standard arrows, `Ctrl+C`, Tab navigation between files and the Sidebar, and the usual mouse
 controls.
 
 | Input | Action |
@@ -94,7 +94,7 @@ controls.
 | `y`, `x`, `p` | Copy, Cut, or Paste |
 | `Delete` | Move the selection to Trash; in Trash, confirm permanent deletion |
 | `u`, `Ctrl+R` | Undo or Redo |
-| `/query`, `//query` | Search here or search recursively |
+| `/query`, `//query` | Search here or search recursively within a folder |
 | `Ctrl+L`, `Ctrl+H` | Edit the location or show hidden files |
 | `Ctrl+O`, `Ctrl+I` | Go Back or Forward |
 | `Ctrl+=`, `Ctrl+-`, `Ctrl+scroll` | Enlarge or shrink file icons and labels |
@@ -201,3 +201,12 @@ WGPU_BACKEND=gl cargo test chevrons_keep_even_edges -- --ignored
 Waddle is licensed under the [MIT License](LICENSE).
 The embedded fallback fonts are licensed under the
 [SIL Open Font License 1.1](data/fonts/LICENSE).
+
+### Rectangular selection
+
+Press `Ctrl+V` while files have focus to start Visual Block selection. Move with
+`h/j/k/l`, arrows, or counted motions to select a rectangle of files. Use `v` to
+switch to linear selection while keeping the anchor. Press the active mode’s
+shortcut again to keep the selection and leave the mode; `Esc` keeps only the
+focused file. List view selects a single column of rows. Copy and cut use the
+complete selection. Paste files with `p`; text fields still use `Ctrl+V` to paste.

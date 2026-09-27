@@ -172,11 +172,19 @@ impl Marquee {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum VisualMode {
+    #[default]
+    Linear,
+    Block,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Selection<T = usize> {
     selected: Option<T>,
     entries: BTreeSet<T>,
     visual_anchor: Option<T>,
+    visual_mode: VisualMode,
     selection_anchor: Option<T>,
 }
 
@@ -186,6 +194,7 @@ impl<T> Selection<T> {
             selected: self.selected.and_then(&mut locate),
             entries: self.entries.into_iter().filter_map(&mut locate).collect(),
             visual_anchor: self.visual_anchor.and_then(&mut locate),
+            visual_mode: self.visual_mode,
             selection_anchor: self.selection_anchor.and_then(locate),
         }
     }
@@ -203,6 +212,8 @@ pub(super) struct GridInteraction {
     selected: Option<usize>,
     selection: BTreeSet<usize>,
     visual_anchor: Option<usize>,
+    visual_mode: VisualMode,
+    entry_count: usize,
     selection_anchor: Option<usize>,
     details: Option<String>,
     list_mode: bool,
@@ -234,6 +245,8 @@ impl GridInteraction {
             selected: None,
             selection: BTreeSet::new(),
             visual_anchor: None,
+            visual_mode: VisualMode::Linear,
+            entry_count: 0,
             selection_anchor: None,
             details: None,
             list_mode: false,
@@ -389,6 +402,7 @@ impl GridInteraction {
 
     pub(super) fn resize(&mut self, size: Size) {
         self.window_size = size;
+        self.recompute_visual_block();
     }
 
     pub(super) fn window_width(&self) -> f32 {
@@ -397,6 +411,7 @@ impl GridInteraction {
 
     pub(super) fn set_sidebar_visible(&mut self, visible: bool) {
         self.sidebar_width = if visible { SIDEBAR_WIDTH } else { 0.0 };
+        self.recompute_visual_block();
     }
 
     pub(super) fn sidebar_width(&self) -> f32 {
@@ -405,6 +420,7 @@ impl GridInteraction {
 
     pub(super) fn set_icon_size(&mut self, size: u16) {
         self.icon_size = size.clamp(super::icon_size::MIN, super::icon_size::MAX);
+        self.recompute_visual_block();
         self.marquee = None;
         self.hovered = None;
         self.context_menu = None;
@@ -464,6 +480,7 @@ impl GridInteraction {
 
     pub(super) fn set_list_mode(&mut self, list_mode: bool) {
         self.list_mode = list_mode;
+        self.recompute_visual_block();
     }
 
     pub(super) fn install_navigation(
@@ -481,10 +498,12 @@ impl GridInteraction {
         if !reset_scroll && self.selection == previous_selection.entries {
             self.selected = previous_selection.selected.or(self.selected);
             self.visual_anchor = previous_selection.visual_anchor;
+            self.visual_mode = previous_selection.visual_mode;
             self.selection_anchor = previous_selection.selection_anchor.or(self.selected);
         } else {
             self.close_context();
         }
+        self.recompute_visual_block();
         self.details = None;
         self.entry_scroll.cancel();
         if reset_scroll {
@@ -650,6 +669,7 @@ impl GridInteraction {
             selected: self.selected,
             entries: self.selection.clone(),
             visual_anchor: self.visual_anchor,
+            visual_mode: self.visual_mode,
             selection_anchor: self.selection_anchor,
         }
     }
@@ -657,13 +677,20 @@ impl GridInteraction {
     pub(super) fn restore_selection(
         &mut self,
         selection: Selection,
+        entry_count: usize,
         locate: impl FnMut(usize) -> Option<usize>,
     ) {
+        self.entry_count = entry_count;
         let selection = selection.map(locate);
         self.selected = selection.selected;
         self.selection = selection.entries;
         self.visual_anchor = selection.visual_anchor;
+        self.visual_mode = selection.visual_mode;
         self.selection_anchor = selection.selection_anchor;
+        if self.selected.is_none() {
+            self.visual_anchor = None;
+        }
+        self.recompute_visual_block();
     }
 
     pub(super) fn selection_count(&self) -> usize {
@@ -691,6 +718,7 @@ impl GridInteraction {
     }
 
     pub(super) fn select_only(&mut self, selected: Option<usize>, entry_count: usize) {
+        self.entry_count = entry_count;
         self.selected = selected.filter(|index| *index < entry_count);
         self.selection.clear();
         self.selection.extend(self.selected);
@@ -699,6 +727,7 @@ impl GridInteraction {
     }
 
     fn select_indices(&mut self, indices: &[usize], entry_count: usize) {
+        self.entry_count = entry_count;
         self.selection = indices
             .iter()
             .copied()
@@ -737,6 +766,7 @@ impl GridInteraction {
     }
 
     pub(super) fn select_all(&mut self, entry_count: usize) {
+        self.entry_count = entry_count;
         self.selection = (0..entry_count).collect();
         self.selected = (entry_count > 0).then_some(0);
         self.selection_anchor = self.selected;
@@ -760,6 +790,7 @@ impl GridInteraction {
         entry_count: usize,
         status_height: f32,
     ) -> Option<usize> {
+        self.entry_count = entry_count;
         if entry_count == 0 {
             return None;
         }
@@ -767,6 +798,10 @@ impl GridInteraction {
         let next = self.motion_target(current, motion, 1, entry_count, status_height);
         let anchor = self.selection_anchor.unwrap_or(current);
         self.selected = Some(next);
+        if self.visual_block_active() {
+            self.update_keyboard_selection();
+            return Some(next);
+        }
         if extend {
             self.selection.clear();
             self.selection.extend(anchor.min(next)..=anchor.max(next));
@@ -791,6 +826,7 @@ impl GridInteraction {
         entry_count: usize,
         status_height: f32,
     ) -> Option<usize> {
+        self.entry_count = entry_count;
         if entry_count == 0 {
             self.select_only(None, entry_count);
             return None;
@@ -879,8 +915,28 @@ impl GridInteraction {
         }
     }
 
+    pub(super) fn visual_block_active(&self) -> bool {
+        self.visual_active() && self.visual_mode == VisualMode::Block
+    }
+
+    fn recompute_visual_block(&mut self) {
+        if self.visual_block_active() {
+            self.update_keyboard_selection();
+        }
+    }
+
     pub(super) fn toggle_visual_selection(&mut self, entry_count: usize) {
-        if self.visual_anchor.take().is_some() {
+        self.toggle_visual_mode(VisualMode::Linear, entry_count);
+    }
+
+    pub(super) fn toggle_visual_block(&mut self, entry_count: usize) {
+        self.toggle_visual_mode(VisualMode::Block, entry_count);
+    }
+
+    fn toggle_visual_mode(&mut self, mode: VisualMode, entry_count: usize) {
+        self.entry_count = entry_count;
+        if self.visual_active() && self.visual_mode == mode {
+            self.visual_anchor = None;
             return;
         }
         if entry_count == 0 {
@@ -889,7 +945,8 @@ impl GridInteraction {
         }
         let selected = self.selected.unwrap_or(0).min(entry_count - 1);
         self.selected = Some(selected);
-        self.visual_anchor = Some(selected);
+        self.visual_anchor.get_or_insert(selected);
+        self.visual_mode = mode;
         self.update_keyboard_selection();
     }
 
@@ -1368,8 +1425,24 @@ impl GridInteraction {
         };
         self.selection.clear();
         if let Some(anchor) = self.visual_anchor {
-            self.selection
-                .extend(anchor.min(selected)..=anchor.max(selected));
+            if self.visual_mode == VisualMode::Block {
+                let columns = self.columns();
+                let first_row = (anchor / columns).min(selected / columns);
+                let last_row = (anchor / columns).max(selected / columns);
+                let first_column = (anchor % columns).min(selected % columns);
+                let last_column = (anchor % columns).max(selected % columns);
+                for row in first_row..=last_row {
+                    for column in first_column..=last_column {
+                        let index = row * columns + column;
+                        if index < self.entry_count {
+                            self.selection.insert(index);
+                        }
+                    }
+                }
+            } else {
+                self.selection
+                    .extend(anchor.min(selected)..=anchor.max(selected));
+            }
         } else {
             self.selection.insert(selected);
         }
@@ -1539,6 +1612,99 @@ mod tests {
             0,
         ));
         assert!(!grid.scrollbar_visible());
+    }
+
+    #[test]
+    fn visual_block_tracks_both_corners_and_skips_missing_cells() {
+        let mut grid = grid();
+        assert_eq!(grid.columns(), 3);
+        grid.select_only(Some(1), 8);
+        grid.toggle_visual_block(8);
+        for (target, expected) in [
+            (5, vec![1, 2, 4, 5]),
+            (7, vec![1, 4, 7]),
+            (0, vec![0, 1]),
+            (1, vec![1]),
+        ] {
+            grid.move_selection(Motion::DisplayIndex(target), 8);
+            assert_eq!(grid.selected_indices(), &expected.into_iter().collect());
+        }
+        grid.select_only(Some(2), 8);
+        grid.toggle_visual_block(8);
+        grid.move_selection_count(Motion::Down, 2, 8, 25.0);
+        assert_eq!(
+            grid.selected_indices(),
+            &[1, 2, 4, 5, 7].into_iter().collect()
+        );
+        grid.move_standard(Motion::Up, false, 8, 25.0);
+        assert_eq!(grid.selected_indices(), &[1, 2, 4, 5].into_iter().collect());
+    }
+
+    #[test]
+    fn visual_block_switches_shape_preserves_anchor_and_exits() {
+        let mut grid = grid();
+        grid.toggle_visual_block(0);
+        assert!(!grid.visual_active());
+        grid.select_only(Some(1), 8);
+        grid.toggle_visual_block(8);
+        grid.move_selection(Motion::Down, 8);
+        assert_eq!(grid.selected_indices(), &[1, 4].into_iter().collect());
+        grid.toggle_visual_selection(8);
+        assert_eq!(grid.selected_indices(), &[1, 2, 3, 4].into_iter().collect());
+        grid.toggle_visual_block(8);
+        assert_eq!(grid.selected_indices(), &[1, 4].into_iter().collect());
+        grid.toggle_visual_block(8);
+        assert!(!grid.visual_active());
+        assert_eq!(grid.selected_indices(), &[1, 4].into_iter().collect());
+        grid.toggle_visual_block(8);
+        grid.move_selection(Motion::Down, 8);
+        grid.cancel_visual_selection(8);
+        assert_eq!(grid.selected_indices(), &[7].into_iter().collect());
+        assert!(!grid.visual_active());
+    }
+
+    #[test]
+    fn visual_block_reflows_and_restores_mapped_anchors() {
+        let mut grid = grid();
+        grid.select_only(Some(1), 8);
+        grid.toggle_visual_block(8);
+        grid.move_selection(Motion::Down, 8);
+        grid.set_list_mode(true);
+        assert_eq!(grid.selected_indices(), &[1, 2, 3, 4].into_iter().collect());
+        grid.set_list_mode(false);
+        assert_eq!(grid.selected_indices(), &[1, 4].into_iter().collect());
+        grid.resize(Size::new(820.0, 560.0));
+        let columns = grid.columns();
+        let expected: BTreeSet<_> = (0..8)
+            .filter(|i| {
+                (1 / columns..=4 / columns).contains(&(i / columns))
+                    && ((1 % columns).min(4 % columns)..=(1 % columns).max(4 % columns))
+                        .contains(&(i % columns))
+            })
+            .collect();
+        assert_eq!(grid.selected_indices(), &expected);
+        let snapshot = grid.capture_selection();
+        grid.select_only(Some(0), 8);
+        grid.restore_selection(snapshot.clone(), 8, |i| Some(7 - i));
+        assert!(grid.visual_block_active());
+        assert_eq!(grid.visual_anchor, Some(6));
+        assert_eq!(grid.selected_entry(), Some(3));
+        grid.restore_selection(snapshot, 8, |i| (i != 1).then_some(i));
+        assert!(!grid.visual_active());
+    }
+
+    #[test]
+    fn visual_block_survives_refresh_but_not_navigation() {
+        let mut grid = grid();
+        grid.select_only(Some(1), 8);
+        grid.toggle_visual_block(8);
+        grid.move_selection(Motion::Down, 8);
+        let snapshot = grid.capture_selection();
+        grid.install_navigation(&[1, 4], 8, false, false, snapshot);
+        assert!(grid.visual_block_active());
+        let snapshot = grid.capture_selection();
+        grid.install_navigation(&[1, 4], 8, false, true, snapshot);
+        assert!(!grid.visual_active());
     }
 
     #[test]

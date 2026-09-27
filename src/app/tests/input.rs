@@ -1051,3 +1051,67 @@ fn ow_opens_the_application_chooser_for_the_selected_entry() {
     ));
     assert!(app.browser_input.pending_sequence().is_none());
 }
+
+fn block_control_v(app: &mut App) {
+    let key = keyboard::Key::Character("v".into());
+    drop(app.handle_event(
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::KeyV),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        }),
+        event::Status::Ignored,
+    ));
+}
+
+#[test]
+fn iced_visual_block_moves_copies_and_cuts_only_the_rectangle() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.grid.resize(iced::Size::new(584.0, 560.0));
+    app.grid.set_icon_size(48);
+    app.grid.set_list_mode(false);
+    app.navigation
+        .replace_displayed_entries((0..8).map(|i| entry(&format!("file{i}"))).collect());
+    app.focus_browser(BrowserFocus::Entries);
+    app.grid.select_only(Some(1), 8);
+    block_control_v(&mut app);
+    assert!(app.grid.visual_block_active());
+    assert!(app.presentation.status().contains("VISUAL BLOCK"));
+    let down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+    drop(app.handle_key(down.clone(), down, keyboard::Modifiers::empty(), None));
+    assert_eq!(app.grid.selected_indices(), &[1, 4].into_iter().collect());
+    press(&mut app, "y");
+    let copied = app.transfers.paste(PathBuf::from("/target")).unwrap();
+    assert_eq!(
+        copied.paths,
+        [PathBuf::from("/start/file1"), PathBuf::from("/start/file4")]
+    );
+    press(&mut app, "x");
+    assert_eq!(
+        app.transfers.pending_cut_paths(),
+        [PathBuf::from("/start/file1"), PathBuf::from("/start/file4")]
+    );
+}
+
+#[test]
+fn block_shortcut_ignores_sidebar_and_text_editors() {
+    let (mut app, _) = App::new();
+    app.navigation.settle_for_test();
+    app.navigation.replace_displayed_entries(vec![entry("one")]);
+    app.grid.select_only(Some(0), 1);
+    app.focus_browser(BrowserFocus::Sidebar);
+    block_control_v(&mut app);
+    assert!(!app.grid.visual_active());
+    app.focus_browser(BrowserFocus::Entries);
+    let key = keyboard::Key::Character("l".into());
+    drop(app.handle_key(key.clone(), key, keyboard::Modifiers::CTRL, None));
+    assert_eq!(app.browser_input.mode(), InputMode::Location);
+    block_control_v(&mut app);
+    assert_eq!(app.browser_input.mode(), InputMode::Location);
+    assert!(!app.grid.visual_active());
+}

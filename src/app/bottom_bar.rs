@@ -42,6 +42,7 @@ impl<'a> View<'a> {
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
                 self.bottom_bar_text(status_model.text)
+                    .wrapping(iced::advanced::text::Wrapping::None)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
                     .color(self.accent_color())
@@ -225,8 +226,9 @@ impl<'a> View<'a> {
                         };
                     let mut line = Row::new()
                         .push(indicator)
-                        .push(
+                        .push(super::status_carousel::status_carousel(
                             self.bottom_bar_text(status_model.text)
+                                .wrapping(iced::advanced::text::Wrapping::None)
                                 .size(11)
                                 .line_height(iced::Pixels(13.0))
                                 .color(if self.app().presentation.notice_is_danger() {
@@ -234,8 +236,10 @@ impl<'a> View<'a> {
                                 } else {
                                     self.secondary_text_color()
                                 })
-                                .width(Fill),
-                        )
+                                .width(Length::Shrink),
+                            status_model.text,
+                            self.app().reduced_motion(),
+                        ))
                         .spacing(
                             if self.app().foreground_operation_active()
                                 || self.app().navigation.loading()
@@ -285,6 +289,7 @@ impl<'a> View<'a> {
                         transfers.active_action.unwrap_or("Transfer"),
                         &snapshot,
                     ))
+                    .wrapping(iced::advanced::text::Wrapping::None)
                     .size(11)
                     .width(Fill),
                 )

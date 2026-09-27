@@ -45,12 +45,17 @@ pub(super) type Job<T> = Pin<Box<dyn Future<Output = Completion<T>> + Send>>;
 #[derive(Debug)]
 pub(super) struct ForegroundActivity {
     active: Arc<AtomicUsize>,
+    browsing_blocked: Option<Arc<AtomicUsize>>,
 }
 
 impl Drop for ForegroundActivity {
     fn drop(&mut self) {
         let previous = self.active.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "foreground operation count underflowed");
+        if let Some(blocked) = &self.browsing_blocked {
+            let previous = blocked.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "browsing operation count underflowed");
+        }
     }
 }
 
@@ -64,6 +69,7 @@ pub(super) struct Operations {
     details_generation: Arc<AtomicU64>,
     search_generation: Arc<AtomicU64>,
     foreground_active: Arc<AtomicUsize>,
+    browsing_blocked: Arc<AtomicUsize>,
 }
 
 impl Default for Operations {
@@ -77,6 +83,7 @@ impl Default for Operations {
             details_generation: Arc::new(AtomicU64::new(0)),
             search_generation: Arc::new(AtomicU64::new(0)),
             foreground_active: Arc::new(AtomicUsize::new(0)),
+            browsing_blocked: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -105,6 +112,16 @@ impl Operations {
         self.schedule(kind, None, Some(activity), work)
     }
 
+    /// Keep mutation controls busy while allowing the user to browse.
+    pub(super) fn run_browsable_foreground<T, F>(&self, kind: Kind, work: F) -> Job<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Cancellation) -> Result<T, String> + Send + 'static,
+    {
+        let activity = self.begin_activity(false);
+        self.schedule(kind, None, Some(activity), work)
+    }
+
     pub(super) fn run_after<T, F>(&self, kind: Kind, delay: Duration, work: F) -> Job<T>
     where
         T: Send + 'static,
@@ -114,10 +131,23 @@ impl Operations {
     }
 
     pub(super) fn begin_foreground(&self) -> ForegroundActivity {
+        self.begin_activity(true)
+    }
+
+    fn begin_activity(&self, block_browsing: bool) -> ForegroundActivity {
         self.foreground_active.fetch_add(1, Ordering::AcqRel);
+        let browsing_blocked = block_browsing.then(|| {
+            self.browsing_blocked.fetch_add(1, Ordering::AcqRel);
+            Arc::clone(&self.browsing_blocked)
+        });
         ForegroundActivity {
             active: Arc::clone(&self.foreground_active),
+            browsing_blocked,
         }
+    }
+
+    pub(super) fn browsing_blocked(&self) -> bool {
+        self.browsing_blocked.load(Ordering::Acquire) > 0
     }
 
     pub(super) fn foreground_active(&self) -> bool {

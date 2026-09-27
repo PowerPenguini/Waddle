@@ -332,6 +332,60 @@ impl TransferSession {
         operations: &Operations,
     ) -> BatchUpdate {
         match outcome {
+            WorkOutcome::Failed(error) => {
+                let Some(QueueFinished {
+                    operation,
+                    next,
+                    activity: _activity,
+                }) = self.queue.fail(id, &error)
+                else {
+                    return BatchUpdate::Ignored;
+                };
+                let mut changed_folders = BTreeSet::new();
+                match operation {
+                    QueueOperation::Transfer(request) => {
+                        if let Some(id) = request.inbound_id
+                            && let Some(adapter) = adapter
+                        {
+                            adapter.finish_inbound(id);
+                        }
+                        changed_folders.insert(request.destination);
+                        changed_folders.extend(
+                            request
+                                .paths
+                                .iter()
+                                .filter_map(|path| path.parent().map(Path::to_path_buf)),
+                        );
+                    }
+                    QueueOperation::Restore(entries) => {
+                        changed_folders.extend(entries.iter().filter_map(|entry| {
+                            entry.receipt.original.parent().map(Path::to_path_buf)
+                        }));
+                    }
+                    QueueOperation::Trash(entries) => {
+                        changed_folders.extend(
+                            entries
+                                .iter()
+                                .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
+                        );
+                    }
+                }
+                BatchUpdate::Completed {
+                    outcome: Box::new(CompletionOutcome {
+                        presentation: CompletionPresentation::Error(format!(
+                            "Transfer worker failed: {error}\nSome files may already have changed. Undo is unavailable for this operation."
+                        )),
+                        notice: None,
+                        detail: None,
+                        undo: UndoOutcome::None,
+                        changed_folders: changed_folders.into_iter().collect(),
+                        refresh: Refresh::Entries(Vec::new()),
+                        sync_location_monitoring: true,
+                        trash_failures: Vec::new(),
+                    }),
+                    next: next.map_or_else(Task::none, |work| launch(work, operations)),
+                }
+            }
             WorkOutcome::Filesystem(TransferBatchOutcome::Complete(report), undo) => {
                 let Some(QueueFinished {
                     operation,
@@ -817,34 +871,20 @@ fn launch(work: Work, operations: &Operations) -> Task<RuntimeEvent> {
         operations.run(OperationKind::Mutation, move |_| {
             Ok::<_, String>(work.run())
         }),
-        move |completion| {
-            let outcome = match completion {
-                Completion::Finished(Ok(outcome)) => outcome,
-                Completion::Finished(Err(error)) => WorkOutcome::Filesystem(
-                    TransferBatchOutcome::Complete(TransferReport {
-                        copied_links: Default::default(),
-                        source_identities: Default::default(),
-                        retry: Vec::new(),
-                        completed: Vec::new(),
-                        failures: vec![fs::TransferFailure {
-                            source: PathBuf::new(),
-                            error,
-                        }],
-                        retained: Vec::new(),
-                        warnings: Vec::new(),
-                        receipts: Vec::new(),
-                        cancelled: false,
-                    }),
-                    Err("Transfer worker failed before preparing Undo".to_owned()),
-                ),
-                Completion::Cancelled => return RuntimeEvent::Noop,
-            };
-            RuntimeEvent::BatchFinished {
-                id,
-                outcome: Box::new(outcome),
-            }
-        },
+        move |completion| finish_work(id, completion),
     )
+}
+
+fn finish_work(id: u64, completion: Completion<WorkOutcome>) -> RuntimeEvent {
+    let outcome = match completion {
+        Completion::Finished(Ok(outcome)) => outcome,
+        Completion::Finished(Err(error)) => WorkOutcome::Failed(error),
+        Completion::Cancelled => return RuntimeEvent::Noop,
+    };
+    RuntimeEvent::BatchFinished {
+        id,
+        outcome: Box::new(outcome),
+    }
 }
 
 fn trash_completion(report: trash::Report, entries: &[FileEntry]) -> CompletionOutcome {
@@ -913,6 +953,15 @@ fn restore_completion(
         .restored
         .iter()
         .filter_map(|receipt| receipt.original.parent().map(Path::to_path_buf))
+        // A partially restored folder has no root receipt, but its destination
+        // may already contain successfully restored children.
+        .chain(
+            entries
+                .iter()
+                .filter_map(|entry| entry.receipt.original.parent().map(Path::to_path_buf)),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
     CompletionOutcome {
         presentation: CompletionPresentation::Status(status),
@@ -1219,6 +1268,128 @@ mod tests {
         })
         .await
         .expect("Transfer should settle")
+    }
+
+    #[test]
+    fn transfer_audit_partial_restore_refreshes_the_destination_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut selected = restore_entry(temp.path(), "folder");
+        std::fs::remove_file(&selected.receipt.trashed).unwrap();
+        std::fs::create_dir(&selected.receipt.trashed).unwrap();
+        std::fs::write(selected.receipt.trashed.join("a"), b"restore this").unwrap();
+        std::fs::write(selected.receipt.trashed.join("b"), b"retain this").unwrap();
+        std::fs::create_dir(&selected.receipt.original).unwrap();
+        std::fs::write(selected.receipt.original.join("b"), b"existing").unwrap();
+        selected.identity = std::fs::symlink_metadata(&selected.receipt.trashed)
+            .ok()
+            .map(|m| (m.dev(), m.ino()));
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            trash::restore_batch(&[selected.clone()]).run()
+        else {
+            panic!()
+        };
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            batch.resolve(fs::ConflictChoice::Replace, false).run()
+        else {
+            panic!()
+        };
+        let TransferBatchOutcome::Complete(report) =
+            batch.resolve(fs::ConflictChoice::Skip, false).run()
+        else {
+            panic!()
+        };
+        assert!(report.receipts.is_empty());
+        assert_eq!(
+            std::fs::read(selected.receipt.original.join("a")).unwrap(),
+            b"restore this"
+        );
+        let outcome = restore_completion(report, &[selected.clone()], Ok(None));
+        assert!(
+            outcome
+                .changed_folders
+                .contains(&selected.receipt.original.parent().unwrap().to_path_buf()),
+            "partial Restore changed files without invalidating the destination tree"
+        );
+        assert!(
+            selected.receipt.info.exists(),
+            "retained Trash item needs its metadata"
+        );
+    }
+
+    #[test]
+    fn transfer_audit_worker_failure_preserves_pending_cut() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        std::fs::write(&source, b"keep cut").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let operations = Operations::default();
+        let mut session = TransferSession::open(temp.path().join("history.json"));
+        session.cut(&[entry(source.clone())]).unwrap();
+        let request = session.paste(destination.clone()).unwrap();
+        let work = session
+            .queue
+            .enqueue_transfer(
+                request.clone(),
+                fs::TransferBatch::new(request.paths, destination, request.action),
+            )
+            .unwrap();
+        let RuntimeEvent::BatchFinished { id, outcome } = finish_work(
+            work.id(),
+            Completion::Finished(Err("worker failed".to_owned())),
+        ) else {
+            panic!()
+        };
+        let _ = session.complete_batch(id, *outcome, temp.path(), &operations);
+        assert_eq!(session.pending_cut_paths(), [source]);
+        assert!(!session.overview().active);
+    }
+
+    #[test]
+    fn transfer_audit_trash_worker_failure_does_not_stall_the_queue() {
+        runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let operations = Operations::default();
+            let mut session = TransferSession::open(temp.path().join("history.json"));
+            let first = vec![entry(temp.path().join("first"))];
+            let second = vec![entry(temp.path().join("second"))];
+            let work = session
+                .queue
+                .enqueue_trash(first.clone(), trash::Batch::new(first))
+                .unwrap();
+            assert!(
+                session
+                    .queue
+                    .enqueue_trash(second.clone(), trash::Batch::new(second))
+                    .is_none()
+            );
+            let completion = operations
+                .run(
+                    OperationKind::Mutation,
+                    |_| -> Result<WorkOutcome, String> {
+                        panic!("injected worker failure");
+                    },
+                )
+                .await;
+            let RuntimeEvent::BatchFinished { id, outcome } = finish_work(work.id(), completion)
+            else {
+                panic!("failed worker must produce a completion");
+            };
+            let update = session.complete_batch(id, *outcome, temp.path(), &operations);
+            let BatchUpdate::Completed { outcome, next } = update else {
+                panic!("Trash worker failure was ignored, leaving the queue stuck");
+            };
+            assert!(matches!(
+                outcome.presentation,
+                CompletionPresentation::Error(_)
+            ));
+            assert!(session.overview().active, "next transfer should start");
+            assert!(matches!(
+                run_task(&mut session, next, temp.path(), &operations).await,
+                BatchUpdate::Completed { .. }
+            ));
+            assert!(!session.overview().active);
+        });
     }
 
     #[test]

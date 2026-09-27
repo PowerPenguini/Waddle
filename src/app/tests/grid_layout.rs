@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::Motion;
+use iced::advanced::Renderer as _;
 use iced::advanced::{Layout, layout, renderer::Headless, widget::Tree};
 use iced::{Point, Rectangle, Size};
 use std::collections::BTreeSet;
@@ -142,4 +144,106 @@ fn marquee_selects_the_tiles_inside_the_rendered_rectangle() {
             "tiles: {tiles:?}, rectangle: {rectangle:?}"
         );
     });
+}
+
+#[test]
+#[ignore = "requires a headless wgpu adapter"]
+fn visual_block_rendered_layout_matches_selected_tiles() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut renderer = <iced::Renderer as Headless>::new(
+                iced::Font::DEFAULT,
+                iced::Pixels(14.0),
+                Some("wgpu"),
+            )
+            .await
+            .unwrap();
+            let (mut app, _) = App::new();
+            app.navigation.settle_for_test();
+            app.navigation.replace_displayed_entries(
+                (0..80)
+                    .map(|i| FileEntry {
+                        path: std::path::PathBuf::from(format!("/start/file{i:02}.txt")),
+                        name: format!("file{i:02}.txt").into(),
+                        directory: false,
+                        metadata: Default::default(),
+                    })
+                    .collect(),
+            );
+            app.grid.set_icon_size(48);
+            app.grid.set_list_mode(false);
+            app.grid.select_only(Some(1), 80);
+            app.grid.toggle_visual_block(80);
+            app.grid.move_selection_count(Motion::Down, 3, 80, 25.0);
+            for width in [584.0, 1000.0] {
+                let size = Size::new(width, 560.0);
+                app.grid.resize(size);
+                app.grid.select_only(Some(1), 80);
+                app.grid.toggle_visual_block(80);
+                app.grid.move_selection(Motion::Down, 80);
+                app.grid.move_selection(Motion::Right, 80);
+                app.refresh_status();
+                assert!(app.presentation.status().contains("VISUAL BLOCK"));
+                let bounds = Rectangle::with_size(size);
+                renderer.reset(bounds);
+                let mut body = View::new(&app).render();
+                let mut tree = Tree::new(body.as_widget());
+                let node = body.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut tiles = Vec::new();
+                tile_bounds(
+                    Layout::new(&node),
+                    Size::new(app.grid.tile_width(), app.grid.tile_height()),
+                    &mut tiles,
+                );
+                let selected: Vec<_> = app
+                    .grid
+                    .selected_indices()
+                    .iter()
+                    .map(|&i| tiles[i])
+                    .collect();
+                assert_eq!(selected.len(), 4);
+                let left = selected.iter().map(|r| r.x).fold(f32::INFINITY, f32::min);
+                let top = selected.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+                let right = selected.iter().map(|r| r.x + r.width).fold(0.0, f32::max);
+                let bottom = selected.iter().map(|r| r.y + r.height).fold(0.0, f32::max);
+                let rectangle =
+                    Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top));
+                let expected: BTreeSet<_> = tiles
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, tile)| rectangle.intersects(tile).then_some(i))
+                    .collect();
+                assert_eq!(app.grid.selected_indices(), &expected);
+                body.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &iced::Theme::Dark,
+                    &iced::advanced::renderer::Style {
+                        text_color: iced::Color::WHITE,
+                    },
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                let pixels =
+                    renderer.screenshot(Size::new(width as u32, 560), 1.0, iced::Color::BLACK);
+                if let Ok(directory) = std::env::var("WADDLE_BLOCK_SCREENSHOTS") {
+                    image::save_buffer(
+                        std::path::Path::new(&directory).join(format!("block-{width}.png")),
+                        &pixels,
+                        width as u32,
+                        560,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
+                }
+            }
+        });
 }

@@ -123,8 +123,10 @@ impl Batch {
         self,
         cancelled: impl Fn() -> bool,
         progress: impl FnMut(TransferProgress),
+        preparing_undo: impl FnOnce(),
     ) -> Report {
         self.run_with(&GioAdapter, cancelled, progress, |receipts| {
+            preparing_undo();
             journal::Action::trash(receipts).map_err(|error| error.to_string())
         })
     }

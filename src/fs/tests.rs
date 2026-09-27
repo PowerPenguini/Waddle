@@ -3673,3 +3673,111 @@ fn cyclic_source_overwrites_leave_data_intact_and_allow_unrelated_transfers() {
         );
     }
 }
+
+#[test]
+fn transfer_audit_rejects_a_destination_retargeted_while_queued() {
+    use std::cell::Cell;
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let original_target = temp.path().join("original-target");
+        let replacement_target = temp.path().join("replacement-target");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("data"), b"preserve me").unwrap();
+        fs::create_dir(&original_target).unwrap();
+        fs::create_dir(&replacement_target).unwrap();
+        std::os::unix::fs::symlink(&original_target, &target).unwrap();
+        let batch = TransferBatch::try_new(vec![source.clone()], target.clone(), action).unwrap();
+        fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink(&replacement_target, &target).unwrap();
+        let updates = Cell::new(0);
+        let TransferBatchOutcome::Complete(report) =
+            batch.run_with(|| updates.get() > 20, |_| updates.set(updates.get() + 1))
+        else {
+            panic!("unexpected conflict")
+        };
+        assert_eq!(
+            report.failures.len(),
+            1,
+            "retargeted destination was accepted: {report:?}"
+        );
+        assert_eq!(fs::read(source.join("data")).unwrap(), b"preserve me");
+        assert_eq!(fs::read_dir(&replacement_target).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn transfer_audit_failed_sources_are_counted_as_processed_items() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, b"data").unwrap();
+    fs::create_dir(&destination).unwrap();
+    let batch = TransferBatch::try_new(vec![source.clone()], destination, Action::Copy).unwrap();
+    fs::remove_file(source).unwrap();
+    let mut updates = Vec::new();
+    let TransferBatchOutcome::Complete(report) = batch.run_with(|| false, |p| updates.push(p))
+    else {
+        panic!("unexpected conflict")
+    };
+    assert_eq!(report.failures.len(), 1);
+    let last = updates.last().unwrap();
+    assert_eq!(
+        last.completed_entries, last.total_entries,
+        "finished failures still look pending"
+    );
+}
+
+#[test]
+fn transfer_audit_mapped_restore_can_create_a_later_items_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let trash_folder = temp.path().join("trashed-folder");
+    let trash_file = temp.path().join("trashed-file");
+    let restored_folder = temp.path().join("restored-folder");
+    fs::create_dir(&trash_folder).unwrap();
+    fs::write(&trash_file, b"restore me").unwrap();
+    let batch = TransferBatch::new_mapped(
+        [
+            (trash_folder, restored_folder.clone()),
+            (trash_file, restored_folder.join("file")),
+        ],
+        Action::Move,
+    );
+    let report = complete(batch);
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(
+        fs::read(restored_folder.join("file")).unwrap(),
+        b"restore me"
+    );
+}
+
+#[test]
+fn transfer_audit_conflict_rejects_a_replaced_destination_folder() {
+    for action in [Action::Copy, Action::Move] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let saved = temp.path().join("saved-target");
+        fs::write(&source, b"new data").unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("source"), b"old data").unwrap();
+        let TransferBatchOutcome::Conflict { batch, .. } =
+            TransferBatch::try_new(vec![source.clone()], target.clone(), action)
+                .unwrap()
+                .run()
+        else {
+            panic!("expected conflict")
+        };
+        fs::rename(&target, &saved).unwrap();
+        fs::create_dir(&target).unwrap();
+        // Preserve the leaf inode, so checking only the conflicting file would
+        // miss the fact that this is now a different destination folder.
+        fs::hard_link(saved.join("source"), target.join("source")).unwrap();
+        let report = complete(batch.resolve(ConflictChoice::Replace, false));
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"new data");
+        assert_eq!(fs::read(target.join("source")).unwrap(), b"old data");
+        assert_eq!(fs::read(saved.join("source")).unwrap(), b"old data");
+    }
+}

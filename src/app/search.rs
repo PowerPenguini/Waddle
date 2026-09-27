@@ -26,6 +26,7 @@ struct Active {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Update {
     None,
+    Rejected(&'static str),
     SelectionChanged,
     CancelPending,
     Search {
@@ -78,6 +79,11 @@ impl SearchSession {
         let Some(active) = self.active.as_mut() else {
             return Update::None;
         };
+        if value.starts_with('/') && !navigation.folder_displayed() {
+            return Update::Rejected(
+                "Recursive search requires a folder; use / to search this view",
+            );
+        }
         self.revision = self.revision.wrapping_add(1);
         if let Some(recursive) = active.recursive.as_mut() {
             if self.query != value {
@@ -168,7 +174,7 @@ impl SearchSession {
                         .map(|(index, entry)| (entry.path.as_path(), index))
                         .collect();
                     let selection = selection.map(|path| positions.get(path.as_path()).copied());
-                    grid.restore_selection(selection, Some);
+                    grid.restore_selection(selection, navigation.entries().len(), Some);
                 } else {
                     grid.select_only(
                         (!navigation.entries().is_empty()).then_some(0),
@@ -221,7 +227,7 @@ impl SearchSession {
             .enumerate()
             .map(|(index, entry)| (entry.path.as_path(), index))
             .collect::<HashMap<_, _>>();
-        grid.restore_selection(active.selection, |index| {
+        grid.restore_selection(active.selection, navigation.entries().len(), |index| {
             active
                 .paths
                 .get(index)

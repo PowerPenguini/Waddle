@@ -53,6 +53,9 @@ impl Work {
                     }
                     _ => (*batch).run_with(cancelled, progress),
                 };
+                if matches!(&outcome, crate::fs::TransferBatchOutcome::Complete(_)) {
+                    self.progress.preparing_undo.store(true, Ordering::Release);
+                }
                 if let Operation::Restore(entries) = &self.operation
                     && let crate::fs::TransferBatchOutcome::Complete(report) = &mut outcome
                 {
@@ -66,7 +69,9 @@ impl Work {
                 };
                 WorkOutcome::Filesystem(outcome, undo)
             }
-            Batch::Trash(batch) => WorkOutcome::Trash(batch.run(cancelled, progress)),
+            Batch::Trash(batch) => WorkOutcome::Trash(batch.run(cancelled, progress, || {
+                self.progress.preparing_undo.store(true, Ordering::Release);
+            })),
         }
     }
 }
@@ -79,6 +84,7 @@ enum Batch {
 
 #[derive(Clone, Debug)]
 pub(in crate::app) enum WorkOutcome {
+    Failed(String),
     Filesystem(crate::fs::TransferBatchOutcome, PreparedUndo),
     Trash(trash::Report),
 }
@@ -143,6 +149,7 @@ pub(super) struct Finished {
 
 #[derive(Debug, Default)]
 pub(super) struct ProgressTracker {
+    preparing_undo: AtomicBool,
     completed_entries: AtomicU64,
     total_entries: AtomicU64,
     completed_bytes: AtomicU64,
@@ -173,6 +180,8 @@ impl ProgressTracker {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::app) struct Snapshot {
+    pub(in crate::app) preparing_undo: bool,
+    pub(in crate::app) item_progress: bool,
     pub(in crate::app) progress: TransferProgress,
     pub(in crate::app) elapsed: Duration,
     pub(in crate::app) bytes_per_second: u64,
@@ -201,7 +210,17 @@ struct Active {
     cancellation: Arc<AtomicBool>,
     progress: Arc<ProgressTracker>,
     started: Instant,
+    paused_at: Option<Instant>,
+    paused_duration: Duration,
     activity: Option<Arc<ForegroundActivity>>,
+}
+
+impl Active {
+    fn finish_pause(&mut self) {
+        if let Some(started) = self.paused_at.take() {
+            self.paused_duration += started.elapsed();
+        }
+    }
 }
 
 struct Pending {
@@ -325,6 +344,7 @@ impl Queue {
             .as_mut()
             .filter(|active| active.id == id && active.paused.is_none())?;
         active.paused = Some(batch);
+        active.paused_at = Some(Instant::now());
         Some(active.operation.clone())
     }
 
@@ -335,12 +355,14 @@ impl Queue {
     ) -> Option<Work> {
         let active = self.active.as_mut()?;
         let batch = active.paused.take()?.resolve(choice, remaining);
+        active.finish_pause();
         Some(work(active, batch))
     }
 
     pub(super) fn cancel_conflict(&mut self) -> Option<Work> {
         let active = self.active.as_mut()?;
         let batch = active.paused.take()?;
+        active.finish_pause();
         active.cancellation.store(true, Ordering::Release);
         Some(work(active, batch))
     }
@@ -405,6 +427,36 @@ impl Queue {
             }
             _ => unreachable!("operation and report were checked before finishing"),
         }
+        Some(self.advance(active))
+    }
+
+    pub(super) fn fail(&mut self, id: u64, error: &str) -> Option<Finished> {
+        let active = self
+            .active
+            .take_if(|active| active.id == id && active.paused.is_none())?;
+        // The worker did not return receipts. Replaying the original request
+        // could repeat already committed mutations, so do not offer blind Retry.
+        self.last_retry = None;
+        if !matches!(active.operation, Operation::Restore(_)) {
+            self.history.push(HistoryEntry {
+                recorded_at: now_seconds(),
+                action: active.operation.active_action().to_owned(),
+                completed: 0,
+                failed: 1,
+                retained: 0,
+                bytes: active.progress.read().completed_bytes,
+                elapsed_millis: active.started.elapsed().as_millis() as u64,
+                cancelled: false,
+                detail: format!(
+                    "{} failed: {error}; completion state is unknown",
+                    active.operation.active_action()
+                ),
+            });
+        }
+        Some(self.advance(active))
+    }
+
+    fn advance(&mut self, active: Active) -> Finished {
         self.prune();
         let _ = self.save();
         let next = self.pending.pop_front().map(
@@ -414,11 +466,11 @@ impl Queue {
                  activity,
              }| self.activate(operation, batch, activity),
         );
-        Some(Finished {
+        Finished {
             operation: active.operation,
             next,
             activity: active.activity,
-        })
+        }
     }
 
     pub(super) fn retry(&mut self, operations: &Operations) -> Result<Option<Work>, String> {
@@ -527,6 +579,8 @@ impl Queue {
             cancellation: Arc::clone(&cancellation),
             progress: Arc::clone(&progress),
             started: Instant::now(),
+            paused_at: None,
+            paused_duration: Duration::ZERO,
             activity: activity.clone(),
         });
         Work {
@@ -579,18 +633,27 @@ impl HistoryEntry {
 fn snapshot(active: &Active, queued: usize) -> Snapshot {
     let progress = active.progress.read();
     let elapsed = active.started.elapsed();
-    let bytes_per_second = if elapsed.as_millis() == 0 {
+    let preparing_undo = active.progress.preparing_undo.load(Ordering::Acquire);
+    let item_progress = matches!(active.operation, Operation::Trash(_));
+    let running_elapsed = elapsed.saturating_sub(active.paused_duration);
+    let bytes_per_second = if preparing_undo
+        || item_progress
+        || active.paused.is_some()
+        || running_elapsed.as_millis() == 0
+    {
         0
     } else {
-        ((u128::from(progress.completed_bytes) * 1_000) / elapsed.as_millis()) as u64
+        ((u128::from(progress.completed_bytes) * 1_000) / running_elapsed.as_millis()) as u64
     };
     let estimated_remaining =
         (bytes_per_second > 0 && progress.completed_bytes < progress.total_bytes).then(|| {
             Duration::from_secs(
-                (progress.total_bytes - progress.completed_bytes) / bytes_per_second,
+                (progress.total_bytes - progress.completed_bytes).div_ceil(bytes_per_second),
             )
         });
     Snapshot {
+        preparing_undo,
+        item_progress,
         progress,
         elapsed,
         bytes_per_second,
@@ -679,6 +742,108 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn transfer_audit_paused_conflict_has_no_speed_or_eta() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let request = request("/target");
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(
+                    request.paths.clone(),
+                    request.destination.clone(),
+                    request.action,
+                ),
+            )
+            .unwrap();
+        work.progress.update(TransferProgress {
+            completed_entries: 1,
+            total_entries: 2,
+            completed_bytes: 1024,
+            total_bytes: 2048,
+        });
+        queue.active.as_mut().unwrap().started = Instant::now() - Duration::from_secs(1);
+        queue
+            .pause_for_conflict(
+                work.id(),
+                TransferBatch::new(request.paths, request.destination, request.action),
+            )
+            .unwrap();
+        let snapshot = queue.snapshot().unwrap();
+        assert_eq!(
+            snapshot.bytes_per_second, 0,
+            "waiting for a choice is not active transfer work"
+        );
+        assert_eq!(snapshot.estimated_remaining, None);
+        // Simulate a long user decision without slowing the test down.
+        let now = Instant::now();
+        let active = queue.active.as_mut().unwrap();
+        active.started = now - Duration::from_secs(101);
+        active.paused_at = Some(now - Duration::from_secs(100));
+        queue.resolve_conflict(ConflictChoice::Skip, false).unwrap();
+        assert!(
+            queue.snapshot().unwrap().bytes_per_second >= 1000,
+            "time spent choosing a conflict response diluted the resumed speed"
+        );
+    }
+
+    #[test]
+    fn transfer_audit_eta_does_not_round_pending_bytes_down_to_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let request = request("/target");
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(
+                    request.paths.clone(),
+                    request.destination.clone(),
+                    request.action,
+                ),
+            )
+            .unwrap();
+        work.progress.update(TransferProgress {
+            completed_entries: 0,
+            total_entries: 1,
+            completed_bytes: 1024,
+            total_bytes: 1025,
+        });
+        queue.active.as_mut().unwrap().started = Instant::now() - Duration::from_secs(1);
+        assert!(queue.snapshot().unwrap().estimated_remaining.unwrap() >= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn worker_marks_undo_preparation_without_reporting_transfer_speed() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("target");
+        fs::write(&source, b"contents").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let mut request = request(destination.to_str().unwrap());
+        request.paths = vec![source];
+        let mut queue = Queue::open(temp.path().join("history.json"));
+        let work = queue
+            .enqueue_transfer(
+                request.clone(),
+                TransferBatch::new(request.paths.clone(), destination, request.action),
+            )
+            .unwrap();
+        assert!(!queue.snapshot().unwrap().preparing_undo);
+        assert!(matches!(
+            work.run(),
+            WorkOutcome::Filesystem(TransferBatchOutcome::Complete(_), Ok(Some(_)))
+        ));
+        let snapshot = queue.snapshot().unwrap();
+        assert!(snapshot.preparing_undo);
+        assert_eq!(snapshot.progress.completed_bytes, 8);
+        assert_eq!(snapshot.bytes_per_second, 0);
+        assert_eq!(snapshot.estimated_remaining, None);
+        let text = crate::app::presentation::format_transfer_snapshot("Copying", &snapshot);
+        assert!(text.contains("Preparing Undo"), "{text}");
+        assert!(!text.contains("/s"), "{text}");
+    }
 
     #[test]
     fn hunt_failed_restore_retries_itself_instead_of_an_older_copy() {

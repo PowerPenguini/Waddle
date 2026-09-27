@@ -591,8 +591,8 @@ impl<'a> View<'a> {
                 location,
                 toolbar_button(
                     match options.view {
-                        fs::ViewMode::Grid => include_bytes!("../ui/icons/view-grid.svg"),
-                        fs::ViewMode::List => include_bytes!("../ui/icons/view-list.svg"),
+                        fs::ViewMode::Grid => include_bytes!("../ui/icons/view-list.svg"),
+                        fs::ViewMode::List => include_bytes!("../ui/icons/view-grid.svg"),
                     },
                     "Toggle view",
                     true,

@@ -26,6 +26,7 @@ mod search;
 mod shell;
 mod startup;
 mod status;
+mod status_carousel;
 mod system_icons;
 mod thumbnail;
 mod transfer_integration;
@@ -301,6 +302,7 @@ enum Message {
     PromptCancel,
     FileOperationFinished(file_operation::Completion),
     JournalFinished {
+        view: operation_integration::JournalView,
         journal: Box<journal::Journal>,
         result: Result<journal::Effect, String>,
     },

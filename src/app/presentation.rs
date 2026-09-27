@@ -818,15 +818,27 @@ pub(super) fn format_transfer_snapshot(
     snapshot: &transfer_session::Snapshot,
 ) -> String {
     let progress = snapshot.progress;
-    let eta = snapshot.estimated_remaining.map_or_else(
-        || "ETA --".to_owned(),
-        |remaining| format!("ETA {}s", remaining.as_secs()),
-    );
     let queued = if snapshot.queued == 0 {
         String::new()
     } else {
         format!("  •  {} queued", snapshot.queued)
     };
+    if snapshot.preparing_undo {
+        return format!("{action}  •  Preparing Undo{queued}");
+    }
+    if progress.total_entries == 0 {
+        return format!("{action}  •  Preparing{queued}");
+    }
+    if snapshot.item_progress {
+        return format!(
+            "{action} {}/{} items{queued}",
+            progress.completed_entries, progress.total_entries,
+        );
+    }
+    let eta = snapshot.estimated_remaining.map_or_else(
+        || "ETA --".to_owned(),
+        |remaining| format!("ETA {}s", remaining.as_secs()),
+    );
     format!(
         "{action} {}/{}  •  {}/{}  •  {}/s  •  {eta}{queued}",
         progress.completed_entries,
@@ -924,6 +936,52 @@ pub(super) fn menu_style(theme: &Theme) -> container::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_transfer_shows_finalization_instead_of_a_decaying_speed() {
+        let snapshot = transfer_session::Snapshot {
+            preparing_undo: true,
+            item_progress: true,
+            progress: crate::fs::TransferProgress {
+                completed_entries: 1,
+                total_entries: 1,
+                completed_bytes: 20_615_843_020,
+                total_bytes: 20_615_843_020,
+            },
+            elapsed: std::time::Duration::from_secs(10),
+            bytes_per_second: 2_061_584_302,
+            estimated_remaining: None,
+            queued: 1,
+        };
+        let text = format_transfer_snapshot("Moving to Trash", &snapshot);
+        assert!(text.contains("Preparing Undo"), "{text}");
+        assert!(!text.contains("/s"), "{text}");
+        assert!(!text.contains("ETA"), "{text}");
+        assert!(text.contains("1 queued"), "{text}");
+    }
+
+    #[test]
+    fn trash_progress_does_not_claim_file_sizes_are_transfer_throughput() {
+        let snapshot = transfer_session::Snapshot {
+            preparing_undo: false,
+            item_progress: true,
+            progress: crate::fs::TransferProgress {
+                completed_entries: 1,
+                total_entries: 2,
+                completed_bytes: 1024,
+                total_bytes: 2048,
+            },
+            elapsed: std::time::Duration::from_secs(1),
+            bytes_per_second: 1024,
+            estimated_remaining: Some(std::time::Duration::from_secs(1)),
+            queued: 0,
+        };
+        let text = format_transfer_snapshot("Moving to Trash", &snapshot);
+        assert!(text.contains("1/2"), "{text}");
+        assert!(!text.contains("/s"), "{text}");
+        assert!(!text.contains("ETA"), "{text}");
+        assert!(!text.contains("KiB"), "{text}");
+    }
 
     #[test]
     fn context_menu_draws_only_its_shared_active_item() {

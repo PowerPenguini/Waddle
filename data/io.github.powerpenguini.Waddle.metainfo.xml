@@ -22,6 +22,17 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.25" date="2026-09-27">
+      <description>
+        <p>Add rectangular keyboard selection and scrolling status text.</p>
+        <ul>
+          <li>Select file rectangles with Ctrl+V and Vim or arrow-key movement.</li>
+          <li>Scroll overflowing status text at 32 pixels per second, respecting reduced motion.</li>
+          <li>Keep browsing responsive during Undo and Redo and preserve subsequent navigation.</li>
+          <li>Improve transfer preparation and progress feedback and restrict recursive search to folders.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.0.24" date="2026-09-17">
       <description>
         <p>Preserve original selections across queued transfers and retries.</p>

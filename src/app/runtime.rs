@@ -62,6 +62,7 @@ impl App {
             Message::WindowAvailable(None) => find_window_after_delay(),
             Message::WindowResized(size) => {
                 self.grid.resize(size);
+                self.refresh_status();
                 self.window_size_known = true;
                 self.startup.remember_size(size);
                 let reveal = std::mem::take(&mut self.pending_reveal_scroll);
@@ -91,6 +92,7 @@ impl App {
             }
             Message::PollTransfer => Task::none(),
             Message::CancelTransfer => self.cancel_transfer_conflict(),
+            Message::RetryTransfer if self.foreground_operation_active() => Task::none(),
             Message::RetryTransfer => match self.transfers.retry(&self.operations) {
                 Ok(task) => task.map(transfer_integration::transfer_runtime_message),
                 Err(error) => {
@@ -564,7 +566,11 @@ impl App {
             Message::PromptConfirm => self.confirm_prompt(),
             Message::PromptCancel => self.cancel_prompt(),
             Message::FileOperationFinished(completion) => self.finish_file_operation(completion),
-            Message::JournalFinished { journal, result } => self.finish_journal(*journal, result),
+            Message::JournalFinished {
+                view,
+                journal,
+                result,
+            } => self.finish_journal(view, *journal, result),
             Message::Copy => self.copy_selection(),
             Message::Paste => self.paste(),
             Message::ClipboardRead {
@@ -718,7 +724,7 @@ impl App {
                         self.navigation.entries().len(),
                         self.status_height(),
                         // Selecting entries is also valid in Trash and Recent.
-                        !self.foreground_operation_active()
+                        !self.operations.browsing_blocked()
                             && self.transfers.overview().conflict_prompt.is_none()
                             && !self.navigation.loading()
                             && !self.search.is_recursive()
@@ -949,6 +955,7 @@ impl App {
             self.grid.close_context();
         }
         let foreground_operation_active = self.foreground_operation_active();
+        let browsing_allowed = !self.operations.browsing_blocked();
         let transfers = self.transfers.overview();
         let access = self.operation_access();
         let entries_focused = self.focus.is(BrowserFocus::Entries);
@@ -969,6 +976,7 @@ impl App {
                     || transfers.retry
                     || !transfers.history.is_empty(),
                 foreground_operation_active,
+                browsing_allowed,
                 visual_active: self.grid.visual_active(),
                 selection_count: self.grid.selection_count(),
                 has_selection: self.grid.selected_entry().is_some(),
@@ -1085,6 +1093,15 @@ impl App {
             InputIntent::BeginCommand(prefix) => self.begin_command(prefix),
             InputIntent::RepeatSearch(reverse) => self.repeat_search(reverse),
             InputIntent::Rename => self.rename_selected(),
+            InputIntent::ToggleVisualBlock => {
+                if self.focus.is(BrowserFocus::Entries) {
+                    self.grid
+                        .toggle_visual_block(self.navigation.entries().len());
+                    self.schedule_details()
+                } else {
+                    Task::none()
+                }
+            }
             InputIntent::ToggleVisual => {
                 self.grid
                     .toggle_visual_selection(self.navigation.entries().len());

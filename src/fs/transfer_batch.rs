@@ -70,6 +70,7 @@ struct TransferRoot {
     source: PathBuf,
     destination: PathBuf,
     replaced_existing: bool,
+    destination_parent: Option<FileIdentity>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +220,7 @@ impl TransferBatch {
                 source: source.clone(),
                 destination: destination.clone(),
                 replaced_existing: false,
+                destination_parent: destination_parent_identity(&destination).ok(),
             });
             pending.push_back(PendingTransfer::Entry {
                 source,
@@ -307,6 +309,7 @@ impl TransferBatch {
                 .sources
                 .verify(&source_key)
                 .and_then(|()| check_source(&source_key))
+                .and_then(|()| self.verify_destination_parent(root))
                 .and_then(|()| self.verify_merge_ancestors(&source_key))
             {
                 self.fail(root, source_key, error);
@@ -706,6 +709,22 @@ impl TransferBatch {
         }
     }
 
+    fn verify_destination_parent(&self, root: usize) -> io::Result<()> {
+        let root = &self.roots[root];
+        let current = destination_parent_identity(&root.destination)?;
+        // A mapped Restore may restore the parent folder earlier in this batch.
+        // Only compare against an identity when the parent existed at submission.
+        if root
+            .destination_parent
+            .is_some_and(|expected| current != expected)
+        {
+            return Err(io::Error::other(
+                "the destination folder changed after the transfer was requested; select it again",
+            ));
+        }
+        Ok(())
+    }
+
     fn verify_merge_ancestors(&self, source: &Path) -> io::Result<()> {
         for ancestor in source.ancestors() {
             let Some(merged) = self.merged_directories.get(ancestor) else {
@@ -790,6 +809,9 @@ impl TransferBatch {
 
     fn fail(&mut self, root: usize, source: PathBuf, error: io::Error) {
         self.failed_roots.insert(root);
+        if !self.pending.iter().any(|pending| pending.root() == root) {
+            self.progressed_roots.insert(root);
+        }
         let destination = self.destination_for(root, &source);
         self.retain_retry(source.clone(), destination);
         self.failures.push(TransferFailure {
@@ -912,6 +934,11 @@ impl TransferBatch {
                 .collect(),
         }
     }
+}
+
+fn destination_parent_identity(destination: &Path) -> io::Result<FileIdentity> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    FileIdentity::read(&parent.canonicalize()?)
 }
 
 fn validate_transfer(

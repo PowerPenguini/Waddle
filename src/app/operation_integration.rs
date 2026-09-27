@@ -11,8 +11,17 @@ use super::{
     transfer_integration, transient::Dismiss, trash,
 };
 
+#[derive(Clone, Debug)]
+pub(super) struct JournalView {
+    navigation_revision: u64,
+    selected: Vec<PathBuf>,
+}
+
 impl App {
     pub(super) fn begin_command(&mut self, prefix: char) -> Task<Message> {
+        if self.foreground_operation_active() {
+            return Task::none();
+        }
         self.change_transient(|sessions| sessions.begin_command(prefix));
         self.refocus_bottom_input()
     }
@@ -609,18 +618,27 @@ impl App {
         if !self.operation_access().history {
             return Task::none();
         }
+        let view = JournalView {
+            navigation_revision: self.navigation.revision(),
+            selected: self
+                .selected_entries()
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect(),
+        };
         self.presentation
             .set_status(if redo { "Redoing…" } else { "Undoing…" });
         let mut journal = self.journal.clone();
         Task::perform(
             self.operations
-                .run_foreground(OperationKind::Mutation, move |_| {
+                .run_browsable_foreground(OperationKind::Mutation, move |_| {
                     let result = if redo { journal.redo() } else { journal.undo() }
                         .map_err(|error| error.to_string());
                     Ok((journal, result))
                 }),
-            |completion| match completion {
+            move |completion| match completion {
                 Completion::Finished(Ok((journal, result))) => Message::JournalFinished {
+                    view: view.clone(),
                     journal: Box::new(journal),
                     result,
                 },
@@ -632,6 +650,7 @@ impl App {
 
     pub(super) fn finish_journal(
         &mut self,
+        view: JournalView,
         journal: journal::Journal,
         result: Result<journal::Effect, String>,
     ) -> Task<Message> {
@@ -645,7 +664,15 @@ impl App {
                 let tree = self.invalidate_tree(effect.changed_folders);
                 let refresh = if self.navigation.defer_refresh() {
                     Task::none()
-                } else if self.navigation.folder_displayed() && !self.search.is_recursive() {
+                } else if self.navigation.folder_displayed()
+                    && !self.search.is_recursive()
+                    && self.navigation.revision() == view.navigation_revision
+                    && self
+                        .selected_entries()
+                        .iter()
+                        .map(|entry| &entry.path)
+                        .eq(view.selected.iter())
+                {
                     self.refresh(effect.select)
                 } else {
                     self.refresh_location()

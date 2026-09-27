@@ -69,6 +69,11 @@ impl App {
         } else {
             format!("{} items  •  {}", self.navigation.entries().len(), location)
         };
+        let status = if self.grid.visual_block_active() {
+            format!("VISUAL BLOCK  •  {status}")
+        } else {
+            status
+        };
         self.presentation.set_status(status);
     }
 

@@ -291,7 +291,7 @@ impl App {
 
     pub(super) fn open_recent(&mut self) -> Task<Message> {
         if self.prompt_blocks_action()
-            || self.foreground_operation_active()
+            || self.operations.browsing_blocked()
             || self.navigation.loading()
         {
             return Task::none();
@@ -302,7 +302,7 @@ impl App {
 
     pub(super) fn open_trash(&mut self) -> Task<Message> {
         if self.prompt_blocks_action()
-            || self.foreground_operation_active()
+            || self.operations.browsing_blocked()
             || self.navigation.loading()
         {
             return Task::none();
@@ -793,8 +793,12 @@ impl App {
 
     pub(super) fn begin_search(&mut self) -> Task<Message> {
         self.change_transient(|sessions| sessions.begin_search());
-        self.operations.cancel(OperationKind::Search);
-        self.search.begin(&self.navigation, &self.grid);
+        // Reopening the editor must keep recursive results attached to their
+        // original folder snapshot, including any search still in flight.
+        if !self.search.is_recursive() {
+            self.operations.cancel(OperationKind::Search);
+            self.search.begin(&self.navigation, &self.grid);
+        }
         self.refocus_bottom_input()
     }
 
@@ -804,6 +808,12 @@ impl App {
             .update(&mut self.navigation, &mut self.grid, value)
         {
             SearchUpdate::None => Task::none(),
+            SearchUpdate::Rejected(reason) => {
+                // Leave the editor so the rejection is visible in the status bar.
+                self.browser_input.leave_mode();
+                self.presentation.set_status(reason.to_owned());
+                Task::none()
+            }
             SearchUpdate::SelectionChanged => self.schedule_details(),
             SearchUpdate::CancelPending => {
                 self.operations.cancel(OperationKind::Search);
