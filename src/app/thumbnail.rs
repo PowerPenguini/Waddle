@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -13,6 +14,9 @@ const THUMBNAIL_EDGE: u32 = super::icon_size::MAX as u32 * 2;
 struct Fingerprint {
     length: u64,
     modified_nanos: u128,
+    device: u64,
+    inode: u64,
+    changed: (i64, i64),
 }
 
 impl Fingerprint {
@@ -29,6 +33,9 @@ impl Fingerprint {
                 .duration_since(UNIX_EPOCH)
                 .ok()?
                 .as_nanos(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
         })
     }
 }
@@ -82,6 +89,9 @@ impl Cache {
         let mut requests = Vec::new();
         for path in paths.into_iter().filter(|path| is_image(path)) {
             let Some(fingerprint) = Fingerprint::read(path) else {
+                self.entries.remove(path);
+                self.pending.remove(path);
+                self.lru.retain(|candidate| candidate != path);
                 continue;
             };
             if self
@@ -253,6 +263,115 @@ mod tests {
 
         fs::write(&paths[0], "changed length").unwrap();
         assert_eq!(cache.requests([paths[0].as_path()]).len(), 1);
+    }
+
+    #[test]
+    fn replacement_with_the_same_size_and_modification_time_refreshes_the_thumbnail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        fs::write(&path, "old image").unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        cache.complete(loaded(request, 1));
+
+        let replacement = temp.path().join("replacement.png");
+        fs::write(&replacement, "new image").unwrap();
+        fs::File::open(&replacement)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        fs::rename(replacement, &path).unwrap();
+
+        assert_eq!(cache.requests([path.as_path()]).len(), 1);
+        assert!(cache.handle(&path).is_none());
+    }
+
+    #[test]
+    fn non_file_replacements_clear_cached_and_pending_thumbnails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        fs::write(&path, "image").unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        cache.complete(loaded(request, 1));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(cache.requests([path.as_path()]).is_empty());
+        assert!(cache.handle(&path).is_none());
+
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, "image").unwrap();
+        let pending = cache.requests([path.as_path()]).pop().unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(cache.requests([path.as_path()]).is_empty());
+        cache.complete(loaded(pending, 2));
+        assert!(cache.handle(&path).is_none());
+    }
+
+    #[test]
+    fn in_place_edits_with_preserved_modification_time_refresh_the_thumbnail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        fs::write(&path, "old image").unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        cache.complete(loaded(request, 1));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&path, "new image").unwrap();
+        fs::File::open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        assert_eq!(cache.requests([path.as_path()]).len(), 1);
+        assert!(cache.handle(&path).is_none());
+    }
+
+    #[test]
+    fn grid_refresh_clears_the_thumbnail_of_an_image_replaced_by_a_folder() {
+        const CHILD: &str = "WADDLE_THUMBNAIL_GRID_REFRESH_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            // App initialization touches GIO's process-wide desktop state.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::thumbnail::tests::grid_refresh_clears_the_thumbnail_of_an_image_replaced_by_a_folder",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        fs::write(&path, "image").unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        cache.complete(loaded(request, 1));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        let (mut app, _) = super::super::App::new();
+        app.thumbnails = cache;
+        app.view_preferences =
+            super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        app.navigation =
+            super::super::navigation::NavigationSession::new(temp.path().to_path_buf());
+        app.navigation
+            .install_folder_entries(crate::fs::read_directory(temp.path()).unwrap());
+        app.grid.resize(iced::Size::new(1000.0, 700.0));
+        drop(app.load_visible_thumbnails());
+
+        assert!(app.thumbnails.handle(&path).is_none());
     }
 
     #[test]

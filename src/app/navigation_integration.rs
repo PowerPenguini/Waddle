@@ -345,7 +345,6 @@ impl App {
             .visible_range(self.navigation.entries().len(), self.status_height());
         let paths = self.navigation.entries()[visible.first_index..visible.last_index]
             .iter()
-            .filter(|entry| !entry.is_directory())
             .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
         Task::batch(
