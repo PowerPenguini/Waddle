@@ -72,9 +72,9 @@ fn spawn_detached(executable: &Path, arguments: &[OsString]) -> io::Result<()> {
 
 pub(crate) fn location(argument: &OsStr) -> Result<Target, String> {
     let path = local_path(argument)?;
-    let metadata = fs::metadata(&path)
+    let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-    if metadata.is_dir() {
+    if metadata.is_dir() || (metadata.file_type().is_symlink() && path.is_dir()) {
         return Ok(Target {
             directory: canonicalize(&path)?,
             selected: Vec::new(),
@@ -90,7 +90,7 @@ pub(crate) fn show_items(
     let mut targets: Vec<Target> = Vec::new();
     for argument in arguments {
         let path = local_path(argument.as_ref())?;
-        fs::metadata(&path)
+        fs::symlink_metadata(&path)
             .map_err(|error| format!("could not reveal {}: {error}", path.display()))?;
         let target = item_target(path)?;
         if let Some(existing) = targets
@@ -232,6 +232,14 @@ mod tests {
             let link = temp.path().join("download-link");
             symlink(&file, &link).unwrap();
             assert_eq!(location(link.as_os_str()).unwrap().selected, [link]);
+
+            let folder_link = temp.path().join("folder-link");
+            symlink(temp.path(), &folder_link).unwrap();
+            assert_eq!(location(folder_link.as_os_str()).unwrap(), directory);
+            assert_eq!(
+                show_items([&folder_link]).unwrap()[0].selected,
+                [folder_link]
+            );
         }
     }
 
@@ -269,5 +277,24 @@ mod tests {
             "the file URI is not a local path"
         );
         assert!(show_items(["/definitely/missing/waddle-item"]).is_err());
+    }
+
+    #[test]
+    fn dangling_symlinks_can_be_revealed_from_paths_and_file_uris() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("broken-link");
+        std::os::unix::fs::symlink(temp.path().join("missing-target"), &link).unwrap();
+        let expected = Target {
+            directory: temp.path().to_path_buf(),
+            selected: vec![link.clone()],
+        };
+
+        assert_eq!(location(link.as_os_str()).unwrap(), expected);
+        assert_eq!(
+            show_items([&link]).unwrap().as_slice(),
+            std::slice::from_ref(&expected)
+        );
+        let uri = gio::File::for_path(&link).uri();
+        assert_eq!(show_items([uri.as_str()]).unwrap(), [expected]);
     }
 }

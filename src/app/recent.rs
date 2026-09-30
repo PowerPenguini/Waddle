@@ -60,7 +60,7 @@ impl Recent {
     }
 
     pub(super) fn entries(&self) -> Result<Vec<FileEntry>, String> {
-        let mut entries = self
+        let entries = self
             .paths()?
             .into_iter()
             .filter_map(|path| {
@@ -74,7 +74,6 @@ impl Recent {
                 })
             })
             .collect::<Vec<_>>();
-        entries.reverse();
         Ok(entries)
     }
 
@@ -86,11 +85,24 @@ impl Recent {
         bookmarks
             .load_from_file(&self.history_path)
             .map_err(|error| format!("Could not read shared Recent history: {error}"))?;
-        Ok(bookmarks
+        let mut paths = bookmarks
             .uris()
             .into_iter()
-            .filter_map(|uri| gio::File::for_uri(uri.as_str()).path())
-            .collect())
+            .filter_map(|uri| {
+                let path = gio::File::for_uri(uri.as_str()).path()?;
+                let visited = bookmarks
+                    .visited_date_time(&uri)
+                    .or_else(|_| bookmarks.modified_date_time(&uri))
+                    .ok();
+                Some((visited, path))
+            })
+            .collect::<Vec<_>>();
+        paths.sort_by(|(left_time, left_path), (right_time, right_path)| {
+            right_time
+                .cmp(left_time)
+                .then_with(|| left_path.cmp(right_path))
+        });
+        Ok(paths.into_iter().map(|(_, path)| path).collect())
     }
 
     pub(super) fn watch_paths(&self, displayed: &[FileEntry]) -> Vec<PathBuf> {
@@ -252,5 +264,53 @@ mod tests {
         let mut cleared = gio::glib::BookmarkFile::new();
         cleared.load_from_file(history).unwrap();
         assert!(cleared.uris().is_empty());
+    }
+
+    #[test]
+    fn recent_entries_follow_visit_times_instead_of_bookmark_insertion_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = temp.path().join("recently-used.xbel");
+        let mut bookmarks = gio::glib::BookmarkFile::new();
+        let mut expected = Vec::new();
+        for (name, visited) in [("newest", 300), ("oldest", 100), ("middle", 200)] {
+            let path = temp.path().join(name);
+            fs::write(&path, name).unwrap();
+            let uri = gio::File::for_path(&path).uri();
+            bookmarks.add_application(&uri, Some("Waddle test"), Some("waddle %u"));
+            bookmarks
+                .set_visited_date_time(&uri, &gio::glib::DateTime::from_unix_utc(visited).unwrap());
+            expected.push(path);
+        }
+        bookmarks.to_file(&history).unwrap();
+        let recent = Recent::open_at(history.clone(), temp.path().join("recent.json"));
+        let paths = || {
+            recent
+                .entries()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(),
+            [
+                expected[0].clone(),
+                expected[2].clone(),
+                expected[1].clone()
+            ]
+        );
+
+        // Reopening an old bookmark updates its timestamp without reinserting it.
+        let uri = gio::File::for_path(&expected[1]).uri();
+        bookmarks.set_visited_date_time(&uri, &gio::glib::DateTime::from_unix_utc(400).unwrap());
+        bookmarks.to_file(&history).unwrap();
+        assert_eq!(
+            paths(),
+            [
+                expected[1].clone(),
+                expected[0].clone(),
+                expected[2].clone()
+            ]
+        );
     }
 }

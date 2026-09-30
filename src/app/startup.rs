@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 
 use iced::{Point, Size, window};
 use serde::{Deserialize, Serialize};
@@ -128,13 +128,15 @@ impl State {
             .parent()
             .ok_or("startup state path has no parent")?;
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(&self.stored).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.path).map_err(|error| error.to_string())
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        temporary
+            .write_all(&serde_json::to_vec_pretty(&self.stored).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist(&self.path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -233,6 +235,49 @@ mod tests {
             std::env::current_dir().unwrap()
         );
         assert_eq!(reopened.window_settings().size, Size::new(900.0, 700.0));
+    }
+
+    #[test]
+    fn saving_startup_state_does_not_touch_another_windows_temporary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("startup.json");
+        let pending = path.with_extension("json.tmp");
+        fs::write(&pending, "another window's pending settings").unwrap();
+        let state = State {
+            path: path.clone(),
+            stored: Stored::default(),
+            requested: None,
+            error: None,
+        };
+
+        state.save().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(pending).unwrap(),
+            "another window's pending settings"
+        );
+        let stored: Stored = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored.width, Stored::default().width);
+    }
+
+    #[test]
+    fn saving_startup_state_does_not_follow_a_stale_temporary_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("startup.json");
+        let unrelated = temp.path().join("notes.txt");
+        fs::write(&unrelated, "keep these notes").unwrap();
+        std::os::unix::fs::symlink(&unrelated, path.with_extension("json.tmp")).unwrap();
+        let state = State {
+            path: path.clone(),
+            stored: Stored::default(),
+            requested: None,
+            error: None,
+        };
+
+        state.save().unwrap();
+
+        assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep these notes");
+        assert!(!fs::symlink_metadata(path).unwrap().file_type().is_symlink());
     }
 
     #[test]
