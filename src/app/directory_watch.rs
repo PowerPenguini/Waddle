@@ -127,7 +127,7 @@ fn worker(
         for command in commands.try_iter() {
             match command {
                 Command::Watch(paths) => {
-                    if replace_watches(descriptor, &mut watched, paths)
+                    if replace_watches(descriptor, &mut watched, paths, &mut pending)
                         && events
                             .unbounded_send(Event {
                                 path: PathBuf::new(),
@@ -238,7 +238,7 @@ fn collect_changed_watches(
                 unsafe { libc::inotify_rm_watch(descriptor, watch) };
                 paths.push(directory);
             }
-            watch_failed |= replace_watches(descriptor, watched, paths);
+            watch_failed |= replace_watches(descriptor, watched, paths, pending);
         } else if let Some(directory) = watched.get(&event.wd) {
             let change = pending.entry(directory.clone()).or_default();
             let now = Instant::now();
@@ -274,6 +274,7 @@ fn replace_watches(
     descriptor: RawFd,
     watched: &mut HashMap<i32, PathBuf>,
     paths: Vec<PathBuf>,
+    pending: &mut HashMap<PathBuf, PendingChange>,
 ) -> bool {
     let mut desired = HashSet::new();
     let candidates = paths
@@ -312,6 +313,12 @@ fn replace_watches(
         let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
         if watch >= 0 {
             watched.insert(watch, path.clone());
+            // Files may have changed between the last scan and registration.
+            // Rescan once after binding; unchanged watches need no notification.
+            let change = pending.entry(path.clone()).or_default();
+            let now = Instant::now();
+            change.first_changed.get_or_insert(now);
+            change.changed = Some(now);
         } else {
             failed = true;
         }
@@ -324,15 +331,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn newly_installed_watches_invalidate_changes_made_before_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = Source::new().unwrap();
+        // A folder scan may finish before the worker installs its watch.
+        std::fs::write(temp.path().join("created-after-scan"), "x").unwrap();
+        source.watch_many([temp.path().to_path_buf()]);
+        let mut events = source.0.events.lock().unwrap().take().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let event = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), events.next())
+                .await
+                .expect("a new watch must invalidate the earlier scan")
+                .unwrap()
+        });
+        assert_eq!(event.path, temp.path());
+        assert!(!event.watch_failed);
+        source.watch_many([temp.path().to_path_buf()]);
+        assert!(runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(250), events.next())
+                .await
+                .is_err()
+        }));
+    }
+
+    fn watch_and_wait(source: &Source, paths: Vec<PathBuf>) -> mpsc::UnboundedReceiver<Event> {
+        source.watch_many(paths.clone());
+        let mut events = source.0.events.lock().unwrap().take().unwrap();
+        let mut expected: HashSet<_> = paths.into_iter().collect();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        while !expected.is_empty() {
+            let event = runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(2), events.next())
+                    .await
+                    .expect("watch registration notification")
+                    .unwrap()
+            });
+            assert!(!event.watch_failed);
+            assert!(expected.remove(&event.path));
+        }
+        events
+    }
+
+    #[test]
     fn inotify_source_debounces_a_burst_for_the_watched_directory() {
         let temp = tempfile::tempdir().unwrap();
         let source = Source::new().unwrap();
-        source.watch_many([temp.path().to_path_buf()]);
-        thread::sleep(Duration::from_millis(30));
+        let mut events = watch_and_wait(&source, vec![temp.path().to_path_buf()]);
         for index in 0..5 {
             std::fs::write(temp.path().join(format!("file-{index}")), "x").unwrap();
         }
-        let mut events = source.0.events.lock().unwrap().take().unwrap();
         let event = iced::futures::executor::block_on(events.next()).expect("debounced event");
         assert_eq!(event.path, temp.path());
         assert!(event.removed.is_empty());
@@ -349,12 +403,10 @@ mod tests {
         std::fs::create_dir(&first).unwrap();
         std::fs::create_dir(&second).unwrap();
         let source = Source::new().unwrap();
-        source.watch_many([first.clone(), second.clone()]);
-        thread::sleep(Duration::from_millis(30));
+        let mut events = watch_and_wait(&source, vec![first.clone(), second.clone()]);
         std::fs::write(first.join("one"), "x").unwrap();
         std::fs::write(second.join("two"), "x").unwrap();
 
-        let mut events = source.0.events.lock().unwrap().take().unwrap();
         let mut paths = [
             iced::futures::executor::block_on(events.next())
                 .unwrap()
@@ -383,13 +435,11 @@ mod tests {
             std::fs::write(path, "x").unwrap();
         }
         let source = Source::new().unwrap();
-        source.watch_many([watched.clone(), other_watched.clone()]);
-        thread::sleep(Duration::from_millis(30));
+        let mut events = watch_and_wait(&source, vec![watched.clone(), other_watched.clone()]);
         std::fs::remove_file(&deleted).unwrap();
         std::fs::rename(&internal, other_watched.join("internal")).unwrap();
         std::fs::rename(&moved, outside.join("moved")).unwrap();
 
-        let mut events = source.0.events.lock().unwrap().take().unwrap();
         let first = iced::futures::executor::block_on(events.next()).unwrap();
         let second = iced::futures::executor::block_on(events.next()).unwrap();
         let watched_event = [first, second]

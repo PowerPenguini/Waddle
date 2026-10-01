@@ -3,7 +3,7 @@ use std::{
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::SystemTime,
 };
 
 use iced::widget::image as widget_image;
@@ -13,7 +13,7 @@ const THUMBNAIL_EDGE: u32 = super::icon_size::MAX as u32 * 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Fingerprint {
     length: u64,
-    modified_nanos: u128,
+    modified: SystemTime,
     device: u64,
     inode: u64,
     changed: (i64, i64),
@@ -27,12 +27,7 @@ impl Fingerprint {
         }
         Some(Self {
             length: metadata.len(),
-            modified_nanos: metadata
-                .modified()
-                .ok()?
-                .duration_since(UNIX_EPOCH)
-                .ok()?
-                .as_nanos(),
+            modified: metadata.modified().ok()?,
             device: metadata.dev(),
             inode: metadata.ino(),
             changed: (metadata.ctime(), metadata.ctime_nsec()),
@@ -208,7 +203,29 @@ fn is_image(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
+
+    #[test]
+    fn images_with_modification_times_before_the_epoch_receive_thumbnails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("old-photo.png");
+        ::image::RgbaImage::from_pixel(1, 1, ::image::Rgba([1, 2, 3, 255]))
+            .save(&path)
+            .unwrap();
+        fs::File::open(&path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH - std::time::Duration::from_secs(1))
+            .unwrap();
+        let mut cache = Cache::new(1);
+        let request = cache
+            .requests([path.as_path()])
+            .pop()
+            .expect("a negative modification timestamp is still valid");
+        cache.complete(decode(request));
+        assert!(cache.handle(&path).is_some());
+    }
 
     fn loaded(request: Request, value: u8) -> Loaded {
         Loaded {
