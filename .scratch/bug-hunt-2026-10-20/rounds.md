@@ -103,3 +103,19 @@ pushes `main`. No release or installation is included.
   Two older expectations were corrected because they asserted overscan targets.
   All-target parallel tests passed: 809 passed, 26 ignored. Locked strict Clippy,
   formatting, and whitespace checks passed.
+
+## Round 6: half-page movement uses overscan and changes grid columns
+
+- Reproduction: move up/down by half a page in four-row and five-row viewports,
+  in both views at three icon sizes, with counts 1, 2, and 10,000.
+- Red: `cargo test --locked half_page_motions_use_visible_rows_and_preserve_grid_columns`
+  moved a four-row grid from index 32 to 41 instead of 38.
+- Cause: half-page distance came from the rendering range, including overscan,
+  and divided the number of entries rather than rows. Odd row counts could
+  therefore change columns. List mode also used tile height for the distance.
+- Fix: derive the row count from the actual viewport, halve it with rounding up,
+  then move by whole rows and apply the numeric count with saturating arithmetic.
+- Green: both directions, both view types, three icon sizes, odd/even page sizes,
+  and normal/extreme counts pass. An older overscan-based expectation was updated.
+  All-target parallel tests passed: 810 passed, 26 ignored. Locked strict Clippy,
+  formatting, and whitespace checks passed.

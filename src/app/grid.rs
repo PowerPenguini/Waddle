@@ -896,12 +896,13 @@ impl GridInteraction {
                 anchor.min(last)
             }
             Motion::HalfPageDown | Motion::HalfPageUp => {
-                let visible = self.visible_range(entry_count, status_height);
-                let half_page = visible
-                    .last_index
-                    .saturating_sub(visible.first_index)
-                    .div_ceil(2);
-                let distance = half_page.max(1).saturating_mul(count);
+                let visible = self.viewport_entry_range(entry_count, status_height);
+                let visible_rows = visible.end.div_ceil(columns) - visible.start / columns;
+                let distance = visible_rows
+                    .div_ceil(2)
+                    .max(1)
+                    .saturating_mul(columns)
+                    .saturating_mul(count);
                 if motion == Motion::HalfPageDown {
                     current.saturating_add(distance).min(last)
                 } else {
@@ -1986,6 +1987,43 @@ mod tests {
     }
 
     #[test]
+    fn half_page_motions_use_visible_rows_and_preserve_grid_columns() {
+        for list in [false, true] {
+            for icon_size in [24, 48, 128] {
+                for (page_rows, half_page_rows) in [(4, 2), (5, 3)] {
+                    for count in [1, 2, 10_000] {
+                        let mut grid = grid();
+                        grid.set_list_mode(list);
+                        grid.set_icon_size(icon_size);
+                        let row_height = grid.row_height();
+                        let status = 25.0;
+                        grid.resize(Size::new(
+                            584.0,
+                            grid.entries_top() + status + row_height * page_rows as f32,
+                        ));
+                        grid.set_scroll(row_height * 3.0);
+                        let columns = grid.columns();
+                        let start = columns * 10 + columns - 1;
+                        let distance = half_page_rows * columns * count;
+                        grid.select_only(Some(start), 200);
+                        assert_eq!(
+                            grid.move_selection_count(Motion::HalfPageDown, count, 200, status),
+                            Some((start + distance).min(199)),
+                            "down: list={list}, size={icon_size}, rows={page_rows}, count={count}"
+                        );
+                        grid.select_only(Some(start), 200);
+                        assert_eq!(
+                            grid.move_selection_count(Motion::HalfPageUp, count, 200, status),
+                            Some(start.saturating_sub(distance)),
+                            "up: list={list}, size={icon_size}, rows={page_rows}, count={count}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn counted_absolute_and_viewport_motions_use_display_order() {
         let mut grid = grid();
         grid.select_only(Some(1), 60);
@@ -2023,7 +2061,7 @@ mod tests {
         grid.select_only(Some(10), 60);
         assert_eq!(
             grid.move_selection_count(Motion::HalfPageDown, 1, 60, 25.0),
-            Some(19)
+            Some(16)
         );
     }
 
