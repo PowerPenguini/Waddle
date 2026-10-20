@@ -445,6 +445,16 @@ impl BrowserInput {
             };
         }
 
+        // Unknown desktop modifier chords must not fall through to plain Vim
+        // letters (for example, Alt+X must not Cut the selected file).
+        if press.alt || press.logo {
+            return if self.pending_sequence().is_some() {
+                self.invalid_sequence("modified key")
+            } else {
+                Intent::None
+            };
+        }
+
         if context.transfer_history_open {
             if press.named == NamedKey::Escape
                 || !press.control && !press.alt && !press.logo && press.text.as_deref() == Some("t")

@@ -1314,3 +1314,56 @@ fn escape_cancels_counts_when_leaving_visual_selection_or_cut() {
             }
         });
 }
+
+#[test]
+fn unsupported_modified_browser_keys_do_not_run_plain_file_commands() {
+    for modifiers in [
+        keyboard::Modifiers::ALT,
+        keyboard::Modifiers::LOGO,
+        keyboard::Modifiers::CTRL | keyboard::Modifiers::ALT,
+        keyboard::Modifiers::CTRL | keyboard::Modifiers::LOGO,
+    ] {
+        for prefix in [false, true] {
+            for text in ["x", "y", "d", "j", "g", "3", "v", "/", "r"] {
+                let temp = tempfile::tempdir().unwrap();
+                for index in 0..3 {
+                    std_fs::write(temp.path().join(format!("{index}.txt")), "contents").unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.transfers =
+                    transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                app.grid.set_list_mode(true);
+                app.grid.select_only(Some(1), 3);
+                app.focus_browser(BrowserFocus::Entries);
+                if prefix {
+                    press(&mut app, "d");
+                }
+                let key = keyboard::Key::Character(text.into());
+                let task = app.handle_key(key.clone(), key, modifiers, Some(text));
+                assert_eq!(
+                    task.units(),
+                    0,
+                    "{modifiers:?}+{text} scheduled a plain command"
+                );
+                assert!(
+                    app.transfers.clipboard_payload().is_none(),
+                    "{modifiers:?}+{text} ran a file operator"
+                );
+                assert_eq!(app.grid.selected_entry(), Some(1));
+                assert!(!app.grid.visual_active());
+                assert_eq!(app.browser_input.mode(), InputMode::Browser);
+                assert!(app.browser_input.pending_sequence().is_none());
+                for index in 0..3 {
+                    assert_eq!(
+                        std_fs::read_to_string(temp.path().join(format!("{index}.txt"))).unwrap(),
+                        "contents"
+                    );
+                }
+            }
+        }
+    }
+}

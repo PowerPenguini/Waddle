@@ -372,3 +372,18 @@ pushes `main`. No release or installation is included.
   The fixture configures List view so Cut's refresh retains the intended geometry.
 - All-target parallel tests pass: 822 passed, 30 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 23: unsupported modifier chords trigger plain Browser file commands
+
+- Red: send Alt+X to the App with a selected real file. The unsupported chord
+  runs the plain `x` Cut command and changes the clipboard payload.
+- Fix: Browser mode ignores unsupported Alt/Super chords instead of passing
+  their character to Vim/file commands. If an unfinished sequence exists, clear
+  it with the existing invalid-sequence feedback. Documented Ctrl shortcuts and
+  text-editor handling retain their paths.
+- Green: 72 real-file App cases cover Alt, Super, Ctrl+Alt, and Ctrl+Super across
+  nine letters, with and without an initial `d` operator. They check no file
+  command/task, clipboard change, movement, Visual selection, editor mode, or
+  pending sequence is created, and fixture contents remain intact.
+- All-target parallel tests pass: 823 passed, 30 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
