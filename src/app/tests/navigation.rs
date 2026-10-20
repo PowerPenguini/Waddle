@@ -3825,3 +3825,83 @@ fn queued_shell_directory_changes_do_not_override_newer_navigation() {
             }
         });
 }
+
+#[test]
+fn reopening_the_current_sidebar_folder_includes_changes_observed_while_collapsed() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for fallback in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let old = temp.path().join("old");
+                let added = temp.path().join("added");
+                std_fs::create_dir(&old).unwrap();
+                let (mut app, _) = App::new();
+                app.view_preferences =
+                    view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.sidebar_tree = SidebarTree::new(Vec::new());
+                app.sidebar_tree.install_places(vec![places::Entry {
+                    path: temp.path().to_path_buf(),
+                    label: "Current".to_owned(),
+                    kind: NodeKind::Favorite,
+                    favorite_index: Some(0),
+                }]);
+                let refresh = app.refresh_location();
+                finish_tasks(&mut app, refresh).await;
+                let root_id = app
+                    .sidebar_tree
+                    .rows(temp.path())
+                    .iter()
+                    .find(|row| row.kind == NodeKind::Favorite)
+                    .unwrap()
+                    .id;
+                let expand = app.activate_tree_row(root_id);
+                finish_tasks(&mut app, expand).await;
+                assert!(
+                    app.sidebar_tree
+                        .rows(temp.path())
+                        .iter()
+                        .any(|row| row.path.as_ref() == Some(&old))
+                );
+                let collapse = app.activate_tree_row(root_id);
+                finish_tasks(&mut app, collapse).await;
+                std_fs::remove_dir(&old).unwrap();
+                std_fs::create_dir(&added).unwrap();
+                let change = if fallback {
+                    drop(
+                        app.update(Message::DirectoryChanged(directory_watch::Event {
+                            path: PathBuf::new(),
+                            removed: Vec::new(),
+                            watch_failed: true,
+                        })),
+                    );
+                    app.update(Message::PollSystem)
+                } else {
+                    app.update(Message::DirectoryChanged(directory_watch::Event {
+                        path: temp.path().to_path_buf(),
+                        removed: vec![old.clone()],
+                        watch_failed: false,
+                    }))
+                };
+                finish_tasks(&mut app, change).await;
+                assert!(
+                    app.navigation
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.path == added)
+                );
+                let expand = app.activate_tree_row(root_id);
+                finish_tasks(&mut app, expand).await;
+                let rows = app.sidebar_tree.rows(temp.path());
+                assert!(
+                    rows.iter().any(|row| row.path.as_ref() == Some(&added)),
+                    "reopened sidebar folder retained its stale cached children"
+                );
+                assert!(!rows.iter().any(|row| row.path.as_ref() == Some(&old)));
+            }
+        });
+}

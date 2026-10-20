@@ -562,3 +562,18 @@ pushes `main`. No release or installation is included.
   remount; the new request remains pending and installs its own result.
 - All-target parallel tests pass: 837 passed, 32 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 35: collapsed sidebar folders retain stale children
+
+- Red: expand the current folder in the sidebar, collapse it, delete one real
+  child and create another, then deliver its change notification. The browser
+  refreshes, but reopening the sidebar still shows the deleted child.
+- Fix: invalidate cached tree folders for every observed watch path, including
+  paths watched for the browser, Cut, or collection sources. Polling fallback uses
+  the same full set, rather than only currently expanded paths.
+- Green: the App regression runs navigation and background tasks through both
+  notification and polling recovery paths. Reopening includes the new folder and
+  removes the deleted one. Existing monitoring-role and recovery tests pass.
+- All-target parallel tests pass: 838 passed, 32 ignored. Locked strict Clippy,
+  formatting, whitespace, development build, and isolated FileManager1 activation
+  smoke test pass.

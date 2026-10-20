@@ -137,7 +137,9 @@ impl<A: Adapter> LocationMonitoring<A> {
             .flatten();
         Change {
             refresh_current: roles.current,
-            invalidate_tree: roles.expanded.then_some(event.path),
+            // A collapsed node can share a watch with the current folder, Cut,
+            // or a collection source. Keep its cached children invalidated too.
+            invalidate_tree: self.roles.contains_key(&event.path).then_some(event.path),
             refresh_displayed: roles.displayed_source,
             resync: notice.is_some(),
             notice,
@@ -148,11 +150,7 @@ impl<A: Adapter> LocationMonitoring<A> {
         if !self.fallback {
             return Poll::default();
         }
-        let mut invalidate_tree = self
-            .roles
-            .iter()
-            .filter_map(|(path, roles)| roles.expanded.then_some(path.clone()))
-            .collect::<Vec<_>>();
+        let mut invalidate_tree = self.roles.keys().cloned().collect::<Vec<_>>();
         invalidate_tree.sort();
         Poll {
             reconcile_cut: true,
@@ -483,10 +481,10 @@ mod tests {
             Poll {
                 reconcile_cut: true,
                 refresh_location: true,
-                invalidate_tree: vec![expanded.clone()],
+                invalidate_tree: vec![current.clone(), expanded.clone()],
             }
         );
-        let mut navigation = NavigationSession::new(current);
+        let mut navigation = NavigationSession::new(current.clone());
         let mut grid = crate::app::grid::GridInteraction::default();
         search.begin(&navigation, &grid);
         let _ = search.update(&mut navigation, &mut grid, "/needle".to_owned());
@@ -495,7 +493,7 @@ mod tests {
             Poll {
                 reconcile_cut: true,
                 refresh_location: false,
-                invalidate_tree: vec![expanded],
+                invalidate_tree: vec![current, expanded],
             }
         );
     }
