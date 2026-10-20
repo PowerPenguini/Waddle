@@ -1369,64 +1369,78 @@ fn moving_a_cut_items_parent_confirms_the_external_move() {
         .build()
         .unwrap()
         .block_on(async {
-            let temp = tempfile::tempdir().unwrap();
-            let source = temp.path().join("source");
-            let destination = temp.path().join("destination");
-            std_fs::create_dir(&source).unwrap();
-            std_fs::create_dir(&destination).unwrap();
-            std_fs::write(source.join("one.txt"), "one").unwrap();
-            let (mut app, _) = App::new();
-            app.navigation = NavigationSession::new(destination);
-            app.navigation.settle_for_test();
-            app.sidebar_tree = SidebarTree::new(Vec::new());
-            app.transfers =
-                transfer_session::TransferSession::open(temp.path().join("transfers.json"));
-            app.transfers
-                .cut(&fs::read_directory(&source).unwrap())
+            for replace_parent_with_file in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let destination = temp.path().join("destination");
+                std_fs::create_dir(&source).unwrap();
+                std_fs::create_dir(&destination).unwrap();
+                std_fs::write(source.join("one.txt"), "one").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation = NavigationSession::new(destination);
+                app.navigation.settle_for_test();
+                app.sidebar_tree = SidebarTree::new(Vec::new());
+                app.transfers =
+                    transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                app.transfers
+                    .cut(&fs::read_directory(&source).unwrap())
+                    .unwrap();
+                app.sync_location_monitoring();
+                let recipe = iced::advanced::subscription::into_recipes(
+                    app.location_monitoring.as_ref().unwrap().subscription(),
+                )
+                .pop()
                 .unwrap();
-            app.sync_location_monitoring();
-            let recipe = iced::advanced::subscription::into_recipes(
-                app.location_monitoring.as_ref().unwrap().subscription(),
-            )
-            .pop()
-            .unwrap();
-            let mut events = recipe.stream(iced::futures::stream::pending().boxed());
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    let event = events.next().await.unwrap();
-                    let source_event = event.path == source && !event.watch_failed;
-                    let task = app.update(Message::DirectoryChanged(event));
-                    navigation::finish_tasks(&mut app, task).await;
-                    if source_event {
-                        break;
+                let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let event = events.next().await.unwrap();
+                        let source_event = event.path == source && !event.watch_failed;
+                        let task = app.update(Message::DirectoryChanged(event));
+                        navigation::finish_tasks(&mut app, task).await;
+                        if source_event {
+                            break;
+                        }
                     }
+                })
+                .await
+                .expect("Cut source watch must become ready");
+                assert_eq!(app.transfers.pending_cut_paths(), [source.join("one.txt")]);
+                let moved = temp.path().join("moved-externally");
+                std_fs::rename(&source, &moved).unwrap();
+                if replace_parent_with_file {
+                    std_fs::write(&source, "replacement file").unwrap();
+                    assert_eq!(
+                        std_fs::symlink_metadata(source.join("one.txt"))
+                            .unwrap_err()
+                            .kind(),
+                        std::io::ErrorKind::NotADirectory
+                    );
                 }
-            })
-            .await
-            .expect("Cut source watch must become ready");
-            assert_eq!(app.transfers.pending_cut_paths(), [source.join("one.txt")]);
-            let moved = temp.path().join("moved-externally");
-            std_fs::rename(&source, &moved).unwrap();
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    let event = events.next().await.unwrap();
-                    let source_event = event.path == source && !event.watch_failed;
-                    let task = app.update(Message::DirectoryChanged(event));
-                    navigation::finish_tasks(&mut app, task).await;
-                    if source_event {
-                        break;
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let event = events.next().await.unwrap();
+                        let source_event = event.path == source && !event.watch_failed;
+                        let task = app.update(Message::DirectoryChanged(event));
+                        navigation::finish_tasks(&mut app, task).await;
+                        if source_event {
+                            break;
+                        }
                     }
+                })
+                .await
+                .expect("Moving the parent must notify its native watch");
+                assert!(
+                    app.transfers.pending_cut_paths().is_empty(),
+                    "Cut still offers to paste an item whose parent moved externally"
+                );
+                assert_eq!(
+                    std_fs::read_to_string(moved.join("one.txt")).unwrap(),
+                    "one"
+                );
+                if replace_parent_with_file {
+                    assert_eq!(std_fs::read_to_string(&source).unwrap(), "replacement file");
                 }
-            })
-            .await
-            .expect("Moving the parent must notify its native watch");
-            assert!(
-                app.transfers.pending_cut_paths().is_empty(),
-                "Cut still offers to paste an item whose parent moved externally"
-            );
-            assert_eq!(
-                std_fs::read_to_string(moved.join("one.txt")).unwrap(),
-                "one"
-            );
+            }
         });
 }

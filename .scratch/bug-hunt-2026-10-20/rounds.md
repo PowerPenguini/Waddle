@@ -253,3 +253,15 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 817 passed, 28 ignored. The new ignored GPU
   regression was explicitly executed. Locked strict Clippy, formatting, and
   whitespace checks pass.
+
+## Round 15: a file replacing the Cut parent keeps missing children pending
+
+- Red: extend the native App Cut-parent regression: after moving the source
+  directory externally, create a regular file at its old path. The old child
+  lookup returns `NotADirectory`; Cut continues offering that nonexistent child.
+- Fix: treat both `NotFound` and `NotADirectory` as confirmed absence when
+  reconciling paths affected by removal events. Other errors retain Cut state.
+- Green: both parent-move scenarios pass ten consecutive native runs, and the
+  regression verifies the replacement file and externally moved contents remain
+  intact. All-target parallel tests pass: 817 passed, 28 ignored. Locked strict
+  Clippy, formatting, and whitespace checks pass.

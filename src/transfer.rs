@@ -363,7 +363,10 @@ impl TransferState {
                 .any(|ancestor| removed_paths.contains(ancestor))
                 || match std::fs::symlink_metadata(path) {
                     Ok(_) => true,
-                    Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+                    Err(error) => !matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ),
                 }
         });
         let removed = before.saturating_sub(payload.paths.len());
