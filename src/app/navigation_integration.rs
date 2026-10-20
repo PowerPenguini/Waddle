@@ -784,14 +784,24 @@ impl App {
     }
 
     pub(super) fn move_sidebar(&mut self, motion: Motion, count: usize) -> Task<Message> {
-        match self
-            .sidebar_tree
-            .move_cursor(motion, count, self.navigation.current())
-        {
+        match self.sidebar_tree.move_cursor(
+            motion,
+            count,
+            self.navigation.current(),
+            self.grid.sidebar_viewport(),
+        ) {
             TreeMoveOutcome::None => Task::none(),
             TreeMoveOutcome::Focused(label) => {
                 self.presentation.set_status(format!("Sidebar  •  {label}"));
-                self.reveal_sidebar_cursor()
+                if matches!(
+                    motion,
+                    Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom
+                ) {
+                    self.grid.cancel_scroll(ScrollTarget::Sidebar);
+                    Task::none()
+                } else {
+                    self.reveal_sidebar_cursor()
+                }
             }
             TreeMoveOutcome::Activate(id) => self.activate_tree_row(id),
         }

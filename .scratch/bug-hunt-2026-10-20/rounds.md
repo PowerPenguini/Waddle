@@ -421,3 +421,21 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 825 passed, 31 ignored. The new opt-in GPU
   regression was explicitly executed. Locked strict Clippy, formatting, and
   whitespace checks pass.
+
+## Round 26: sidebar viewport motions ignore the visible tree
+
+- Red: scroll a sidebar with real Favorite folders so `place-08` is the first
+  visible row, then press `H`. It focuses Computer instead. `M` stays at the
+  current cursor, `L` moves one row, and Ctrl+D/U move by one row per count
+  rather than half a page.
+- Fix: supply sidebar viewport geometry to tree cursor movement. Derive visible
+  rows from real row heights, top padding, and section gaps; include partially
+  visible rows and clamp stale offsets after content shrinks. Implement counted
+  H/L from visible edges, M in the visible range, and half-page movement by half
+  the visible row count. H/M/L cancel motion without issuing scroll operations.
+- Green: ten App viewport-jump cases cover scrolled views, counts, large counts,
+  and stale offsets. Six half-page cases cover both directions and counts 1, 2,
+  and 10,000. Existing sidebar tests and all six grid/sidebar renderer regressions
+  pass, including the keyboard reveal behavior from round 25.
+- All-target parallel tests pass: 827 passed, 31 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.

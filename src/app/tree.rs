@@ -208,6 +208,32 @@ fn row_heights_for(rows: &[TreeRow]) -> impl Iterator<Item = f32> + '_ {
     })
 }
 
+fn viewport_rows(rows: &[TreeRow], viewport: std::ops::Range<f32>) -> std::ops::Range<usize> {
+    debug_assert!(!rows.is_empty());
+    let mut bottom = super::grid::LIST_VIEW_TOP_INSET;
+    let height = (viewport.end - viewport.start).max(1.0);
+    let maximum = (bottom + row_heights_for(rows).sum::<f32>() - height).max(0.0);
+    let top = viewport.start.clamp(0.0, maximum);
+    let end = top + height;
+    let mut first = None;
+    let mut last = 0;
+    let mut nearest = None;
+    for (index, (row, extent)) in rows.iter().zip(row_heights_for(rows)).enumerate() {
+        bottom += extent;
+        if bottom > top {
+            nearest.get_or_insert(index);
+        }
+        // Section gaps are not rows. Include a row only when its actual bounds
+        // overlap the viewport, including partially visible top/bottom rows.
+        if bottom > top && bottom - row.height() < end {
+            first.get_or_insert(index);
+            last = index;
+        }
+    }
+    let first = first.or(nearest).unwrap_or(rows.len() - 1);
+    first..last.max(first) + 1
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct LoadRequest {
     pub(super) id: u64,
@@ -522,6 +548,7 @@ impl SidebarTree {
         motion: Motion,
         count: usize,
         current_path: &Path,
+        viewport: std::ops::Range<f32>,
     ) -> MoveOutcome {
         let rows = self.rows(current_path);
         let Some(current) = self
@@ -534,17 +561,33 @@ impl SidebarTree {
         };
         let last = rows.len() - 1;
         let count = count.max(1);
+        let visible = if matches!(
+            motion,
+            Motion::ViewportTop
+                | Motion::ViewportMiddle
+                | Motion::ViewportBottom
+                | Motion::HalfPageUp
+                | Motion::HalfPageDown
+        ) {
+            viewport_rows(&rows, viewport)
+        } else {
+            0..rows.len()
+        };
         let target = match motion {
             Motion::Down => current.saturating_add(count).min(last),
             Motion::Up => current.saturating_sub(count),
             Motion::First | Motion::RowStart => 0,
             Motion::Last | Motion::RowEnd => last,
             Motion::DisplayIndex(index) => index.min(last),
-            Motion::ViewportTop | Motion::HalfPageUp => current.saturating_sub(count),
-            Motion::ViewportMiddle => current,
-            Motion::ViewportBottom | Motion::HalfPageDown => {
-                current.saturating_add(count).min(last)
+            Motion::ViewportTop => visible.start.saturating_add(count - 1).min(visible.end - 1),
+            Motion::ViewportMiddle => visible.start + (visible.len() - 1) / 2,
+            Motion::ViewportBottom => visible.end.saturating_sub(count).max(visible.start),
+            Motion::HalfPageUp => {
+                current.saturating_sub(count.saturating_mul(visible.len().div_ceil(2)))
             }
+            Motion::HalfPageDown => current
+                .saturating_add(count.saturating_mul(visible.len().div_ceil(2)))
+                .min(last),
             Motion::Left => {
                 let row = &rows[current];
                 if find_node(&self.roots, row.id).is_some_and(|node| node.expanded) {
@@ -1343,7 +1386,7 @@ GVolumeMonitor *g_volume_monitor_get(void) {
         tree.focus(drive.id);
 
         assert_eq!(
-            tree.move_cursor(Motion::Down, 1, Path::new("/data/tmp")),
+            tree.move_cursor(Motion::Down, 1, Path::new("/data/tmp"), 0.0..500.0),
             MoveOutcome::Focused("tmp".to_owned())
         );
         assert_eq!(
@@ -1351,7 +1394,7 @@ GVolumeMonitor *g_volume_monitor_get(void) {
             Some(tree.rows(Path::new("/data/tmp"))[2].id)
         );
         assert_eq!(
-            tree.move_cursor(Motion::Left, 1, Path::new("/data/tmp")),
+            tree.move_cursor(Motion::Left, 1, Path::new("/data/tmp"), 0.0..500.0),
             MoveOutcome::Focused("Data".to_owned())
         );
     }

@@ -1077,20 +1077,26 @@ impl GridInteraction {
         width / self.columns() as f32
     }
 
+    pub(super) fn sidebar_viewport(&self) -> std::ops::Range<f32> {
+        let height =
+            (self.window_size.height - SIDEBAR_VERTICAL_PADDING * 2.0 - SIDEBAR_HEADER_HEIGHT)
+                .max(1.0);
+        self.sidebar_scroll_y..self.sidebar_scroll_y + height
+    }
+
     pub(super) fn sidebar_reveal_offset(
         &self,
         row: std::ops::Range<f32>,
         content_height: f32,
     ) -> f32 {
-        let viewport =
-            (self.window_size.height - SIDEBAR_VERTICAL_PADDING * 2.0 - SIDEBAR_HEADER_HEIGHT)
-                .max(1.0);
-        let maximum = (content_height - viewport).max(0.0);
-        let current = self.sidebar_scroll_y.min(maximum);
+        let viewport = self.sidebar_viewport();
+        let height = viewport.end - viewport.start;
+        let maximum = (content_height - height).max(0.0);
+        let current = viewport.start.min(maximum);
         let target = if row.start < current {
             row.start
-        } else if row.end > current + viewport {
-            row.end - viewport
+        } else if row.end > current + height {
+            row.end - height
         } else {
             current
         };

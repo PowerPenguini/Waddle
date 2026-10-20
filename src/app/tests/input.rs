@@ -1367,3 +1367,150 @@ fn unsupported_modified_browser_keys_do_not_run_plain_file_commands() {
         }
     }
 }
+
+#[test]
+fn sidebar_viewport_jumps_choose_visible_rows_without_scrolling() {
+    let temp = tempfile::tempdir().unwrap();
+    let locations: Vec<_> = (0..30)
+        .map(|index| {
+            let label = format!("place-{index:02}");
+            let path = temp.path().join(&label);
+            std_fs::create_dir(&path).unwrap();
+            places::Entry {
+                path,
+                label,
+                kind: tree::NodeKind::Favorite,
+                favorite_index: Some(index),
+            }
+        })
+        .collect();
+    for (stale, prefix, text, expected) in [
+        (false, None, "H", "place-08"),
+        (false, None, "M", "place-13"),
+        (false, None, "L", "place-19"),
+        (false, Some("2"), "H", "place-09"),
+        (false, Some("2"), "L", "place-18"),
+        (false, Some("10000"), "H", "place-19"),
+        (false, Some("10000"), "L", "place-08"),
+        (true, None, "H", "place-18"),
+        (true, None, "M", "place-23"),
+        (true, None, "L", "place-29"),
+    ] {
+        let (mut app, _) = App::new();
+        app.view_preferences =
+            view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        app.navigation = NavigationSession::new(temp.path().to_path_buf());
+        app.navigation.settle_for_test();
+        app.sidebar_tree = SidebarTree::new(Vec::new());
+        app.sidebar_tree.install_locations(locations.clone());
+        app.focus_browser(BrowserFocus::Sidebar);
+        app.grid.resize(iced::Size::new(700.0, 420.0));
+        let rows = app.sidebar_tree.rows(temp.path());
+        let first = rows.iter().position(|row| row.label == "place-08").unwrap();
+        let heights = app.sidebar_tree.row_heights(temp.path());
+        let offset = if stale {
+            1_000_000.0
+        } else {
+            LIST_VIEW_TOP_INSET + heights[..first].iter().sum::<f32>() + 5.0
+        };
+        let content_height = LIST_VIEW_TOP_INSET + heights.iter().sum::<f32>();
+        // The 374-pixel viewport intersects twelve 32-pixel Favorite rows.
+        app.grid.observe_scroll(
+            ScrollTarget::Sidebar,
+            offset,
+            content_height - 374.0,
+            Instant::now(),
+            0,
+        );
+        if let Some(prefix) = prefix {
+            for key in prefix.split("").filter(|key| !key.is_empty()) {
+                press(&mut app, key);
+            }
+        }
+        let key = keyboard::Key::Character(text.into());
+        let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), Some(text));
+        let focused = app
+            .sidebar_tree
+            .rows(temp.path())
+            .into_iter()
+            .find(|row| row.focused)
+            .unwrap();
+        assert_eq!(
+            focused.label, expected,
+            "{prefix:?}{text} ignored the sidebar viewport"
+        );
+        assert_eq!(
+            task.units(),
+            0,
+            "a sidebar viewport jump issued a scroll operation"
+        );
+    }
+}
+
+#[test]
+fn sidebar_half_page_motions_use_the_number_of_visible_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let locations: Vec<_> = (0..30)
+        .map(|index| {
+            let label = format!("place-{index:02}");
+            let path = temp.path().join(&label);
+            std_fs::create_dir(&path).unwrap();
+            places::Entry {
+                path,
+                label,
+                kind: tree::NodeKind::Favorite,
+                favorite_index: Some(index),
+            }
+        })
+        .collect();
+    for (prefix, count) in [(None, 1_usize), (Some("2"), 2), (Some("10000"), 10000)] {
+        for down in [true, false] {
+            let (mut app, _) = App::new();
+            app.view_preferences =
+                view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(Vec::new());
+            app.sidebar_tree.install_locations(locations.clone());
+            app.focus_browser(BrowserFocus::Sidebar);
+            app.grid.resize(iced::Size::new(700.0, 420.0));
+            let rows = app.sidebar_tree.rows(temp.path());
+            let current = rows.iter().position(|row| row.label == "place-15").unwrap();
+            drop(app.move_sidebar(Motion::DisplayIndex(current), 1));
+            let first = rows.iter().position(|row| row.label == "place-08").unwrap();
+            let heights = app.sidebar_tree.row_heights(temp.path());
+            let offset = LIST_VIEW_TOP_INSET + heights[..first].iter().sum::<f32>() + 5.0;
+            let content_height = LIST_VIEW_TOP_INSET + heights.iter().sum::<f32>();
+            app.grid.observe_scroll(
+                ScrollTarget::Sidebar,
+                offset,
+                content_height - 374.0,
+                Instant::now(),
+                0,
+            );
+            if let Some(prefix) = prefix {
+                for key in prefix.split("").filter(|key| !key.is_empty()) {
+                    press(&mut app, key);
+                }
+            }
+            let text = if down { "d" } else { "u" };
+            let key = keyboard::Key::Character(text.into());
+            drop(app.handle_key(key.clone(), key, keyboard::Modifiers::CTRL, Some(text)));
+            let expected = if down {
+                current.saturating_add(count * 6).min(rows.len() - 1)
+            } else {
+                current.saturating_sub(count * 6)
+            };
+            let focused = app
+                .sidebar_tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.focused)
+                .unwrap();
+            assert_eq!(
+                focused.id, rows[expected].id,
+                "{prefix:?}Ctrl+{text} did not move half of the twelve visible rows"
+            );
+        }
+    }
+}
