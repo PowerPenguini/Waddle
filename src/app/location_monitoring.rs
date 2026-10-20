@@ -162,7 +162,7 @@ impl<A: Adapter> LocationMonitoring<A> {
     }
 
     #[cfg(test)]
-    fn watched_paths(&self) -> std::collections::HashSet<PathBuf> {
+    pub(super) fn watched_paths(&self) -> std::collections::HashSet<PathBuf> {
         self.roles.keys().cloned().collect()
     }
 }

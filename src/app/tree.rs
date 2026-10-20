@@ -1821,6 +1821,73 @@ GVolumeMonitor *g_volume_monitor_get(void) {
     }
 
     #[test]
+    fn removing_an_expanded_favorite_releases_watches_and_restores_sidebar_focus() {
+        for sidebar_focused in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let favorite = temp.path().join("favorite");
+            let child = favorite.join("child");
+            let current = temp.path().join("current");
+            std::fs::create_dir_all(&child).unwrap();
+            std::fs::create_dir(&current).unwrap();
+            let mut places = places::Places::empty_at(temp.path().join("favorites.json"));
+            places.command(&favorite, "add Expanded").unwrap();
+            let (mut app, _) = super::super::App::new();
+            app.view_preferences =
+                super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.navigation = super::super::NavigationSession::new(current.clone());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::with_places(Vec::new(), places);
+            app.install_locations();
+            let favorite_id = app
+                .sidebar_tree
+                .rows(&current)
+                .iter()
+                .find(|row| row.kind == NodeKind::Favorite)
+                .unwrap()
+                .id;
+            let request = app.sidebar_tree.expand(favorite_id).unwrap();
+            app.sidebar_tree.complete_load(
+                &request,
+                Ok(crate::fs::read_child_folders(&favorite).unwrap()),
+            );
+            let child_id = app
+                .sidebar_tree
+                .rows(&current)
+                .iter()
+                .find(|row| row.path.as_ref() == Some(&child))
+                .unwrap()
+                .id;
+            app.sidebar_tree.focus(child_id);
+            app.focus_browser(if sidebar_focused {
+                super::super::BrowserFocus::Sidebar
+            } else {
+                super::super::BrowserFocus::Entries
+            });
+            app.sync_location_monitoring();
+            assert!(
+                app.location_monitoring
+                    .as_ref()
+                    .unwrap()
+                    .watched_paths()
+                    .contains(&favorite)
+            );
+            drop(app.begin_command(':'));
+            app.command.change("favorite remove 1".to_owned());
+            drop(app.submit_command());
+            let watched = app.location_monitoring.as_ref().unwrap().watched_paths();
+            assert!(
+                !watched.contains(&favorite),
+                "removed Favorite retained an obsolete directory watch"
+            );
+            assert!(watched.contains(&current));
+            assert!(
+                app.sidebar_tree.focused_id().is_some() == sidebar_focused,
+                "removing the focused Favorite left keyboard sidebar focus without a cursor"
+            );
+        }
+    }
+
+    #[test]
     fn failed_and_cancelled_loads_stop_loading_and_remain_retryable() {
         let volume = VolumeRoot {
             id: "uuid:data".to_owned(),

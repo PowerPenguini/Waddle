@@ -520,3 +520,17 @@ pushes `main`. No release or installation is included.
   state, labels update, and removing one root clears only its own cursor/state.
 - All-target parallel tests pass: 834 passed, 32 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 32: removed Favorites retain directory watches
+
+- Red: expand a real Favorite, focus its child, and submit `:favorite remove 1`
+  through the App command interface. The removed branch remains watched and
+  active keyboard sidebar focus loses its cursor.
+- Fix: finalize accepted sidebar tree changes through one App helper: synchronize
+  Location monitoring, then restore and reveal a cursor if sidebar focus lost its
+  row. Use it after tree loads, Favorite commands, and successful drag reorders.
+- Green: command regressions release obsolete Favorite watches, retain the current
+  folder watch, and restore a cursor only when the sidebar has focus. All seven
+  GPU renderer regressions pass.
+- All-target parallel tests pass: 835 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.

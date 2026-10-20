@@ -311,6 +311,17 @@ impl App {
         self.request_navigation(start)
     }
 
+    pub(super) fn finish_sidebar_tree_update(&mut self) -> Task<Message> {
+        self.sync_location_monitoring();
+        if self.focus.is(super::BrowserFocus::Sidebar) && self.sidebar_tree.focused_id().is_none() {
+            self.sidebar_tree
+                .focus_current_or_first(self.navigation.current());
+            self.reveal_sidebar_cursor()
+        } else {
+            Task::none()
+        }
+    }
+
     pub(super) fn install_locations(&mut self) {
         let mut entries = self.recent.sidebar_entry().into_iter().collect::<Vec<_>>();
         entries.push(self.trash.sidebar_entry());

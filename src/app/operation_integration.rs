@@ -116,6 +116,7 @@ impl App {
                         } else {
                             self.presentation.set_status(status);
                         }
+                        return self.finish_sidebar_tree_update();
                     }
                     Err(error) => self.presentation.set_status(error),
                 }

@@ -337,16 +337,7 @@ impl App {
                         if let TreeLoadOutcome::Failed(error) = outcome {
                             self.presentation.set_status(error);
                         }
-                        self.sync_location_monitoring();
-                        if self.focus.is(BrowserFocus::Sidebar)
-                            && self.sidebar_tree.focused_id().is_none()
-                        {
-                            self.sidebar_tree
-                                .focus_current_or_first(self.navigation.current());
-                            self.reveal_sidebar_cursor()
-                        } else {
-                            Task::none()
-                        }
+                        self.finish_sidebar_tree_update()
                     }
                 }
             }
@@ -364,9 +355,11 @@ impl App {
                 let mut entries = self.recent.sidebar_entry().into_iter().collect::<Vec<_>>();
                 entries.push(self.trash.sidebar_entry());
                 match self.sidebar_tree.release_favorite(index, entries) {
-                    Ok(true) => self
-                        .presentation
-                        .set_status("Favorite order saved".to_owned()),
+                    Ok(true) => {
+                        self.presentation
+                            .set_status("Favorite order saved".to_owned());
+                        return self.finish_sidebar_tree_update();
+                    }
                     Ok(false) => {}
                     Err(error) => self.presentation.set_status(error),
                 }
