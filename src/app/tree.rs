@@ -77,6 +77,7 @@ struct FolderNode {
     can_unmount: bool,
     storage_usage: Option<StorageUsage>,
     storage_usage_loading: bool,
+    storage_usage_revision: u64,
 }
 
 impl FolderNode {
@@ -96,6 +97,7 @@ impl FolderNode {
             can_unmount: false,
             storage_usage: None,
             storage_usage_loading: false,
+            storage_usage_revision: 0,
         }
     }
 
@@ -115,6 +117,7 @@ impl FolderNode {
             can_unmount: volume.can_unmount,
             storage_usage: None,
             storage_usage_loading: false,
+            storage_usage_revision: 0,
         }
     }
 
@@ -138,6 +141,7 @@ impl FolderNode {
             can_unmount: false,
             storage_usage: None,
             storage_usage_loading: false,
+            storage_usage_revision: 0,
         }
     }
 
@@ -163,6 +167,7 @@ impl FolderNode {
             can_unmount: false,
             storage_usage: None,
             storage_usage_loading: false,
+            storage_usage_revision: 0,
         }
     }
 }
@@ -253,6 +258,7 @@ pub(super) struct LoadRequest {
 pub(super) struct StorageUsageRequest {
     pub(super) id: u64,
     pub(super) path: PathBuf,
+    pub(super) revision: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -503,9 +509,11 @@ impl SidebarTree {
             })
             .filter_map(|node| {
                 node.storage_usage_loading = true;
+                node.storage_usage_revision = node.storage_usage_revision.wrapping_add(1);
                 Some(StorageUsageRequest {
                     id: node.id,
                     path: node.path.clone()?,
+                    revision: node.storage_usage_revision,
                 })
             })
             .collect()
@@ -519,7 +527,10 @@ impl SidebarTree {
         let Some(node) = find_node_mut(&mut self.roots, request.id) else {
             return false;
         };
-        if node.path.as_deref() != Some(request.path.as_path()) || !node.storage_usage_loading {
+        if node.path.as_deref() != Some(request.path.as_path())
+            || !node.storage_usage_loading
+            || node.storage_usage_revision != request.revision
+        {
             return false;
         }
         node.storage_usage_loading = false;
@@ -1507,6 +1518,51 @@ GVolumeMonitor *g_volume_monitor_get(void) {
             tree.rows(Path::new("/elsewhere"))[0].storage_usage,
             Some(usage)
         );
+    }
+
+    #[test]
+    fn storage_usage_ignores_results_from_before_a_volume_remount() {
+        for failed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mounted = VolumeRoot {
+                id: "test-remounted".to_owned(),
+                path: Some(temp.path().to_path_buf()),
+                label: "Remounted".to_owned(),
+                can_unmount: true,
+            };
+            let mut tree = SidebarTree::new(vec![mounted.clone()]);
+            let old = tree
+                .begin_storage_usage_refresh()
+                .into_iter()
+                .find(|request| request.path == temp.path())
+                .unwrap();
+            let old_result = if failed {
+                Err("old mount unavailable".to_owned())
+            } else {
+                crate::fs::storage_usage(temp.path())
+            };
+            let mut unmounted = mounted.clone();
+            unmounted.path = None;
+            unmounted.can_unmount = false;
+            assert!(tree.reconcile_volumes(vec![unmounted]));
+            assert!(tree.reconcile_volumes(vec![mounted]));
+            let current = tree
+                .begin_storage_usage_refresh()
+                .into_iter()
+                .find(|request| request.path == temp.path())
+                .unwrap();
+            assert!(
+                !tree.complete_storage_usage(&old, old_result),
+                "pre-remount result superseded the current disk-usage request"
+            );
+            assert!(tree.begin_storage_usage_refresh().is_empty());
+            let usage = crate::fs::storage_usage(temp.path()).unwrap();
+            assert!(tree.complete_storage_usage(&current, Ok(usage)));
+            assert_eq!(
+                find_node(&tree.roots, current.id).unwrap().storage_usage,
+                Some(usage)
+            );
+        }
     }
 
     #[test]

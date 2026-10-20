@@ -549,3 +549,16 @@ pushes `main`. No release or installation is included.
   recovery and all seven GPU renderer regressions pass.
 - All-target parallel tests pass: 836 passed, 32 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 34: stale disk-usage results supersede remounted drives
+
+- Red: start a storage query, reconcile a drive through unmounted and remounted
+  states at the same path, then start its new query. The pre-remount result is
+  accepted and clears the newer query's loading state.
+- Fix: give storage-usage requests a per-node revision and accept only the current
+  revision alongside the existing ID, path, and loading checks. Preserve the
+  revision across mount state changes.
+- Green: real filesystem usage reads and old-error results are both rejected after
+  remount; the new request remains pending and installs its own result.
+- All-target parallel tests pass: 837 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
