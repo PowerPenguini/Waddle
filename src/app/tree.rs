@@ -68,6 +68,7 @@ struct FolderNode {
     expanded: bool,
     loading: bool,
     loaded: bool,
+    load_revision: u64,
     children: Vec<FolderNode>,
     favorite_index: Option<usize>,
     can_unmount: bool,
@@ -86,6 +87,7 @@ impl FolderNode {
             expanded: false,
             loading: false,
             loaded: true,
+            load_revision: 0,
             children: Vec::new(),
             favorite_index: None,
             can_unmount: false,
@@ -104,6 +106,7 @@ impl FolderNode {
             expanded: false,
             loading: false,
             loaded: false,
+            load_revision: 0,
             children: Vec::new(),
             favorite_index: None,
             can_unmount: volume.can_unmount,
@@ -126,6 +129,7 @@ impl FolderNode {
             expanded: false,
             loading: false,
             loaded: false,
+            load_revision: 0,
             children: Vec::new(),
             favorite_index: None,
             can_unmount: false,
@@ -150,6 +154,7 @@ impl FolderNode {
             expanded: false,
             loading: false,
             loaded: false,
+            load_revision: 0,
             children: Vec::new(),
             favorite_index,
             can_unmount: false,
@@ -238,6 +243,7 @@ fn viewport_rows(rows: &[TreeRow], viewport: std::ops::Range<f32>) -> std::ops::
 pub(super) struct LoadRequest {
     pub(super) id: u64,
     pub(super) path: PathBuf,
+    pub(super) revision: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -648,10 +654,15 @@ impl SidebarTree {
                 let should_load = node.expanded && !node.loaded && !node.loading;
                 if should_load {
                     node.loading = true;
+                    node.load_revision = node.load_revision.wrapping_add(1);
                 }
                 Some(Activation::Folder {
                     path: path.clone(),
-                    load: should_load.then_some(LoadRequest { id, path }),
+                    load: should_load.then_some(LoadRequest {
+                        id,
+                        path,
+                        revision: node.load_revision,
+                    }),
                 })
             }
         }
@@ -670,8 +681,13 @@ impl SidebarTree {
         let should_load = !node.loaded && !node.loading;
         if should_load {
             node.loading = true;
+            node.load_revision = node.load_revision.wrapping_add(1);
         }
-        should_load.then_some(LoadRequest { id, path })
+        should_load.then_some(LoadRequest {
+            id,
+            path,
+            revision: node.load_revision,
+        })
     }
 
     pub(super) fn install_children(
@@ -705,9 +721,11 @@ impl SidebarTree {
         request: &LoadRequest,
         result: Result<Vec<PathBuf>, String>,
     ) -> LoadOutcome {
-        if find_node(&self.roots, request.id)
-            .is_none_or(|node| node.path.as_deref() != Some(&request.path) || !node.loading)
-        {
+        if find_node(&self.roots, request.id).is_none_or(|node| {
+            node.path.as_deref() != Some(&request.path)
+                || !node.loading
+                || node.load_revision != request.revision
+        }) {
             return LoadOutcome::Ignored;
         }
         match result {
@@ -735,7 +753,10 @@ impl SidebarTree {
         let Some(node) = find_node_mut(&mut self.roots, request.id) else {
             return false;
         };
-        if node.path.as_deref() != Some(&request.path) || !node.loading {
+        if node.path.as_deref() != Some(&request.path)
+            || !node.loading
+            || node.load_revision != request.revision
+        {
             return false;
         }
         node.loading = false;
@@ -987,11 +1008,13 @@ fn invalidate_folders(
         {
             node.children.clear();
             node.loaded = false;
+            node.load_revision = node.load_revision.wrapping_add(1);
             node.loading = node.expanded;
             if node.expanded {
                 reloads.push(LoadRequest {
                     id: node.id,
                     path: node.path.clone().expect("expanded nodes have paths"),
+                    revision: node.load_revision,
                 });
             }
             continue;
@@ -1003,6 +1026,64 @@ fn invalidate_folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_tree_loads_ignore_older_results_and_cancellations() {
+        for stale in ["success", "error", "cancel"] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(temp.path().join("one")).unwrap();
+            let mut tree = SidebarTree::new(vec![VolumeRoot {
+                id: "test-volume".to_owned(),
+                path: Some(temp.path().to_path_buf()),
+                label: "Data".to_owned(),
+                can_unmount: true,
+            }]);
+            let drive = tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.kind == NodeKind::Drive)
+                .unwrap();
+            let old = tree.expand(drive.id).unwrap();
+            let old_folders = crate::fs::read_child_folders(temp.path()).unwrap();
+            std::fs::create_dir(temp.path().join("two")).unwrap();
+            let newer = tree.invalidate(&[temp.path().to_path_buf()]).pop().unwrap();
+            let newer_folders = crate::fs::read_child_folders(temp.path()).unwrap();
+            if stale == "cancel" {
+                assert!(
+                    !tree.cancel_load(&old),
+                    "an old cancellation cancelled the newer load"
+                );
+            } else {
+                let result = if stale == "success" {
+                    Ok(old_folders)
+                } else {
+                    Err("old failure".to_owned())
+                };
+                assert!(
+                    matches!(tree.complete_load(&old, result), LoadOutcome::Ignored),
+                    "an old {stale} completion superseded the newer load"
+                );
+            }
+            assert!(
+                tree.rows(temp.path())
+                    .iter()
+                    .find(|row| row.id == drive.id)
+                    .unwrap()
+                    .loading
+            );
+            assert!(matches!(
+                tree.complete_load(&newer, Ok(newer_folders)),
+                LoadOutcome::Installed
+            ));
+            let children: Vec<_> = tree
+                .rows(temp.path())
+                .into_iter()
+                .filter(|row| row.depth == 1)
+                .map(|row| row.label)
+                .collect();
+            assert_eq!(children, ["one", "two"]);
+        }
+    }
 
     #[test]
     fn native_volume_queries_share_one_thread_and_the_default_context() {

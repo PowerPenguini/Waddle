@@ -829,6 +829,7 @@ mod tests {
         let mut session = NavigationSession::new(PathBuf::from("/current"));
         let load = LoadRequest {
             id: 42,
+            revision: 1,
             path: PathBuf::from("/slow"),
         };
         let first = session
@@ -886,6 +887,7 @@ mod tests {
         let mut session = NavigationSession::new(PathBuf::from("/current"));
         let load = LoadRequest {
             id: 42,
+            revision: 1,
             path: PathBuf::from("/current"),
         };
         let reuse = session.transition(Transition::Sidebar {

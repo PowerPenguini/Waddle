@@ -475,3 +475,18 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 829 passed, 32 ignored. Locked strict Clippy,
   formatting, whitespace, the development build, and isolated FileManager1
   activation smoke test pass.
+
+## Round 29: older sidebar scans supersede newer refreshes
+
+- Red: start a folder-node scan, add a real child directory, and start a newer
+  refresh for the same node. Deliver the old scan first. It is accepted, clears
+  the shared loading flag, and causes the newer result to be ignored.
+- Fix: add a per-node load revision to folder requests. Advance it for new scans
+  and invalidations, and require a matching revision before accepting results or
+  cancellations. Node IDs and paths still provide their existing ownership checks.
+- Green: a real-directory regression covers late success, late failure, and an
+  old cancellation. Each is ignored while the newer request remains loading;
+  only the updated scan installs both child folders. Existing current-load
+  failure/cancellation and Navigation-session request-ownership tests also pass.
+- All-target parallel tests pass: 830 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
