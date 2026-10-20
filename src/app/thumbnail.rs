@@ -158,6 +158,8 @@ pub(super) async fn load(request: Request) -> Loaded {
 fn decode(request: Request) -> Loaded {
     use std::{io::BufReader, os::unix::fs::OpenOptionsExt};
 
+    use ::image::ImageDecoder;
+
     let result = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -174,17 +176,31 @@ fn decode(request: Request) -> Loaded {
                 .with_guessed_format()
                 .map_err(|error| error.to_string())
         })
-        .and_then(|reader| reader.decode().map_err(|error| error.to_string()))
-        .and_then(|decoded| {
+        .and_then(|reader| {
+            reader
+                .into_decoder()
+                .and_then(|mut decoder| {
+                    // Match ImageReader::decode's allocation accounting while
+                    // retaining access to the decoder's orientation metadata.
+                    let mut limits = ::image::Limits::default();
+                    limits.reserve(decoder.total_bytes())?;
+                    decoder.set_limits(limits)?;
+                    let orientation = decoder.orientation()?;
+                    let decoded = ::image::DynamicImage::from_decoder(decoder)?;
+                    Ok((decoded, orientation))
+                })
+                .map_err(|error| error.to_string())
+        })
+        .and_then(|(decoded, orientation)| {
             if Fingerprint::read(&request.path) != Some(request.fingerprint) {
                 return Err("image changed while its thumbnail was being generated".to_owned());
             }
-            let thumbnail = decoded
-                .thumbnail(
-                    THUMBNAIL_EDGE.min(decoded.width()),
-                    THUMBNAIL_EDGE.min(decoded.height()),
-                )
-                .to_rgba8();
+            let mut thumbnail = decoded.thumbnail(
+                THUMBNAIL_EDGE.min(decoded.width()),
+                THUMBNAIL_EDGE.min(decoded.height()),
+            );
+            thumbnail.apply_orientation(orientation);
+            let thumbnail = thumbnail.to_rgba8();
             let (width, height) = thumbnail.dimensions();
             Ok((width, height, thumbnail.into_raw()))
         });
@@ -211,6 +227,87 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use super::*;
+
+    fn exif_orientation(value: u8) -> Vec<u8> {
+        // Little-endian TIFF with one SHORT Orientation tag (0x0112).
+        vec![
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, value, 0, 0, 0, 0,
+            0, 0, 0,
+        ]
+    }
+
+    #[test]
+    fn thumbnails_apply_all_exif_rotations_and_reflections() {
+        use ::image::ImageEncoder;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = ::image::RgbaImage::from_fn(3, 2, |x, y| {
+            ::image::Rgba([(y * 3 + x + 1) as u8, 0, 0, 255])
+        });
+        for (orientation, dimensions, expected) in [
+            (1, (3, 2), [1, 2, 3, 4, 5, 6]),
+            (2, (3, 2), [3, 2, 1, 6, 5, 4]),
+            (3, (3, 2), [6, 5, 4, 3, 2, 1]),
+            (4, (3, 2), [4, 5, 6, 1, 2, 3]),
+            (5, (2, 3), [1, 4, 2, 5, 3, 6]),
+            (6, (2, 3), [4, 1, 5, 2, 6, 3]),
+            (7, (2, 3), [6, 3, 5, 2, 4, 1]),
+            (8, (2, 3), [3, 6, 2, 5, 1, 4]),
+        ] {
+            let path = temp.path().join(format!("orientation-{orientation}.png"));
+            let mut encoder =
+                ::image::codecs::png::PngEncoder::new(fs::File::create(&path).unwrap());
+            encoder
+                .set_exif_metadata(exif_orientation(orientation))
+                .unwrap();
+            encoder
+                .write_image(source.as_raw(), 3, 2, ::image::ExtendedColorType::Rgba8)
+                .unwrap();
+            let mut cache = Cache::default();
+            let request = cache.requests([path.as_path()]).pop().unwrap();
+            let (width, height, pixels) = decode(request).result.unwrap();
+            assert_eq!((width, height), dimensions, "orientation {orientation}");
+            assert_eq!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|pixel| pixel[0])
+                    .collect::<Vec<_>>(),
+                expected,
+                "orientation {orientation}"
+            );
+        }
+    }
+
+    #[test]
+    fn jpeg_camera_orientation_rotates_the_thumbnail_pixels() {
+        use ::image::ImageEncoder;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("phone-photo.jpg");
+        let source = ::image::RgbImage::from_fn(3, 2, |x, y| {
+            ::image::Rgb([(y * 3 + x + 1) as u8 * 30, 0, 0])
+        });
+        let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(
+            fs::File::create(&path).unwrap(),
+            100,
+        );
+        encoder.set_exif_metadata(exif_orientation(6)).unwrap();
+        encoder
+            .write_image(source.as_raw(), 3, 2, ::image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let stored = ::image::open(&path).unwrap().to_rgba8();
+        let expected = [3, 0, 4, 1, 5, 2]
+            .into_iter()
+            .flat_map(|index| stored.as_raw()[index * 4..index * 4 + 4].iter().copied())
+            .collect::<Vec<_>>();
+        let mut cache = Cache::default();
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        let (width, height, pixels) = decode(request).result.unwrap();
+        assert_eq!((width, height), (2, 3));
+        assert_eq!(pixels, expected);
+    }
 
     #[test]
     fn small_images_are_not_upscaled_when_creating_thumbnails() {

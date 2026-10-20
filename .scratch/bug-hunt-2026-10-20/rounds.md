@@ -119,3 +119,20 @@ pushes `main`. No release or installation is included.
   and normal/extreme counts pass. An older overscan-based expectation was updated.
   All-target parallel tests passed: 810 passed, 26 ignored. Locked strict Clippy,
   formatting, and whitespace checks passed.
+
+## Round 7: camera and mirrored image orientation is ignored
+
+- Reproduction: encode small images with real EXIF orientation tags. A JPEG
+  marked for 90-degree rotation kept its stored landscape dimensions; a PNG
+  marked for horizontal reflection kept its unreflected pixel order.
+- Red: the thumbnail suite reproduced both failures, with 11 existing tests
+  passing and the two new regressions failing.
+- Cause: ImageReader::decode returns stored pixels; Waddle did not read and apply
+  the decoder's orientation metadata.
+- Fix: retain the decoder long enough to read orientation, preserve the previous
+  decode allocation-limit accounting, and apply the transformation after resizing
+  so rotation does not require copying the full-resolution image.
+- Green: exact pixel/dimension checks pass for all eight EXIF orientations and
+  a camera-style rotated JPEG. The complete parallel all-target suite passed:
+  812 passed, 26 ignored. All 13 thumbnail tests passed again after a test-only
+  Clippy correction. Locked strict Clippy, formatting, and whitespace checks pass.
