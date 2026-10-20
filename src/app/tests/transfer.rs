@@ -1497,3 +1497,64 @@ fn cut_polling_coalesces_work_and_ignores_results_for_an_older_cut() {
             assert!(!app.cut_poll_pending);
         });
 }
+
+#[test]
+fn modified_conflict_keys_do_not_choose_a_transfer_action() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for modifiers in [
+                keyboard::Modifiers::CTRL,
+                keyboard::Modifiers::ALT,
+                keyboard::Modifiers::LOGO,
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::ALT,
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::LOGO,
+            ] {
+                for text in ["r", "R", "s", "S", "k", "K"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let source = temp.path().join("source.txt");
+                    let destination = temp.path().join("destination");
+                    std_fs::create_dir(&destination).unwrap();
+                    let target = destination.join("source.txt");
+                    std_fs::write(&source, "new source contents").unwrap();
+                    std_fs::write(&target, "existing destination contents").unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation = NavigationSession::new(destination.clone());
+                    app.navigation.settle_for_test();
+                    app.transfers =
+                        transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                    let request = crate::transfer::Request::detached_clipboard(
+                        ClipboardImport {
+                            paths: vec![source.clone()],
+                            action: TransferAction::Copy,
+                            generation: None,
+                        },
+                        destination.clone(),
+                    )
+                    .unwrap();
+                    let task = app.start_transfer(request);
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert!(app.transfers.overview().conflict_prompt.is_some());
+                    let key = keyboard::Key::Character(text.into());
+                    let task = app.handle_key(key.clone(), key, modifiers, Some(text));
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert_eq!(
+                        std_fs::read_to_string(&target).unwrap(),
+                        "existing destination contents",
+                        "{modifiers:?}+{text} unexpectedly replaced the destination"
+                    );
+                    assert!(
+                        app.transfers.overview().conflict_prompt.is_some(),
+                        "{modifiers:?}+{text} answered the conflict prompt"
+                    );
+                    assert_eq!(
+                        std_fs::read_to_string(&source).unwrap(),
+                        "new source contents"
+                    );
+                    assert_eq!(std_fs::read_dir(destination).unwrap().count(), 1);
+                }
+            }
+        });
+}

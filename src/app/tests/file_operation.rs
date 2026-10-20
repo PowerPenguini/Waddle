@@ -3169,3 +3169,57 @@ fn command_metadata_actions_accept_paths_without_a_grid_selection() {
 fn command_output_actions_are_visually_separated() {
     assert!(super::super::bottom_bar::command_output_action_spacing() >= 8.0);
 }
+
+#[test]
+fn modified_confirmation_keys_do_not_answer_delete_prompts() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for modifiers in [
+                keyboard::Modifiers::CTRL,
+                keyboard::Modifiers::ALT,
+                keyboard::Modifiers::LOGO,
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::ALT,
+            ] {
+                for text in ["y", "Y", "n", "N"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path().join("Trash");
+                    std_fs::create_dir_all(root.join("files")).unwrap();
+                    std_fs::create_dir_all(root.join("info")).unwrap();
+                    let trashed = root.join("files/discarded.txt");
+                    let info = root.join("info/discarded.txt.trashinfo");
+                    std_fs::write(&trashed, "fixture contents").unwrap();
+                    std_fs::write(&info, "[Trash Info]\nPath=/original/discarded.txt\n").unwrap();
+                    let (mut app, _) = App::new();
+                    app.navigation.settle_for_test();
+                    app.trash = trash::Trash::at(root);
+                    app.navigation
+                        .install_trash_entries(app.trash.entries().unwrap());
+                    app.grid.select_only(Some(0), 1);
+                    drop(app.update(Message::ContextDeletePermanent));
+                    assert!(matches!(
+                        app.file_operations.view(),
+                        FileOperationView::PermanentDelete { .. }
+                    ));
+                    let key = keyboard::Key::Character(text.into());
+                    let task = app.handle_key(key.clone(), key, modifiers, Some(text));
+                    navigation::finish_tasks(&mut app, task).await;
+                    assert!(trashed.exists(), "{modifiers:?}+{text} confirmed deletion");
+                    assert_eq!(
+                        std_fs::read_to_string(&trashed).unwrap(),
+                        "fixture contents"
+                    );
+                    assert!(info.exists());
+                    assert!(
+                        matches!(
+                            app.file_operations.view(),
+                            FileOperationView::PermanentDelete { .. }
+                        ),
+                        "{modifiers:?}+{text} answered the confirmation prompt"
+                    );
+                }
+            }
+        });
+}

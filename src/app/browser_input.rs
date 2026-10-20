@@ -349,6 +349,13 @@ impl BrowserInput {
     }
 
     pub(super) fn handle_in_mode(&mut self, press: Press, context: Context, mode: Mode) -> Intent {
+        // Modal choices accept plain keys and shifted letters, not unrelated
+        // Ctrl/Alt/Super shortcuts that happen to carry the same character.
+        if (context.transfer_conflict || context.prompt.is_active())
+            && (press.control || press.alt || press.logo)
+        {
+            return Intent::None;
+        }
         if context.transfer_conflict {
             if press.named == NamedKey::Escape {
                 return Intent::ConflictCancel;

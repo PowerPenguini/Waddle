@@ -387,3 +387,18 @@ pushes `main`. No release or installation is included.
   pending sequence is created, and fixture contents remain intact.
 - All-target parallel tests pass: 823 passed, 30 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 24: modified letters answer file-operation dialogs
+
+- Red: create a real Copy conflict, press Ctrl+R, and finish the resulting tasks.
+  The destination is replaced even though Ctrl+R is not a Replace choice. A
+  second fixture shows Ctrl+Y confirming permanent deletion from temporary Trash.
+- Fix: modal conflict and file-operation choices ignore Ctrl/Alt/Super chords.
+  Plain keys and shifted letters retain their existing choice semantics; editor
+  input events and documented Browser Ctrl shortcuts keep their own handling.
+- Green: 30 modified conflict-key cases keep the conflict open, preserve source
+  and destination contents, and create no Keep Both files. Sixteen modified
+  yes/no cases retain the confirmation prompt and its Trash file and metadata.
+  Both fixtures run the actual App tasks, not just the parser's returned intent.
+- All-target parallel tests pass: 825 passed, 30 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
