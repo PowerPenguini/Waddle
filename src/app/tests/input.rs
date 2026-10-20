@@ -1260,3 +1260,57 @@ fn standard_keyboard_actions_cancel_pending_vim_sequences() {
         }
     }
 }
+
+#[test]
+fn escape_cancels_counts_when_leaving_visual_selection_or_cut() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for visual in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                for index in 0..5 {
+                    std_fs::write(temp.path().join(format!("{index}.txt")), "contents").unwrap();
+                }
+                let (mut app, _) = App::new();
+                app.view_preferences =
+                    view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+                app.view_preferences
+                    .apply_command(temp.path(), false, "view=list")
+                    .unwrap();
+                app.navigation = NavigationSession::new(temp.path().to_path_buf());
+                app.navigation.settle_for_test();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.transfers =
+                    transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+                app.grid.set_list_mode(true);
+                app.grid.select_only(Some(1), 5);
+                app.focus_browser(BrowserFocus::Entries);
+                press(&mut app, if visual { "v" } else { "x" });
+                assert_eq!(app.grid.visual_active(), visual);
+                assert_eq!(!app.transfers.pending_cut_paths().is_empty(), !visual);
+                press(&mut app, "3");
+                let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+                let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None);
+                navigation::finish_tasks(&mut app, task).await;
+                assert!(!app.grid.visual_active());
+                assert!(app.transfers.pending_cut_paths().is_empty());
+                assert!(
+                    app.browser_input.pending_sequence().is_none(),
+                    "Escape retained a count after cancelling {}",
+                    if visual { "Visual selection" } else { "Cut" }
+                );
+                app.grid.select_only(Some(1), 5);
+                press(&mut app, "j");
+                assert_eq!(app.grid.selected_entry(), Some(2));
+                for index in 0..5 {
+                    assert_eq!(
+                        std_fs::read_to_string(temp.path().join(format!("{index}.txt"))).unwrap(),
+                        "contents"
+                    );
+                }
+            }
+        });
+}

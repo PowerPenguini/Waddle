@@ -359,3 +359,16 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 821 passed, 30 ignored. The extended 35-case
   regression was rerun after adding black-hole coverage. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 22: Escape leaves a typed count after cancelling Visual selection or Cut
+
+- Red: enter Visual selection, type `3`, and press Escape. Visual selection
+  closes, but the pending count remains and affects the next Browser motion.
+  The same early-return path exists when Escape cancels pending Cut.
+- Fix: clear unfinished Browser sequences when Escape cancels either state.
+- Green: a real-file App regression exercises both cancellation paths, finishes
+  the resulting async refresh/details work, verifies no sequence remains, and
+  confirms the following `j` moves once. All original files remain intact.
+  The fixture configures List view so Cut's refresh retains the intended geometry.
+- All-target parallel tests pass: 822 passed, 30 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.

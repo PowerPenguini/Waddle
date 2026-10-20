@@ -482,9 +482,11 @@ impl BrowserInput {
                 return Intent::CloseCommandOutput;
             }
             if context.visual_active {
+                self.clear_sequence();
                 return Intent::CancelVisual;
             }
             if context.pending_cut {
+                self.clear_sequence();
                 return Intent::CancelCut;
             }
             if self.pending_sequence().is_some() {
