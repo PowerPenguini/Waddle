@@ -1028,11 +1028,15 @@ impl<'a> View<'a> {
                 .clip(true),
             )
             .push(
-                self.text(kind)
-                    .font(self.fonts().mono)
-                    .size(11.0 * self.app.grid.label_scale())
-                    .color(apply_opacity(self.secondary_text_color(), content_opacity))
-                    .width(self.app.grid.label_scale() * LIST_TYPE_WIDTH),
+                container(
+                    self.text(kind)
+                        .font(self.fonts().mono)
+                        .size(11.0 * self.app.grid.label_scale())
+                        .color(apply_opacity(self.secondary_text_color(), content_opacity))
+                        .wrapping(iced::advanced::text::Wrapping::None),
+                )
+                .width(self.app.grid.label_scale() * LIST_TYPE_WIDTH)
+                .clip(true),
             )
             .width(Fill)
             .spacing(LIST_COLUMN_SPACING)

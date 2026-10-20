@@ -401,3 +401,90 @@ fn sidebar_folder_labels_with_line_breaks_fit_one_line() {
             }
         });
 }
+
+#[test]
+#[ignore = "requires a headless wgpu adapter"]
+fn long_type_labels_do_not_draw_over_neighboring_list_columns() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut renderer = <iced::Renderer as Headless>::new(
+                iced::Font::DEFAULT,
+                iced::Pixels(14.0),
+                Some("wgpu"),
+            )
+            .await
+            .expect("headless wgpu adapter");
+            let temp = tempfile::tempdir().unwrap();
+            let short = temp.path().join("example.txt");
+            let long = temp.path().join(format!("example.{}", "W".repeat(80)));
+            for path in [&short, &long] {
+                std::fs::write(path, "x").unwrap();
+            }
+            let entries = fs::read_directory(temp.path()).unwrap();
+            let metadata = entries[0].metadata;
+            let (mut app, _) = App::new();
+            app.grid.set_list_mode(true);
+            app.grid.set_sidebar_visible(false);
+            app.grid.resize(Size::new(1200.0, 700.0));
+            app.grid.set_icon_size(24);
+            let window = Size::new(1200.0, 50.0);
+            let bounds = Rectangle::with_size(window);
+            let mut screenshots = Vec::new();
+            let mut column_right = None;
+            for path in [&short, &long] {
+                let mut entry = entries
+                    .iter()
+                    .find(|entry| entry.path == *path)
+                    .unwrap()
+                    .clone();
+                entry.metadata = metadata;
+                let kind = entry.type_label();
+                app.navigation.install_folder_entries(vec![entry]);
+                let mut row = View::new(&app).file_list_row(0);
+                let mut tree = Tree::new(row.as_widget());
+                let node = row.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, window),
+                );
+                let mut texts = TextBounds::default();
+                row.as_widget_mut()
+                    .operate(&mut tree, Layout::new(&node), &renderer, &mut texts);
+                let type_bounds = texts.0.iter().find(|(text, _)| text == &kind).unwrap().1;
+                let right =
+                    (type_bounds.x + app.grid.label_scale() * LIST_TYPE_WIDTH).ceil() as usize;
+                if let Some(previous) = column_right {
+                    assert_eq!(right, previous);
+                }
+                column_right = Some(right);
+                renderer.reset(bounds);
+                row.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &iced::Theme::Dark,
+                    &iced::advanced::renderer::Style {
+                        text_color: iced::Color::WHITE,
+                    },
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                screenshots.push(renderer.screenshot(Size::new(1200, 50), 1.0, iced::Color::BLACK));
+            }
+            let right = column_right.unwrap();
+            assert!(right < 1100, "fixture must leave room for metadata columns");
+            let differences = (0..50)
+                .flat_map(|y| ((right + 1)..1200).map(move |x| (y * 1200 + x) * 4))
+                .filter(|index| {
+                    screenshots[0][*index..*index + 4] != screenshots[1][*index..*index + 4]
+                })
+                .count();
+            assert_eq!(
+                differences, 0,
+                "long type label painted into neighboring columns"
+            );
+        });
+}

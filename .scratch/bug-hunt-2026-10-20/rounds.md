@@ -310,3 +310,17 @@ pushes `main`. No release or installation is included.
   display `File` and sort with extensionless files after known extensions.
   All-target parallel tests pass: 818 passed, 29 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 19: long type labels paint over neighboring List columns
+
+- Red: render real files with normal and 80-character extensions while keeping
+  metadata identical, then compare pixels beyond the Type column. The long
+  label changes 1,624 pixels in the neighboring metadata columns.
+- Cause: assigning a text width does not clip the glyphs of an unbroken label;
+  the text renderer receives the whole row's viewport.
+- Fix: render the type label inside a clipped container with the existing column
+  width and disable wrapping, keeping it on one line.
+- Green: the pixel comparison reports zero differences beyond the Type column.
+  All five grid/sidebar renderer regressions explicitly pass. All-target parallel
+  tests pass: 818 passed, 30 ignored. Locked strict Clippy, formatting, and
+  whitespace checks pass.
