@@ -189,6 +189,25 @@ impl TreeRow {
     }
 }
 
+fn row_heights_for(rows: &[TreeRow]) -> impl Iterator<Item = f32> + '_ {
+    let mut previous_section = None;
+    rows.iter().map(move |row| {
+        let separator = if row.depth == 0 {
+            let section = sidebar_section(row.kind);
+            let separated = previous_section.is_some_and(|previous| previous != section);
+            previous_section = Some(section);
+            if separated {
+                SECTION_SEPARATOR_HEIGHT
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        separator + row.height()
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct LoadRequest {
     pub(super) id: u64,
@@ -418,24 +437,20 @@ impl SidebarTree {
 
     pub(super) fn row_heights(&self, current: &Path) -> Vec<f32> {
         let rows = self.rows(current);
-        let mut previous_section = None;
-        rows.iter()
-            .map(|row| {
-                let separator = if row.depth == 0 {
-                    let section = sidebar_section(row.kind);
-                    let separated = previous_section.is_some_and(|previous| previous != section);
-                    previous_section = Some(section);
-                    if separated {
-                        SECTION_SEPARATOR_HEIGHT
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                separator + row.height()
-            })
-            .collect()
+        row_heights_for(&rows).collect()
+    }
+
+    pub(super) fn focused_row_bounds(&self, current: &Path) -> Option<(std::ops::Range<f32>, f32)> {
+        let rows = self.rows(current);
+        let mut bottom = 0.0;
+        let mut focused = None;
+        for (row, height) in rows.iter().zip(row_heights_for(&rows)) {
+            bottom += height;
+            if row.focused {
+                focused = Some(bottom - row.height()..bottom);
+            }
+        }
+        focused.map(|bounds| (bounds, bottom))
     }
 
     pub(super) fn begin_storage_usage_refresh(&mut self) -> Vec<StorageUsageRequest> {

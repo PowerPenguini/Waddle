@@ -791,10 +791,33 @@ impl App {
             TreeMoveOutcome::None => Task::none(),
             TreeMoveOutcome::Focused(label) => {
                 self.presentation.set_status(format!("Sidebar  •  {label}"));
-                Task::none()
+                self.reveal_sidebar_cursor()
             }
             TreeMoveOutcome::Activate(id) => self.activate_tree_row(id),
         }
+    }
+
+    fn reveal_sidebar_cursor(&mut self) -> Task<Message> {
+        let Some((mut row, height)) = self
+            .sidebar_tree
+            .focused_row_bounds(self.navigation.current())
+        else {
+            return Task::none();
+        };
+        if row.start > 0.0 {
+            row.start += super::LIST_VIEW_TOP_INSET;
+        }
+        row.end += super::LIST_VIEW_TOP_INSET;
+        let y = self
+            .grid
+            .sidebar_reveal_offset(row, height + super::LIST_VIEW_TOP_INSET);
+        self.grid.cancel_scroll(ScrollTarget::Sidebar);
+        // Use the current layout's extent rather than the motion controller's
+        // previous maximum: expanding/collapsing the tree can change it.
+        iced::widget::operation::scroll_to(
+            iced::widget::Id::new(super::SIDEBAR_SCROLL_ID),
+            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+        )
     }
 
     pub(super) fn begin_search(&mut self) -> Task<Message> {

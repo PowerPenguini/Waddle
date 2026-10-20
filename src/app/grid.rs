@@ -9,6 +9,8 @@ use super::{
 };
 
 pub(super) const SIDEBAR_WIDTH: f32 = 220.0;
+pub(super) const SIDEBAR_VERTICAL_PADDING: f32 = 8.0;
+pub(super) const SIDEBAR_HEADER_HEIGHT: f32 = 30.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 46.0;
 pub(super) const TOOLBAR_DIVIDER_HEIGHT: f32 = 1.0;
 pub(super) const TILE_WIDTH: f32 = 104.0;
@@ -19,7 +21,7 @@ pub(super) const LIST_VIEW_TOP_INSET: f32 = 6.0;
 pub(super) const LIST_HEADER_HEIGHT: f32 = 26.0;
 pub(super) const LIST_ROW_HEIGHT: f32 = 34.0;
 
-const TREE_TOP: f32 = 44.0;
+const TREE_TOP: f32 = SIDEBAR_VERTICAL_PADDING + SIDEBAR_HEADER_HEIGHT + LIST_VIEW_TOP_INSET;
 const AUTOSCROLL_EDGE: f32 = 44.0;
 const AUTOSCROLL_STEP: f32 = 12.0;
 const MARQUEE_DRAG_THRESHOLD: f32 = 6.0;
@@ -1073,6 +1075,26 @@ impl GridInteraction {
     fn column_width(&self) -> f32 {
         let width = (self.window_size.width - self.sidebar_width - 2.0 * CONTENT_GUTTER).max(1.0);
         width / self.columns() as f32
+    }
+
+    pub(super) fn sidebar_reveal_offset(
+        &self,
+        row: std::ops::Range<f32>,
+        content_height: f32,
+    ) -> f32 {
+        let viewport =
+            (self.window_size.height - SIDEBAR_VERTICAL_PADDING * 2.0 - SIDEBAR_HEADER_HEIGHT)
+                .max(1.0);
+        let maximum = (content_height - viewport).max(0.0);
+        let current = self.sidebar_scroll_y.min(maximum);
+        let target = if row.start < current {
+            row.start
+        } else if row.end > current + viewport {
+            row.end - viewport
+        } else {
+            current
+        };
+        target.clamp(0.0, maximum)
     }
 
     pub(super) fn scroll_target(&self, index: usize) -> f32 {

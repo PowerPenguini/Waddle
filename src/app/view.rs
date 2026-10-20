@@ -19,6 +19,7 @@ use iced::{
 
 use crate::{fs, fs::FileEntry, transfer::Preview as TransferPreview};
 
+use super::grid::{SIDEBAR_HEADER_HEIGHT, SIDEBAR_VERTICAL_PADDING};
 use super::wheel_area::wheel_area;
 use super::{
     App, BrowserFocus, CONTENT_GUTTER, EntryIconKind, GRID_NAME_MAX_CHARACTERS, GRID_SCROLL_ID,
@@ -274,14 +275,14 @@ impl<'a> View<'a> {
                     .line_height(iced::Pixels(14.0))
                     .color(with_alpha(self.app.iced_theme().palette().text, 0.68)),
             )
-            .height(30)
-            .center_y(30),
+            .height(SIDEBAR_HEADER_HEIGHT)
+            .center_y(SIDEBAR_HEADER_HEIGHT),
             scroll,
         ];
         container(content)
             .width(SIDEBAR_WIDTH)
             .height(Fill)
-            .padding(Padding::from([8, 12]))
+            .padding(Padding::from([SIDEBAR_VERTICAL_PADDING, 12.0]))
             .style(move |theme| {
                 sidebar_style(
                     theme,

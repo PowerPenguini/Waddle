@@ -402,3 +402,22 @@ pushes `main`. No release or installation is included.
   Both fixtures run the actual App tasks, not just the parser's returned intent.
 - All-target parallel tests pass: 825 passed, 30 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 25: keyboard sidebar navigation focuses rows outside the viewport
+
+- Red: create 30 real Favorite folders, press `G` in the sidebar, and lay out
+  the actual widget. The focused label is at y=1240 while the scroll viewport
+  spans y=38..412. Cursor movement never issued a reveal operation.
+- Fix: calculate the focused row's bounds and content height from the same row
+  heights used by sidebar hit testing, including storage rows and section gaps.
+  Reveal the row through the sidebar scroll widget after keyboard movement,
+  cancelling ongoing scroll motion. Use current content geometry rather than a
+  stale scroll maximum after tree expansion/collapse. Share header/padding
+  constants between rendering and scroll geometry.
+- Green: the explicit headless renderer test applies the returned Iced widget
+  operations and retains scroll state across `G`, `gg`, `20j`, `G`, and `k`.
+  The focused label remains inside the actual scroll viewport after each action.
+  All six grid/sidebar renderer regressions pass.
+- All-target parallel tests pass: 825 passed, 31 ignored. The new opt-in GPU
+  regression was explicitly executed. Locked strict Clippy, formatting, and
+  whitespace checks pass.
