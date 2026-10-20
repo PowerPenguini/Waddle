@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -58,6 +58,7 @@ pub(super) struct Cache {
     capacity: usize,
     entries: HashMap<PathBuf, Cached>,
     pending: HashMap<PathBuf, Fingerprint>,
+    visible: HashSet<PathBuf>,
     lru: VecDeque<PathBuf>,
 }
 
@@ -73,6 +74,7 @@ impl Cache {
             capacity,
             entries: HashMap::new(),
             pending: HashMap::new(),
+            visible: HashSet::new(),
             lru: VecDeque::new(),
         }
     }
@@ -81,8 +83,15 @@ impl Cache {
         &mut self,
         paths: impl IntoIterator<Item = &'a Path>,
     ) -> Vec<Request> {
+        let paths = paths
+            .into_iter()
+            .filter(|path| is_image(path))
+            .collect::<Vec<_>>();
+        // Keep tracking in-flight work to suppress duplicate decodes when the
+        // user scrolls back. Accept results into the cache only for this viewport.
+        self.visible = paths.iter().map(|path| path.to_path_buf()).collect();
         let mut requests = Vec::new();
-        for path in paths.into_iter().filter(|path| is_image(path)) {
+        for path in paths {
             let Some(fingerprint) = Fingerprint::read(path) else {
                 self.entries.remove(path);
                 self.pending.remove(path);
@@ -115,6 +124,9 @@ impl Cache {
             return;
         }
         self.pending.remove(&loaded.path);
+        if !self.visible.contains(&loaded.path) {
+            return;
+        }
         let handle = loaded
             .result
             .ok()
@@ -403,6 +415,55 @@ mod tests {
         );
         cache.complete(decode(requests.pop().unwrap()));
         assert!(cache.handle(destination).is_some());
+    }
+
+    #[test]
+    fn delayed_offscreen_thumbnails_do_not_evict_current_viewport_images() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths =
+            ["old.png", "visible-one.png", "visible-two.png"].map(|name| temp.path().join(name));
+        for path in &paths {
+            image::RgbaImage::new(1, 1).save(path).unwrap();
+        }
+        let mut cache = Cache::new(2);
+        let old = cache.requests([paths[0].as_path()]).pop().unwrap();
+        // A previous viewport's slow worker returns after both current images.
+        let requests = cache.requests(paths[1..].iter().map(PathBuf::as_path));
+        for request in requests {
+            cache.complete(decode(request));
+        }
+        cache.complete(decode(old));
+        assert!(
+            cache.handle(&paths[1]).is_some(),
+            "a delayed offscreen result evicted a visible thumbnail"
+        );
+        assert!(cache.handle(&paths[2]).is_some());
+        assert!(cache.handle(&paths[0]).is_none());
+        assert!(
+            cache
+                .requests(paths[1..].iter().map(PathBuf::as_path))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn returning_to_a_pending_thumbnail_reuses_its_original_decode() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ["first.png", "second.png"].map(|name| temp.path().join(name));
+        for path in &paths {
+            image::RgbaImage::new(1, 1).save(path).unwrap();
+        }
+        let mut cache = Cache::new(1);
+        let first = cache.requests([paths[0].as_path()]).pop().unwrap();
+        let second = cache.requests([paths[1].as_path()]).pop().unwrap();
+        assert!(
+            cache.requests([paths[0].as_path()]).is_empty(),
+            "scrolling back queued a duplicate decode"
+        );
+        cache.complete(decode(first));
+        cache.complete(decode(second));
+        assert!(cache.handle(&paths[0]).is_some());
+        assert!(cache.handle(&paths[1]).is_none());
     }
 
     #[test]

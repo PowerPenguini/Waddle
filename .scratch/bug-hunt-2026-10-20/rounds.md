@@ -324,3 +324,22 @@ pushes `main`. No release or installation is included.
   All five grid/sidebar renderer regressions explicitly pass. All-target parallel
   tests pass: 818 passed, 30 ignored. Locked strict Clippy, formatting, and
   whitespace checks pass.
+
+## Round 20: delayed offscreen thumbnails evict visible images
+
+- Red: queue a thumbnail for an old viewport, request and finish two current
+  viewport images in a two-entry cache, then deliver the old result. A current
+  thumbnail disappears because the old completion is treated as recently used.
+  The regression decodes real PNG files and controls only completion order.
+- Fix: track the current requested image paths separately from in-flight work.
+  Remove completed work from the pending map, but discard its cache result if
+  its path is no longer requested. Keep tracking in-flight requests so scrolling
+  back before completion does not queue a duplicate decode. The completed-image
+  cache retains its existing LRU bound and invalidation checks.
+- Green: the late result preserves both visible thumbnails. A second real-PNG
+  regression scrolls away and back while work is pending, verifies no duplicate
+  request is created, and preserves the current image when the other result
+  finishes. Existing thumbnail decoding, invalidation, and LRU tests also pass.
+- All-target parallel tests pass: 820 passed, 30 ignored. Locked strict Clippy,
+  formatting, whitespace, the development build, and isolated FileManager1
+  activation smoke test pass.
