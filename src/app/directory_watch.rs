@@ -120,7 +120,7 @@ fn worker(
     events: mpsc::UnboundedSender<Event>,
 ) {
     let descriptor = watcher.as_raw_fd();
-    let mut watched = HashMap::<i32, PathBuf>::new();
+    let mut watched = HashMap::<i32, HashSet<PathBuf>>::new();
     let mut pending = HashMap::<PathBuf, PendingChange>::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
@@ -205,7 +205,7 @@ fn worker(
 fn collect_changed_watches(
     descriptor: RawFd,
     buffer: &[u8],
-    watched: &mut HashMap<i32, PathBuf>,
+    watched: &mut HashMap<i32, HashSet<PathBuf>>,
     pending: &mut HashMap<PathBuf, PendingChange>,
 ) -> bool {
     let mut offset = 0;
@@ -228,31 +228,35 @@ fn collect_changed_watches(
             // Overflow records have no watch ID; any watched directory may be stale.
             let now = Instant::now();
             let mut paths = Vec::with_capacity(watched.len());
-            for (watch, directory) in watched.drain() {
-                let change = pending.entry(directory.clone()).or_default();
-                change.first_changed.get_or_insert(now);
-                change.changed = Some(now);
+            for (watch, directories) in watched.drain() {
+                for directory in directories {
+                    let change = pending.entry(directory.clone()).or_default();
+                    change.first_changed.get_or_insert(now);
+                    change.changed = Some(now);
+                    paths.push(directory);
+                }
                 // Overflow may hide a move/delete event. Rebind watches to paths
                 // so replacements do not leave us monitoring the old inodes.
                 // SAFETY: watch was registered on this worker's descriptor.
                 unsafe { libc::inotify_rm_watch(descriptor, watch) };
-                paths.push(directory);
             }
             watch_failed |= replace_watches(descriptor, watched, paths, pending);
-        } else if let Some(directory) = watched.get(&event.wd) {
-            let change = pending.entry(directory.clone()).or_default();
-            let now = Instant::now();
-            change.first_changed.get_or_insert(now);
-            change.changed = Some(now);
-            let name_start = offset + std::mem::size_of::<libc::inotify_event>();
-            let name_bytes = &buffer[name_start..offset + record_size];
-            let name_length = name_bytes
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(name_bytes.len());
-            if name_length > 0 && event.mask & (libc::IN_MOVED_FROM | libc::IN_DELETE) != 0 {
-                let name = std::ffi::OsString::from_vec(name_bytes[..name_length].to_vec());
-                change.removed.insert(directory.join(name));
+        } else if let Some(directories) = watched.get(&event.wd) {
+            for directory in directories {
+                let change = pending.entry(directory.clone()).or_default();
+                let now = Instant::now();
+                change.first_changed.get_or_insert(now);
+                change.changed = Some(now);
+                let name_start = offset + std::mem::size_of::<libc::inotify_event>();
+                let name_bytes = &buffer[name_start..offset + record_size];
+                let name_length = name_bytes
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(name_bytes.len());
+                if name_length > 0 && event.mask & (libc::IN_MOVED_FROM | libc::IN_DELETE) != 0 {
+                    let name = std::ffi::OsString::from_vec(name_bytes[..name_length].to_vec());
+                    change.removed.insert(directory.join(name));
+                }
             }
             if event.mask & (libc::IN_MOVE_SELF | libc::IN_DELETE_SELF | libc::IN_IGNORED) != 0 {
                 // Watches follow inodes. A replacement at the same path needs
@@ -272,7 +276,7 @@ fn collect_changed_watches(
 
 fn replace_watches(
     descriptor: RawFd,
-    watched: &mut HashMap<i32, PathBuf>,
+    watched: &mut HashMap<i32, HashSet<PathBuf>>,
     paths: Vec<PathBuf>,
     pending: &mut HashMap<PathBuf, PendingChange>,
 ) -> bool {
@@ -288,10 +292,13 @@ fn replace_watches(
     // report failure. Keep polling whenever any requested path is unwatched.
     let mut failed = desired.len() != desired_order.len();
     desired = desired_order.iter().cloned().collect();
-    let removed = watched
-        .iter()
-        .filter_map(|(watch, path)| (!desired.contains(path)).then_some(*watch))
-        .collect::<Vec<_>>();
+    let mut removed = Vec::new();
+    for (watch, paths) in watched.iter_mut() {
+        paths.retain(|path| desired.contains(path));
+        if paths.is_empty() {
+            removed.push(*watch);
+        }
+    }
     for watch in removed {
         // SAFETY: watch was returned by inotify_add_watch for this descriptor.
         unsafe { libc::inotify_rm_watch(descriptor, watch) };
@@ -306,7 +313,7 @@ fn replace_watches(
         | libc::IN_MOVE_SELF
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
-    let current = watched.values().cloned().collect::<HashSet<_>>();
+    let current = watched.values().flatten().cloned().collect::<HashSet<_>>();
     for path in desired_order.iter().filter(|path| !current.contains(*path)) {
         let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
             continue;
@@ -314,7 +321,9 @@ fn replace_watches(
         // SAFETY: path_bytes is a valid C string for this call.
         let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
         if watch >= 0 {
-            watched.insert(watch, path.clone());
+            // inotify reuses a watch ID for paths resolving to the same inode.
+            // Keep each path so all Location monitoring roles receive changes.
+            watched.entry(watch).or_default().insert(path.clone());
             // Files may have changed between the last scan and registration.
             // Rescan once after binding; unchanged watches need no notification.
             let change = pending.entry(path.clone()).or_default();
@@ -446,6 +455,61 @@ mod tests {
         assert!(!event.watch_failed);
         thread::sleep(Duration::from_millis(180));
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn directory_aliases_both_receive_native_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let real_parent = temp.path().join("real");
+        let alias_parent = temp.path().join("alias");
+        std::fs::create_dir(&real_parent).unwrap();
+        std::os::unix::fs::symlink(&real_parent, &alias_parent).unwrap();
+        let real = real_parent.join("folder");
+        let alias = alias_parent.join("folder");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("entry"), "x").unwrap();
+        let source = Source::new().unwrap();
+        let mut events = watch_and_wait(&source, vec![real.clone(), alias.clone()]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        std::fs::remove_file(real.join("entry")).unwrap();
+        runtime.block_on(async {
+            let mut expected = HashSet::from([real.clone(), alias.clone()]);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !expected.is_empty() {
+                    let event = events.next().await.unwrap();
+                    assert!(!event.watch_failed);
+                    assert!(expected.remove(&event.path));
+                    assert_eq!(event.removed, [event.path.join("entry")]);
+                }
+            })
+            .await
+            .expect("both paths to the directory must receive its deletion");
+
+            // Resynchronizing identical paths must not keep rebinding aliases.
+            source.watch_many([real.clone(), alias]);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), events.next())
+                    .await
+                    .is_err()
+            );
+            // Dropping one alias must retain the shared kernel watch.
+            source.watch_many([real.clone()]);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), events.next())
+                    .await
+                    .is_err()
+            );
+            std::fs::write(real.join("new-entry"), "x").unwrap();
+            let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+                .await
+                .expect("remaining path must retain native monitoring")
+                .unwrap();
+            assert_eq!(event.path, real);
+            assert!(!event.watch_failed);
+        });
     }
 
     #[test]

@@ -190,3 +190,18 @@ pushes `main`. No release or installation is included.
   and Redo, checking copied contents and source preservation. All-target parallel
   tests pass: 814 passed, 27 ignored. Locked strict Clippy, formatting, whitespace,
   the development build, and isolated FileManager1 activation smoke test pass.
+
+## Round 11: native changes disappear for directory aliases
+
+- Red: register a real directory and a second path through a symlinked parent,
+  wait for both registration notifications, then delete a real child. Only one
+  path receives the deletion; the native regression times out waiting for both.
+- Cause: inotify returns the same watch ID for both paths to the same inode.
+  The previous ID-to-path map overwrote the first path without activating fallback.
+- Fix: retain all requested paths for each watch ID and distribute native changes
+  and removed child paths to each one. Overflow recovery rebinds all aliases;
+  removing a path removes the shared kernel watch only when no aliases remain.
+- Green: the real inotify regression checks deletion through both paths, quiet
+  resynchronization, and continued native updates after dropping one alias.
+  It passes ten consecutive runs. All-target parallel tests pass: 815 passed,
+  27 ignored. Locked strict Clippy, formatting, and whitespace checks pass.
