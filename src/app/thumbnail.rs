@@ -179,7 +179,12 @@ fn decode(request: Request) -> Loaded {
             if Fingerprint::read(&request.path) != Some(request.fingerprint) {
                 return Err("image changed while its thumbnail was being generated".to_owned());
             }
-            let thumbnail = decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE).to_rgba8();
+            let thumbnail = decoded
+                .thumbnail(
+                    THUMBNAIL_EDGE.min(decoded.width()),
+                    THUMBNAIL_EDGE.min(decoded.height()),
+                )
+                .to_rgba8();
             let (width, height) = thumbnail.dimensions();
             Ok((width, height, thumbnail.into_raw()))
         });
@@ -206,6 +211,48 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use super::*;
+
+    #[test]
+    fn small_images_are_not_upscaled_when_creating_thumbnails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.bmp");
+        // A 1x1 uncompressed, 24-bit BMP with one red pixel and row padding.
+        let bitmap = [
+            0x42, 0x4d, 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+            1, 0, 24, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 255, 0,
+        ];
+        fs::write(&path, bitmap).unwrap();
+        let mut cache = Cache::default();
+        let request = cache.requests([path.as_path()]).pop().unwrap();
+        let loaded = decode(request);
+        let (width, height, pixels) = loaded.result.as_ref().unwrap();
+        assert_eq!((*width, *height), (1, 1));
+        assert_eq!(pixels, &[255, 0, 0, 255]);
+        cache.complete(loaded);
+        assert!(cache.handle(&path).is_some());
+    }
+
+    #[test]
+    fn thumbnails_preserve_aspect_ratio_and_stay_within_source_and_cache_bounds() {
+        let temp = tempfile::tempdir().unwrap();
+        for (width, height, expected) in [
+            (64, 32, (64, 32)),
+            (32, 64, (32, 64)),
+            (1024, 512, (256, 128)),
+            (512, 1024, (128, 256)),
+            (1, 1024, (1, 256)),
+            (1024, 1, (256, 1)),
+        ] {
+            let path = temp.path().join(format!("{width}-{height}.png"));
+            ::image::RgbaImage::new(width, height).save(&path).unwrap();
+            let mut cache = Cache::default();
+            let request = cache.requests([path.as_path()]).pop().unwrap();
+            let (actual_width, actual_height, pixels) = decode(request).result.unwrap();
+            assert_eq!((actual_width, actual_height), expected);
+            assert_eq!(pixels.len(), (actual_width * actual_height * 4) as usize);
+        }
+    }
 
     #[test]
     fn images_with_modification_times_before_the_epoch_receive_thumbnails() {
