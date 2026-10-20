@@ -593,3 +593,15 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 839 passed, 32 ignored. Locked strict Clippy,
   formatting, whitespace, development build, and isolated FileManager1 activation
   smoke test pass.
+
+## Round 37: keyboard collapse retains hidden subtree watches
+
+- Red: expand a real sidebar root and child, focus the root, then collapse it
+  with the keyboard Left motion. Both hidden directory watches remain active.
+- Fix: synchronize Location monitoring after Left motions, which can change
+  expansion state as well as move focus.
+- Green: the App regression releases root and descendant expansion watches,
+  retains the independent current-folder watch, and preserves the focused root.
+  All seven GPU renderer regressions pass.
+- All-target parallel tests pass: 840 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.

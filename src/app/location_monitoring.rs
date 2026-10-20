@@ -450,6 +450,71 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_collapse_releases_watches_for_the_hidden_subtree() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("expanded");
+        let branch = parent.join("branch");
+        let current = temp.path().join("current");
+        std::fs::create_dir_all(branch.join("leaf")).unwrap();
+        std::fs::create_dir(&current).unwrap();
+        let (mut app, _) = super::super::App::new();
+        app.view_preferences =
+            super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+        app.navigation = NavigationSession::new(current.clone());
+        app.navigation.settle_for_test();
+        app.sidebar_tree = SidebarTree::new(Vec::new());
+        app.sidebar_tree
+            .install_places(vec![super::super::places::Entry {
+                path: parent.clone(),
+                label: "Expanded".to_owned(),
+                kind: super::super::tree::NodeKind::Favorite,
+                favorite_index: Some(0),
+            }]);
+        let root_id = app
+            .sidebar_tree
+            .rows(&current)
+            .into_iter()
+            .find(|row| row.path.as_ref() == Some(&parent))
+            .unwrap()
+            .id;
+        let request = app.sidebar_tree.expand(root_id).unwrap();
+        app.sidebar_tree.complete_load(
+            &request,
+            Ok(crate::fs::read_child_folders(&parent).unwrap()),
+        );
+        let branch_id = app
+            .sidebar_tree
+            .rows(&current)
+            .into_iter()
+            .find(|row| row.path.as_ref() == Some(&branch))
+            .unwrap()
+            .id;
+        let request = app.sidebar_tree.expand(branch_id).unwrap();
+        app.sidebar_tree.complete_load(
+            &request,
+            Ok(crate::fs::read_child_folders(&branch).unwrap()),
+        );
+        app.sidebar_tree.focus(root_id);
+        app.focus_browser(super::super::BrowserFocus::Sidebar);
+        app.sync_location_monitoring();
+        let watched = app.location_monitoring.as_ref().unwrap().watched_paths();
+        assert!(watched.contains(&parent) && watched.contains(&branch));
+        drop(app.move_sidebar(super::super::Motion::Left, 1));
+        assert!(!app.sidebar_tree.is_expanded(root_id));
+        let watched = app.location_monitoring.as_ref().unwrap().watched_paths();
+        assert!(
+            !watched.contains(&parent),
+            "keyboard collapse retained its expanded-folder watch"
+        );
+        assert!(
+            !watched.contains(&branch),
+            "keyboard collapse retained a hidden descendant watch"
+        );
+        assert!(watched.contains(&current));
+        assert_eq!(app.sidebar_tree.focused_id(), Some(root_id));
+    }
+
+    #[test]
     fn notification_failure_enables_one_polling_fallback_policy() {
         let temp = tempfile::tempdir().unwrap();
         let current = temp.path().join("current");

@@ -803,6 +803,9 @@ impl App {
         ) {
             TreeMoveOutcome::None => Task::none(),
             TreeMoveOutcome::Focused(label) => {
+                if motion == Motion::Left {
+                    self.sync_location_monitoring();
+                }
                 self.presentation.set_status(format!("Sidebar  •  {label}"));
                 if matches!(
                     motion,
