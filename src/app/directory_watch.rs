@@ -325,23 +325,50 @@ fn replace_watches(
         | libc::IN_MOVE_SELF
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
-    let current = watched.values().flatten().cloned().collect::<HashSet<_>>();
-    for path in desired_order.iter().filter(|path| !current.contains(*path)) {
+    let current = watched
+        .iter()
+        .flat_map(|(watch, paths)| paths.iter().map(move |path| (path.clone(), *watch)))
+        .collect::<HashMap<PathBuf, i32>>();
+    // An unchanged path can resolve to a different inode after an ancestor
+    // moves. Re-adding an unchanged inode returns its existing watch ID.
+    for path in &desired_order {
         let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
             continue;
         };
         // SAFETY: path_bytes is a valid C string for this call.
         let watch = unsafe { libc::inotify_add_watch(descriptor, path_bytes.as_ptr(), mask) };
         if watch >= 0 {
+            let previous = current.get(path).copied();
+            if let Some(previous) = previous
+                && previous != watch
+            {
+                let unused = watched.get_mut(&previous).is_some_and(|paths| {
+                    paths.remove(path);
+                    paths.is_empty()
+                });
+                if unused {
+                    // SAFETY: this worker owns the old watch, with no aliases left.
+                    unsafe { libc::inotify_rm_watch(descriptor, previous) };
+                    watched.remove(&previous);
+                }
+            }
             // inotify reuses a watch ID for paths resolving to the same inode.
             // Keep each path so all Location monitoring roles receive changes.
             watched.entry(watch).or_default().insert(path.clone());
+            if previous == Some(watch) {
+                continue;
+            }
             // Files may have changed between the last scan and registration.
             // Rescan once after binding; unchanged watches need no notification.
             let change = pending.entry(path.clone()).or_default();
             let now = Instant::now();
             change.first_changed.get_or_insert(now);
             change.changed = Some(now);
+            if previous.is_some() {
+                // Rebinding can overtake queued old-inode removal events.
+                // Confirm any missing captured Cut paths beneath this folder.
+                change.removed.insert(path.clone());
+            }
         } else {
             failed = true;
         }
@@ -522,6 +549,118 @@ mod tests {
             assert_eq!(event.path, real);
             assert!(!event.watch_failed);
         });
+    }
+
+    #[test]
+    fn unchanged_watch_paths_rebind_after_an_ancestor_is_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let moved = temp.path().join("moved-parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let source = Source::new().unwrap();
+        let mut events = watch_and_wait(&source, vec![child.clone()]);
+        std::fs::rename(&parent, &moved).unwrap();
+        std::fs::create_dir_all(&child).unwrap();
+        source.watch_many([child.clone()]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let rebound = tokio::time::timeout(Duration::from_secs(2), events.next())
+                .await
+                .expect("the replacement path must receive a fresh native watch")
+                .unwrap();
+            assert_eq!(rebound.path, child);
+            assert!(!rebound.watch_failed);
+            std::fs::write(child.join("new-file"), "replacement contents").unwrap();
+            let changed = tokio::time::timeout(Duration::from_secs(2), events.next())
+                .await
+                .expect("the replacement directory must report new files")
+                .unwrap();
+            assert_eq!(changed.path, child);
+            assert!(!changed.watch_failed);
+            assert_eq!(
+                std::fs::read_to_string(child.join("new-file")).unwrap(),
+                "replacement contents"
+            );
+            std::fs::write(moved.join("child/old-inode"), "old contents").unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), events.next())
+                    .await
+                    .is_err(),
+                "the old inode still reports changes under the replacement path"
+            );
+        });
+    }
+
+    #[test]
+    fn rebinding_one_path_retains_an_alias_still_using_the_old_inode() {
+        for alias_first in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("parent");
+            let moved = temp.path().join("moved-parent");
+            let alias_parent = temp.path().join("alias");
+            let child = parent.join("child");
+            let alias = alias_parent.join("child");
+            std::fs::create_dir_all(&child).unwrap();
+            std::os::unix::fs::symlink(&parent, &alias_parent).unwrap();
+            let paths = if alias_first {
+                vec![alias.clone(), child.clone()]
+            } else {
+                vec![child.clone(), alias.clone()]
+            };
+            let source = Source::new().unwrap();
+            let mut events = watch_and_wait(&source, paths.clone());
+            std::fs::rename(&parent, &moved).unwrap();
+            std::fs::remove_file(&alias_parent).unwrap();
+            std::os::unix::fs::symlink(&moved, &alias_parent).unwrap();
+            std::fs::create_dir_all(&child).unwrap();
+            source.watch_many(paths);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let rebound = tokio::time::timeout(Duration::from_secs(2), events.next())
+                    .await
+                    .expect("replacement watch notification")
+                    .unwrap();
+                assert_eq!(rebound.path, child);
+                assert!(!rebound.watch_failed);
+                for (path, name) in [(&child, "replacement"), (&alias, "retained-alias")] {
+                    std::fs::write(path.join(name), "contents").unwrap();
+                    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+                        .await
+                        .expect("each path must keep its own native binding")
+                        .unwrap();
+                    assert_eq!(&event.path, path);
+                    assert!(!event.watch_failed);
+                }
+                source.watch_many([child.clone()]);
+                // Dropping one binding must not rebind the unchanged path.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(250), events.next())
+                        .await
+                        .is_err()
+                );
+                // Removing the final old-inode alias must stop that watch.
+                std::fs::write(alias.join("after-removing-alias"), "old contents").unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(250), events.next())
+                        .await
+                        .is_err()
+                );
+                std::fs::write(child.join("still-watched"), "new contents").unwrap();
+                let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+                    .await
+                    .expect("replacement path must remain watched")
+                    .unwrap();
+                assert_eq!(event.path, child);
+                assert!(!event.watch_failed);
+            });
+        }
     }
 
     #[test]

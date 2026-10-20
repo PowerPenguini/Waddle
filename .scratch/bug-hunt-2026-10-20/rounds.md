@@ -455,3 +455,23 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 827 passed, 32 ignored. The new opt-in GPU
   regression was explicitly executed. Locked strict Clippy, formatting, and
   whitespace checks pass.
+
+## Round 28: unchanged watch paths remain bound to replaced ancestor trees
+
+- Red: watch a child directory, rename its ancestor, create a replacement child
+  at the original path, and resynchronize that same path. No new native binding
+  or notification arrives; inotify still follows the old child inode.
+- Fix: verify every requested path with inotify during resynchronization. An
+  unchanged inode returns its existing watch ID and stays quiet. A changed ID
+  rebinds that path, releases the old watch only when no aliases need it, and
+  requests a rescan. Rebinding also supplies an ancestor removal candidate for
+  Cut reconciliation if queued old-inode removal events were overtaken.
+- Green: the native regression observes replacement-directory writes and ignores
+  old-inode writes. A second native regression retains an alias on the old inode
+  while rebinding the other path, verifies both event streams in both request
+  orders, then removes the alias and checks the replacement stays monitored.
+  Both regressions pass ten consecutive runs each. Existing quiet-resync,
+  multi-alias, missing-path recovery, and debounce tests also pass.
+- All-target parallel tests pass: 829 passed, 32 ignored. Locked strict Clippy,
+  formatting, whitespace, the development build, and isolated FileManager1
+  activation smoke test pass.
