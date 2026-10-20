@@ -134,7 +134,7 @@ impl App {
                     theme::icon_theme(settings.as_ref()),
                     self.view_preferences.uses_system_icons(),
                 );
-                self.sidebar_tree.refresh_volumes();
+                let volumes_changed = self.sidebar_tree.refresh_volumes();
                 let storage_usage = self.refresh_tree_storage_usage();
                 let volume_navigation = self.resume_tree_volume_navigation();
                 let search = if self.search.is_recursive() {
@@ -151,6 +151,13 @@ impl App {
                         refresh_location: !self.search.is_recursive(),
                         invalidate_tree: self.sidebar_tree.expanded_paths(),
                     });
+                // Capture recovery work before resynchronization can replace a
+                // failed watch with a healthy one and clear the fallback flag.
+                let tree = if volumes_changed {
+                    self.finish_sidebar_tree_update()
+                } else {
+                    Task::none()
+                };
                 let cut = if fallback.reconcile_cut {
                     self.poll_pending_cut()
                 } else {
@@ -164,6 +171,7 @@ impl App {
                 let fallback =
                     Task::batch([self.invalidate_tree(fallback.invalidate_tree), location]);
                 Task::batch([
+                    tree,
                     search,
                     fallback,
                     system_icon_task(system_icons),

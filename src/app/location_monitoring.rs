@@ -388,6 +388,70 @@ mod tests {
     }
 
     #[test]
+    fn system_poll_releases_detached_drive_watches_and_repairs_sidebar_focus() {
+        for sidebar_focused in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mount = temp.path().join("detached-volume");
+            let child = mount.join("child");
+            let current = temp.path().join("current");
+            std::fs::create_dir_all(&child).unwrap();
+            std::fs::create_dir(&current).unwrap();
+            let (mut app, _) = super::super::App::new();
+            app.view_preferences =
+                super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.navigation = NavigationSession::new(current.clone());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(vec![super::super::tree::VolumeRoot {
+                id: format!("test-detached:{}", temp.path().display()),
+                path: Some(mount.clone()),
+                label: "Detached".to_owned(),
+                can_unmount: true,
+            }]);
+            let drive = app
+                .sidebar_tree
+                .rows(&current)
+                .into_iter()
+                .find(|row| row.kind == super::super::tree::NodeKind::Drive)
+                .unwrap();
+            let request = app.sidebar_tree.expand(drive.id).unwrap();
+            app.sidebar_tree
+                .complete_load(&request, Ok(crate::fs::read_child_folders(&mount).unwrap()));
+            let child_id = app
+                .sidebar_tree
+                .rows(&current)
+                .into_iter()
+                .find(|row| row.path.as_ref() == Some(&child))
+                .unwrap()
+                .id;
+            app.sidebar_tree.focus(child_id);
+            app.focus_browser(if sidebar_focused {
+                super::super::BrowserFocus::Sidebar
+            } else {
+                super::super::BrowserFocus::Entries
+            });
+            app.sync_location_monitoring();
+            assert!(
+                app.location_monitoring
+                    .as_ref()
+                    .unwrap()
+                    .watched_paths()
+                    .contains(&mount)
+            );
+            // The synthetic volume is absent from the real desktop inventory, just
+            // as a detached device is absent on the next system poll.
+            drop(app.update(super::super::Message::PollSystem));
+            assert!(!app.sidebar_tree.mount_paths().contains(&mount));
+            let watched = app.location_monitoring.as_ref().unwrap().watched_paths();
+            assert!(
+                !watched.contains(&mount),
+                "detached drive retained an obsolete directory watch"
+            );
+            assert!(watched.contains(&current));
+            assert_eq!(app.sidebar_tree.focused_id().is_some(), sidebar_focused);
+        }
+    }
+
+    #[test]
     fn notification_failure_enables_one_polling_fallback_policy() {
         let temp = tempfile::tempdir().unwrap();
         let current = temp.path().join("current");

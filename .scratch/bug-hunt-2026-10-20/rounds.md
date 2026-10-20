@@ -534,3 +534,18 @@ pushes `main`. No release or installation is included.
   GPU renderer regressions pass.
 - All-target parallel tests pass: 835 passed, 32 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 33: detached drives retain expanded directory watches
+
+- Red: install an expanded volume backed by a real temporary directory, then let
+  the system poll reconcile it against the desktop inventory where it is absent.
+  The row disappears, but its obsolete watch and missing sidebar cursor remain.
+- Fix: finalize changed volume inventories with the shared tree-update helper.
+  Capture polling recovery before resynchronizing watches so a restored parent
+  still receives its required Recent rescan; the existing lifecycle regression
+  caught this ordering requirement during validation.
+- Green: detached-volume regressions release its watch, retain the current folder
+  watch, and restore focus only for an active sidebar. Recent missing-parent
+  recovery and all seven GPU renderer regressions pass.
+- All-target parallel tests pass: 836 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
