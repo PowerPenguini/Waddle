@@ -284,6 +284,9 @@ fn replace_watches(
         .into_iter()
         .take(MAX_WATCHES)
         .collect::<Vec<_>>();
+    // Filtering can skip a missing folder before inotify gets a chance to
+    // report failure. Keep polling whenever any requested path is unwatched.
+    let mut failed = desired.len() != desired_order.len();
     desired = desired_order.iter().cloned().collect();
     let removed = watched
         .iter()
@@ -304,7 +307,6 @@ fn replace_watches(
         | libc::IN_MOVED_FROM
         | libc::IN_MOVED_TO;
     let current = watched.values().cloned().collect::<HashSet<_>>();
-    let mut failed = false;
     for path in desired_order.iter().filter(|path| !current.contains(*path)) {
         let Ok(path_bytes) = CString::new(path.as_os_str().as_bytes()) else {
             continue;
@@ -329,6 +331,57 @@ fn replace_watches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_watch_paths_request_polling_until_native_monitoring_recovers() {
+        let temp = tempfile::tempdir().unwrap();
+        let available = temp.path().join("available");
+        let missing = temp.path().join("restored-later");
+        std::fs::create_dir(&available).unwrap();
+        let source = Source::new().unwrap();
+        let mut events = source.0.events.lock().unwrap().take().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            source.watch_many([available.clone(), missing.clone()]);
+            let mut fallback = false;
+            let mut available_changed = false;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !fallback || !available_changed {
+                    let event = events.next().await.unwrap();
+                    fallback |= event.watch_failed;
+                    available_changed |= event.path == available;
+                }
+            })
+            .await
+            .expect("an unwatchable requested path must activate polling fallback");
+
+            std::fs::create_dir(&missing).unwrap();
+            source.watch_many([available.clone(), missing.clone()]);
+            let restored = tokio::time::timeout(Duration::from_secs(2), events.next())
+                .await
+                .expect("a restored folder must receive a native watch")
+                .unwrap();
+            assert!(!restored.watch_failed);
+            assert_eq!(restored.path, missing);
+
+            std::fs::write(available.join("still-watched"), "x").unwrap();
+            std::fs::write(missing.join("newly-watched"), "x").unwrap();
+            let mut changed = HashSet::new();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while changed.len() < 2 {
+                    let event = events.next().await.unwrap();
+                    assert!(!event.watch_failed);
+                    changed.insert(event.path);
+                }
+            })
+            .await
+            .expect("available and restored folders must both remain monitored");
+            assert_eq!(changed, HashSet::from([available, missing]));
+        });
+    }
 
     #[test]
     fn newly_installed_watches_invalidate_changes_made_before_registration() {

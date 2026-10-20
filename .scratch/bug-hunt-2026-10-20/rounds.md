@@ -37,3 +37,23 @@ pushes `main`. No release or installation is included.
   deduplication, GNOME Cut, Unicode and raw filename bytes, remote hosts,
   malformed escapes, and embedded NUL. Locked strict Clippy, formatting, and
   whitespace checks passed.
+
+## Round 3: unavailable watch paths silently disable recovery
+
+- Reproduction: request native watches for an existing folder and a missing
+  folder, as happens when a Recent bookmark's whole parent is removed.
+- Red: `cargo test --locked unavailable_watch_paths_request_polling_until_native_monitoring_recovers`
+  timed out waiting for the polling-fallback signal.
+- Cause: the safe watch filter discards unavailable directories before inotify
+  registration. Only inotify errors activated fallback, so filtered paths were
+  silently treated as monitored.
+- Fix: report incomplete registration whenever fewer unique paths are watched
+  than requested. Keep the existing no-automount filtering.
+- Green: the native test detects fallback, creates the missing folder, and
+  verifies native changes arrive from both folders. It passed ten consecutive
+  isolated repetitions. An application regression removes a Recent bookmark's
+  parent, consumes the real fallback event, restores the parent and file, then
+  verifies periodic polling rediscovers the entry in Recent.
+- All-target tests passed sequentially: 804 passed, 26 ignored. Locked strict
+  Clippy, formatting, whitespace checks, the locked debug build, and isolated
+  FileManager1 activation smoke testing passed.

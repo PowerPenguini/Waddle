@@ -202,6 +202,58 @@ fn recent_observes_a_missing_bookmarked_file_restored_externally() {
 }
 
 #[test]
+fn recent_rediscovers_a_bookmark_after_its_missing_parent_is_restored() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut app, file) = collection_app(temp.path(), true).await;
+            let parent = file.parent().unwrap();
+            std_fs::remove_dir_all(parent).unwrap();
+            let refresh = app.refresh_location();
+            finish_tasks(&mut app, refresh).await;
+            assert!(app.navigation.entries().is_empty());
+
+            // Start monitoring while the bookmarked file's parent is absent.
+            app.location_monitoring = Some(location_monitoring::Native::open().unwrap());
+            app.sidebar_tree = SidebarTree::new(Vec::new());
+            app.sync_location_monitoring();
+            let recipe = iced::advanced::subscription::into_recipes(
+                app.location_monitoring.as_ref().unwrap().subscription(),
+            )
+            .pop()
+            .unwrap();
+            let mut events = recipe.stream(iced::futures::stream::pending().boxed());
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let event = events.next().await.unwrap();
+                    let failed = event.watch_failed;
+                    let task = app.update(Message::DirectoryChanged(event));
+                    finish_tasks(&mut app, task).await;
+                    if failed {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("a missing bookmark parent must enable polling");
+
+            std_fs::create_dir(parent).unwrap();
+            std_fs::write(&file, "restored externally").unwrap();
+            let poll = app.update(Message::PollSystem);
+            finish_tasks(&mut app, poll).await;
+            assert_eq!(
+                app.navigation.displayed_location(),
+                DisplayedLocation::Recent
+            );
+            assert_eq!(app.navigation.entries().len(), 1);
+            assert_eq!(app.navigation.entries()[0].path, file);
+        });
+}
+
+#[test]
 fn recent_multi_parent_transfer_conflicts_and_history_preserve_each_file() {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
