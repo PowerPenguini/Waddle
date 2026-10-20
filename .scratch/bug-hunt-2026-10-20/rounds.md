@@ -343,3 +343,19 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 820 passed, 30 ignored. Locked strict Clippy,
   formatting, whitespace, the development build, and isolated FileManager1
   activation smoke test pass.
+
+## Round 21: conventional keys leave Vim operators waiting for a later key
+
+- Red: press `d`, then ArrowLeft, then `j` against real files. The arrow moves
+  conventionally but leaves the `d` operator pending, so the later `j` cuts a
+  range instead of moving. Pending counts and `g` sequences also survive these
+  unrelated conventional actions.
+- Fix: clear unfinished Browser sequences before arrows, Home, End, and Space
+  perform their conventional actions.
+- Green: the App regression checks five prefixes (`d`, `2d`, `3`, `g`, and the
+  black-hole `"_d`) across all seven conventional keys. The following `j` moves
+  once, no Cut is created, no sequence remains pending, and fixture files retain
+  their contents. Trash is isolated within the fixture for the black-hole case.
+- All-target parallel tests pass: 821 passed, 30 ignored. The extended 35-case
+  regression was rerun after adding black-hole coverage. Locked strict Clippy,
+  formatting, and whitespace checks pass.

@@ -1204,3 +1204,59 @@ fn viewport_jump_keys_select_visible_files_without_scrolling_the_view() {
             }
         });
 }
+
+#[test]
+fn standard_keyboard_actions_cancel_pending_vim_sequences() {
+    use keyboard::key::Named;
+
+    for sequence in ["d", "2d", "3", "g", "\"_d"] {
+        for named in [
+            Named::ArrowLeft,
+            Named::ArrowRight,
+            Named::ArrowUp,
+            Named::ArrowDown,
+            Named::Home,
+            Named::End,
+            Named::Space,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            for index in 0..5 {
+                std_fs::write(temp.path().join(format!("{index}.txt")), "contents").unwrap();
+            }
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.navigation
+                .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+            app.transfers =
+                transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+            app.trash = trash::Trash::at(temp.path().join("trash"));
+            app.grid.set_list_mode(true);
+            app.grid.select_only(Some(2), 5);
+            app.focus_browser(BrowserFocus::Entries);
+            for key in sequence.split("").filter(|key| !key.is_empty()) {
+                press(&mut app, key);
+            }
+            let key = keyboard::Key::Named(named);
+            drop(app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None));
+            let after_standard_key = app.grid.selected_entry().unwrap();
+            press(&mut app, "j");
+            assert!(
+                app.transfers.pending_cut_paths().is_empty(),
+                "{sequence} then {named:?} left an operator that cut files on the next j"
+            );
+            assert_eq!(
+                app.grid.selected_entry(),
+                Some((after_standard_key + 1).min(4)),
+                "{sequence} then {named:?} changed the following motion"
+            );
+            assert!(app.browser_input.pending_sequence().is_none());
+            for index in 0..5 {
+                assert_eq!(
+                    std_fs::read_to_string(temp.path().join(format!("{index}.txt"))).unwrap(),
+                    "contents"
+                );
+            }
+        }
+    }
+}

@@ -578,12 +578,16 @@ impl BrowserInput {
             _ => None,
         };
         if let Some(motion) = standard_motion {
+            // Conventional actions end an unfinished Vim sequence. Otherwise a
+            // later character can unexpectedly reuse its operator or count.
+            self.clear_sequence();
             return Intent::StandardMove {
                 motion,
                 extend: press.shift,
             };
         }
         if press.named == NamedKey::Space {
+            self.clear_sequence();
             return Intent::ToggleActive;
         }
 
