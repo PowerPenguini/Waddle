@@ -152,3 +152,23 @@ pushes `main`. No release or installation is included.
   no scrolling commands. All-target parallel tests passed: 813 passed, 26 ignored.
   All three vendored scrollbar regressions, locked strict Clippy, formatting,
   and whitespace checks passed. Help remains within its tested 64-column limit.
+
+## Round 9: line breaks in filenames hide compact status text
+
+- Reproduction: select a real file whose name contains a newline, render the
+  actual bottom bar with a headless wgpu renderer, and inspect layout geometry.
+- Red: the filename status occupied 25 pixels instead of one 13-pixel text line,
+  despite wrapping being disabled. The compact bar clipped the extra line.
+- Cause: disabling wrapping does not suppress explicit line-break characters.
+  Filenames, notices, and conflict prompts could supply those characters.
+- Fix: escape control characters and Unicode line/paragraph separators only in
+  compact status/conflict rendering. Keep model text, paths, and filenames intact.
+  Ordinary text is borrowed without allocating a replacement string.
+- Green: the explicit headless layout regression passes for newline, carriage
+  return, vertical tab, form feed, NEL, and Unicode line/paragraph separators.
+  It covers selected-file status, notices, and real Copy conflict prompts, while
+  preserving both source names and existing destination contents. The existing
+  status-carousel renderer test and both grid-layout renderer tests also pass.
+- All-target parallel tests passed: 813 passed, 27 ignored. The new opt-in GPU
+  regression was explicitly executed, rather than counted as a standard-suite
+  pass. Locked strict Clippy, formatting, and whitespace checks passed.

@@ -3,6 +3,9 @@ use super::view::View;
 #[cfg(test)]
 #[path = "tests/open_with_layout.rs"]
 mod open_with_layout;
+#[cfg(test)]
+#[path = "tests/status_layout.rs"]
+mod status_layout;
 use iced::{
     Alignment, Color, Element, Fill, Length, Padding,
     widget::{
@@ -41,7 +44,7 @@ impl<'a> View<'a> {
         let transient = resolved.kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
-                self.bottom_bar_text(status_model.text)
+                self.bottom_bar_text(super::presentation::single_line_status(status_model.text))
                     .wrapping(iced::advanced::text::Wrapping::None)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
@@ -227,16 +230,18 @@ impl<'a> View<'a> {
                     let mut line = Row::new()
                         .push(indicator)
                         .push(super::status_carousel::status_carousel(
-                            self.bottom_bar_text(status_model.text)
-                                .wrapping(iced::advanced::text::Wrapping::None)
-                                .size(11)
-                                .line_height(iced::Pixels(13.0))
-                                .color(if self.app().presentation.notice_is_danger() {
-                                    self.app().iced_theme().palette().danger
-                                } else {
-                                    self.secondary_text_color()
-                                })
-                                .width(Length::Shrink),
+                            self.bottom_bar_text(super::presentation::single_line_status(
+                                status_model.text,
+                            ))
+                            .wrapping(iced::advanced::text::Wrapping::None)
+                            .size(11)
+                            .line_height(iced::Pixels(13.0))
+                            .color(if self.app().presentation.notice_is_danger() {
+                                self.app().iced_theme().palette().danger
+                            } else {
+                                self.secondary_text_color()
+                            })
+                            .width(Length::Shrink),
                             status_model.text,
                             self.app().reduced_motion(),
                         ))

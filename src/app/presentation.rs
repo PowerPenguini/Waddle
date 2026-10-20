@@ -283,6 +283,23 @@ impl Presentation {
     }
 }
 
+pub(super) fn single_line_status(text: &str) -> std::borrow::Cow<'_, str> {
+    let escape =
+        |character: char| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}');
+    if !text.chars().any(escape) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut displayed = String::with_capacity(text.len());
+    for character in text.chars() {
+        if escape(character) {
+            displayed.extend(character.escape_default());
+        } else {
+            displayed.push(character);
+        }
+    }
+    std::borrow::Cow::Owned(displayed)
+}
+
 pub(super) fn compact_status_line<'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
