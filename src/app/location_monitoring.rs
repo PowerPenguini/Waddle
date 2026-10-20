@@ -41,6 +41,7 @@ pub(super) struct Change {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct Poll {
+    pub(super) reconcile_cut: bool,
     pub(super) refresh_location: bool,
     pub(super) invalidate_tree: Vec<PathBuf>,
 }
@@ -154,6 +155,7 @@ impl<A: Adapter> LocationMonitoring<A> {
             .collect::<Vec<_>>();
         invalidate_tree.sort();
         Poll {
+            reconcile_cut: true,
             refresh_location: !search.is_recursive(),
             invalidate_tree,
         }
@@ -328,6 +330,7 @@ mod tests {
         assert_eq!(
             monitoring.poll(&search),
             Poll {
+                reconcile_cut: true,
                 refresh_location: true,
                 invalidate_tree: vec![expanded.clone()],
             }
@@ -339,6 +342,7 @@ mod tests {
         assert_eq!(
             monitoring.poll(&search),
             Poll {
+                reconcile_cut: true,
                 refresh_location: false,
                 invalidate_tree: vec![expanded],
             }

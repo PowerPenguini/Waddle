@@ -147,9 +147,15 @@ impl App {
                     .as_ref()
                     .map(|monitoring| monitoring.poll(&self.search))
                     .unwrap_or_else(|| location_monitoring::Poll {
+                        reconcile_cut: true,
                         refresh_location: !self.search.is_recursive(),
                         invalidate_tree: self.sidebar_tree.expanded_paths(),
                     });
+                let cut = if fallback.reconcile_cut {
+                    self.poll_pending_cut()
+                } else {
+                    Task::none()
+                };
                 let location = if fallback.refresh_location {
                     self.refresh_location()
                 } else {
@@ -163,7 +169,21 @@ impl App {
                     system_icon_task(system_icons),
                     volume_navigation,
                     storage_usage,
+                    cut,
                 ])
+            }
+            Message::CutSourcesChecked { revision, missing } => {
+                self.cut_poll_pending = false;
+                if revision == self.transfers.clipboard_revision()
+                    && !missing.is_empty()
+                    && let Some(notice) = self.transfers.reconcile_pending_cut(&missing)
+                {
+                    self.presentation.set_notice(notice);
+                    self.sync_location_monitoring();
+                    self.refresh_location()
+                } else {
+                    Task::none()
+                }
             }
             Message::DirectoryChanged(event) => {
                 let change = match self.location_monitoring.as_mut() {

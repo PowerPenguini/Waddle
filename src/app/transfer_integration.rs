@@ -30,6 +30,39 @@ pub(super) fn transfer_runtime_message(event: transfer_session::RuntimeEvent) ->
 }
 
 impl App {
+    pub(super) fn poll_pending_cut(&mut self) -> Task<Message> {
+        if self.cut_poll_pending || self.transfers.pending_cut_paths().is_empty() {
+            return Task::none();
+        }
+        self.cut_poll_pending = true;
+        let revision = self.transfers.clipboard_revision();
+        let paths = self.transfers.pending_cut_paths().to_vec();
+        Task::perform(
+            self.operations
+                .run(super::OperationKind::Background, move |_| {
+                    Ok(paths
+                        .into_iter()
+                        .filter(|path| {
+                            std::fs::symlink_metadata(path).is_err_and(|error| {
+                                matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::NotFound
+                                        | std::io::ErrorKind::NotADirectory
+                                )
+                            })
+                        })
+                        .collect())
+                }),
+            move |completion| Message::CutSourcesChecked {
+                revision,
+                missing: match completion {
+                    super::Completion::Finished(Ok(paths)) => paths,
+                    _ => Vec::new(),
+                },
+            },
+        )
+    }
+
     pub(super) fn copy_selection(&mut self) -> Task<Message> {
         if !self.operation_access().entries {
             return Task::none();

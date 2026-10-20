@@ -1444,3 +1444,56 @@ fn moving_a_cut_items_parent_confirms_the_external_move() {
             }
         });
 }
+
+#[test]
+fn cut_polling_coalesces_work_and_ignores_results_for_an_older_cut() {
+    use iced::futures::StreamExt;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source.txt");
+            std_fs::write(&source, "first Cut").unwrap();
+            let entries = fs::read_directory(temp.path()).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.transfers =
+                transfer_session::TransferSession::open(temp.path().join("transfers.json"));
+            assert_eq!(app.poll_pending_cut().units(), 0);
+            app.transfers.cut(&entries).unwrap();
+            std_fs::remove_file(&source).unwrap();
+            let task = app.poll_pending_cut();
+            assert!(app.cut_poll_pending);
+            assert_eq!(
+                app.poll_pending_cut().units(),
+                0,
+                "duplicate poll queued a second scan"
+            );
+            let mut stream = iced_runtime::task::into_stream(task).unwrap();
+            let mut completion = None;
+            while let Some(action) = stream.next().await {
+                if let iced_runtime::Action::Output(message) = action {
+                    completion = Some(message);
+                }
+            }
+            std_fs::write(&source, "newer Cut").unwrap();
+            app.transfers.cut(&entries).unwrap();
+            std_fs::remove_file(&source).unwrap();
+            let task = app.update(completion.expect("background probe result"));
+            navigation::finish_tasks(&mut app, task).await;
+            assert_eq!(
+                app.transfers.pending_cut_paths(),
+                [source],
+                "an older scan cleared the newer Cut"
+            );
+            assert!(!app.cut_poll_pending);
+            let task = app.poll_pending_cut();
+            navigation::finish_tasks(&mut app, task).await;
+            assert!(app.transfers.pending_cut_paths().is_empty());
+            assert!(!app.cut_poll_pending);
+        });
+}

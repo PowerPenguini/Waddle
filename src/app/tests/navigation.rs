@@ -1688,6 +1688,20 @@ fn failed_native_monitor_startup_keeps_polling_after_each_refresh() {
                     "polling failed to display {name} after native monitoring failed"
                 );
             }
+            let kept = temp.path().join("second.txt");
+            app.transfers
+                .cut(&fs::read_directory(temp.path()).unwrap())
+                .unwrap();
+            assert_eq!(app.transfers.pending_cut_paths().len(), 2);
+            std_fs::remove_file(temp.path().join("first.txt")).unwrap();
+            let task = app.update(Message::PollSystem);
+            finish_tasks(&mut app, task).await;
+            assert_eq!(
+                app.transfers.pending_cut_paths(),
+                std::slice::from_ref(&kept),
+                "polling left an externally removed Cut item pending"
+            );
+            assert_eq!(std_fs::read_to_string(kept).unwrap(), "external change");
         });
 }
 

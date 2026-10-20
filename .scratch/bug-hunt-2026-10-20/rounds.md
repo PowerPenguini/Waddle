@@ -265,3 +265,21 @@ pushes `main`. No release or installation is included.
   regression verifies the replacement file and externally moved contents remain
   intact. All-target parallel tests pass: 817 passed, 28 ignored. Locked strict
   Clippy, formatting, and whitespace checks pass.
+
+## Round 16: polling fallback never reconciles externally removed Cut items
+
+- Red: extend the native-startup-failure fixture to Cut two real files and delete
+  one externally. Polling refreshes the folder list but leaves both Cut paths
+  pending, even though the removed source cannot be pasted.
+- Fix: the centralized fallback policy requests a background Cut-source check.
+  Probe captured paths on the existing background executor, coalesce overlapping
+  polls, and compare the clipboard revision before applying a completion. Retain
+  existing paths and other lookup errors; confirm absence before reconciliation.
+- Green: the failure-injection fixture retains the existing Cut file and clears
+  the deleted one. A second worker-level App regression verifies overlapping
+  polls coalesce, delayed results cannot clear a newer Cut, and the next poll can
+  still complete. Both regressions pass ten consecutive runs each.
+- All-target parallel tests pass: 818 passed, 28 ignored. Locked strict Clippy,
+  formatting, whitespace, the development build, and isolated FileManager1
+  activation smoke test pass. A test-only unnecessary clone was corrected and
+  the affected fixture rerun after Clippy identified it.
