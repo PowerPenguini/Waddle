@@ -1169,11 +1169,16 @@ fn viewport_jump_keys_select_visible_files_without_scrolling_the_view() {
                 app.grid.set_scroll(row_height * 3.0);
                 app.grid.select_only(Some(0), 200);
                 let columns = if list { 1 } else { 3 };
-                for (key, expected) in [
-                    ("H", 3 * columns),
-                    ("M", 5 * columns - 1),
-                    ("L", 7 * columns - 1),
+                for (prefix, key, expected) in [
+                    (None, "H", 3 * columns),
+                    (None, "M", 5 * columns - 1),
+                    (None, "L", 7 * columns - 1),
+                    (Some("2"), "H", 4 * columns),
+                    (Some("2"), "L", 6 * columns - 1),
                 ] {
+                    if let Some(prefix) = prefix {
+                        press(&mut app, prefix);
+                    }
                     let mut commands = ScrollCommands::default();
                     let key = keyboard::Key::Character(key.into());
                     let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None);

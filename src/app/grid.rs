@@ -887,10 +887,18 @@ impl GridInteraction {
             Motion::DisplayIndex(index) => index.min(last),
             Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom => {
                 let visible = self.viewport_entry_range(entry_count, status_height);
+                let visible_rows = visible.end.div_ceil(columns) - visible.start / columns;
+                let offset = count
+                    .saturating_sub(1)
+                    .min(visible_rows.saturating_sub(1))
+                    .saturating_mul(columns);
                 let anchor = match motion {
-                    Motion::ViewportTop => visible.start,
+                    Motion::ViewportTop => visible
+                        .start
+                        .saturating_add(offset)
+                        .min(visible.end.saturating_sub(1)),
                     Motion::ViewportMiddle => (visible.start + visible.end.saturating_sub(1)) / 2,
-                    Motion::ViewportBottom => visible.end.saturating_sub(1),
+                    Motion::ViewportBottom => visible.end.saturating_sub(1).saturating_sub(offset),
                     _ => unreachable!(),
                 };
                 anchor.min(last)
@@ -2018,6 +2026,34 @@ mod tests {
                             "up: list={list}, size={icon_size}, rows={page_rows}, count={count}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn counted_viewport_jumps_choose_rows_from_each_visible_edge() {
+        for list in [false, true] {
+            let mut grid = grid();
+            grid.set_list_mode(list);
+            let height = grid.row_height();
+            grid.resize(Size::new(584.0, grid.entries_top() + 25.0 + height * 4.0));
+            grid.set_scroll(height * 3.0);
+            let columns = grid.columns();
+            for selected in [None, Some(0)] {
+                for (count, row_offset) in [(1, 0), (2, 1), (10_000, 3)] {
+                    grid.select_only(selected, 200);
+                    assert_eq!(
+                        grid.move_selection_count(Motion::ViewportTop, count, 200, 25.0),
+                        Some((3 + row_offset) * columns),
+                        "H, count={count}, list={list}, selected={selected:?}"
+                    );
+                    grid.select_only(selected, 200);
+                    assert_eq!(
+                        grid.move_selection_count(Motion::ViewportBottom, count, 200, 25.0),
+                        Some((7 - row_offset) * columns - 1),
+                        "L, count={count}, list={list}, selected={selected:?}"
+                    );
                 }
             }
         }

@@ -25,7 +25,8 @@ Vim navigation
   0 / $  Move to the start / end of the grid row
   gg / G  Jump to the first / last entry
   [count]gg / [count]G  Jump to a display position
-  H / M / L  Jump to the viewport top / middle / bottom
+  [count]H/L  Jump to rows from the viewport top/bottom
+  M  Jump to the viewport middle
   [count]Ctrl+D/U  Move down / up by half a page
 
 Selection and file operations

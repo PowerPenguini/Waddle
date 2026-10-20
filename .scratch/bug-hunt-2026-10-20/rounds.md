@@ -136,3 +136,19 @@ pushes `main`. No release or installation is included.
   a camera-style rotated JPEG. The complete parallel all-target suite passed:
   812 passed, 26 ignored. All 13 thumbnail tests passed again after a test-only
   Clippy correction. Locked strict Clippy, formatting, and whitespace checks pass.
+
+## Round 8: counted viewport jumps discard their counts
+
+- The local counted Browser key grammar ticket promises counts for supported
+  viewport motions. The parser forwarded counts for H/L, but targeting ignored
+  them.
+- Red: `cargo test --locked counted_viewport_jumps_choose_rows_from_each_visible_edge`
+  returned index 9 for 2H instead of index 12, even without a prior selection.
+- Fix: offset H/L by the requested row count from the corresponding visible edge,
+  clamping large counts inside the viewport. M retains the midpoint behavior.
+  The built-in help now documents counted H/L explicitly.
+- Green: both views pass with/without selection and counts 1, 2, and 10,000.
+  The real keyboard/Iced regression also exercises 2H/2L and verifies they issue
+  no scrolling commands. All-target parallel tests passed: 813 passed, 26 ignored.
+  All three vendored scrollbar regressions, locked strict Clippy, formatting,
+  and whitespace checks passed. Help remains within its tested 64-column limit.
