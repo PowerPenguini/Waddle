@@ -82,3 +82,24 @@ pushes `main`. No release or installation is included.
   a locked debug build, and isolated FileManager1 activation smoke testing passed.
 - This fixes the reproduced ownership violation. Without the old core, the
   historical segmentation fault cannot be conclusively attributed to it.
+
+## Round 5: viewport jumps select offscreen files and move the viewport
+
+- Reproduction: issue H/M/L against scrolled grids and lists at small, default,
+  and large icon sizes. The first regression selected a row above the viewport.
+  A real-keyboard/Iced-operation regression also detected an unwanted scroll.
+- Red: the geometry regression returned index 6 instead of 9 for H. The input
+  regression found a scroll-to-top command after an otherwise valid target.
+  With no selection, the keyboard path instead chose the first file.
+- Cause: viewport motions used the renderer's overscan range, always calculated
+  with grid tile height. The generic motion caller then aligned the selected
+  target at the top. The no-selection path bypassed viewport targeting entirely.
+- Fix: calculate actual visible entry bounds using the current view's row height,
+  excluding overscan and rows with only their spacing visible. Resolve viewport
+  jumps even without an existing selection. Cancel pending scroll motion and
+  keep the viewport in place when H/M/L changes the active file.
+- Green: tests cover both views, three icon sizes, full and partial rows, spacing
+  at the top edge, empty selection, and real keyboard/Iced scroll operations.
+  Two older expectations were corrected because they asserted overscan targets.
+  All-target parallel tests passed: 809 passed, 26 ignored. Locked strict Clippy,
+  formatting, and whitespace checks passed.

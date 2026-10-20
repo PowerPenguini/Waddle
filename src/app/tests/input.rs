@@ -1115,3 +1115,87 @@ fn block_shortcut_ignores_sidebar_and_text_editors() {
     assert_eq!(app.browser_input.mode(), InputMode::Location);
     assert!(!app.grid.visual_active());
 }
+
+#[test]
+fn viewport_jump_keys_select_visible_files_without_scrolling_the_view() {
+    use iced::advanced::widget::operation::scrollable::{
+        AbsoluteOffset, RelativeOffset, Scrollable,
+    };
+    use iced::futures::StreamExt;
+
+    #[derive(Default)]
+    struct ScrollCommands(usize);
+    impl Scrollable for ScrollCommands {
+        fn snap_to(&mut self, _: RelativeOffset<Option<f32>>) {
+            self.0 += 1;
+        }
+        fn scroll_to(&mut self, _: AbsoluteOffset<Option<f32>>) {
+            self.0 += 1;
+        }
+        fn scroll_by(&mut self, _: AbsoluteOffset, _: iced::Rectangle, _: iced::Rectangle) {
+            self.0 += 1;
+        }
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for list in [false, true] {
+                let (mut app, _) = App::new();
+                app.navigation.settle_for_test();
+                app.navigation.install_folder_entries(
+                    (0..200)
+                        .map(|index| entry(&format!("file-{index}")))
+                        .collect(),
+                );
+                app.focus_browser(BrowserFocus::Entries);
+                app.grid.set_list_mode(list);
+                app.grid.set_icon_size(48);
+                app.grid.set_sidebar_visible(true);
+                let row_height = if list {
+                    LIST_ROW_HEIGHT
+                } else {
+                    TILE_ROW_HEIGHT
+                };
+                let top = TOOLBAR_HEIGHT
+                    + TOOLBAR_DIVIDER_HEIGHT
+                    + LIST_VIEW_TOP_INSET
+                    + LIST_HEADER_HEIGHT;
+                let status = app.status_height();
+                app.grid
+                    .resize(iced::Size::new(584.0, top + status + row_height * 4.0));
+                app.grid.set_scroll(row_height * 3.0);
+                app.grid.select_only(Some(0), 200);
+                let columns = if list { 1 } else { 3 };
+                for (key, expected) in [
+                    ("H", 3 * columns),
+                    ("M", 5 * columns - 1),
+                    ("L", 7 * columns - 1),
+                ] {
+                    let mut commands = ScrollCommands::default();
+                    let key = keyboard::Key::Character(key.into());
+                    let task = app.handle_key(key.clone(), key, keyboard::Modifiers::empty(), None);
+                    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+                        while let Some(action) = stream.next().await {
+                            if let iced_runtime::Action::Widget(mut operation) = action {
+                                operation.scrollable(
+                                    Some(&widget::Id::new(GRID_SCROLL_ID)),
+                                    iced::Rectangle::default(),
+                                    iced::Rectangle::default(),
+                                    iced::Vector::ZERO,
+                                    &mut commands,
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(app.grid.selected_entry(), Some(expected));
+                    assert_eq!(
+                        commands.0, 0,
+                        "a viewport jump scrolled its target to the top"
+                    );
+                }
+            }
+        });
+}

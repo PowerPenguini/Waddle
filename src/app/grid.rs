@@ -835,20 +835,18 @@ impl GridInteraction {
         let last = entry_count - 1;
         let Some(current) = self.selected else {
             let next = match motion {
-                Motion::Left
-                | Motion::Up
-                | Motion::RowEnd
-                | Motion::Last
-                | Motion::ViewportBottom
-                | Motion::HalfPageUp => last,
+                Motion::Left | Motion::Up | Motion::RowEnd | Motion::Last | Motion::HalfPageUp => {
+                    last
+                }
                 Motion::DisplayIndex(index) => index.min(last),
                 Motion::Down
                 | Motion::Right
                 | Motion::RowStart
                 | Motion::First
-                | Motion::ViewportTop
-                | Motion::ViewportMiddle
                 | Motion::HalfPageDown => 0,
+                Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom => {
+                    self.motion_target(0, motion, count.max(1), entry_count, status_height)
+                }
             };
             self.selected = Some(next);
             self.update_keyboard_selection();
@@ -888,13 +886,11 @@ impl GridInteraction {
             Motion::Last => last,
             Motion::DisplayIndex(index) => index.min(last),
             Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom => {
-                let visible = self.visible_range(entry_count, status_height);
+                let visible = self.viewport_entry_range(entry_count, status_height);
                 let anchor = match motion {
-                    Motion::ViewportTop => visible.first_index,
-                    Motion::ViewportMiddle => {
-                        (visible.first_index + visible.last_index.saturating_sub(1)) / 2
-                    }
-                    Motion::ViewportBottom => visible.last_index.saturating_sub(1),
+                    Motion::ViewportTop => visible.start,
+                    Motion::ViewportMiddle => (visible.start + visible.end.saturating_sub(1)) / 2,
+                    Motion::ViewportBottom => visible.end.saturating_sub(1),
                     _ => unreachable!(),
                 };
                 anchor.min(last)
@@ -1113,6 +1109,29 @@ impl GridInteraction {
         } else {
             self.scroll_y
         }
+    }
+
+    fn viewport_entry_range(
+        &self,
+        entry_count: usize,
+        status_height: f32,
+    ) -> std::ops::Range<usize> {
+        let columns = self.columns();
+        let row_height = self.row_height();
+        let total_rows = entry_count.div_ceil(columns);
+        let viewport =
+            (self.window_size.height - self.entries_top() - status_height).max(row_height);
+        let maximum = (total_rows as f32 * row_height - viewport).max(0.0);
+        let scroll = self.scroll_y.clamp(0.0, maximum);
+        let entry_height = if self.list_mode {
+            row_height
+        } else {
+            self.tile_height()
+        };
+        // A row ending above the viewport can leave only its spacing visible.
+        let first_row = ((scroll + row_height - entry_height) / row_height).floor() as usize;
+        let last_row = ((scroll + viewport) / row_height).ceil() as usize;
+        first_row * columns..last_row.saturating_mul(columns).min(entry_count)
     }
 
     pub(super) fn visible_range(&self, entry_count: usize, status_height: f32) -> VisibleRange {
@@ -1908,6 +1927,65 @@ mod tests {
     }
 
     #[test]
+    fn viewport_motions_target_visible_entries_in_both_views_across_icon_sizes() {
+        for list in [false, true] {
+            for icon_size in [24, 48, 128] {
+                for (scroll_rows, first_row, last_row) in [
+                    (3.0, 3, 6),
+                    (3.5, 3, 7),
+                    (3.99, if list { 3 } else { 4 }, 7),
+                ] {
+                    let mut grid = grid();
+                    grid.set_list_mode(list);
+                    grid.set_icon_size(icon_size);
+                    let row_height = grid.row_height();
+                    let top = grid.entries_top();
+                    let status_height = 25.0;
+                    grid.resize(Size::new(584.0, top + status_height + row_height * 4.0));
+                    grid.set_scroll(row_height * scroll_rows);
+                    let columns = grid.columns();
+                    let first = first_row * columns;
+                    let last = (last_row + 1) * columns - 1;
+                    for (motion, expected) in [
+                        (Motion::ViewportTop, first),
+                        (Motion::ViewportMiddle, (first + last) / 2),
+                        (Motion::ViewportBottom, last),
+                    ] {
+                        grid.select_only(Some(0), 200);
+                        let selected = grid
+                            .move_selection_count(motion, 1, 200, status_height)
+                            .unwrap();
+                        assert_eq!(
+                            selected, expected,
+                            "{motion:?}, list={list}, size={icon_size}, scroll={scroll_rows}"
+                        );
+                        let bounds = grid.entry_bounds(selected);
+                        assert!(bounds.y + bounds.height > top);
+                        assert!(bounds.y < grid.window_size.height - status_height);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn viewport_motions_without_selection_use_the_current_viewport() {
+        let mut grid = grid();
+        grid.set_scroll(TILE_ROW_HEIGHT * 2.0);
+        for (motion, expected) in [
+            (Motion::ViewportTop, 6),
+            (Motion::ViewportMiddle, 11),
+            (Motion::ViewportBottom, 17),
+        ] {
+            grid.select_only(None, 60);
+            assert_eq!(
+                grid.move_selection_count(motion, 1, 60, 25.0),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn counted_absolute_and_viewport_motions_use_display_order() {
         let mut grid = grid();
         grid.select_only(Some(1), 60);
@@ -1932,7 +2010,7 @@ mod tests {
         grid.set_scroll(TILE_ROW_HEIGHT * 2.0);
         assert_eq!(
             grid.move_selection_count(Motion::ViewportTop, 1, 60, 25.0),
-            Some(3)
+            Some(6)
         );
         assert_eq!(
             grid.move_selection_count(Motion::ViewportMiddle, 1, 60, 25.0),
@@ -1940,7 +2018,7 @@ mod tests {
         );
         assert_eq!(
             grid.move_selection_count(Motion::ViewportBottom, 1, 60, 25.0),
-            Some(20)
+            Some(17)
         );
         grid.select_only(Some(10), 60);
         assert_eq!(

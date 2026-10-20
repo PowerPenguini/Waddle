@@ -463,6 +463,13 @@ impl App {
             self.navigation.entries().len(),
             self.status_height(),
         );
+        if matches!(
+            motion,
+            Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom
+        ) {
+            self.grid.cancel_scroll(ScrollTarget::Entries);
+            return self.schedule_details();
+        }
         Task::batch([
             self.schedule_details(),
             self.scroll_to_selected_with(motion.is_directional()),
