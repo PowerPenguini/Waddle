@@ -6,6 +6,7 @@ use iced::advanced::{
     renderer::Headless,
     widget::{Operation, Tree},
 };
+use iced::futures::StreamExt;
 use iced::{Point, Rectangle, Size};
 use std::collections::BTreeSet;
 
@@ -18,6 +19,109 @@ impl Operation for TextBounds {
     fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
         self.0.push((text.to_owned(), bounds));
     }
+}
+
+#[derive(Default)]
+struct SidebarBounds {
+    viewport: Rectangle,
+    translation: iced::Vector,
+    texts: Vec<(String, Rectangle)>,
+}
+impl Operation for SidebarBounds {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        translation: iced::Vector,
+        _: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(SIDEBAR_SCROLL_ID)) {
+            self.viewport = bounds;
+            self.translation = translation;
+        }
+    }
+    fn text(&mut self, _: Option<&Id>, mut bounds: Rectangle, text: &str) {
+        bounds.x -= self.translation.x;
+        bounds.y -= self.translation.y;
+        self.texts.push((text.to_owned(), bounds));
+    }
+}
+async fn assert_sidebar_focus_visible(
+    app: &App,
+    task: iced::Task<Message>,
+    renderer: &iced::Renderer,
+    state: &mut Option<Tree>,
+    window: Size,
+) {
+    let focused = app
+        .sidebar_tree
+        .rows(app.navigation.current())
+        .into_iter()
+        .find(|row| row.focused)
+        .unwrap();
+    let mut body = View::new(app).sidebar();
+    let state = state.get_or_insert_with(|| Tree::new(body.as_widget()));
+    state.diff(body.as_widget());
+    let node =
+        body.as_widget_mut()
+            .layout(state, renderer, &layout::Limits::new(Size::ZERO, window));
+    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+        while let Some(action) = stream.next().await {
+            if let iced_runtime::Action::Widget(mut operation) = action {
+                body.as_widget_mut().operate(
+                    state,
+                    Layout::new(&node),
+                    renderer,
+                    operation.as_mut(),
+                );
+            }
+        }
+    }
+    let mut observed = SidebarBounds::default();
+    body.as_widget_mut()
+        .operate(state, Layout::new(&node), renderer, &mut observed);
+    let (_, focused_bounds) = observed
+        .texts
+        .iter()
+        .find(|(label, _)| label == &focused.label)
+        .unwrap();
+    assert!(observed.viewport.height > 0.0);
+    assert!(
+        focused_bounds.y >= observed.viewport.y
+            && focused_bounds.y + focused_bounds.height
+                <= observed.viewport.y + observed.viewport.height + 0.1,
+        "keyboard focus {focused_bounds:?} is outside sidebar viewport {:?}",
+        observed.viewport
+    );
+}
+
+fn sidebar_navigation_fixture(directory: &std::path::Path) -> App {
+    let locations = (0..30)
+        .map(|index| {
+            let label = format!("place-{index:02}");
+            let path = directory.join(&label);
+            std::fs::create_dir(&path).unwrap();
+            super::super::places::Entry {
+                path,
+                label,
+                kind: tree::NodeKind::Favorite,
+                favorite_index: Some(index),
+            }
+        })
+        .collect();
+    let (mut app, _) = App::new();
+    app.view_preferences =
+        super::super::view_preferences::Preferences::empty_at(directory.join("waddlerc"));
+    app.navigation = super::super::navigation::NavigationSession::new(directory.to_path_buf());
+    app.navigation.settle_for_test();
+    app.sidebar_tree = super::super::tree::SidebarTree::new(Vec::new());
+    app.sidebar_tree.install_locations(locations);
+    app.focus_browser(BrowserFocus::Sidebar);
+    app
 }
 
 fn tile_bounds(layout: Layout<'_>, size: Size, tiles: &mut Vec<Rectangle>) {
@@ -492,86 +596,6 @@ fn long_type_labels_do_not_draw_over_neighboring_list_columns() {
 #[test]
 #[ignore = "requires a headless wgpu adapter"]
 fn keyboard_sidebar_navigation_keeps_the_focused_row_visible() {
-    use iced::futures::StreamExt;
-
-    #[derive(Default)]
-    struct SidebarBounds {
-        viewport: Rectangle,
-        translation: iced::Vector,
-        texts: Vec<(String, Rectangle)>,
-    }
-    impl Operation for SidebarBounds {
-        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-            operate(self);
-        }
-        fn scrollable(
-            &mut self,
-            id: Option<&Id>,
-            bounds: Rectangle,
-            _: Rectangle,
-            translation: iced::Vector,
-            _: &mut dyn iced::advanced::widget::operation::Scrollable,
-        ) {
-            if id == Some(&Id::new(SIDEBAR_SCROLL_ID)) {
-                self.viewport = bounds;
-                self.translation = translation;
-            }
-        }
-        fn text(&mut self, _: Option<&Id>, mut bounds: Rectangle, text: &str) {
-            bounds.x -= self.translation.x;
-            bounds.y -= self.translation.y;
-            self.texts.push((text.to_owned(), bounds));
-        }
-    }
-    async fn assert_visible(
-        app: &App,
-        task: iced::Task<Message>,
-        renderer: &iced::Renderer,
-        state: &mut Option<Tree>,
-        window: Size,
-    ) {
-        let focused = app
-            .sidebar_tree
-            .rows(app.navigation.current())
-            .into_iter()
-            .find(|row| row.focused)
-            .unwrap();
-        let mut body = View::new(app).sidebar();
-        let state = state.get_or_insert_with(|| Tree::new(body.as_widget()));
-        state.diff(body.as_widget());
-        let node =
-            body.as_widget_mut()
-                .layout(state, renderer, &layout::Limits::new(Size::ZERO, window));
-        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
-            while let Some(action) = stream.next().await {
-                if let iced_runtime::Action::Widget(mut operation) = action {
-                    body.as_widget_mut().operate(
-                        state,
-                        Layout::new(&node),
-                        renderer,
-                        operation.as_mut(),
-                    );
-                }
-            }
-        }
-        let mut observed = SidebarBounds::default();
-        body.as_widget_mut()
-            .operate(state, Layout::new(&node), renderer, &mut observed);
-        let (_, focused_bounds) = observed
-            .texts
-            .iter()
-            .find(|(label, _)| label == &focused.label)
-            .unwrap();
-        assert!(observed.viewport.height > 0.0);
-        assert!(
-            focused_bounds.y >= observed.viewport.y
-                && focused_bounds.y + focused_bounds.height
-                    <= observed.viewport.y + observed.viewport.height + 0.1,
-            "keyboard focus {focused_bounds:?} is outside sidebar viewport {:?}",
-            observed.viewport
-        );
-    }
-
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -585,28 +609,7 @@ fn keyboard_sidebar_navigation_keeps_the_focused_row_visible() {
             .await
             .expect("headless wgpu adapter");
             let temp = tempfile::tempdir().unwrap();
-            let locations = (0..30)
-                .map(|index| {
-                    let label = format!("place-{index:02}");
-                    let path = temp.path().join(&label);
-                    std::fs::create_dir(&path).unwrap();
-                    super::super::places::Entry {
-                        path,
-                        label,
-                        kind: tree::NodeKind::Favorite,
-                        favorite_index: Some(index),
-                    }
-                })
-                .collect();
-            let (mut app, _) = App::new();
-            app.view_preferences =
-                super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
-            app.navigation =
-                super::super::navigation::NavigationSession::new(temp.path().to_path_buf());
-            app.navigation.settle_for_test();
-            app.sidebar_tree = super::super::tree::SidebarTree::new(Vec::new());
-            app.sidebar_tree.install_locations(locations);
-            app.focus_browser(BrowserFocus::Sidebar);
+            let mut app = sidebar_navigation_fixture(temp.path());
             let window = Size::new(700.0, 420.0);
             app.grid.resize(window);
             let mut state = None;
@@ -627,7 +630,63 @@ fn keyboard_sidebar_navigation_keeps_the_focused_row_visible() {
                         Some(text),
                     );
                 }
-                assert_visible(&app, task, &renderer, &mut state, window).await;
+                assert_sidebar_focus_visible(&app, task, &renderer, &mut state, window).await;
+            }
+        });
+}
+
+#[test]
+#[ignore = "requires a headless wgpu adapter"]
+fn entering_sidebar_focus_reveals_its_remembered_offscreen_row() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let renderer = <iced::Renderer as Headless>::new(
+                iced::Font::DEFAULT,
+                iced::Pixels(14.0),
+                Some("wgpu"),
+            )
+            .await
+            .expect("headless wgpu adapter");
+            for shortcut in ["Tab", "Shift+Tab", "Ctrl+W h"] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut app = sidebar_navigation_fixture(temp.path());
+                let window = Size::new(700.0, 420.0);
+                app.grid.resize(window);
+                // Remember a row below the viewport, then focus files. The sidebar
+                // is at its initial scroll position, as after scrolling it to the top.
+                drop(app.move_sidebar(Motion::Last, 1));
+                let remembered = app.sidebar_tree.focused_id().unwrap();
+                app.focus_browser(BrowserFocus::Entries);
+                let task = if shortcut == "Ctrl+W h" {
+                    let key = iced::keyboard::Key::Character("w".into());
+                    drop(app.handle_key(
+                        key.clone(),
+                        key,
+                        iced::keyboard::Modifiers::CTRL,
+                        Some("w"),
+                    ));
+                    let key = iced::keyboard::Key::Character("h".into());
+                    app.handle_key(
+                        key.clone(),
+                        key,
+                        iced::keyboard::Modifiers::empty(),
+                        Some("h"),
+                    )
+                } else {
+                    let modifiers = if shortcut == "Shift+Tab" {
+                        iced::keyboard::Modifiers::SHIFT
+                    } else {
+                        iced::keyboard::Modifiers::empty()
+                    };
+                    let key = iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab);
+                    app.handle_key(key.clone(), key, modifiers, None)
+                };
+                assert!(app.focus.is(BrowserFocus::Sidebar));
+                assert_eq!(app.sidebar_tree.focused_id(), Some(remembered));
+                assert_sidebar_focus_visible(&app, task, &renderer, &mut None, window).await;
             }
         });
 }

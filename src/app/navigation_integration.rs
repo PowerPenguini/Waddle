@@ -807,7 +807,10 @@ impl App {
         }
     }
 
-    fn reveal_sidebar_cursor(&mut self) -> Task<Message> {
+    pub(super) fn reveal_sidebar_cursor(&mut self) -> Task<Message> {
+        if !self.focus.is(super::BrowserFocus::Sidebar) {
+            return Task::none();
+        }
         let Some((mut row, height)) = self
             .sidebar_tree
             .focused_row_bounds(self.navigation.current())

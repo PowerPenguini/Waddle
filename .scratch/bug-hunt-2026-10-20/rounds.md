@@ -439,3 +439,19 @@ pushes `main`. No release or installation is included.
   pass, including the keyboard reveal behavior from round 25.
 - All-target parallel tests pass: 827 passed, 31 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 27: transferring focus into the sidebar does not reveal its cursor
+
+- Red: remember a Favorite below the sidebar viewport while file entries have
+  focus, then press Tab. Focus transfers to the sidebar and retains its cursor,
+  but the label remains at y=1240 outside the y=38..412 viewport.
+- Fix: apply the existing sidebar reveal operation after keyboard focus transfer.
+  Skip the operation when the resulting focus is outside the sidebar.
+- Green: an explicit headless renderer regression covers Tab, Shift+Tab, and
+  Ctrl+W h, applies the actual Iced widget operations, verifies the remembered
+  cursor is preserved, and checks its label lies inside the actual viewport.
+  Shared sidebar fixtures/geometry observers also keep the movement regression
+  from round 25 intact. All seven grid/sidebar renderer regressions pass.
+- All-target parallel tests pass: 827 passed, 32 ignored. The new opt-in GPU
+  regression was explicitly executed. Locked strict Clippy, formatting, and
+  whitespace checks pass.

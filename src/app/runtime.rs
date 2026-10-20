@@ -1079,11 +1079,11 @@ impl App {
             InputIntent::BeginLocation => self.begin_location(),
             InputIntent::MoveFocus { reverse } => {
                 self.move_browser_focus(reverse);
-                Task::none()
+                self.reveal_sidebar_cursor()
             }
             InputIntent::MoveFocusIn(direction) => {
                 self.move_browser_focus_in(direction);
-                Task::none()
+                self.reveal_sidebar_cursor()
             }
             InputIntent::CompleteCommand => {
                 if !self.command.complete_setting() {
