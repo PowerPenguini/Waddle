@@ -283,3 +283,19 @@ pushes `main`. No release or installation is included.
   formatting, whitespace, the development build, and isolated FileManager1
   activation smoke test pass. A test-only unnecessary clone was corrected and
   the affected fixture rerun after Clippy identified it.
+
+## Round 17: sidebar folder labels expand past one line
+
+- Red: render an actual Favorite row for a real folder containing a newline.
+  The label occupies 30 pixels inside its fixed-height row instead of one
+  16-pixel line, clipping the name.
+- Fix: escape control characters and Unicode line/paragraph separators before
+  shortening sidebar labels. Keep the original Tree row label and path intact.
+- Green: the explicit headless wgpu regression covers LF, CR, VT, FF, NEL, and
+  Unicode line/paragraph separators, verifies label geometry and model labels,
+  and confirms the real folder remains present. All four grid/sidebar renderer
+  regressions pass. The text-bounds observer is shared between the List and
+  sidebar tests instead of duplicated.
+- All-target parallel tests pass: 818 passed, 29 ignored. The new opt-in GPU
+  regression was explicitly executed. Locked strict Clippy, formatting, and
+  whitespace checks pass.

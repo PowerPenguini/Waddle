@@ -42,7 +42,10 @@ fn clip_tree_label(label: &str, depth: usize) -> String {
     let max_characters = TREE_LABEL_ROOT_MAX_CHARACTERS
         .saturating_sub(depth.saturating_mul(TREE_LABEL_DEPTH_CHARACTER_COST))
         .max(TREE_LABEL_MIN_CHARACTERS);
-    clip_file_name(label, max_characters)
+    clip_file_name(
+        &super::presentation::single_line_text(label),
+        max_characters,
+    )
 }
 
 fn scrolled(target: ScrollTarget, viewport: scrollable::Viewport) -> Message {

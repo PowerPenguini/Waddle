@@ -1,9 +1,24 @@
 use super::*;
 use crate::app::Motion;
 use iced::advanced::Renderer as _;
-use iced::advanced::{Layout, layout, renderer::Headless, widget::Tree};
+use iced::advanced::{
+    Layout, layout,
+    renderer::Headless,
+    widget::{Operation, Tree},
+};
 use iced::{Point, Rectangle, Size};
 use std::collections::BTreeSet;
+
+#[derive(Default)]
+struct TextBounds(Vec<(String, Rectangle)>);
+impl Operation for TextBounds {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+    fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
+        self.0.push((text.to_owned(), bounds));
+    }
+}
 
 fn tile_bounds(layout: Layout<'_>, size: Size, tiles: &mut Vec<Rectangle>) {
     let bounds = layout.bounds();
@@ -251,19 +266,6 @@ fn visual_block_rendered_layout_matches_selected_tiles() {
 #[test]
 #[ignore = "requires a headless wgpu adapter"]
 fn filenames_with_line_breaks_keep_list_cells_on_one_line() {
-    use iced::advanced::widget::Operation;
-
-    #[derive(Default)]
-    struct TextBounds(Vec<(String, Rectangle)>);
-    impl Operation for TextBounds {
-        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-            operate(self);
-        }
-        fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
-            self.0.push((text.to_owned(), bounds));
-        }
-    }
-
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -327,6 +329,75 @@ fn filenames_with_line_breaks_keep_list_cells_on_one_line() {
                     assert_eq!(std::fs::read_to_string(&path).unwrap(), "contents");
                     assert_eq!(app.navigation.entries()[0].path, path);
                 }
+            }
+        });
+}
+
+#[test]
+#[ignore = "requires a headless wgpu adapter"]
+fn sidebar_folder_labels_with_line_breaks_fit_one_line() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let renderer = <iced::Renderer as Headless>::new(
+                iced::Font::DEFAULT,
+                iced::Pixels(14.0),
+                Some("wgpu"),
+            )
+            .await
+            .expect("headless wgpu adapter");
+            for name in [
+                "first\nsecond",
+                "first\rsecond",
+                "first\u{2028}second",
+                "first\u{2029}second",
+                "first\u{b}second",
+                "first\u{c}second",
+                "first\u{85}second",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join(name);
+                std::fs::create_dir(&path).unwrap();
+                let (mut app, _) = App::new();
+                app.sidebar_tree
+                    .install_locations(vec![super::super::places::Entry {
+                        path: path.clone(),
+                        label: name.to_owned(),
+                        kind: tree::NodeKind::Favorite,
+                        favorite_index: Some(0),
+                    }]);
+                let entry = app
+                    .sidebar_tree
+                    .rows(temp.path())
+                    .into_iter()
+                    .find(|entry| entry.path.as_ref() == Some(&path))
+                    .unwrap();
+                assert_eq!(entry.label, name);
+                let mut row = View::new(&app).tree_row(entry);
+                let mut state = Tree::new(row.as_widget());
+                let node = row.as_widget_mut().layout(
+                    &mut state,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, Size::new(SIDEBAR_WIDTH, 100.0)),
+                );
+                let mut texts = TextBounds::default();
+                row.as_widget_mut()
+                    .operate(&mut state, Layout::new(&node), &renderer, &mut texts);
+                let (text, bounds) = texts
+                    .0
+                    .iter()
+                    .find(|(text, _)| text.starts_with("first"))
+                    .unwrap();
+                assert!(
+                    bounds.height <= 16.1,
+                    "sidebar label {text:?} spans multiple lines: {}",
+                    bounds.height
+                );
+                assert!(!text.chars().any(|character| character.is_control()
+                    || matches!(character, '\u{2028}' | '\u{2029}')));
+                assert!(path.is_dir());
             }
         });
 }
