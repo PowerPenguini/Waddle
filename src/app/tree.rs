@@ -789,13 +789,10 @@ impl SidebarTree {
 }
 
 fn volume_roots() -> Vec<VolumeRoot> {
-    let context = gio::glib::MainContext::default();
-    if let Ok(_guard) = context.acquire() {
-        while context.pending() {
-            context.iteration(false);
-        }
-    }
-    let monitor = gio::VolumeMonitor::get();
+    super::desktop_volumes::query(volume_roots_from_monitor).unwrap_or_default()
+}
+
+fn volume_roots_from_monitor(monitor: &gio::VolumeMonitor) -> Vec<VolumeRoot> {
     let mut roots = monitor
         .volumes()
         .into_iter()
@@ -948,6 +945,128 @@ fn invalidate_folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_volume_queries_share_one_thread_and_the_default_context() {
+        const TRACE: &str = "WADDLE_VOLUME_MONITOR_TRACE";
+        let Some(trace) = std::env::var_os(TRACE) else {
+            let fixture = tempfile::tempdir().unwrap();
+            let source = fixture.path().join("volume_trace.c");
+            let library = fixture.path().join("volume_trace.so");
+            let trace = fixture.path().join("calls.log");
+            std::fs::write(
+                &source,
+                r#"#define _GNU_SOURCE
+#include <gio/gio.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+GVolumeMonitor *g_volume_monitor_get(void) {
+    GVolumeMonitor *(*original)(void) = dlsym(RTLD_NEXT, "g_volume_monitor_get");
+    FILE *trace = fopen(getenv("WADDLE_VOLUME_MONITOR_TRACE"), "a");
+    if (trace) {
+        fprintf(trace, "%lu %d\n", (unsigned long)pthread_self(),
+                g_main_context_get_thread_default() != NULL);
+        fclose(trace);
+    }
+    return original();
+}
+"#,
+            )
+            .unwrap();
+            let flags = std::process::Command::new("pkg-config")
+                .args(["--cflags", "--libs", "gio-2.0"])
+                .output()
+                .unwrap();
+            assert!(flags.status.success());
+            let compiled = std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&library)
+                .arg(&source)
+                .args(String::from_utf8(flags.stdout).unwrap().split_whitespace())
+                .args(["-ldl", "-pthread"])
+                .output()
+                .unwrap();
+            assert!(
+                compiled.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::tree::tests::native_volume_queries_share_one_thread_and_the_default_context",
+                    "--nocapture",
+                ])
+                .env(TRACE, &trace)
+                .env("LD_PRELOAD", library)
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+            let calls = std::fs::read_to_string(trace).unwrap();
+            let mut owners = std::collections::HashSet::new();
+            for call in calls.lines() {
+                let (thread, has_thread_context) = call.split_once(' ').unwrap();
+                owners.insert(thread);
+                assert_eq!(
+                    has_thread_context, "0",
+                    "volume monitoring used a private thread context: {calls}"
+                );
+            }
+            assert!(
+                !owners.is_empty(),
+                "the fixture did not observe native volume discovery"
+            );
+            assert_eq!(
+                owners.len(),
+                1,
+                "native volume discovery ran on different threads: {calls}"
+            );
+            return;
+        };
+        // Keep callers alive together, but invoke each path in turn so the
+        // regression observes thread ownership without relying on a crash race.
+        let turn = std::sync::atomic::AtomicUsize::new(0);
+        let finished = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for index in 0..4 {
+                let turn = &turn;
+                let finished = &finished;
+                let missing = PathBuf::from(&trace).join("nonexistent-waddle-volume");
+                scope.spawn(move || {
+                    while turn.load(std::sync::atomic::Ordering::Acquire) != index {
+                        std::thread::yield_now();
+                    }
+                    match index {
+                        0 => {
+                            let _ = volume_roots();
+                        }
+                        1 => {
+                            assert!(places::mount_volume(missing.to_str().unwrap()).is_err());
+                        }
+                        2 => {
+                            assert!(places::unmount_volume(missing.to_str().unwrap()).is_err());
+                        }
+                        3 => {
+                            assert!(
+                                places::run_volume_command(&format!("mount {}", missing.display()))
+                                    .is_err()
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    turn.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    finished.wait();
+                });
+            }
+        });
+    }
 
     #[test]
     fn unmounted_volume_is_visible_and_activates_mount_before_navigation() {

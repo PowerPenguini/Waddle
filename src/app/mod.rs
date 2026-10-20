@@ -1,6 +1,7 @@
 mod bottom_bar;
 mod browser_input;
 mod command;
+mod desktop_volumes;
 mod diagnostics;
 mod directory_watch;
 mod drag_hover;

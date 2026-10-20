@@ -57,3 +57,28 @@ pushes `main`. No release or installation is included.
 - All-target tests passed sequentially: 804 passed, 26 ignored. Locked strict
   Clippy, formatting, whitespace checks, the locked debug build, and isolated
   FileManager1 activation smoke testing passed.
+
+## Round 4: volume monitoring crosses threads and private contexts
+
+- The historical core mentioned in the September follow-up is unavailable on
+  this host. Resource inspection showed available memory; no new crash was
+  needed to reproduce the current ownership violation.
+- Reproduction: an isolated native-call trace exercises Sidebar discovery,
+  mount-by-ID, unmount-by-ID, and a named volume command from separate callers.
+  Missing synthetic IDs/names prevent actual device mutations.
+- Red: `cargo test --locked native_volume_queries_share_one_thread_and_the_default_context`
+  detected volume discovery inside a private thread-default GLib context.
+- Cause: the application and its workers independently acquired GVolumeMonitor,
+  including under private MainContexts. Installed GIO documentation requires
+  volume monitoring on the main thread with the global default context.
+- Fix: one persistent desktop thread owns the default context, the monitor, and
+  its objects. Queries return plain data through channels. Async volume actions
+  run on that context while the owner continues processing queries and events.
+- Green: the native trace observes one owner and no private context. A separate
+  regression keeps a non-Send async operation pending, verifies queries still
+  complete, then verifies the operation resumes on its original owner.
+- The complete parallel all-target suite passed 21 consecutive runs, each with
+  806 passed and 26 ignored. Locked strict Clippy, formatting, whitespace checks,
+  a locked debug build, and isolated FileManager1 activation smoke testing passed.
+- This fixes the reproduced ownership violation. Without the old core, the
+  historical segmentation fault cannot be conclusively attributed to it.

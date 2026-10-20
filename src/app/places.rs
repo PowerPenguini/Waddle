@@ -314,9 +314,7 @@ async fn mount_volume_object(
 
 pub(super) fn mount_volume(id: &str) -> Result<MountedVolume, String> {
     let id = id.to_owned();
-    let context = gio::glib::MainContext::new();
-    context.block_on(async move {
-        let monitor = gio::VolumeMonitor::get();
+    super::desktop_volumes::operate(move |monitor| async move {
         let volume = monitor
             .volumes()
             .into_iter()
@@ -330,9 +328,7 @@ pub(super) fn mount_volume(id: &str) -> Result<MountedVolume, String> {
 
 pub(super) fn unmount_volume(id: &str) -> Result<(), String> {
     let id = id.to_owned();
-    let context = gio::glib::MainContext::new();
-    context.block_on(async move {
-        let monitor = gio::VolumeMonitor::get();
+    super::desktop_volumes::operate(move |monitor| async move {
         let mount = monitor
             .volumes()
             .into_iter()
@@ -382,9 +378,7 @@ fn parse_volume_action(arguments: &str) -> Result<(VolumeAction, String), String
 
 pub(super) fn run_volume_command(arguments: &str) -> Result<String, String> {
     let (action, name) = parse_volume_action(arguments)?;
-    let context = gio::glib::MainContext::new();
-    context.block_on(async move {
-        let monitor = gio::VolumeMonitor::get();
+    super::desktop_volumes::operate(move |monitor| async move {
         let operation = gio::MountOperation::new();
         operation.set_password_save(gio::PasswordSave::ForSession);
         match action {
