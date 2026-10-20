@@ -205,3 +205,19 @@ pushes `main`. No release or installation is included.
   resynchronization, and continued native updates after dropping one alias.
   It passes ten consecutive runs. All-target parallel tests pass: 815 passed,
   27 ignored. Locked strict Clippy, formatting, and whitespace checks pass.
+
+## Round 12: Cut remains pending after its parent moves externally
+
+- Red: Cut a real file, navigate elsewhere, wait for native source monitoring,
+  then rename the whole source folder externally. The App receives the native
+  event but continues offering Paste from the nonexistent original child path.
+- Cause: an inotify self-move/self-delete event has no child filename, and Cut
+  reconciliation previously considered only exact named-child removal paths.
+- Fix: include the vanished watched folder as a removal candidate, and consider
+  captured Cut paths beneath that candidate. Confirm absence before clearing any
+  item, preserving unrelated paths and paths that have reappeared.
+- Green: the App/native inotify regression clears the stale Cut and verifies the
+  externally moved contents. It passes ten consecutive runs. A second real-file
+  regression retains both a sibling path and a recreated path after an ancestor
+  move. All-target parallel tests pass: 817 passed, 27 ignored. Locked strict
+  Clippy, formatting, and whitespace checks pass.

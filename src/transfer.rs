@@ -356,7 +356,11 @@ impl TransferState {
         let before = payload.paths.len();
         let removed_paths: HashSet<&Path> = removed.iter().map(PathBuf::as_path).collect();
         payload.paths.retain(|path| {
-            !removed_paths.contains(path.as_path())
+            // A watched ancestor can move as a whole without individual child
+            // events. Only probe paths affected by a confirmed removal event.
+            !path
+                .ancestors()
+                .any(|ancestor| removed_paths.contains(ancestor))
                 || match std::fs::symlink_metadata(path) {
                     Ok(_) => true,
                     Err(error) => error.kind() != std::io::ErrorKind::NotFound,
@@ -1319,6 +1323,45 @@ mod tests {
         );
         assert!(state.pending_cut_paths().is_empty());
         assert!(state.clipboard_payload().is_none());
+    }
+
+    #[test]
+    fn moved_parent_reconciliation_preserves_other_and_recreated_cut_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let sibling = temp.path().join("source-other");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        let removed = source.join("removed");
+        let recreated = source.join("recreated");
+        let unrelated = sibling.join("unrelated");
+        for path in [&removed, &recreated, &unrelated] {
+            std::fs::write(path, "original").unwrap();
+        }
+        let entries =
+            [&removed, &recreated, &unrelated].map(|path| entry(path.to_str().unwrap(), false));
+        let mut state = TransferState::default();
+        state.cut(&entries).unwrap();
+        let generation = state.clipboard_payload().unwrap().generation;
+        let moved = temp.path().join("moved");
+        std::fs::rename(&source, &moved).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(&recreated, "replacement").unwrap();
+
+        assert_eq!(
+            state.reconcile_pending_cut(&[source]),
+            Some((generation, 1))
+        );
+        assert_eq!(
+            state.pending_cut_paths(),
+            [recreated.clone(), unrelated.clone()]
+        );
+        assert_eq!(std::fs::read_to_string(recreated).unwrap(), "replacement");
+        assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(moved.join("removed")).unwrap(),
+            "original"
+        );
     }
 
     #[test]

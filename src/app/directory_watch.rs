@@ -261,6 +261,15 @@ fn collect_changed_watches(
             if event.mask & (libc::IN_MOVE_SELF | libc::IN_DELETE_SELF | libc::IN_IGNORED) != 0 {
                 // Watches follow inodes. A replacement at the same path needs
                 // a fresh watch when the browser resynchronizes after this event.
+                // Moving/removing the watched folder also removes each child's
+                // old path, without generating named child deletion events.
+                for directory in directories {
+                    pending
+                        .entry(directory.clone())
+                        .or_default()
+                        .removed
+                        .insert(directory.clone());
+                }
                 watched.remove(&event.wd);
                 if event.mask & libc::IN_MOVE_SELF != 0 {
                     // SAFETY: this worker owns the descriptor and the reported watch.
