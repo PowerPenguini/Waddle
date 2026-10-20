@@ -396,30 +396,35 @@ impl SidebarTree {
     }
 
     fn replace_locations(&mut self, places: Vec<places::Entry>) {
-        self.roots.retain(|node| {
-            !matches!(
+        let mut previous = HashMap::new();
+        let roots = std::mem::take(&mut self.roots);
+        for node in roots {
+            if matches!(
                 node.kind,
-                NodeKind::Home
-                    | NodeKind::Desktop
-                    | NodeKind::Documents
-                    | NodeKind::Downloads
-                    | NodeKind::Music
-                    | NodeKind::Pictures
-                    | NodeKind::Videos
-                    | NodeKind::Favorite
-                    | NodeKind::Recent
-                    | NodeKind::Trash
-            )
-        });
+                NodeKind::Computer | NodeKind::Drive | NodeKind::Folder
+            ) {
+                self.roots.push(node);
+            } else {
+                previous.insert((node.kind, node.path.clone()), node);
+            }
+        }
         for place in places {
-            let id = self.allocate_node_id();
-            self.roots.push(FolderNode::location(
-                id,
-                place.path,
-                place.label,
-                place.kind,
-                place.favorite_index,
-            ));
+            let key = (place.kind, Some(place.path.clone()));
+            let node = if let Some(mut node) = previous.remove(&key) {
+                node.label = place.label;
+                node.favorite_index = place.favorite_index;
+                node
+            } else {
+                let id = self.allocate_node_id();
+                FolderNode::location(
+                    id,
+                    place.path,
+                    place.label,
+                    place.kind,
+                    place.favorite_index,
+                )
+            };
+            self.roots.push(node);
         }
         self.retain_valid_cursor();
     }
@@ -1664,6 +1669,155 @@ GVolumeMonitor *g_volume_monitor_get(void) {
             .map(|row| row.label)
             .collect::<Vec<_>>();
         assert_eq!(labels, ["Second", "First"]);
+    }
+
+    #[test]
+    fn favorite_reordering_preserves_expanded_descendants_and_pending_loads() {
+        for pending in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = temp.path().join("first");
+            let nested = first.join("nested");
+            let leaf = nested.join("leaf");
+            let second = temp.path().join("second");
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::create_dir(&second).unwrap();
+            let mut places = places::Places::empty_at(temp.path().join("favorites.json"));
+            places.command(&first, "add First").unwrap();
+            places.command(&second, "add Second").unwrap();
+            let mut tree = SidebarTree::with_places(Vec::new(), places);
+            tree.install_locations(Vec::new());
+            let first_id = tree
+                .rows(&first)
+                .iter()
+                .find(|row| row.kind == NodeKind::Favorite && row.path.as_ref() == Some(&first))
+                .unwrap()
+                .id;
+            let request = tree.expand(first_id).unwrap();
+            assert_eq!(
+                tree.complete_load(&request, Ok(crate::fs::read_child_folders(&first).unwrap())),
+                LoadOutcome::Installed
+            );
+            let nested_id = tree
+                .rows(&first)
+                .iter()
+                .find(|row| row.path.as_ref() == Some(&nested))
+                .unwrap()
+                .id;
+            let request = tree.expand(nested_id).unwrap();
+            if !pending {
+                assert_eq!(
+                    tree.complete_load(
+                        &request,
+                        Ok(crate::fs::read_child_folders(&nested).unwrap())
+                    ),
+                    LoadOutcome::Installed
+                );
+            }
+            let focused = if pending {
+                nested_id
+            } else {
+                tree.rows(&first)
+                    .iter()
+                    .find(|row| row.path.as_ref() == Some(&leaf))
+                    .unwrap()
+                    .id
+            };
+            assert!(tree.focus(focused));
+            tree.press_favorite(0);
+            assert!(tree.release_favorite(1, Vec::new()).unwrap());
+            assert_eq!(
+                tree.focused_id(),
+                Some(focused),
+                "Favorite reorder discarded expanded focus"
+            );
+            assert!(tree.rows(&first).iter().any(|row| row.id == focused));
+            let first_node = find_node(&tree.roots, first_id).unwrap();
+            assert!(first_node.expanded);
+            assert_eq!(first_node.favorite_index, Some(1));
+            if pending {
+                assert_eq!(
+                    tree.complete_load(
+                        &request,
+                        Ok(crate::fs::read_child_folders(&nested).unwrap())
+                    ),
+                    LoadOutcome::Installed
+                );
+                assert!(
+                    tree.rows(&first)
+                        .iter()
+                        .any(|row| row.path.as_ref() == Some(&leaf))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn locations_sharing_a_path_preserve_separate_state_when_reordered() {
+        let temp = tempfile::tempdir().unwrap();
+        let child = temp.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut tree = SidebarTree::with_places(
+            Vec::new(),
+            places::Places::empty_at(temp.path().join("favorites.json")),
+        );
+        let entry = |kind, label: &str| places::Entry {
+            path: temp.path().to_path_buf(),
+            label: label.to_owned(),
+            kind,
+            favorite_index: (kind == NodeKind::Favorite).then_some(0),
+        };
+        tree.install_places(vec![
+            entry(NodeKind::Home, "Home"),
+            entry(NodeKind::Favorite, "Favorite"),
+        ]);
+        let home_id = tree
+            .roots
+            .iter()
+            .find(|node| node.kind == NodeKind::Home)
+            .unwrap()
+            .id;
+        let favorite_id = tree
+            .roots
+            .iter()
+            .find(|node| node.kind == NodeKind::Favorite)
+            .unwrap()
+            .id;
+        let home_load = tree.expand(home_id).unwrap();
+        assert_eq!(
+            tree.complete_load(
+                &home_load,
+                Ok(crate::fs::read_child_folders(temp.path()).unwrap())
+            ),
+            LoadOutcome::Installed
+        );
+        let home_child = find_node(&tree.roots, home_id).unwrap().children[0].id;
+        let favorite_load = tree.expand(favorite_id).unwrap();
+        assert!(tree.focus(home_child));
+        tree.install_places(vec![
+            entry(NodeKind::Favorite, "Renamed"),
+            entry(NodeKind::Home, "Home"),
+        ]);
+        assert_eq!(tree.focused_id(), Some(home_child));
+        assert_eq!(
+            find_node(&tree.roots, favorite_id).unwrap().label,
+            "Renamed"
+        );
+        assert_eq!(
+            tree.complete_load(
+                &favorite_load,
+                Ok(crate::fs::read_child_folders(temp.path()).unwrap())
+            ),
+            LoadOutcome::Installed
+        );
+        let favorite_child = find_node(&tree.roots, favorite_id).unwrap().children[0].id;
+        assert_ne!(home_child, favorite_child);
+        tree.install_places(vec![entry(NodeKind::Favorite, "Renamed")]);
+        assert_eq!(tree.focused_id(), None);
+        assert!(find_node(&tree.roots, home_id).is_none());
+        assert_eq!(
+            find_node(&tree.roots, favorite_id).unwrap().children[0].id,
+            favorite_child
+        );
     }
 
     #[test]

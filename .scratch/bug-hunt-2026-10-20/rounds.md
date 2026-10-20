@@ -507,3 +507,16 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 832 passed, 32 ignored. Locked strict Clippy,
   formatting, whitespace, development build, and isolated FileManager1 activation
   smoke test pass.
+
+## Round 31: reordering Favorites collapses expanded branches
+
+- Red: expand a Favorite and its real nested folder, focus its leaf, then reorder
+  Favorites through the drag interface. Rebuilding location roots discards the
+  focused node, descendants, and pending scan ownership.
+- Fix: reconcile location roots by kind and path. Preserve surviving nodes while
+  updating labels and Favorite indexes; remove roots no longer present.
+- Green: real-directory tests preserve loaded descendants and pending scans across
+  reordering. Home and Favorite entries sharing one path retain separate IDs and
+  state, labels update, and removing one root clears only its own cursor/state.
+- All-target parallel tests pass: 834 passed, 32 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
