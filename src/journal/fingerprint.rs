@@ -179,86 +179,91 @@ fn hash_tree(
 ) -> Result<(), Error> {
     use std::{io::Read, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?;
-    if let Some(attributes) = attributes_digest {
-        attributes.write_field(relative.as_os_str().as_bytes());
-        attributes.write(&attribute_digest(path, permissions)?.to_le_bytes());
-    }
-    for (index, digest) in digests.iter_mut().enumerate() {
-        digest.write(relative.as_os_str().as_bytes());
-        digest.write(
-            &(if permissions {
-                metadata.mode()
-            } else {
-                metadata.mode() & libc::S_IFMT
-            })
-            .to_le_bytes(),
-        );
-        // Child operations change directory timestamps and storage size even
-        // when Undo restores every entry. Keep the original digest for older
-        // journals, and verify new records by contents and meaningful metadata.
-        if index == 0 || !metadata.is_dir() {
-            digest.write(&metadata.size().to_le_bytes());
-            digest.write(&metadata.mtime().to_le_bytes());
-            digest.write(&metadata.mtime_nsec().to_le_bytes());
+    // Keep filesystem depth off the worker stack. In particular, the file
+    // read buffer must not be reserved once for every ancestor directory.
+    let mut pending = vec![(path.to_path_buf(), relative.to_path_buf())];
+    while let Some((path, relative)) = pending.pop() {
+        let path = path.as_path();
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            Error::io(format!("could not fingerprint {}", path.display()), error)
+        })?;
+        if let Some(attributes) = attributes_digest.as_mut() {
+            attributes.write_field(relative.as_os_str().as_bytes());
+            attributes.write(&attribute_digest(path, permissions)?.to_le_bytes());
         }
-    }
-    if metadata.file_type().is_symlink() {
-        let target = fs::read_link(path)
-            .map_err(|error| Error::io("could not read symbolic link", error))?;
-        for digest in digests.iter_mut() {
-            digest.write(target.as_os_str().as_bytes());
-        }
-    } else if metadata.is_dir() {
-        let mut entries = fs::read_dir(path)
-            .map_err(|error| Error::io(format!("could not fingerprint {}", path.display()), error))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| Error::io("could not read directory entry", error))?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            hash_tree(
-                &entry.path(),
-                &relative.join(entry.file_name()),
-                digests,
-                permissions,
-                attributes_digest,
-            )?;
-        }
-    } else if metadata.is_file() {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|error| {
-                Error::io(format!("could not fingerprint {}", path.display()), error)
-            })?;
-        if !file
-            .metadata()
-            .map_err(|error| Error::io("could not inspect file", error))?
-            .is_file()
-        {
-            return Err(Error::message("cannot fingerprint a special file"));
-        }
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file
-                .read(&mut buffer)
-                .map_err(|error| Error::io("could not read file for fingerprint", error))?;
-            if read == 0 {
-                break;
+        for (index, digest) in digests.iter_mut().enumerate() {
+            digest.write(relative.as_os_str().as_bytes());
+            digest.write(
+                &(if permissions {
+                    metadata.mode()
+                } else {
+                    metadata.mode() & libc::S_IFMT
+                })
+                .to_le_bytes(),
+            );
+            // Child operations change directory timestamps and storage size even
+            // when Undo restores every entry. Keep the original digest for older
+            // journals, and verify new records by contents and meaningful metadata.
+            if index == 0 || !metadata.is_dir() {
+                digest.write(&metadata.size().to_le_bytes());
+                digest.write(&metadata.mtime().to_le_bytes());
+                digest.write(&metadata.mtime_nsec().to_le_bytes());
             }
+        }
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(path)
+                .map_err(|error| Error::io("could not read symbolic link", error))?;
             for digest in digests.iter_mut() {
-                digest.write(&buffer[..read]);
+                digest.write(target.as_os_str().as_bytes());
             }
+        } else if metadata.is_dir() {
+            let mut entries = fs::read_dir(path)
+                .map_err(|error| {
+                    Error::io(format!("could not fingerprint {}", path.display()), error)
+                })?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| Error::io("could not read directory entry", error))?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            // Reverse the pending children so the stack preserves the original
+            // sorted, depth-first byte stream, including legacy journal digests.
+            for entry in entries.into_iter().rev() {
+                pending.push((entry.path(), relative.join(entry.file_name())));
+            }
+        } else if metadata.is_file() {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                .open(path)
+                .map_err(|error| {
+                    Error::io(format!("could not fingerprint {}", path.display()), error)
+                })?;
+            if !file
+                .metadata()
+                .map_err(|error| Error::io("could not inspect file", error))?
+                .is_file()
+            {
+                return Err(Error::message("cannot fingerprint a special file"));
+            }
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| Error::io("could not read file for fingerprint", error))?;
+                if read == 0 {
+                    break;
+                }
+                for digest in digests.iter_mut() {
+                    digest.write(&buffer[..read]);
+                }
+            }
+        } else {
+            return Err(Error::message(format!(
+                "cannot fingerprint special file {}",
+                path.display()
+            )));
         }
-    } else {
-        return Err(Error::message(format!(
-            "cannot fingerprint special file {}",
-            path.display()
-        )));
     }
     Ok(())
 }

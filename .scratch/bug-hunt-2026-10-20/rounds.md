@@ -172,3 +172,21 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests passed: 813 passed, 27 ignored. The new opt-in GPU
   regression was explicitly executed, rather than counted as a standard-suite
   pass. Locked strict Clippy, formatting, and whitespace checks passed.
+
+## Round 10: nested folder Copy aborts the application
+
+- Red: an actual App Copy of a temporary folder with 1,700 nested directories
+  aborts its Tokio worker with a stack overflow. The original code also fails
+  with only 64 nested directories. The regression runs in a subprocess so an
+  abort fails the test instead of terminating the suite; core dumping is disabled.
+- Live GDB stops in `journal::fingerprint::hash_tree`, with repeated recursive
+  ancestor frames. Its 64 KiB file-read buffer is reserved at each level, even
+  while traversing directories. The Copy itself has reached journal preparation.
+- Fix: fingerprint the tree with an explicit pending stack. Reverse sorted
+  children when pushing so traversal retains the existing depth-first ordering
+  and byte stream for current and legacy journal digests. Files, symlinks,
+  permission checks, and extended-attribute hashing retain their checks.
+- Green: the real App regression copies 1,700 levels and completes keyboard Undo
+  and Redo, checking copied contents and source preservation. All-target parallel
+  tests pass: 814 passed, 27 ignored. Locked strict Clippy, formatting, whitespace,
+  the development build, and isolated FileManager1 activation smoke test pass.

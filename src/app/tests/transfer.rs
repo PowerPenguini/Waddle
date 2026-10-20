@@ -1267,3 +1267,95 @@ fn delayed_paste_does_not_replace_a_newer_copy_or_cut() {
             }
         });
 }
+
+#[test]
+fn deep_folder_copy_completes_without_crashing_its_worker() {
+    const ROOT: &str = "WADDLE_DEEP_COPY_TEST_ROOT";
+    let Some(root) = std::env::var_os(ROOT) else {
+        let temp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "app::tests::transfer::deep_folder_copy_completes_without_crashing_its_worker",
+                "--nocapture",
+            ])
+            .env(ROOT, temp.path());
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the child hook only changes its own core settings using syscalls.
+        unsafe {
+            child.pre_exec(|| {
+                let limit = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+                    || libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "deep Copy child failed: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = PathBuf::from(root);
+            let source = root.join("source");
+            std_fs::create_dir(&source).unwrap();
+            let mut nested = source.clone();
+            for _ in 0..1700 {
+                nested.push("d");
+                std_fs::create_dir(&nested).unwrap();
+            }
+            let leaf = nested.join("leaf.txt");
+            std_fs::write(&leaf, "deep contents").unwrap();
+            let destination = root.join("destination");
+            std_fs::create_dir(&destination).unwrap();
+            let (mut app, _) = App::new();
+            app.navigation = NavigationSession::new(destination.clone());
+            app.navigation.settle_for_test();
+            app.transfers = transfer_session::TransferSession::open(root.join("transfers.json"));
+            let request = crate::transfer::Request::detached_clipboard(
+                ClipboardImport {
+                    paths: vec![source.clone()],
+                    action: TransferAction::Copy,
+                    generation: None,
+                },
+                destination.clone(),
+            )
+            .unwrap();
+            let task = app.start_transfer(request);
+            navigation::finish_tasks(&mut app, task).await;
+            let copied = destination
+                .join("source")
+                .join(leaf.strip_prefix(&source).unwrap());
+            assert_eq!(std_fs::read_to_string(&copied).unwrap(), "deep contents");
+            assert_eq!(std_fs::read_to_string(leaf).unwrap(), "deep contents");
+            assert!(!app.transfers.overview().retry);
+            for (key, modifiers, exists) in [
+                ("u", keyboard::Modifiers::empty(), false),
+                ("r", keyboard::Modifiers::CTRL, true),
+            ] {
+                let named = keyboard::Key::Character(key.into());
+                let task = app.handle_key(named.clone(), named, modifiers, Some(key));
+                navigation::finish_tasks(&mut app, task).await;
+                assert_eq!(copied.exists(), exists);
+                if exists {
+                    assert_eq!(std_fs::read_to_string(&copied).unwrap(), "deep contents");
+                }
+            }
+        });
+}
