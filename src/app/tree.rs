@@ -805,6 +805,26 @@ impl SidebarTree {
         reloads
     }
 
+    pub(super) fn cached_folder_paths(&self) -> Vec<PathBuf> {
+        fn collect(nodes: &[FolderNode], paths: &mut Vec<PathBuf>) {
+            for node in nodes {
+                if !matches!(
+                    node.kind,
+                    NodeKind::Computer | NodeKind::Recent | NodeKind::Trash
+                ) && let Some(path) = &node.path
+                {
+                    paths.push(path.clone());
+                }
+                collect(&node.children, paths);
+            }
+        }
+        let mut paths = Vec::new();
+        collect(&self.roots, &mut paths);
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     pub(super) fn expanded_paths(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         collect_expanded_paths(&self.roots, &mut paths);

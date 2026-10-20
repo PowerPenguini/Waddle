@@ -577,3 +577,19 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 838 passed, 32 ignored. Locked strict Clippy,
   formatting, whitespace, development build, and isolated FileManager1 activation
   smoke test pass.
+
+## Round 36: hidden-folder settings leave sidebar branches unchanged
+
+- Red: expand real folders containing hidden children, then submit `:set hidden=false`.
+  The browser hides the child while the expanded sidebar still displays it.
+- Fix: snapshot effective hidden settings for cached tree paths before applying
+  settings, then invalidate only paths whose effective setting changed. Include
+  collapsed caches so they refresh on reopening, and respect local overrides
+  even when a global change leaves the current browser options unchanged.
+- Green: App command regressions toggle hidden folders in both directions for
+  global settings, local settings, and a global change beneath a current-folder
+  override. Each scenario covers expanded and collapsed/reopened branches and
+  verifies scope against a second root and the browser listing.
+- All-target parallel tests pass: 839 passed, 32 ignored. Locked strict Clippy,
+  formatting, whitespace, development build, and isolated FileManager1 activation
+  smoke test pass.

@@ -3905,3 +3905,108 @@ fn reopening_the_current_sidebar_folder_includes_changes_observed_while_collapse
             }
         });
 }
+
+#[test]
+fn hidden_setting_updates_expanded_sidebar_folders_in_its_scope() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for (local, override_current) in [(false, false), (true, false), (false, true)] {
+                for collapsed in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let current = temp.path().join("current");
+                    let other = temp.path().join("other");
+                    for path in [&current, &other] {
+                        std_fs::create_dir_all(path.join(".hidden")).unwrap();
+                        std_fs::create_dir(path.join("visible")).unwrap();
+                    }
+                    let (mut app, _) = App::new();
+                    app.view_preferences =
+                        view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+                    if override_current {
+                        app.view_preferences
+                            .apply_command(&current, true, "hidden=false")
+                            .unwrap();
+                    }
+                    app.navigation = NavigationSession::new(current.clone());
+                    app.navigation.settle_for_test();
+                    app.sidebar_tree = SidebarTree::new(Vec::new());
+                    app.sidebar_tree.install_places(
+                        [&current, &other]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, path)| places::Entry {
+                                path: path.to_path_buf(),
+                                label: format!("Place {index}"),
+                                kind: NodeKind::Favorite,
+                                favorite_index: Some(index),
+                            })
+                            .collect(),
+                    );
+                    let refresh = app.refresh_location();
+                    finish_tasks(&mut app, refresh).await;
+                    let roots = app
+                        .sidebar_tree
+                        .rows(&current)
+                        .into_iter()
+                        .filter(|row| row.kind == NodeKind::Favorite)
+                        .collect::<Vec<_>>();
+                    for root in &roots {
+                        let request = app.sidebar_tree.expand(root.id).unwrap();
+                        let folders = fs::read_child_folders_with_hidden(
+                            root.path.as_ref().unwrap(),
+                            app.view_preferences
+                                .for_directory(root.path.as_ref().unwrap())
+                                .show_hidden,
+                        )
+                        .unwrap();
+                        app.sidebar_tree.complete_load(&request, Ok(folders));
+                    }
+                    for hidden in [false, true] {
+                        if collapsed {
+                            for root in &roots {
+                                let _ = app.sidebar_tree.activate(root.id);
+                            }
+                        }
+                        drop(app.begin_command(':'));
+                        app.command.change(format!(
+                            "{} hidden={hidden}",
+                            if local { "setlocal" } else { "set" }
+                        ));
+                        let task = app.submit_command();
+                        finish_tasks(&mut app, task).await;
+                        assert_eq!(
+                            app.navigation
+                                .entries()
+                                .iter()
+                                .any(|entry| entry.path == current.join(".hidden")),
+                            hidden && !override_current
+                        );
+                        if collapsed {
+                            for root in &roots {
+                                if let Some(request) = app.sidebar_tree.expand(root.id) {
+                                    let task = app.load_tree_node(request);
+                                    finish_tasks(&mut app, task).await;
+                                }
+                            }
+                        }
+                        let rows = app.sidebar_tree.rows(&current);
+                        assert_eq!(
+                            rows.iter()
+                                .any(|row| row.path.as_ref() == Some(&current.join(".hidden"))),
+                            hidden && !override_current,
+                            "current sidebar folder ignored hidden setting"
+                        );
+                        assert_eq!(
+                            rows.iter()
+                                .any(|row| row.path.as_ref() == Some(&other.join(".hidden"))),
+                            hidden || local,
+                            "global hidden setting did not refresh another expanded root"
+                        );
+                    }
+                }
+            }
+        });
+}

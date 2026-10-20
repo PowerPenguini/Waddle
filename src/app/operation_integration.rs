@@ -64,6 +64,15 @@ impl App {
                 Task::none()
             }
             command::CommandAction::ChangeSettings { local, arguments } => {
+                let hidden_before = self
+                    .sidebar_tree
+                    .cached_folder_paths()
+                    .into_iter()
+                    .map(|path| {
+                        let hidden = self.view_preferences.for_directory(&path).show_hidden;
+                        (path, hidden)
+                    })
+                    .collect::<Vec<_>>();
                 match self.view_preferences.apply_command(
                     self.navigation.current(),
                     local,
@@ -94,7 +103,15 @@ impl App {
                         } else {
                             Task::none()
                         };
-                        Task::batch([browse, icon_size, system_icon_task(system_icons)])
+                        let changed_folders = hidden_before
+                            .into_iter()
+                            .filter_map(|(path, before)| {
+                                (self.view_preferences.for_directory(&path).show_hidden != before)
+                                    .then_some(path)
+                            })
+                            .collect();
+                        let tree = self.invalidate_tree(changed_folders);
+                        Task::batch([browse, tree, icon_size, system_icon_task(system_icons)])
                     }
                     Err(error) => {
                         self.presentation.set_status(error);
