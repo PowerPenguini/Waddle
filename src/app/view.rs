@@ -986,7 +986,7 @@ impl<'a> View<'a> {
             self.app.reduced_transparency(),
         );
         let icon_kind = entry_icon_kind(entry);
-        let kind = entry.type_label();
+        let kind = super::presentation::single_line_text(&entry.type_label()).into_owned();
         let size = if entry.is_directory() {
             "—".to_owned()
         } else {
@@ -1006,7 +1006,7 @@ impl<'a> View<'a> {
         );
         let (show_size, show_modified) = self.list_column_visibility();
         let name = clip_file_name(
-            &fs::display_name(&entry.name),
+            &super::presentation::single_line_text(&fs::display_name(&entry.name)),
             self.list_name_character_limit(),
         );
         let mut content = Row::new()

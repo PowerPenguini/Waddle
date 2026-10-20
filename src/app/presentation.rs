@@ -283,7 +283,7 @@ impl Presentation {
     }
 }
 
-pub(super) fn single_line_status(text: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn single_line_text(text: &str) -> std::borrow::Cow<'_, str> {
     let escape =
         |character: char| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}');
     if !text.chars().any(escape) {

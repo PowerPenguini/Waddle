@@ -236,3 +236,20 @@ pushes `main`. No release or installation is included.
   the remaining file's contents. Both scenarios pass ten consecutive runs.
   All-target parallel tests pass: 817 passed, 27 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 14: line breaks expand single-line List cells
+
+- Red: a headless wgpu layout of the actual List row renders a real filename
+  containing a newline as a 28-pixel cell at icon size 24, exceeding one line.
+  Disabling wrapping does not suppress explicit line breaks.
+- Fix: escape control characters and Unicode line/paragraph separators at the
+  List filename and type-label rendering boundaries, using the existing compact
+  text helper (renamed to `single_line_text`). Preserve real paths and filenames.
+- Green: the opt-in renderer regression explicitly passes at icon sizes 24,
+  48, and 128 for LF, CR, VT, FF, NEL, Unicode separators, an extension containing
+  LF, and a long extension. It checks cell geometry, displayed control characters,
+  and original file contents/paths. Both existing grid-layout renderer tests and
+  the compact-status renderer regression also pass.
+- All-target parallel tests pass: 817 passed, 28 ignored. The new ignored GPU
+  regression was explicitly executed. Locked strict Clippy, formatting, and
+  whitespace checks pass.

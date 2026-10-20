@@ -44,7 +44,7 @@ impl<'a> View<'a> {
         let transient = resolved.kind();
         let content: Element<'_, Message> = if transient == TransientPresentationKind::Conflict {
             compact_status_line(
-                self.bottom_bar_text(super::presentation::single_line_status(status_model.text))
+                self.bottom_bar_text(super::presentation::single_line_text(status_model.text))
                     .wrapping(iced::advanced::text::Wrapping::None)
                     .size(11)
                     .line_height(iced::Pixels(13.0))
@@ -230,7 +230,7 @@ impl<'a> View<'a> {
                     let mut line = Row::new()
                         .push(indicator)
                         .push(super::status_carousel::status_carousel(
-                            self.bottom_bar_text(super::presentation::single_line_status(
+                            self.bottom_bar_text(super::presentation::single_line_text(
                                 status_model.text,
                             ))
                             .wrapping(iced::advanced::text::Wrapping::None)

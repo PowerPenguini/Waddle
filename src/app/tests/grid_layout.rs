@@ -247,3 +247,86 @@ fn visual_block_rendered_layout_matches_selected_tiles() {
             }
         });
 }
+
+#[test]
+#[ignore = "requires a headless wgpu adapter"]
+fn filenames_with_line_breaks_keep_list_cells_on_one_line() {
+    use iced::advanced::widget::Operation;
+
+    #[derive(Default)]
+    struct TextBounds(Vec<(String, Rectangle)>);
+    impl Operation for TextBounds {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
+            self.0.push((text.to_owned(), bounds));
+        }
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let renderer = <iced::Renderer as Headless>::new(
+                iced::Font::DEFAULT,
+                iced::Pixels(14.0),
+                Some("wgpu"),
+            )
+            .await
+            .expect("headless wgpu adapter");
+            for name in [
+                "first\nsecond.txt",
+                "first\rsecond.txt",
+                "first\u{2028}second.txt",
+                "first\u{2029}second.txt",
+                "first.txt\npng",
+                "first\u{b}second.txt",
+                "first\u{c}second.txt",
+                "first\u{85}second.txt",
+                "first.averyveryveryveryveryveryverylongextension",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join(name);
+                std::fs::write(&path, "contents").unwrap();
+                let (mut app, _) = App::new();
+                app.navigation
+                    .install_folder_entries(fs::read_directory(temp.path()).unwrap());
+                app.grid.set_list_mode(true);
+                app.grid.resize(Size::new(1000.0, 700.0));
+                for icon_size in [24, 48, 128] {
+                    app.grid.set_icon_size(icon_size);
+                    let mut row = View::new(&app).file_list_row(0);
+                    let mut tree = Tree::new(row.as_widget());
+                    let node = row.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, Size::new(1000.0, 200.0)),
+                    );
+                    let mut texts = TextBounds::default();
+                    row.as_widget_mut().operate(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &mut texts,
+                    );
+                    assert!(texts.0.iter().any(|(text, _)| text.starts_with("first")));
+                    for (text, bounds) in texts.0 {
+                        assert!(
+                            !text.chars().any(|character| character.is_control()
+                                || matches!(character, '\u{2028}' | '\u{2029}')),
+                            "list cell retains a line-break character: {text:?}"
+                        );
+                        assert!(
+                            bounds.height <= app.grid.label_font_size() * 1.5,
+                            "list cell {text:?} spans multiple lines at icon size {icon_size}: {}",
+                            bounds.height
+                        );
+                    }
+                    assert_eq!(std::fs::read_to_string(&path).unwrap(), "contents");
+                    assert_eq!(app.navigation.entries()[0].path, path);
+                }
+            }
+        });
+}
