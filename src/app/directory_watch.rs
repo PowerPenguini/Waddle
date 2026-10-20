@@ -233,6 +233,9 @@ fn collect_changed_watches(
                     let change = pending.entry(directory.clone()).or_default();
                     change.first_changed.get_or_insert(now);
                     change.changed = Some(now);
+                    // Lost events may include unnamed child removals. Let Cut
+                    // reconciliation confirm missing captured paths below here.
+                    change.removed.insert(directory.clone());
                     paths.push(directory);
                 }
                 // Overflow may hide a move/delete event. Rebind watches to paths

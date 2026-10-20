@@ -221,3 +221,18 @@ pushes `main`. No release or installation is included.
   regression retains both a sibling path and a recreated path after an ancestor
   move. All-target parallel tests pass: 817 passed, 27 ignored. Locked strict
   Clippy, formatting, and whitespace checks pass.
+
+## Round 13: queue overflow leaves removed Cut items pending
+
+- Red: extend the native inotify overflow fixture to Cut two real files and
+  delete one. The shim replaces the named deletion with `IN_Q_OVERFLOW` and
+  writes a marker proving that interception occurred. The App refreshes its
+  file list but never clears the removed Cut item.
+- Fix: overflow recovery includes each watched folder as a removal candidate.
+  The existing ancestor-aware reconciliation confirms absent captured paths;
+  a Cut item whose file still exists remains pending.
+- Green: the injected overflow test covers both existing file-list recovery
+  and partial Cut reconciliation, verifies the interception marker, and checks
+  the remaining file's contents. Both scenarios pass ten consecutive runs.
+  All-target parallel tests pass: 817 passed, 27 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.

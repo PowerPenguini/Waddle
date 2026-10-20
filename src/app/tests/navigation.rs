@@ -1383,6 +1383,7 @@ fn cancelling_recursive_search_refreshes_changes_made_during_the_search() {
 fn native_queue_overflow_rescans_the_displayed_folder() {
     use iced::futures::StreamExt;
 
+    const CUT: &str = "WADDLE_INOTIFY_OVERFLOW_CUT";
     const MARKER: &str = "WADDLE_INOTIFY_OVERFLOW_MARKER";
     let Some(marker) = std::env::var_os(MARKER) else {
         let fixture = tempfile::tempdir().unwrap();
@@ -1440,22 +1441,29 @@ ssize_t read(int fd, void *buffer, size_t count) {
             "{}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "app::tests::navigation::native_queue_overflow_rescans_the_displayed_folder",
-                "--nocapture",
-            ])
-            .env(MARKER, fixture.path().join("injected"))
-            .env("LD_PRELOAD", library)
-            .output()
-            .unwrap();
-        assert!(
-            child.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr)
-        );
+        for cut in [false, true] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "app::tests::navigation::native_queue_overflow_rescans_the_displayed_folder",
+                    "--nocapture",
+                ])
+                .env(MARKER, fixture.path().join("injected"))
+                .env("LD_PRELOAD", &library);
+            if cut {
+                command.env(CUT, "1");
+            } else {
+                command.env_remove(CUT);
+            }
+            let child = command.output().unwrap();
+            assert!(
+                child.status.success(),
+                "Cut scenario {cut}: {}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+        }
         return;
     };
 
@@ -1494,6 +1502,54 @@ ssize_t read(int fd, void *buffer, size_t count) {
             .expect("native watch should become ready");
             let task = app.update(Message::DirectoryChanged(ready));
             finish_tasks(&mut app, task).await;
+
+            if std::env::var_os(CUT).is_some() {
+                let cut = current.join("overflow.txt");
+                std_fs::write(&cut, "cut contents").unwrap();
+                // Drain the injected creation overflow before starting Cut.
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let event = events.next().await.unwrap();
+                        let source_event = event.path == current && !event.watch_failed;
+                        let task = app.update(Message::DirectoryChanged(event));
+                        finish_tasks(&mut app, task).await;
+                        if source_event {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("creation overflow must finish rebinding");
+                let kept = current.join("ready.txt");
+                app.transfers
+                    .cut(&fs::read_directory(&current).unwrap())
+                    .unwrap();
+                assert_eq!(
+                    app.transfers.pending_cut_paths(),
+                    [cut.clone(), kept.clone()]
+                );
+                app.sync_location_monitoring();
+                std_fs::remove_file(&marker).unwrap();
+                std_fs::remove_file(&cut).unwrap();
+                let reconciled = tokio::time::timeout(Duration::from_secs(3), async {
+                    while app.transfers.pending_cut_paths() != std::slice::from_ref(&kept) {
+                        let event = events.next().await.unwrap();
+                        let task = app.update(Message::DirectoryChanged(event));
+                        finish_tasks(&mut app, task).await;
+                    }
+                })
+                .await;
+                assert!(
+                    PathBuf::from(marker).is_file(),
+                    "deletion must inject native overflow"
+                );
+                assert!(
+                    reconciled.is_ok(),
+                    "overflow left an externally removed Cut item pending"
+                );
+                assert_eq!(std_fs::read_to_string(kept).unwrap(), "ready");
+                return;
+            }
 
             let lost = current.join("overflow.txt");
             std_fs::write(&lost, "created while notifications were lost").unwrap();
