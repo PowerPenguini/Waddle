@@ -490,3 +490,20 @@ pushes `main`. No release or installation is included.
   failure/cancellation and Navigation-session request-ownership tests also pass.
 - All-target parallel tests pass: 830 passed, 32 ignored. Locked strict Clippy,
   formatting, and whitespace checks pass.
+
+## Round 30: parent refresh discards expanded folders and stale watch roles
+
+- Red: refreshing a real parent directory immediately removes its expanded
+  descendants and focused leaf. Completing a scan after an expanded child is
+  deleted also leaves the removed child in Location monitoring roles.
+- Fix: retain the visible snapshot during refresh and reconcile children by path,
+  preserving surviving node IDs, expanded descendants, and pending scans. Process
+  explicitly invalidated descendants alongside their parents. Synchronize watch
+  roles after accepted results and restore a valid cursor when sidebar focus loses
+  its row. Cached descendants of collapsed nodes cannot retain invisible focus.
+- Green: real-directory regressions cover success, failure, cancellation, retry,
+  simultaneous parent/child refresh in both completion orders, removed watch roles,
+  and sidebar versus browser focus. All seven GPU renderer regressions pass.
+- All-target parallel tests pass: 832 passed, 32 ignored. Locked strict Clippy,
+  formatting, whitespace, development build, and isolated FileManager1 activation
+  smoke test pass.

@@ -331,13 +331,24 @@ impl App {
                 Task::none()
             }
             Message::TreeLoaded { request, result } => {
-                if let TreeLoadOutcome::Failed(error) =
-                    self.sidebar_tree.complete_load(&request, result)
-                {
-                    self.presentation.set_status(error);
-                    self.sync_location_monitoring();
+                match self.sidebar_tree.complete_load(&request, result) {
+                    TreeLoadOutcome::Ignored => Task::none(),
+                    outcome => {
+                        if let TreeLoadOutcome::Failed(error) = outcome {
+                            self.presentation.set_status(error);
+                        }
+                        self.sync_location_monitoring();
+                        if self.focus.is(BrowserFocus::Sidebar)
+                            && self.sidebar_tree.focused_id().is_none()
+                        {
+                            self.sidebar_tree
+                                .focus_current_or_first(self.navigation.current());
+                            self.reveal_sidebar_cursor()
+                        } else {
+                            Task::none()
+                        }
+                    }
                 }
-                Task::none()
             }
             Message::TreeStorageUsageLoaded(results) => {
                 for (request, result) in results {

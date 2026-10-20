@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use gio::prelude::{FileExt, MountExt, VolumeExt, VolumeMonitorExt};
 
@@ -538,6 +541,7 @@ impl SidebarTree {
     }
 
     pub(super) fn focus_current_or_first(&mut self, current: &Path) {
+        self.retain_valid_cursor();
         if self.cursor.is_some() {
             return;
         }
@@ -699,11 +703,23 @@ impl SidebarTree {
         if find_node(&self.roots, node_id).is_none_or(|node| node.path.as_deref() != Some(path)) {
             return false;
         }
+        let previous = {
+            let Some(node) = find_node_mut(&mut self.roots, node_id) else {
+                return false;
+            };
+            std::mem::take(&mut node.children)
+        };
+        let mut previous = previous
+            .into_iter()
+            .filter_map(|node| node.path.clone().map(|path| (path, node)))
+            .collect::<HashMap<_, _>>();
         let children = folders
             .into_iter()
             .map(|path| {
-                let id = self.allocate_node_id();
-                FolderNode::folder(id, path)
+                previous.remove(&path).unwrap_or_else(|| {
+                    let id = self.allocate_node_id();
+                    FolderNode::folder(id, path)
+                })
             })
             .collect();
         let Some(node) = find_node_mut(&mut self.roots, node_id) else {
@@ -855,7 +871,7 @@ impl SidebarTree {
     fn retain_valid_cursor(&mut self) {
         if self
             .cursor
-            .is_some_and(|id| find_node(&self.roots, id).is_none())
+            .is_some_and(|id| find_visible_node(&self.roots, id).is_none())
         {
             self.cursor = None;
         }
@@ -938,6 +954,20 @@ fn find_node(nodes: &[FolderNode], id: u64) -> Option<&FolderNode> {
     None
 }
 
+fn find_visible_node(nodes: &[FolderNode], id: u64) -> Option<&FolderNode> {
+    for node in nodes {
+        if node.id == id {
+            return Some(node);
+        }
+        if node.expanded
+            && let Some(found) = find_visible_node(&node.children, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn find_node_mut(nodes: &mut [FolderNode], id: u64) -> Option<&mut FolderNode> {
     for node in nodes {
         if node.id == id {
@@ -1006,7 +1036,6 @@ fn invalidate_folders(
             .as_ref()
             .is_some_and(|node_path| changed_folders.iter().any(|path| path == node_path))
         {
-            node.children.clear();
             node.loaded = false;
             node.load_revision = node.load_revision.wrapping_add(1);
             node.loading = node.expanded;
@@ -1017,7 +1046,6 @@ fn invalidate_folders(
                     revision: node.load_revision,
                 });
             }
-            continue;
         }
         invalidate_folders(&mut node.children, changed_folders, reloads);
     }
@@ -1026,6 +1054,139 @@ fn invalidate_folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refreshing_a_parent_preserves_expanded_children_and_focus() {
+        for outcome in ["success", "error", "cancel"] {
+            let temp = tempfile::tempdir().unwrap();
+            let branch = temp.path().join("branch");
+            let leaf = branch.join("leaf");
+            let removed = temp.path().join("removed");
+            let added = temp.path().join("added");
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::create_dir(&removed).unwrap();
+            let mut tree = SidebarTree::new(vec![VolumeRoot {
+                id: "test-volume".to_owned(),
+                path: Some(temp.path().to_path_buf()),
+                label: "Data".to_owned(),
+                can_unmount: true,
+            }]);
+            let drive = tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.kind == NodeKind::Drive)
+                .unwrap();
+            let load = tree.expand(drive.id).unwrap();
+            assert!(matches!(
+                tree.complete_load(
+                    &load,
+                    Ok(crate::fs::read_child_folders(temp.path()).unwrap())
+                ),
+                LoadOutcome::Installed
+            ));
+            let branch_id = tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.path.as_ref() == Some(&branch))
+                .unwrap()
+                .id;
+            let load = tree.expand(branch_id).unwrap();
+            assert!(matches!(
+                tree.complete_load(&load, Ok(crate::fs::read_child_folders(&branch).unwrap())),
+                LoadOutcome::Installed
+            ));
+            let leaf_id = tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.path.as_ref() == Some(&leaf))
+                .unwrap()
+                .id;
+            assert!(tree.focus(leaf_id));
+            std::fs::remove_dir(&removed).unwrap();
+            std::fs::create_dir(&added).unwrap();
+            let refresh = tree.invalidate(&[temp.path().to_path_buf()]).pop().unwrap();
+            assert_eq!(
+                tree.focused_id(),
+                Some(leaf_id),
+                "parent refresh lost focus while loading"
+            );
+            assert!(
+                tree.rows(temp.path()).iter().any(|row| row.id == leaf_id),
+                "parent refresh hid the expanded branch while loading"
+            );
+            let refresh = if outcome == "success" {
+                refresh
+            } else {
+                if outcome == "error" {
+                    assert!(matches!(
+                        tree.complete_load(&refresh, Err("refresh failed".to_owned())),
+                        LoadOutcome::Failed(_)
+                    ));
+                } else {
+                    assert!(tree.cancel_load(&refresh));
+                }
+                assert_eq!(
+                    tree.focused_id(),
+                    None,
+                    "collapsed cached children retained hidden focus"
+                );
+                assert!(tree.focus(leaf_id));
+                tree.focus_current_or_first(temp.path());
+                assert_eq!(
+                    tree.focused_id(),
+                    Some(drive.id),
+                    "focus entry retained an invisible cached cursor"
+                );
+                tree.expand(drive.id)
+                    .expect("failed or cancelled scans must be retryable")
+            };
+            assert!(matches!(
+                tree.complete_load(
+                    &refresh,
+                    Ok(crate::fs::read_child_folders(temp.path()).unwrap())
+                ),
+                LoadOutcome::Installed
+            ));
+            assert!(
+                tree.is_expanded(branch_id),
+                "unchanged child branch collapsed after parent refresh"
+            );
+            let rows = tree.rows(temp.path());
+            assert!(rows.iter().any(|row| row.id == leaf_id));
+            assert!(rows.iter().any(|row| row.path.as_ref() == Some(&added)));
+            assert!(!rows.iter().any(|row| row.path.as_ref() == Some(&removed)));
+            if outcome == "success" {
+                assert_eq!(tree.focused_id(), Some(leaf_id));
+                let new_leaf = branch.join("new-leaf");
+                std::fs::create_dir(&new_leaf).unwrap();
+                for child_first in [false, true] {
+                    let mut refreshes =
+                        tree.invalidate(&[temp.path().to_path_buf(), branch.clone()]);
+                    assert_eq!(
+                        refreshes.len(),
+                        2,
+                        "parent invalidation skipped a requested child refresh"
+                    );
+                    if child_first {
+                        refreshes.reverse();
+                    }
+                    for request in refreshes {
+                        let folders = crate::fs::read_child_folders(&request.path).unwrap();
+                        assert!(matches!(
+                            tree.complete_load(&request, Ok(folders)),
+                            LoadOutcome::Installed
+                        ));
+                    }
+                    assert_eq!(tree.focused_id(), Some(leaf_id));
+                    assert!(
+                        tree.rows(temp.path())
+                            .iter()
+                            .any(|row| row.path.as_ref() == Some(&new_leaf))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn overlapping_tree_loads_ignore_older_results_and_cancellations() {

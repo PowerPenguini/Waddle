@@ -301,6 +301,93 @@ mod tests {
     }
 
     #[test]
+    fn completed_tree_refresh_resynchronizes_expanded_path_roles() {
+        for sidebar_focused in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let branch = temp.path().join("branch");
+            let leaf = branch.join("leaf");
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::create_dir(temp.path().join("kept")).unwrap();
+            let (mut app, _) = super::super::App::new();
+            app.view_preferences =
+                super::super::view_preferences::Preferences::empty_at(temp.path().join("waddlerc"));
+            app.navigation = NavigationSession::new(temp.path().to_path_buf());
+            app.navigation.settle_for_test();
+            app.sidebar_tree = SidebarTree::new(vec![super::super::tree::VolumeRoot {
+                id: "test-volume".to_owned(),
+                path: Some(temp.path().to_path_buf()),
+                label: "Data".to_owned(),
+                can_unmount: true,
+            }]);
+            let drive = app
+                .sidebar_tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.kind == super::super::tree::NodeKind::Drive)
+                .unwrap();
+            let load = app.sidebar_tree.expand(drive.id).unwrap();
+            app.sidebar_tree.complete_load(
+                &load,
+                Ok(crate::fs::read_child_folders(temp.path()).unwrap()),
+            );
+            let child_id = app
+                .sidebar_tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.path.as_ref() == Some(&branch))
+                .unwrap()
+                .id;
+            let load = app.sidebar_tree.expand(child_id).unwrap();
+            app.sidebar_tree
+                .complete_load(&load, Ok(crate::fs::read_child_folders(&branch).unwrap()));
+            let leaf_id = app
+                .sidebar_tree
+                .rows(temp.path())
+                .into_iter()
+                .find(|row| row.path.as_ref() == Some(&leaf))
+                .unwrap()
+                .id;
+            app.sidebar_tree.focus(leaf_id);
+            app.focus_browser(if sidebar_focused {
+                super::super::BrowserFocus::Sidebar
+            } else {
+                super::super::BrowserFocus::Entries
+            });
+            app.sync_location_monitoring();
+            assert!(
+                app.location_monitoring
+                    .as_ref()
+                    .unwrap()
+                    .watched_paths()
+                    .contains(&branch)
+            );
+            std::fs::remove_dir(&leaf).unwrap();
+            std::fs::remove_dir(&branch).unwrap();
+            let request = app
+                .sidebar_tree
+                .invalidate(&[temp.path().to_path_buf()])
+                .pop()
+                .unwrap();
+            drop(app.update(super::super::Message::TreeLoaded {
+                request,
+                result: Ok(crate::fs::read_child_folders(temp.path()).unwrap()),
+            }));
+            assert!(
+                !app.location_monitoring
+                    .as_ref()
+                    .unwrap()
+                    .watched_paths()
+                    .contains(&branch),
+                "successful refresh retained monitoring roles for removed expanded folders"
+            );
+            assert_eq!(
+                app.sidebar_tree.focused_id(),
+                sidebar_focused.then_some(drive.id)
+            );
+        }
+    }
+
+    #[test]
     fn notification_failure_enables_one_polling_fallback_policy() {
         let temp = tempfile::tempdir().unwrap();
         let current = temp.path().join("current");
