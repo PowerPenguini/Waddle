@@ -856,6 +856,9 @@ fn type_sort_orders_folders_extensions_then_extensionless_files() {
     fs::write(temp.path().join("z-file"), "x").unwrap();
     fs::write(temp.path().join("notes.md"), "x").unwrap();
 
+    fs::write(temp.path().join("trailing."), "x").unwrap();
+    fs::write(temp.path().join("double.."), "x").unwrap();
+
     let entries = read_directory_with(
         temp.path(),
         BrowseOptions {
@@ -869,7 +872,19 @@ fn type_sort_orders_folders_extensions_then_extensionless_files() {
         .map(|entry| display_name(&entry.name))
         .collect();
 
-    assert_eq!(names, ["a-folder", "notes.md", "z-file"]);
+    for entry in &entries {
+        if entry.name == "trailing." || entry.name == "double.." {
+            assert_eq!(
+                entry.type_label(),
+                "File",
+                "empty extensions need a file type label"
+            );
+        }
+    }
+    assert_eq!(
+        names,
+        ["a-folder", "notes.md", "double..", "trailing.", "z-file"]
+    );
 }
 
 #[test]

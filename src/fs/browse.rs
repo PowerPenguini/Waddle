@@ -34,6 +34,7 @@ impl FileEntry {
         } else {
             self.path
                 .extension()
+                .filter(|extension| !extension.is_empty())
                 .map(|extension| extension.to_string_lossy().to_uppercase())
                 .unwrap_or_else(|| "File".to_owned())
         }
@@ -42,7 +43,11 @@ impl FileEntry {
     fn type_sort_key(&self) -> (u8, String) {
         let rank = if self.is_directory() {
             0
-        } else if self.path.extension().is_some() {
+        } else if self
+            .path
+            .extension()
+            .is_some_and(|extension| !extension.is_empty())
+        {
             1
         } else {
             2

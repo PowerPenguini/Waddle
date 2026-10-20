@@ -299,3 +299,14 @@ pushes `main`. No release or installation is included.
 - All-target parallel tests pass: 818 passed, 29 ignored. The new opt-in GPU
   regression was explicitly executed. Locked strict Clippy, formatting, and
   whitespace checks pass.
+
+## Round 18: filenames ending in a dot have blank type labels
+
+- Red: real files named `trailing.` and `double..` return an empty type label.
+  Their empty extensions also place them among typed files during Type sorting.
+- Fix: classify an empty extension the same way as no extension for both the
+  visible type label and its sort group.
+- Green: the filesystem Type-sort regression checks both trailing-dot names
+  display `File` and sort with extensionless files after known extensions.
+  All-target parallel tests pass: 818 passed, 29 ignored. Locked strict Clippy,
+  formatting, and whitespace checks pass.
