@@ -201,14 +201,9 @@ fn decode_uri_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<Vec<
         if uri.is_empty() || uri.starts_with('#') {
             continue;
         }
-        if !uri.starts_with("file:///") {
-            return Err(format!("unsupported file URI: {uri}"));
-        }
         entry_count += 1;
         validate_entry_count(entry_count)?;
-        let path = gio::File::for_uri(uri)
-            .path()
-            .filter(|path| path.is_absolute())
+        let path = crate::file_uri::local_path(uri)
             .ok_or_else(|| format!("unsupported file URI: {uri}"))?;
         if !paths.contains(&path) {
             paths.push(path);
@@ -283,6 +278,23 @@ mod tests {
             decode_uri_list(b"# source\r\nfile:///tmp/a%20file.txt\r\nfile:///tmp/a%20file.txt\n")
                 .unwrap();
         assert_eq!(decoded, [PathBuf::from("/tmp/a file.txt")]);
+    }
+
+    #[test]
+    fn localhost_file_uris_import_local_paths_and_deduplicate_uri_spellings() {
+        let list = b"file://localhost/tmp/a%20file.txt\r\nfile:///tmp/a%20file.txt\r\n";
+        let expected = vec![PathBuf::from("/tmp/a file.txt")];
+        assert_eq!(decode_uri_list(list).unwrap(), expected);
+        let gnome = b"cut\nfile://localhost/tmp/a%20file.txt\n";
+        let imported = decode(GNOME_MIME, gnome).unwrap();
+        assert_eq!(imported.paths, expected);
+        assert_eq!(imported.action, Action::Move);
+    }
+
+    #[test]
+    fn uri_lists_reject_embedded_nul_without_panicking() {
+        assert!(decode_uri_list(b"file:///tmp/a\0file\r\n").is_err());
+        assert!(decode(GNOME_MIME, b"cut\nfile:///tmp/a\0file\n").is_err());
     }
 
     #[test]

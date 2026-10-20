@@ -20,3 +20,20 @@ pushes `main`. No release or installation is included.
   Clippy, formatting, and whitespace checks passed.
 - The earlier parallel GIO crash report remains unresolved. Sequential tests do
   not establish that it is fixed.
+
+## Round 2: local file URI spellings are rejected
+
+- Reproduction: launch and import `file://localhost/...` through the real launch,
+  URI-list, and GNOME Cut parsers. Both original regressions returned errors.
+- Red: `cargo test --locked localhost_file_uris` failed in both launch and
+  clipboard parsing before filesystem access.
+- Cause: both parsers required a literal `file:///` prefix instead of parsing
+  the URI's local authority. That also excluded `file:/...` launch paths.
+- Fix: share GLib filename decoding with explicit absolute-path and local-host
+  validation. Preserve percent escapes and non-UTF-8 filename bytes. Reject
+  embedded NUL before the FFI call, which a malformed-input test showed panicked.
+- Green: 802 all-target tests passed sequentially, 26 ignored. Tests cover
+  localhost, mixed-case localhost, authority-free absolute URIs, URI spelling
+  deduplication, GNOME Cut, Unicode and raw filename bytes, remote hosts,
+  malformed escapes, and embedded NUL. Locked strict Clippy, formatting, and
+  whitespace checks passed.

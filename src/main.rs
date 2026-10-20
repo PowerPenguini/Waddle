@@ -1,5 +1,6 @@
 mod app;
 mod file_manager_service;
+mod file_uri;
 mod fs;
 mod journal;
 mod launch;

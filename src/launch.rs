@@ -8,8 +8,6 @@ use std::{
     process::{Command, Stdio},
 };
 
-use gio::prelude::FileExt;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Target {
     pub(crate) directory: PathBuf,
@@ -114,12 +112,11 @@ pub(crate) fn show_items(
 
 fn local_path(argument: &OsStr) -> Result<PathBuf, String> {
     let encoded = argument.to_string_lossy();
-    let path = if encoded.starts_with("file://") {
-        if !encoded.starts_with("file:///") {
-            return Err("the file URI is not a local path".to_owned());
-        }
-        gio::File::for_uri(encoded.as_ref())
-            .path()
+    let path = if encoded
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:"))
+    {
+        crate::file_uri::local_path(encoded.as_ref())
             .ok_or_else(|| "the file URI is not a local path".to_owned())?
     } else {
         let path = PathBuf::from(argument);
@@ -161,6 +158,7 @@ mod tests {
     use std::{cell::RefCell, os::unix::ffi::OsStringExt};
 
     use super::*;
+    use gio::prelude::FileExt;
 
     #[derive(Default)]
     struct RecordingLauncher {
@@ -277,6 +275,26 @@ mod tests {
             "the file URI is not a local path"
         );
         assert!(show_items(["/definitely/missing/waddle-item"]).is_err());
+    }
+
+    #[test]
+    fn localhost_file_uris_open_and_reveal_local_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("zażółć file.txt");
+        fs::write(&path, "fixture").unwrap();
+        let uri = gio::File::for_path(&path).uri().to_string();
+        let localhost = uri.replacen("file:///", "file://localhost/", 1);
+        let without_authority = uri.replacen("file:///", "file:/", 1);
+        let expected = Target {
+            directory: temp.path().to_path_buf(),
+            selected: vec![path.clone()],
+        };
+        assert_eq!(location(localhost.as_ref()).unwrap(), expected);
+        assert_eq!(location(without_authority.as_ref()).unwrap(), expected);
+        assert_eq!(
+            show_items([localhost, without_authority, uri]).unwrap(),
+            [expected]
+        );
     }
 
     #[test]
